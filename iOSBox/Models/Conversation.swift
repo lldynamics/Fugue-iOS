@@ -25,9 +25,17 @@ final class Conversation {
     @Relationship(deleteRule: .cascade, inverse: \ChatMessage.conversation)
     var messages: [ChatMessage] = []
 
+    /// Localized placeholder title; replaced by the first message once the user sends one.
+    static var defaultTitle: String { String(localized: "新对话") }
+
+    /// True for the placeholder title in any language the app has run in.
+    static func isDefaultTitle(_ title: String) -> Bool {
+        title == defaultTitle || title == "新对话" || title == "New Chat"
+    }
+
     init(
         id: UUID = UUID(),
-        title: String = "新对话",
+        title: String = Conversation.defaultTitle,
         isPinned: Bool = false,
         assistantID: UUID? = nil,
         assistantEmoji: String = "✨",

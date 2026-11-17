@@ -35,7 +35,7 @@ struct ArenaComparisonGroupView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: sideBySideLayout ? "rectangle.stack" : "rectangle.split.2x1")
-                        Text(sideBySideLayout ? "标签视图" : "并排横滑")
+                        Text(sideBySideLayout ? String(localized: "标签视图") : String(localized: "并排横滑"))
                     }
                     .font(.caption2.weight(.medium))
                     .padding(.horizontal, 8)
@@ -146,7 +146,7 @@ struct ArenaComparisonGroupView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: msg.isSelectedInGroup ? "checkmark.circle.fill" : "circle")
-                        Text(msg.isSelectedInGroup ? "上下文主回复" : "设为上下文")
+                        Text(msg.isSelectedInGroup ? String(localized: "上下文主回复") : String(localized: "设为上下文"))
                     }
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(msg.isSelectedInGroup ? Color.accentColor : .secondary)

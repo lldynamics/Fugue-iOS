@@ -50,7 +50,7 @@ enum GeminiAdapter {
                         // The whole prompt was rejected; there will be no candidates.
                         if let feedback = obj["promptFeedback"] as? [String: Any],
                            let blockReason = feedback["blockReason"] as? String, !blockReason.isEmpty {
-                            throw LLMError.apiError("提问内容被 Gemini 安全策略拦截（\(blockReason)），请调整后重试。")
+                            throw LLMError.apiError(String(localized: "提问内容被 Gemini 安全策略拦截（\(blockReason)），请调整后重试。"))
                         }
 
                         if let candidates = obj["candidates"] as? [[String: Any]],

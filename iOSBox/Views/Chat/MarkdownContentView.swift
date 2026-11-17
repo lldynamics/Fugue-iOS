@@ -87,15 +87,67 @@ private struct MarkdownBlockView: View, Equatable {
 
 private struct InlineMarkdownText: View {
     let raw: String
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
+        let segments = InlineMathParser.split(raw)
+        if segments.count == 1, case .text(let only) = segments[0] {
+            Self.markdownText(only)
+        } else {
+            composedText(segments)
+        }
+    }
+
+    /// Text and typeset math joined into one `Text`, so it wraps and selects like normal text.
+    private func composedText(_ segments: [InlineMathSegment]) -> Text {
+        // Match the body text size, following Dynamic Type.
+        let fontSize = UIFont.preferredFont(
+            forTextStyle: .body,
+            compatibleWith: UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
+        ).pointSize
+
+        return segments.reduce(Text(verbatim: "")) { partial, segment in
+            switch segment {
+            case .text(let text):
+                return partial + Self.markdownText(text)
+            case .math(let tex, let display):
+                if let rendered = MathRenderer.render(latex: tex, fontSize: fontSize, colorScheme: colorScheme, displayStyle: display) {
+                    return partial + Text(Image(uiImage: rendered.image)).baselineOffset(-rendered.descent)
+                }
+                // Unparseable LaTeX: show the source rather than dropping it.
+                return partial + Text(verbatim: display ? "$$\(tex)$$" : "$\(tex)$")
+            }
+        }
+    }
+
+    static func markdownText(_ raw: String) -> Text {
         if let attributed = try? AttributedString(
             markdown: raw,
             options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
-            Text(attributed)
-        } else {
-            Text(raw)
+            return Text(attributed)
+        }
+        return Text(verbatim: raw)
+    }
+}
+
+private extension UIContentSizeCategory {
+    init(_ size: DynamicTypeSize) {
+        switch size {
+        case .xSmall: self = .extraSmall
+        case .small: self = .small
+        case .medium: self = .medium
+        case .large: self = .large
+        case .xLarge: self = .extraLarge
+        case .xxLarge: self = .extraExtraLarge
+        case .xxxLarge: self = .extraExtraExtraLarge
+        case .accessibility1: self = .accessibilityMedium
+        case .accessibility2: self = .accessibilityLarge
+        case .accessibility3: self = .accessibilityExtraLarge
+        case .accessibility4: self = .accessibilityExtraExtraLarge
+        case .accessibility5: self = .accessibilityExtraExtraExtraLarge
+        @unknown default: self = .large
         }
     }
 }
@@ -125,7 +177,7 @@ private struct CopyButton: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                Text(copied ? "已复制" : idleTitle)
+                Text(copied ? String(localized: "已复制") : idleTitle)
             }
             .font(.caption2.weight(.medium))
             .foregroundStyle(copied ? .green : .secondary)
@@ -162,7 +214,7 @@ private struct CodeBlockCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            CardHeader(title: language.isEmpty ? "code" : language.lowercased(), copyText: code, copyTitle: "复制代码")
+            CardHeader(title: language.isEmpty ? "code" : language.lowercased(), copyText: code, copyTitle: String(localized: "复制代码"))
             Divider().opacity(0.4)
             ScrollView(.horizontal, showsIndicators: true) {
                 Text(SyntaxHighlighter.highlight(code: code))
@@ -176,24 +228,47 @@ private struct CodeBlockCard: View {
     }
 }
 
-/// Display math (`$$…$$`, `\[…\]`) shown as readable LaTeX source in a dedicated card instead
-/// of being mangled by the inline markdown parser. Typeset rendering would need a math engine.
+/// Display math (`$$…$$`, `\[…\]`) typeset with SwiftMath. Falls back to the LaTeX source
+/// when the expression can't be parsed (or is still streaming in incomplete).
 private struct MathBlockCard: View {
     let tex: String
+    @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: .body) private var fontSize: CGFloat = 19
 
     var body: some View {
+        if let rendered = MathRenderer.render(latex: tex, fontSize: fontSize, colorScheme: colorScheme, displayStyle: true) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                Image(uiImage: rendered.image)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 2)
+            }
+            .contextMenu {
+                Button {
+                    UIPasteboard.general.string = tex
+                } label: {
+                    Label("复制 LaTeX 源码", systemImage: "doc.on.doc")
+                }
+            }
+            .accessibilityElement()
+            .accessibilityLabel(String(localized: "公式：\(tex)"))
+        } else {
+            sourceCard
+        }
+    }
+
+    private var sourceCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            CardHeader(title: "公式 · LaTeX", copyText: tex, copyTitle: "复制公式")
+            CardHeader(title: String(localized: "公式 · LaTeX"), copyText: tex, copyTitle: String(localized: "复制公式"))
             Divider().opacity(0.4)
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(tex)
+                Text(verbatim: tex)
                     .font(.callout.monospaced())
                     .padding(12)
                     .textSelection(.enabled)
             }
         }
         .cardStyle()
-        .accessibilityLabel("公式：\(tex)")
+        .accessibilityLabel(String(localized: "公式：\(tex)"))
     }
 }
 

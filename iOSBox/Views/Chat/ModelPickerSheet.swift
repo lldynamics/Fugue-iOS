@@ -73,7 +73,7 @@ struct ModelPickerSheet: View {
                     .searchable(text: $searchText, prompt: "搜索模型名称或 ID")
                 }
             }
-            .navigationTitle(mode == .single ? "切换对话模型" : "选择并发对比模型")
+            .navigationTitle(mode == .single ? String(localized: "切换对话模型") : String(localized: "选择并发对比模型"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

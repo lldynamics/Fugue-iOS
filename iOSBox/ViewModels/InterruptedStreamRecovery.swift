@@ -5,7 +5,7 @@ import SwiftData
 /// crashed, or suspended mid-generation. Must run once per launch, before any new
 /// generation starts (no stream can legitimately be in flight at that point).
 enum InterruptedStreamRecovery {
-    static let interruptedNotice = "回复生成被中断（App 已退出或在后台被系统挂起），可点击重试。"
+    static let interruptedNotice = String(localized: "回复生成被中断（App 已退出或在后台被系统挂起），可点击重试。")
 
     @discardableResult
     static func run(in container: ModelContainer) -> Int {

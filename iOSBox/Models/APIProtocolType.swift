@@ -10,11 +10,11 @@ enum APIProtocolType: String, Codable, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .openAICompatible:
-            return "OpenAI 兼容协议"
+            return String(localized: "OpenAI 兼容协议")
         case .anthropic:
-            return "Anthropic Claude 原生"
+            return String(localized: "Anthropic Claude 原生")
         case .gemini:
-            return "Google Gemini 原生"
+            return String(localized: "Google Gemini 原生")
         }
     }
 
@@ -32,11 +32,11 @@ enum APIProtocolType: String, Codable, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .openAICompatible:
-            return "支持 OpenAI / DeepSeek / OpenRouter / 硅基流动 / Ollama / 各类中转站"
+            return String(localized: "支持 OpenAI / DeepSeek / OpenRouter / 硅基流动 / Ollama / 各类中转站")
         case .anthropic:
-            return "使用 /v1/messages 接口，原生支持 Extended Thinking 与 PDF 文档"
+            return String(localized: "使用 /v1/messages 接口，原生支持 Extended Thinking 与 PDF 文档")
         case .gemini:
-            return "使用 streamGenerateContent 接口，原生支持多模态与思考链"
+            return String(localized: "使用 streamGenerateContent 接口，原生支持多模态与思考链")
         }
     }
 

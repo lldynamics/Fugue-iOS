@@ -1,0 +1,70 @@
+{
+  "sourceLanguage": "zh-Hans",
+  "strings": {
+    "CFBundleDisplayName": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOSBox"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOSBox"
+          }
+        }
+      }
+    },
+    "NSCameraUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used to take photos and send them to AI models for analysis."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用于拍摄照片并发送给 AI 模型进行多模态分析"
+          }
+        }
+      }
+    },
+    "NSLocalNetworkUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used to connect to model servers on your local network (such as Ollama or LM Studio). Requests go directly to the address you enter."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用于连接你在局域网内部署的模型服务（如 Ollama、LM Studio），请求直接发往你填写的地址。"
+          }
+        }
+      }
+    },
+    "NSPhotoLibraryUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used to choose images to send to AI models for analysis and Q&A."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用于选择图片发送给 AI 模型进行识图与问答"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

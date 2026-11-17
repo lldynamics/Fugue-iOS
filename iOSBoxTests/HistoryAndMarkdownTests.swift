@@ -45,7 +45,8 @@ final class PromptHistoryTests: XCTestCase {
         XCTAssertTrue(oldest.allSatisfy { $0.dataBase64 == nil })
         XCTAssertEqual(oldest.first?.kind, .document)
         let text = LLMClient.composeTextWithDocuments(text: "旧图", attachments: oldest, includePDFText: false)
-        XCTAssertTrue(text.contains("[附件: old.jpg"))
+        XCTAssertTrue(text.contains("old.jpg"), "image placeholder keeps the file name")
+        XCTAssertFalse(text.contains("QUJD"), "no base64 in the placeholder")
         XCTAssertTrue(text.contains("PDF 正文"))
     }
 }
@@ -58,8 +59,8 @@ final class ContextLimitOptionsTests: XCTestCase {
 
     func testLegacyNonStandardValueIsOfferedSoPickerHasMatchingTag() {
         XCTAssertEqual(ContextLimitOptions.values(including: 24), [4, 10, 20, 24, 50, 0])
-        XCTAssertEqual(ContextLimitOptions.label(for: 0), "全部历史")
-        XCTAssertEqual(ContextLimitOptions.label(for: 24), "最近 24 条")
+        XCTAssertEqual(ContextLimitOptions.label(for: 0), String(localized: "全部历史"))
+        XCTAssertEqual(ContextLimitOptions.label(for: 24), String(localized: "最近 \(24) 条"))
     }
 }
 

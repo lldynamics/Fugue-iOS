@@ -45,7 +45,7 @@ struct ConversationListView: View {
                             }
                         }
 
-                        Section(pinnedList.isEmpty ? "全部对话" : "最近对话") {
+                        Section(pinnedList.isEmpty ? String(localized: "全部对话") : String(localized: "最近对话")) {
                             ForEach(regularList) { conv in
                                 conversationRow(conv)
                             }
@@ -125,7 +125,7 @@ struct ConversationListView: View {
 
                     HStack(spacing: 6) {
                         if let lastMsg = conv.sortedMessages.last {
-                            Text(lastMsg.content.isEmpty ? (lastMsg.isStreaming ? "正在生成…" : "[附件消息]") : lastMsg.content)
+                            Text(lastMsg.content.isEmpty ? (lastMsg.isStreaming ? String(localized: "正在生成…") : String(localized: "[附件消息]")) : lastMsg.content)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -149,7 +149,7 @@ struct ConversationListView: View {
                 conv.isPinned.toggle()
                 try? modelContext.save()
             } label: {
-                Label(conv.isPinned ? "取消置顶" : "置顶", systemImage: conv.isPinned ? "pin.slash" : "pin.fill")
+                Label(conv.isPinned ? String(localized: "取消置顶") : String(localized: "置顶"), systemImage: conv.isPinned ? "pin.slash" : "pin.fill")
             }
             .tint(.orange)
         }
@@ -221,7 +221,7 @@ struct ConversationListView: View {
 
         let arenaInitial = Array(allTargets.prefix(2))
         let conv = Conversation(
-            title: "新对话",
+            title: Conversation.defaultTitle,
             isArenaMode: arenaMode && arenaInitial.count >= 2,
             primaryTarget: preferredPrimary,
             arenaTargets: arenaInitial

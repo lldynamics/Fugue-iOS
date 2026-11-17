@@ -168,7 +168,7 @@ enum AnthropicAdapter {
         if let firstRole = wireMessages.first?["role"] as? String, firstRole != "user" {
             wireMessages.insert([
                 "role": "user",
-                "content": [["type": "text", "text": "继续"]]
+                "content": [["type": "text", "text": String(localized: "继续")]]
             ], at: 0)
         }
 

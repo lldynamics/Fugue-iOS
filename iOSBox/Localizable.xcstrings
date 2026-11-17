@@ -1,0 +1,4518 @@
+{
+  "sourceLanguage": "zh-Hans",
+  "strings": {
+    "": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ""
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ""
+          }
+        }
+      }
+    },
+    "%@\n\n...[文件内容较长，已截取前 %lld 个字符]...": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@\n\n...[File truncated to the first %lld characters]..."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@\n\n...[文件内容较长，已截取前 %lld 个字符]..."
+          }
+        }
+      }
+    },
+    "%@ · %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %@"
+          }
+        }
+      }
+    },
+    "%@ 未标记支持识图，图片可能被忽略或导致报错。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ not marked as supporting images; images may be ignored or cause an error."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 未标记支持识图，图片可能被忽略或导致报错。"
+          }
+        }
+      }
+    },
+    "%lld tok": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld tok"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld tok"
+          }
+        }
+      }
+    },
+    "--- 第 %lld 页 ---\n%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "--- Page %lld ---\n%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "--- 第 %lld 页 ---\n%@"
+          }
+        }
+      }
+    },
+    "0": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0"
+          }
+        }
+      }
+    },
+    "AI 助手": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI Assistant"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI 助手"
+          }
+        }
+      }
+    },
+    "API Key": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API Key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API Key"
+          }
+        }
+      }
+    },
+    "API Key 仅保存在本机 iOS 安全钥匙串（Keychain）中，直连目标接口，不经过任何第三方服务器。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your API key stays in this device's iOS Keychain and is sent only to the API you configure — never through a third-party server."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API Key 仅保存在本机 iOS 安全钥匙串（Keychain）中，直连目标接口，不经过任何第三方服务器。"
+          }
+        }
+      }
+    },
+    "API Key 加密存储于 iOS 系统 Keychain，所有请求由手机直接发往你配置的 API 地址。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API keys are encrypted in the iOS Keychain, and every request goes straight from your device to the API you configured."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API Key 加密存储于 iOS 系统 Keychain，所有请求由手机直接发往你配置的 API 地址。"
+          }
+        }
+      }
+    },
+    "API Key（iOS 钥匙串加密存储）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API Key (encrypted in the iOS Keychain)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API Key（iOS 钥匙串加密存储）"
+          }
+        }
+      }
+    },
+    "API 协议类型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API Protocol"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API 协议类型"
+          }
+        }
+      }
+    },
+    "API 服务商与自定义中转站": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API Providers & Custom Relays"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API 服务商与自定义中转站"
+          }
+        }
+      }
+    },
+    "Anthropic Claude 原生": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anthropic Claude (Native)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anthropic Claude 原生"
+          }
+        }
+      }
+    },
+    "Anthropic 原生 /v1/messages 协议，支持 Extended Thinking 与原版 PDF 解析": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Native Anthropic /v1/messages with Extended Thinking and native PDF input"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anthropic 原生 /v1/messages 协议，支持 Extended Thinking 与原版 PDF 解析"
+          }
+        }
+      }
+    },
+    "Base URL": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Base URL"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Base URL"
+          }
+        }
+      }
+    },
+    "Base URL（如 https://api.xxx.com/v1）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Base URL (e.g. https://api.xxx.com/v1)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Base URL（如 https://api.xxx.com/v1）"
+          }
+        }
+      }
+    },
+    "DeepSeek 深度求索": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 深度求索"
+          }
+        }
+      }
+    },
+    "Google AI Studio 原生协议，支持多模态识图、PDF 文档及思考过程展示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Native Google AI Studio API with image, PDF and thinking support"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Google AI Studio 原生协议，支持多模态识图、PDF 文档及思考过程展示"
+          }
+        }
+      }
+    },
+    "Google Gemini 原生": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Google Gemini (Native)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Google Gemini 原生"
+          }
+        }
+      }
+    },
+    "HTTP 请求头": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTP Header"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTP 请求头"
+          }
+        }
+      }
+    },
+    "Header 值": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Header value"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Header 值"
+          }
+        }
+      }
+    },
+    "Header 名称（如 HTTP-Referer）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Header name (e.g. HTTP-Referer)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Header 名称（如 HTTP-Referer）"
+          }
+        }
+      }
+    },
+    "Key 已就绪": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key Ready"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key 已就绪"
+          }
+        }
+      }
+    },
+    "Key 已配置": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key Set"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key 已配置"
+          }
+        }
+      }
+    },
+    "Ollama / 局域网本地模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ollama / Local Network Models"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ollama / 局域网本地模型"
+          }
+        }
+      }
+    },
+    "OpenAI 兼容协议": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenAI-Compatible"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenAI 兼容协议"
+          }
+        }
+      }
+    },
+    "OpenAI 官方接口，支持一键拉取账户可用模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Official OpenAI API; fetch the models available to your account"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenAI 官方接口，支持一键拉取账户可用模型"
+          }
+        }
+      }
+    },
+    "SiliconFlow 硅基流动": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SiliconFlow"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SiliconFlow 硅基流动"
+          }
+        }
+      }
+    },
+    "System Prompt（系统提示词）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System Prompt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System Prompt（系统提示词）"
+          }
+        }
+      }
+    },
+    "Temperature": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Temperature"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Temperature"
+          }
+        }
+      }
+    },
+    "Top P": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Top P"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Top P"
+          }
+        }
+      }
+    },
+    "URL 格式待完善": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Incomplete URL"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "URL 格式待完善"
+          }
+        }
+      }
+    },
+    "[附件: %@ (%@)]": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "[Attachment: %@ (%@)]"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "[附件: %@ (%@)]"
+          }
+        }
+      }
+    },
+    "[附件消息]": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "[Attachment]"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "[附件消息]"
+          }
+        }
+      }
+    },
+    "https://api.example.com/v1": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "https://api.example.com/v1"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "https://api.example.com/v1"
+          }
+        }
+      }
+    },
+    "iOSBox": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOSBox"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOSBox"
+          }
+        }
+      }
+    },
+    "· 已启用 %lld 个模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "· %lld models enabled"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "· 已启用 %lld 个模型"
+          }
+        }
+      }
+    },
+    "••••••••（已存入钥匙串）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "•••••••• (stored in Keychain)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "••••••••（已存入钥匙串）"
+          }
+        }
+      }
+    },
+    "、": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ", "
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "、"
+          }
+        }
+      }
+    },
+    "一个 Key 聚合全球数百个主流与开源模型，支持一键拉取全部模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "One key for hundreds of commercial and open models; fetch them all in one tap"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一个 Key 聚合全球数百个主流与开源模型，支持一键拉取全部模型"
+          }
+        }
+      }
+    },
+    "一键从接口拉取模型列表 (/models)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fetch Model List (/models)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一键从接口拉取模型列表 (/models)"
+          }
+        }
+      }
+    },
+    "一键套用助手角色": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apply an Assistant"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一键套用助手角色"
+          }
+        }
+      }
+    },
+    "上一条回复仍在生成或正在停止，请稍候再发送。你输入的内容已保留。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The previous reply is still generating or stopping. Please wait a moment. Your message has been kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一条回复仍在生成或正在停止，请稍候再发送。你输入的内容已保留。"
+          }
+        }
+      }
+    },
+    "上下文主回复": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used as Context"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上下文主回复"
+          }
+        }
+      }
+    },
+    "上传文档或代码文件": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Upload Document or Code File"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上传文档或代码文件"
+          }
+        }
+      }
+    },
+    "专注高质量代码实现、架构设计与排错": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "High-quality code, architecture and debugging"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "专注高质量代码实现、架构设计与排错"
+          }
+        }
+      }
+    },
+    "中英互译、母语级润色与术语对齐": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chinese–English translation with native polish and consistent terms"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中英互译、母语级润色与术语对齐"
+          }
+        }
+      }
+    },
+    "从备份文件导入": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import from Backup"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从备份文件导入"
+          }
+        }
+      }
+    },
+    "从相册、相机或文件中添加图片与文档": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add images and documents from Photos, the camera or Files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从相册、相机或文件中添加图片与文档"
+          }
+        }
+      }
+    },
+    "从相册选择图片": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose from Photos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从相册选择图片"
+          }
+        }
+      }
+    },
+    "会话参数与预设": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat Settings"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话参数与预设"
+          }
+        }
+      }
+    },
+    "你擅长第一性原理与系统性思考。面对问题时，先拆解核心假设与关键变量，对比不同方案的优劣与适用边界，最后给出可落地的结论。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You excel at first-principles and systems thinking. Start by identifying core assumptions and key variables, compare the strengths, weaknesses and limits of each option, then give an actionable conclusion."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你擅长第一性原理与系统性思考。面对问题时，先拆解核心假设与关键变量，对比不同方案的优劣与适用边界，最后给出可落地的结论。"
+          }
+        }
+      }
+    },
+    "你是一位专业、高效的 AI 助手。请用清晰、结构化的 Markdown 格式回答问题，必要时提供代码示例或分步说明。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You are a professional, efficient AI assistant. Answer in clear, well-structured Markdown, adding code examples or step-by-step explanations when helpful."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你是一位专业、高效的 AI 助手。请用清晰、结构化的 Markdown 格式回答问题，必要时提供代码示例或分步说明。"
+          }
+        }
+      }
+    },
+    "你是一位精通中英文母语表达的专业译者。若输入为中文则翻译为地道自然的英文；若输入为外文则翻译为流畅优雅的中文。保留专有名词与格式，并在必要时简短说明关键措辞。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You are a professional translator fluent in Chinese and English. Translate Chinese input into natural, idiomatic English, and other languages into fluent, elegant Chinese. Preserve proper nouns and formatting, and briefly explain key word choices when needed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你是一位精通中英文母语表达的专业译者。若输入为中文则翻译为地道自然的英文；若输入为外文则翻译为流畅优雅的中文。保留专有名词与格式，并在必要时简短说明关键措辞。"
+          }
+        }
+      }
+    },
+    "你是一位资深编辑与写作教练。帮用户改写或起草文本时，去除生硬的套话与翻译腔，让句式长短有致、逻辑顺畅、重点突出。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You are a seasoned editor and writing coach. When rewriting or drafting text, remove stiff clichés and translationese, vary sentence length, keep the logic smooth, and make the key points stand out."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你是一位资深编辑与写作教练。帮用户改写或起草文本时，去除生硬的套话与翻译腔，让句式长短有致、逻辑顺畅、重点突出。"
+          }
+        }
+      }
+    },
+    "你是一位资深软件架构师与全栈工程师。输出代码时优先遵循现代最佳实践，处理边界条件与并发安全，简要解释核心设计思路，避免冗余套话。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You are a senior software architect and full-stack engineer. Follow modern best practices, handle edge cases and concurrency safety, briefly explain key design decisions, and skip filler."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你是一位资深软件架构师与全栈工程师。输出代码时优先遵循现代最佳实践，处理边界条件与并发安全，简要解释核心设计思路，避免冗余套话。"
+          }
+        }
+      }
+    },
+    "使用 /v1/messages 接口，原生支持 Extended Thinking 与 PDF 文档": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uses /v1/messages with native Extended Thinking and PDF support"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 /v1/messages 接口，原生支持 Extended Thinking 与 PDF 文档"
+          }
+        }
+      }
+    },
+    "使用 streamGenerateContent 接口，原生支持多模态与思考链": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uses streamGenerateContent with native multimodal input and thinking"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 streamGenerateContent 接口，原生支持多模态与思考链"
+          }
+        }
+      }
+    },
+    "使用原模型重答 (%@)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Regenerate with Original Model (%@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用原模型重答 (%@)"
+          }
+        }
+      }
+    },
+    "使用当前顶部所选模型重答": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Regenerate with Current Model"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用当前顶部所选模型重答"
+          }
+        }
+      }
+    },
+    "例如：gpt-4.1 / deepseek-r1 / claude-sonnet-4-5": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "e.g. gpt-4.1 / deepseek-r1 / claude-sonnet-4-5"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "例如：gpt-4.1 / deepseek-r1 / claude-sonnet-4-5"
+          }
+        }
+      }
+    },
+    "保存": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存"
+          }
+        }
+      }
+    },
+    "停止生成": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop Generating"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止生成"
+          }
+        }
+      }
+    },
+    "全能日常助手": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Everyday Assistant"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全能日常助手"
+          }
+        }
+      }
+    },
+    "全部停用": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disable All"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部停用"
+          }
+        }
+      }
+    },
+    "全部历史": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entire History"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部历史"
+          }
+        }
+      }
+    },
+    "全部启用": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable All"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部启用"
+          }
+        }
+      }
+    },
+    "全部对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All Chats"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部对话"
+          }
+        }
+      }
+    },
+    "公式 · LaTeX": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Formula · LaTeX"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "公式 · LaTeX"
+          }
+        }
+      }
+    },
+    "公式：%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Formula: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "公式：%@"
+          }
+        }
+      }
+    },
+    "关闭": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭"
+          }
+        }
+      }
+    },
+    "切换单聊模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switch Model"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切换单聊模型"
+          }
+        }
+      }
+    },
+    "切换对话模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switch Model"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切换对话模型"
+          }
+        }
+      }
+    },
+    "创建": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建"
+          }
+        }
+      }
+    },
+    "初始模型（可选，创建后也可一键拉取）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Initial Model (optional — you can fetch models later)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "初始模型（可选，创建后也可一键拉取）"
+          }
+        }
+      }
+    },
+    "删除": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除"
+          }
+        }
+      }
+    },
+    "删除请求头 %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete header %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除请求头 %@"
+          }
+        }
+      }
+    },
+    "前往「服务商」页面配置自有 API Key 后即可直接流式对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add your own API key on the Providers tab to start chatting"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前往「服务商」页面配置自有 API Key 后即可直接流式对话"
+          }
+        }
+      }
+    },
+    "助手": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Assistants"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "助手"
+          }
+        }
+      }
+    },
+    "助手 %lld 个": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld assistants"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "助手 %lld 个"
+          }
+        }
+      }
+    },
+    "助手名称（例如：Swift 专家）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Assistant name (e.g. Swift Expert)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "助手名称（例如：Swift 专家）"
+          }
+        }
+      }
+    },
+    "助手预设": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Assistants"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "助手预设"
+          }
+        }
+      }
+    },
+    "勾选 2–4 个模型，发送消息时将同时并发请求并同屏对比结果。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select 2–4 models. Each message is sent to all of them at once and the results are shown side by side."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "勾选 2–4 个模型，发送消息时将同时并发请求并同屏对比结果。"
+          }
+        }
+      }
+    },
+    "去 AI 味，优化逻辑节奏与表达感染力": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove the AI tone; improve flow, rhythm and impact"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "去 AI 味，优化逻辑节奏与表达感染力"
+          }
+        }
+      }
+    },
+    "去配置": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set Up"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "去配置"
+          }
+        }
+      }
+    },
+    "发送": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送"
+          }
+        }
+      }
+    },
+    "发送一条提问，同时请求多个服务商模型并排比对思考链与答案质量。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send one prompt to several models at once and compare their reasoning and answers side by side."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送一条提问，同时请求多个服务商模型并排比对思考链与答案质量。"
+          }
+        }
+      }
+    },
+    "取消": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
+    "取消置顶": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unpin"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消置顶"
+          }
+        }
+      }
+    },
+    "启用后的模型会出现在聊天框的模型切换器与多模型并发对比列表中。左滑可删除模型。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enabled models appear in the chat's model switcher and comparison list. Swipe left to delete a model."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用后的模型会出现在聊天框的模型切换器与多模型并发对比列表中。左滑可删除模型。"
+          }
+        }
+      }
+    },
+    "启用深度思考 (Thinking / R1)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Thinking (Reasoning Models)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用深度思考 (Thinking / R1)"
+          }
+        }
+      }
+    },
+    "启用该服务商": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Provider"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用该服务商"
+          }
+        }
+      }
+    },
+    "回复已达到最大输出长度，内容可能不完整。可在会话参数中调大「最大输出 Tokens」后重答。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The reply hit the max output length and may be incomplete. Increase Max Output Tokens in chat settings, then regenerate."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复已达到最大输出长度，内容可能不完整。可在会话参数中调大「最大输出 Tokens」后重答。"
+          }
+        }
+      }
+    },
+    "回复生成被中断（App 已退出或在后台被系统挂起），可点击重试。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generation was interrupted (the app quit or was suspended in the background). Tap Retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复生成被中断（App 已退出或在后台被系统挂起），可点击重试。"
+          }
+        }
+      }
+    },
+    "回复被模型服务商的安全策略拦截或截断。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The reply was blocked or cut off by the provider's safety policy."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复被模型服务商的安全策略拦截或截断。"
+          }
+        }
+      }
+    },
+    "国内高速推理平台，聚合 DeepSeek / Qwen / GLM 等模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fast inference platform hosting DeepSeek, Qwen, GLM and more"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "国内高速推理平台，聚合 DeepSeek / Qwen / GLM 等模型"
+          }
+        }
+      }
+    },
+    "在 %lld 个模型中搜索…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search %lld models…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %lld 个模型中搜索…"
+          }
+        }
+      }
+    },
+    "地道双语翻译官": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bilingual Translator"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "地道双语翻译官"
+          }
+        }
+      }
+    },
+    "基础连接配置": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "基础连接配置"
+          }
+        }
+      }
+    },
+    "备份包含服务商配置、助手和全部对话（含附件），不含 API Key 与敏感请求头。导入为合并模式：已存在的项目会跳过，不会覆盖或重复。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Backups include providers, assistants and all chats (with attachments), but not API keys or sensitive headers. Importing merges: existing items are skipped, never overwritten or duplicated."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "备份包含服务商配置、助手和全部对话（含附件），不含 API Key 与敏感请求头。导入为合并模式：已存在的项目会跳过，不会覆盖或重复。"
+          }
+        }
+      }
+    },
+    "复制": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制"
+          }
+        }
+      }
+    },
+    "复制 LaTeX 源码": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy LaTeX Source"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制 LaTeX 源码"
+          }
+        }
+      }
+    },
+    "复制代码": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Code"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制代码"
+          }
+        }
+      }
+    },
+    "复制公式": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Formula"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制公式"
+          }
+        }
+      }
+    },
+    "复制提问": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Prompt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制提问"
+          }
+        }
+      }
+    },
+    "外观与名称": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appearance & Name"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外观与名称"
+          }
+        }
+      }
+    },
+    "多模型对比": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compare Models"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "多模型对比"
+          }
+        }
+      }
+    },
+    "多模型并发对比 (%lld)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model Comparison (%lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "多模型并发对比 (%lld)"
+          }
+        }
+      }
+    },
+    "多模型并发对比已开启": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model Comparison Is On"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "多模型并发对比已开启"
+          }
+        }
+      }
+    },
+    "多角度拆解复杂问题、利弊权衡与决策建议": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Break down complex problems, weigh trade-offs, recommend decisions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "多角度拆解复杂问题、利弊权衡与决策建议"
+          }
+        }
+      }
+    },
+    "好": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "好"
+          }
+        }
+      }
+    },
+    "完成": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成"
+          }
+        }
+      }
+    },
+    "官方直连，支持 DeepSeek-V3 与 DeepSeek-R1 深度思考链": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Official API with DeepSeek-V3 and DeepSeek-R1 reasoning"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "官方直连，支持 DeepSeek-V3 与 DeepSeek-R1 深度思考链"
+          }
+        }
+      }
+    },
+    "定义角色身份、输出风格与约束条件…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Define the role, output style and constraints…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "定义角色身份、输出风格与约束条件…"
+          }
+        }
+      }
+    },
+    "实际对话端点：%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat endpoint: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实际对话端点：%@"
+          }
+        }
+      }
+    },
+    "对当前会话内的所有模型（含并发对比模型）生效。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applies to every model in this chat, including compared models."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对当前会话内的所有模型（含并发对比模型）生效。"
+          }
+        }
+      }
+    },
+    "对比": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compare"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对比"
+          }
+        }
+      }
+    },
+    "对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chats"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对话"
+          }
+        }
+      }
+    },
+    "对话 %lld 个（消息 %lld 条）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld chats (%lld messages)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对话 %lld 个（消息 %lld 条）"
+          }
+        }
+      }
+    },
+    "对话标题": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chat title"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对话标题"
+          }
+        }
+      }
+    },
+    "导入失败": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import Failed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入失败"
+          }
+        }
+      }
+    },
+    "导入完成": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import Complete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入完成"
+          }
+        }
+      }
+    },
+    "导出失败": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export Failed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出失败"
+          }
+        }
+      }
+    },
+    "导出完整备份 (JSON)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export Full Backup (JSON)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出完整备份 (JSON)"
+          }
+        }
+      }
+    },
+    "已保存": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存"
+          }
+        }
+      }
+    },
+    "已停止生成": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generation stopped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已停止生成"
+          }
+        }
+      }
+    },
+    "已复制": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copied"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已复制"
+          }
+        }
+      }
+    },
+    "已导入：%@。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imported: %@."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已导入：%@。"
+          }
+        }
+      }
+    },
+    "已将旧数据库备份到 App 的 Application Support/%@ 目录。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The old database was backed up to Application Support/%@ in the app's container."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已将旧数据库备份到 App 的 Application Support/%@ 目录。"
+          }
+        }
+      }
+    },
+    "已深度思考": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thought"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已深度思考"
+          }
+        }
+      }
+    },
+    "已深度思考（%@ 秒）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thought for %@ s"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已深度思考（%@ 秒）"
+          }
+        }
+      }
+    },
+    "帮我写一段高质量的 Python 异步并发请求模板": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Write a high-quality Python template for concurrent async requests"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "帮我写一段高质量的 Python 异步并发请求模板"
+          }
+        }
+      }
+    },
+    "帮我对比一下 Swift Actor 和传统锁的性能与适用场景": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compare Swift actors and traditional locks in performance and use cases"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "帮我对比一下 Swift Actor 和传统锁的性能与适用场景"
+          }
+        }
+      }
+    },
+    "并发对比": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compare"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "并发对比"
+          }
+        }
+      }
+    },
+    "并发对比 · %lld 模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comparing · %lld models"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "并发对比 · %lld 模型"
+          }
+        }
+      }
+    },
+    "并排横滑": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Side by Side"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "并排横滑"
+          }
+        }
+      }
+    },
+    "开启对比 (%lld)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compare (%lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启对比 (%lld)"
+          }
+        }
+      }
+    },
+    "开始自由 AI 对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start a Conversation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始自由 AI 对话"
+          }
+        }
+      }
+    },
+    "当前模型「%@」未标记支持识图，图片可能被忽略或导致报错（可在服务商页修改「识图」标记）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” isn't marked as supporting images; images may be ignored or cause an error (change the Vision flag on the Providers tab)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前模型「%@」未标记支持识图，图片可能被忽略或导致报错（可在服务商页修改「识图」标记）。"
+          }
+        }
+      }
+    },
+    "当前模型尚未填入 API Key": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This model has no API key yet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前模型尚未填入 API Key"
+          }
+        }
+      }
+    },
+    "待填 Key": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs Key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待填 Key"
+          }
+        }
+      }
+    },
+    "快速选择常见模板（或自定义）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quick Templates (or Custom)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "快速选择常见模板（或自定义）"
+          }
+        }
+      }
+    },
+    "思考": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考"
+          }
+        }
+      }
+    },
+    "思考 Token 预算：%lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking Budget: %lld tokens"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考 Token 预算：%lld"
+          }
+        }
+      }
+    },
+    "思考过程用完了输出长度上限，未生成正文。请调大「最大输出 Tokens」或降低思考预算后重答。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking used up the output limit before any answer was written. Increase Max Output Tokens or lower the thinking budget, then regenerate."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考过程用完了输出长度上限，未生成正文。请调大「最大输出 Tokens」或降低思考预算后重答。"
+          }
+        }
+      }
+    },
+    "思考链": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考链"
+          }
+        }
+      }
+    },
+    "成功拉取 %lld 个模型（新增 %lld 个，已自动启用前几个，可搜索按需开启）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fetched %lld models (%lld new; the first few were enabled automatically — search to enable others)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "成功拉取 %lld 个模型（新增 %lld 个，已自动启用前几个，可搜索按需开启）。"
+          }
+        }
+      }
+    },
+    "手动添加模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Model"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手动添加模型"
+          }
+        }
+      }
+    },
+    "手动添加模型 ID": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Model ID Manually"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手动添加模型 ID"
+          }
+        }
+      }
+    },
+    "批量操作": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bulk Actions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "批量操作"
+          }
+        }
+      }
+    },
+    "拍照识图": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Take Photo"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拍照识图"
+          }
+        }
+      }
+    },
+    "接口协议": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protocol"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接口协议"
+          }
+        }
+      }
+    },
+    "接口协议与地址": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protocol & Address"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接口协议与地址"
+          }
+        }
+      }
+    },
+    "接口返回成功，但未解析到可用模型，请尝试手动添加。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The request succeeded but no models were found. Try adding models manually."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接口返回成功，但未解析到可用模型，请尝试手动添加。"
+          }
+        }
+      }
+    },
+    "推理与深度思考": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reasoning"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "推理与深度思考"
+          }
+        }
+      }
+    },
+    "提问内容被 Gemini 安全策略拦截（%@），请调整后重试。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your prompt was blocked by Gemini's safety policy (%@). Please rephrase and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提问内容被 Gemini 安全策略拦截（%@），请调整后重试。"
+          }
+        }
+      }
+    },
+    "搜索标题或聊天内容": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search titles or messages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索标题或聊天内容"
+          }
+        }
+      }
+    },
+    "搜索模型名称或 ID": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search model name or ID"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索模型名称或 ID"
+          }
+        }
+      }
+    },
+    "携带上下文条数": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Context Messages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "携带上下文条数"
+          }
+        }
+      }
+    },
+    "支持 NewAPI / OneAPI / LiteLLM / vLLM 等任意兼容接口；URL 末尾加 # 可禁用自动补全 /v1": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Any compatible API such as NewAPI, OneAPI, LiteLLM or vLLM. End the URL with # to skip adding /v1 automatically"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "支持 NewAPI / OneAPI / LiteLLM / vLLM 等任意兼容接口；URL 末尾加 # 可禁用自动补全 /v1"
+          }
+        }
+      }
+    },
+    "支持 OpenAI / DeepSeek / OpenRouter / 硅基流动 / Ollama / 各类中转站": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Works with OpenAI, DeepSeek, OpenRouter, SiliconFlow, Ollama and API relays"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "支持 OpenAI / DeepSeek / OpenRouter / 硅基流动 / Ollama / 各类中转站"
+          }
+        }
+      }
+    },
+    "支持图片多模态输入": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Supports Image Input"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "支持图片多模态输入"
+          }
+        }
+      }
+    },
+    "支持接入的协议说明": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Supported Protocols"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "支持接入的协议说明"
+          }
+        }
+      }
+    },
+    "支持深度思考过程展示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Supports Thinking"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "支持深度思考过程展示"
+          }
+        }
+      }
+    },
+    "支持随时修改；若使用末尾带 # 的自定义网关地址可跳过自动拼接 /v1。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can change it any time. End a custom gateway URL with # to skip adding /v1 automatically."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "支持随时修改；若使用末尾带 # 的自定义网关地址可跳过自动拼接 /v1。"
+          }
+        }
+      }
+    },
+    "支持随时在底部切换不同服务商的模型接力回答，也可发送图片与 PDF 文档。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switch to any provider's model from the bar below at any time, and send images or PDFs."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "支持随时在底部切换不同服务商的模型接力回答，也可发送图片与 PDF 文档。"
+          }
+        }
+      }
+    },
+    "敏感信息（存入钥匙串）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sensitive (store in Keychain)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "敏感信息（存入钥匙串）"
+          }
+        }
+      }
+    },
+    "数据与隐私安全": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Data & Privacy"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "数据与隐私安全"
+          }
+        }
+      }
+    },
+    "数据库已重建": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Database Rebuilt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "数据库已重建"
+          }
+        }
+      }
+    },
+    "文档：%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Document: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文档：%@"
+          }
+        }
+      }
+    },
+    "新对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Chat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新对话"
+          }
+        }
+      }
+    },
+    "新建助手": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Assistant"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建助手"
+          }
+        }
+      }
+    },
+    "新建助手预设": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Assistant"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建助手预设"
+          }
+        }
+      }
+    },
+    "新建对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Chat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建对话"
+          }
+        }
+      }
+    },
+    "无效的接口地址：%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invalid API address: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无效的接口地址：%@"
+          }
+        }
+      }
+    },
+    "无法打开文件": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Open File"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法打开文件"
+          }
+        }
+      }
+    },
+    "无法识别该文件，请选择由 iOSBox 导出的 JSON 备份。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file isn't recognized. Choose a JSON backup exported by iOSBox."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法识别该文件，请选择由 iOSBox 导出的 JSON 备份。"
+          }
+        }
+      }
+    },
+    "旧数据库备份失败。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Backing up the old database failed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "旧数据库备份失败。"
+          }
+        }
+      }
+    },
+    "显示 API Key": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show API Key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示 API Key"
+          }
+        }
+      }
+    },
+    "显示名称（选填，留空则同 ID）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Display name (optional, defaults to the ID)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示名称（选填，留空则同 ID）"
+          }
+        }
+      }
+    },
+    "暂无已启用的模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Enabled Models"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无已启用的模型"
+          }
+        }
+      }
+    },
+    "暂时无法发送": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can't Send Yet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时无法发送"
+          }
+        }
+      }
+    },
+    "更多操作": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "More"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更多操作"
+          }
+        }
+      }
+    },
+    "最大输出 Tokens (0=默认)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Max Output Tokens (0 = default)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最大输出 Tokens (0=默认)"
+          }
+        }
+      }
+    },
+    "最近 %lld 条": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近 %lld 条"
+          }
+        }
+      }
+    },
+    "最近对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近对话"
+          }
+        }
+      }
+    },
+    "服务商": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Providers"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务商"
+          }
+        }
+      }
+    },
+    "服务商 %lld 个": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld providers"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务商 %lld 个"
+          }
+        }
+      }
+    },
+    "服务商与设置": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Providers & Settings"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务商与设置"
+          }
+        }
+      }
+    },
+    "服务商名称": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provider name"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务商名称"
+          }
+        }
+      }
+    },
+    "服务商显示名称": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Display name"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务商显示名称"
+          }
+        }
+      }
+    },
+    "服务端未返回有效内容": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The server returned no usable content"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务端未返回有效内容"
+          }
+        }
+      }
+    },
+    "服务端返回成功，但回复内容为空": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The server responded successfully but returned no content"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务端返回成功，但回复内容为空"
+          }
+        }
+      }
+    },
+    "未填 Key": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未填 Key"
+          }
+        }
+      }
+    },
+    "未找到对应的服务商配置（可能已被删除）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provider not found (it may have been deleted)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未找到对应的服务商配置（可能已被删除）"
+          }
+        }
+      }
+    },
+    "本地数据库无法创建，本次运行的数据不会被保存。请检查设备存储空间后重启 App。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The local database couldn't be created, so nothing will be saved this session. Check your free storage and restart the app."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地数据库无法创建，本次运行的数据不会被保存。请检查设备存储空间后重启 App。"
+          }
+        }
+      }
+    },
+    "本地数据库无法打开，已为你创建新的数据库。%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The local database couldn't be opened, so a new one was created. %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地数据库无法打开，已为你创建新的数据库。%@"
+          }
+        }
+      }
+    },
+    "查看图片 %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View image %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看图片 %@"
+          }
+        }
+      }
+    },
+    "标签视图": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tabs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标签视图"
+          }
+        }
+      }
+    },
+    "模型 ID（必填，如 deepseek-reasoner）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model ID (required, e.g. deepseek-reasoner)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模型 ID（必填，如 deepseek-reasoner）"
+          }
+        }
+      }
+    },
+    "模型列表（已启用 %lld/%lld）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Models (%lld/%lld enabled)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模型列表（已启用 %lld/%lld）"
+          }
+        }
+      }
+    },
+    "模型标识": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model Identifier"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模型标识"
+          }
+        }
+      }
+    },
+    "模型能力标记": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capabilities"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模型能力标记"
+          }
+        }
+      }
+    },
+    "正在导入…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importing…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在导入…"
+          }
+        }
+      }
+    },
+    "正在生成…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generating…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在生成…"
+          }
+        }
+      }
+    },
+    "正在生成备份…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creating Backup…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在生成备份…"
+          }
+        }
+      }
+    },
+    "正在请求 /models 拉取可用模型…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fetching models from /models…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在请求 /models 拉取可用模型…"
+          }
+        }
+      }
+    },
+    "正在连接模型生成回复…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connecting to the model…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接模型生成回复…"
+          }
+        }
+      }
+    },
+    "深度思考中…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "深度思考中…"
+          }
+        }
+      }
+    },
+    "深度推理分析师": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deep Reasoning Analyst"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "深度推理分析师"
+          }
+        }
+      }
+    },
+    "添加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加"
+          }
+        }
+      }
+    },
+    "添加 API": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add API"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加 API"
+          }
+        }
+      }
+    },
+    "添加自定义 API": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Custom API"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加自定义 API"
+          }
+        }
+      }
+    },
+    "添加自定义 HTTP Header": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Custom HTTP Header"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加自定义 HTTP Header"
+          }
+        }
+      }
+    },
+    "添加自定义 Header": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Custom Header"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加自定义 Header"
+          }
+        }
+      }
+    },
+    "添加附件": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Attachment"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加附件"
+          }
+        }
+      }
+    },
+    "清晰、准确、结构化回答各类问题": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear, accurate, well-structured answers"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清晰、准确、结构化回答各类问题"
+          }
+        }
+      }
+    },
+    "清空当前消息记录": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear Messages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清空当前消息记录"
+          }
+        }
+      }
+    },
+    "清除搜索": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear Search"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除搜索"
+          }
+        }
+      }
+    },
+    "点击分享或保存导出的备份文件": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share or Save the Backup File"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击分享或保存导出的备份文件"
+          }
+        }
+      }
+    },
+    "点击卡片可编辑提示词与采样参数，点击「对话」立即创建专属会话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap a card to edit its prompt and parameters; tap Chat to start a conversation with it"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击卡片可编辑提示词与采样参数，点击「对话」立即创建专属会话"
+          }
+        }
+      }
+    },
+    "点击开始对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap to start chatting"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击开始对话"
+          }
+        }
+      }
+    },
+    "点进任意服务商可填入 API Key、修改 Base URL，并支持一键拉取 /models 模型列表或手动添加模型。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open a provider to add its API key, edit the Base URL, fetch models from /models or add models manually."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点进任意服务商可填入 API Key、修改 Base URL，并支持一键拉取 /models 模型列表或手动添加模型。"
+          }
+        }
+      }
+    },
+    "用于鉴权 Token 等敏感值：只保存在 iOS 钥匙串中，不写入本地数据库，界面上也不再显示明文。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "For auth tokens and other secrets: stored only in the iOS Keychain, never in the local database, and never shown in plain text."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用于鉴权 Token 等敏感值：只保存在 iOS 钥匙串中，不写入本地数据库，界面上也不再显示明文。"
+          }
+        }
+      }
+    },
+    "用通俗生动的语言解释 Transformer 的自注意力机制": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Explain Transformer self-attention in plain, vivid language"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用通俗生动的语言解释 Transformer 的自注意力机制"
+          }
+        }
+      }
+    },
+    "知道了": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "知道了"
+          }
+        }
+      }
+    },
+    "确定": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确定"
+          }
+        }
+      }
+    },
+    "移除附件 %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove attachment %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除附件 %@"
+          }
+        }
+      }
+    },
+    "简短描述（可选）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Short description (optional)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "简短描述（可选）"
+          }
+        }
+      }
+    },
+    "粘贴": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴"
+          }
+        }
+      }
+    },
+    "粘贴 API Key（加密保存在系统钥匙串）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste API key (stored encrypted in the Keychain)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴 API Key（加密保存在系统钥匙串）"
+          }
+        }
+      }
+    },
+    "精炼写作与润色": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Writing & Editing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "精炼写作与润色"
+          }
+        }
+      }
+    },
+    "系统提示词 (System Prompt)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System Prompt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统提示词 (System Prompt)"
+          }
+        }
+      }
+    },
+    "系统提示词与参数": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System Prompt & Parameters"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统提示词与参数"
+          }
+        }
+      }
+    },
+    "纯客户端本地直连": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Direct, On-Device Connections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "纯客户端本地直连"
+          }
+        }
+      }
+    },
+    "继续": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续"
+          }
+        }
+      }
+    },
+    "编辑": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑"
+          }
+        }
+      }
+    },
+    "编辑助手预设": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Assistant"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑助手预设"
+          }
+        }
+      }
+    },
+    "置顶": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pin"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "置顶"
+          }
+        }
+      }
+    },
+    "置顶对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pinned"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "置顶对话"
+          }
+        }
+      }
+    },
+    "聚合你的所有 AI 模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All Your AI Models in One Place"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "聚合你的所有 AI 模型"
+          }
+        }
+      }
+    },
+    "自定义 OpenAI 兼容中转站": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Custom OpenAI-Compatible Relay"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自定义 OpenAI 兼容中转站"
+          }
+        }
+      }
+    },
+    "自定义服务商": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Custom Provider"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自定义服务商"
+          }
+        }
+      }
+    },
+    "自定义请求头（可选）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Custom Headers (optional)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自定义请求头（可选）"
+          }
+        }
+      }
+    },
+    "自定义随机度 (Temperature)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Custom Temperature"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自定义随机度 (Temperature)"
+          }
+        }
+      }
+    },
+    "自由接入 OpenAI 兼容中转、DeepSeek、OpenRouter、Claude 与 Gemini。\n既可单聊随时切换模型，也可一键开启多模型同屏对比。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect OpenAI-compatible relays, DeepSeek, OpenRouter, Claude and Gemini.\nSwitch models any time in a chat, or compare several side by side."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自由接入 OpenAI 兼容中转、DeepSeek、OpenRouter、Claude 与 Gemini。\n既可单聊随时切换模型，也可一键开启多模型同屏对比。"
+          }
+        }
+      }
+    },
+    "设为上下文": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use as Context"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设为上下文"
+          }
+        }
+      }
+    },
+    "识图": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vision"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "识图"
+          }
+        }
+      }
+    },
+    "识图：%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "识图：%@"
+          }
+        }
+      }
+    },
+    "该地址使用 http:// 且指向公网：iOS 会阻止此类明文连接，API Key 与对话内容也会以明文传输。请改用 https:// 地址；局域网内的 http 服务（如 Ollama）不受影响。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This address uses http:// on the public internet: iOS blocks such unencrypted connections, and your API key and messages would travel in plain text. Use an https:// address instead; http services on your local network (such as Ollama) still work."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该地址使用 http:// 且指向公网：iOS 会阻止此类明文连接，API Key 与对话内容也会以明文传输。请改用 https:// 地址；局域网内的 http 服务（如 Ollama）不受影响。"
+          }
+        }
+      }
+    },
+    "该备份来自更新版本的 iOSBox（格式 v%lld），请先升级 App 再导入。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This backup comes from a newer version of iOSBox (format v%lld). Update the app before importing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该备份来自更新版本的 iOSBox（格式 v%lld），请先升级 App 再导入。"
+          }
+        }
+      }
+    },
+    "请先在「服务商」页面为「%@」配置 API Key（本地服务若免鉴权可忽略）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add an API key for “%@” on the Providers tab first (not needed for local services without auth)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在「服务商」页面为「%@」配置 API Key（本地服务若免鉴权可忽略）"
+          }
+        }
+      }
+    },
+    "请先在「服务商」页面启用服务商并添加模型。你输入的内容已保留。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable a provider and add models on the Providers tab first. Your message has been kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在「服务商」页面启用服务商并添加模型。你输入的内容已保留。"
+          }
+        }
+      }
+    },
+    "请前往底部「服务商」页面填入 API Key，一键拉取或手动添加模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go to the Providers tab to add an API key, then fetch or add models"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请前往底部「服务商」页面填入 API Key，一键拉取或手动添加模型"
+          }
+        }
+      }
+    },
+    "请求失败（无详细错误信息）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Request failed (no error details)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请求失败（无详细错误信息）"
+          }
+        }
+      }
+    },
+    "请求被服务端拒绝": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The server rejected the request"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请求被服务端拒绝"
+          }
+        }
+      }
+    },
+    "请求预览：%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Request preview: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请求预览：%@"
+          }
+        }
+      }
+    },
+    "读取文件失败：%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't read the file: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "读取文件失败：%@"
+          }
+        }
+      }
+    },
+    "资深架构与编程专家": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Senior Software Architect"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "资深架构与编程专家"
+          }
+        }
+      }
+    },
+    "跳过已存在的 %lld 项": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld existing items skipped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跳过已存在的 %lld 项"
+          }
+        }
+      }
+    },
+    "输入或粘贴 API Key": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter or paste API key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入或粘贴 API Key"
+          }
+        }
+      }
+    },
+    "输入消息，支持随时切换模型或发图…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message — switch models or attach images any time…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入消息，支持随时切换模型或发图…"
+          }
+        }
+      }
+    },
+    "输入系统提示词（System Prompt）…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a system prompt…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入系统提示词（System Prompt）…"
+          }
+        }
+      }
+    },
+    "还没有可用的模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Models Available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没有可用的模型"
+          }
+        }
+      }
+    },
+    "连接局域网电脑运行的 Ollama / LM Studio，API Key 可留空": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect to Ollama or LM Studio on your local network; API key optional"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接局域网电脑运行的 Ollama / LM Studio，API Key 可留空"
+          }
+        }
+      }
+    },
+    "连接正常，共同步 %lld 个可用模型（新增 %lld 个）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection OK. Synced %lld models (%lld new)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接正常，共同步 %lld 个可用模型（新增 %lld 个）。"
+          }
+        }
+      }
+    },
+    "退出对比": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exit Compare"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "退出对比"
+          }
+        }
+      }
+    },
+    "选择并发对比模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Models to Compare"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择并发对比模型"
+          }
+        }
+      }
+    },
+    "选择模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Model"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择模型"
+          }
+        }
+      }
+    },
+    "配置多模型并发对比": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set Up Model Comparison"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配置多模型并发对比"
+          }
+        }
+      }
+    },
+    "采样与上下文控制": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sampling & Context"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "采样与上下文控制"
+          }
+        }
+      }
+    },
+    "重命名对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename Chat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名对话"
+          }
+        }
+      }
+    },
+    "重答": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Regenerate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重答"
+          }
+        }
+      }
+    },
+    "重试请求": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试请求"
+          }
+        }
+      }
+    },
+    "附件提示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attachment"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "附件提示"
+          }
+        }
+      }
+    },
+    "隐藏 API Key": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide API Key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏 API Key"
+          }
+        }
+      }
+    },
+    "默认参数": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Defaults"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认参数"
+          }
+        }
+      }
+    },
+    "默认开启深度思考": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking On by Default"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认开启深度思考"
+          }
+        }
+      }
+    },
+    "默认携带上下文": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default Context Messages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认携带上下文"
+          }
+        }
+      }
+    },
+    "，": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ", "
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "，"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

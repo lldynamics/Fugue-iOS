@@ -95,7 +95,7 @@ final class ChatEngine {
         conversation.messages.append(userMsg)
         context.insert(userMsg)
 
-        if conversation.messages.filter({ $0.role == .user }).count == 1 && conversation.title == "新对话" {
+        if conversation.messages.filter({ $0.role == .user }).count == 1 && Conversation.isDefaultTitle(conversation.title) {
             conversation.title = Self.makeConversationTitle(from: trimmed, attachments: attachments)
         }
         conversation.updatedAt = Date()
@@ -224,7 +224,7 @@ final class ChatEngine {
         var prepared: [(ChatMessage, LLMChatRequest?)] = []
         for (msg, target) in placeholders {
             guard let provider = providers.first(where: { $0.id == target.providerID }) else {
-                msg.errorMessage = "未找到对应的服务商配置（可能已被删除）"
+                msg.errorMessage = String(localized: "未找到对应的服务商配置（可能已被删除）")
                 msg.isStreaming = false
                 prepared.append((msg, nil))
                 continue
@@ -376,10 +376,10 @@ final class ChatEngine {
                 case .length:
                     message.errorMessage = message.reasoningContent.isEmpty
                         ? LLMFinishReason.length.userNotice
-                        : "思考过程用完了输出长度上限，未生成正文。请调大「最大输出 Tokens」或降低思考预算后重答。"
+                        : String(localized: "思考过程用完了输出长度上限，未生成正文。请调大「最大输出 Tokens」或降低思考预算后重答。")
                 case nil:
                     if message.reasoningContent.isEmpty {
-                        message.errorMessage = "服务端返回成功，但回复内容为空"
+                        message.errorMessage = String(localized: "服务端返回成功，但回复内容为空")
                     }
                 }
             }
@@ -389,7 +389,7 @@ final class ChatEngine {
             guard Self.isAlive(message) else { return }
             if Self.isCancellation(error) {
                 if message.content.isEmpty && message.reasoningContent.isEmpty {
-                    message.errorMessage = "已停止生成"
+                    message.errorMessage = String(localized: "已停止生成")
                 }
             } else {
                 message.errorMessage = error.localizedDescription
@@ -514,8 +514,8 @@ final class ChatEngine {
             return oneLine.count > 22 ? String(oneLine.prefix(22)) + "…" : oneLine
         }
         if let first = attachments.first {
-            return first.kind == .image ? "识图：\(first.fileName)" : "文档：\(first.fileName)"
+            return first.kind == .image ? String(localized: "识图：\(first.fileName)") : String(localized: "文档：\(first.fileName)")
         }
-        return "新对话"
+        return Conversation.defaultTitle
     }
 }

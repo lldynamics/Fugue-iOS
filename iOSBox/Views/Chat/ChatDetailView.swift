@@ -244,15 +244,15 @@ struct ChatDetailView: View {
     }
 
     private var sendBlockedTitle: String {
-        sendBlockedReason == .noAvailableModel ? "还没有可用的模型" : "暂时无法发送"
+        sendBlockedReason == .noAvailableModel ? String(localized: "还没有可用的模型") : String(localized: "暂时无法发送")
     }
 
     private var sendBlockedMessage: String {
         switch sendBlockedReason {
         case .noAvailableModel:
-            return "请先在「服务商」页面启用服务商并添加模型。你输入的内容已保留。"
+            return String(localized: "请先在「服务商」页面启用服务商并添加模型。你输入的内容已保留。")
         case .busy:
-            return "上一条回复仍在生成或正在停止，请稍候再发送。你输入的内容已保留。"
+            return String(localized: "上一条回复仍在生成或正在停止，请稍候再发送。你输入的内容已保留。")
         default:
             return ""
         }
@@ -313,13 +313,13 @@ struct ChatDetailView: View {
             Text(conversation.assistantEmoji)
                 .font(.system(size: 46))
 
-            Text(conversation.isArenaMode ? "多模型并发对比已开启" : "开始自由 AI 对话")
+            Text(conversation.isArenaMode ? String(localized: "多模型并发对比已开启") : String(localized: "开始自由 AI 对话"))
                 .font(.title3.weight(.bold))
 
             Text(
                 conversation.isArenaMode
-                    ? "发送一条提问，同时请求多个服务商模型并排比对思考链与答案质量。"
-                    : "支持随时在底部切换不同服务商的模型接力回答，也可发送图片与 PDF 文档。"
+                    ? String(localized: "发送一条提问，同时请求多个服务商模型并排比对思考链与答案质量。")
+                    : String(localized: "支持随时在底部切换不同服务商的模型接力回答，也可发送图片与 PDF 文档。")
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
@@ -327,9 +327,9 @@ struct ChatDetailView: View {
             .padding(.horizontal, 24)
 
             VStack(spacing: 8) {
-                quickSuggestionButton("帮我对比一下 Swift Actor 和传统锁的性能与适用场景")
-                quickSuggestionButton("用通俗生动的语言解释 Transformer 的自注意力机制")
-                quickSuggestionButton("帮我写一段高质量的 Python 异步并发请求模板")
+                quickSuggestionButton(String(localized: "帮我对比一下 Swift Actor 和传统锁的性能与适用场景"))
+                quickSuggestionButton(String(localized: "用通俗生动的语言解释 Transformer 的自注意力机制"))
+                quickSuggestionButton(String(localized: "帮我写一段高质量的 Python 异步并发请求模板"))
             }
             .padding(.top, 6)
         }

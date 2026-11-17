@@ -104,7 +104,7 @@ struct AssistantEditorSheet: View {
                     }
                 }
             }
-            .navigationTitle(preset == nil ? "新建助手预设" : "编辑助手预设")
+            .navigationTitle(preset == nil ? String(localized: "新建助手预设") : String(localized: "编辑助手预设"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

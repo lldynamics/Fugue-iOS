@@ -84,7 +84,7 @@ enum AttachmentProcessor {
             if let page = document.page(at: index),
                let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines),
                !text.isEmpty {
-                pages.append("--- 第 \(index + 1) 页 ---\n\(text)")
+                pages.append(String(localized: "--- 第 \(index + 1) 页 ---\n\(text)"))
             }
         }
         return pages.joined(separator: "\n\n")
@@ -93,7 +93,7 @@ enum AttachmentProcessor {
     private static func truncateIfNeeded(_ text: String) -> String {
         guard text.count > maxTextCharacters else { return text }
         let prefix = text.prefix(maxTextCharacters)
-        return "\(prefix)\n\n...[文件内容较长，已截取前 \(maxTextCharacters) 个字符]..."
+        return String(localized: "\(prefix)\n\n...[文件内容较长，已截取前 \(maxTextCharacters) 个字符]...")
     }
 
     private static func downscaleIfNeeded(_ image: UIImage, maxDimension: CGFloat) -> UIImage {

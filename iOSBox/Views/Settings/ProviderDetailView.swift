@@ -103,7 +103,7 @@ struct ProviderDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(revealAPIKey ? "隐藏 API Key" : "显示 API Key")
+                    .accessibilityLabel(revealAPIKey ? String(localized: "隐藏 API Key") : String(localized: "显示 API Key"))
 
                     Button {
                         if let clip = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -146,7 +146,7 @@ struct ProviderDetailView: View {
                                         .foregroundStyle(.green)
                                 }
                             }
-                            Text(header.isSecret ? "••••••••（已存入钥匙串）" : header.value)
+                            Text(header.isSecret ? String(localized: "••••••••（已存入钥匙串）") : header.value)
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -471,7 +471,7 @@ struct ProviderDetailView: View {
 
             guard !remoteSpecs.isEmpty else {
                 fetchBannerIsError = true
-                fetchBannerMessage = "接口返回成功，但未解析到可用模型，请尝试手动添加。"
+                fetchBannerMessage = String(localized: "接口返回成功，但未解析到可用模型，请尝试手动添加。")
                 return
             }
 
@@ -495,9 +495,9 @@ struct ProviderDetailView: View {
 
             fetchBannerIsError = false
             if remoteSpecs.count > 20 && newlyAddedCount > 0 {
-                fetchBannerMessage = "成功拉取 \(remoteSpecs.count) 个模型（新增 \(newlyAddedCount) 个，已智能勾选常用项，可搜索按需开启）。"
+                fetchBannerMessage = String(localized: "成功拉取 \(remoteSpecs.count) 个模型（新增 \(newlyAddedCount) 个，已自动启用前几个，可搜索按需开启）。")
             } else {
-                fetchBannerMessage = "连接正常，共同步 \(remoteSpecs.count) 个可用模型（新增 \(newlyAddedCount) 个）。"
+                fetchBannerMessage = String(localized: "连接正常，共同步 \(remoteSpecs.count) 个可用模型（新增 \(newlyAddedCount) 个）。")
             }
         } catch {
             fetchBannerIsError = true

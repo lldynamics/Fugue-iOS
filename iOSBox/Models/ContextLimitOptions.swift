@@ -15,6 +15,6 @@ enum ContextLimitOptions {
     }
 
     static func label(for value: Int) -> String {
-        value == 0 ? "全部历史" : "最近 \(value) 条"
+        value == 0 ? String(localized: "全部历史") : String(localized: "最近 \(value) 条")
     }
 }

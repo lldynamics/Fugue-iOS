@@ -147,7 +147,7 @@ struct ProviderListView: View {
                 case .success(let url):
                     Task { await importBackup(from: url) }
                 case .failure(let error):
-                    backupAlert = BackupAlert(title: "无法打开文件", message: error.localizedDescription)
+                    backupAlert = BackupAlert(title: String(localized: "无法打开文件"), message: error.localizedDescription)
                 }
             }
             .alert(item: $backupAlert) { alert in
@@ -169,7 +169,7 @@ struct ProviderListView: View {
             }.value
             exportedJSONURL = url
         } catch {
-            backupAlert = BackupAlert(title: "导出失败", message: error.localizedDescription)
+            backupAlert = BackupAlert(title: String(localized: "导出失败"), message: error.localizedDescription)
         }
     }
 
@@ -183,9 +183,9 @@ struct ProviderListView: View {
                 return try BackupService.decode(Data(contentsOf: url))
             }.value
             let summary = try BackupService.apply(decoded, to: modelContext)
-            backupAlert = BackupAlert(title: "导入完成", message: summary.description)
+            backupAlert = BackupAlert(title: String(localized: "导入完成"), message: summary.description)
         } catch {
-            backupAlert = BackupAlert(title: "导入失败", message: error.localizedDescription)
+            backupAlert = BackupAlert(title: String(localized: "导入失败"), message: error.localizedDescription)
         }
     }
 
@@ -231,7 +231,7 @@ struct ProviderListView: View {
                         Circle()
                             .fill(hasKey ? Color.green : Color.orange)
                             .frame(width: 6, height: 6)
-                        Text(hasKey ? "Key 已配置" : "待填 Key")
+                        Text(hasKey ? String(localized: "Key 已配置") : String(localized: "待填 Key"))
                             .font(.caption2)
                             .foregroundStyle(hasKey ? .green : .orange)
                     }

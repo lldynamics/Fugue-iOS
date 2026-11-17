@@ -10,15 +10,15 @@ enum LLMError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL(let raw):
-            return "无效的接口地址：\(raw)"
+            return String(localized: "无效的接口地址：\(raw)")
         case .missingAPIKey(let provider):
-            return "请先在「服务商」页面为「\(provider)」配置 API Key（本地服务若免鉴权可忽略）"
+            return String(localized: "请先在「服务商」页面为「\(provider)」配置 API Key（本地服务若免鉴权可忽略）")
         case .httpError(let code, let detail):
             return "HTTP \(code)：\(detail)"
         case .apiError(let msg):
             return msg
         case .emptyResponse:
-            return "服务端未返回有效内容"
+            return String(localized: "服务端未返回有效内容")
         }
     }
 }
@@ -73,9 +73,9 @@ enum LLMFinishReason: String, Codable, Sendable {
     var userNotice: String {
         switch self {
         case .length:
-            return "回复已达到最大输出长度，内容可能不完整。可在会话参数中调大「最大输出 Tokens」后重答。"
+            return String(localized: "回复已达到最大输出长度，内容可能不完整。可在会话参数中调大「最大输出 Tokens」后重答。")
         case .contentFilter:
-            return "回复被模型服务商的安全策略拦截或截断。"
+            return String(localized: "回复被模型服务商的安全策略拦截或截断。")
         }
     }
 }
@@ -173,7 +173,7 @@ enum LLMClient {
     }
 
     static func extractReadableErrorMessage(from data: Data) -> String {
-        guard !data.isEmpty else { return "请求失败（无详细错误信息）" }
+        guard !data.isEmpty else { return String(localized: "请求失败（无详细错误信息）") }
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let errDict = json["error"] as? [String: Any],
                let msg = errDict["message"] as? String, !msg.isEmpty {
@@ -191,7 +191,7 @@ enum LLMClient {
         }
         let raw = String(decoding: data.prefix(600), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return raw.isEmpty ? "请求被服务端拒绝" : raw
+        return raw.isEmpty ? String(localized: "请求被服务端拒绝") : raw
     }
 
     static func composeTextWithDocuments(text: String, attachments: [MessageAttachment], includePDFText: Bool) -> String {
@@ -203,7 +203,7 @@ enum LLMClient {
             if let extracted = item.extractedText, !extracted.isEmpty {
                 blocks.append("<attachment name=\"\(item.fileName)\">\n\(extracted)\n</attachment>")
             } else {
-                blocks.append("[附件: \(item.fileName) (\(item.formattedSize))]")
+                blocks.append(String(localized: "[附件: \(item.fileName) (\(item.formattedSize))]"))
             }
         }
         if !text.isEmpty {

@@ -29,11 +29,11 @@ enum PersistenceController {
         let backupFolder = backupStoreFiles(at: configuration.url)
         do {
             let container = try open(schema: schema, configuration: configuration)
-            let location = backupFolder.map { "已将旧数据库备份到 App 的 Application Support/\($0.lastPathComponent) 目录。" }
-                ?? "旧数据库备份失败。"
+            let location = backupFolder.map { String(localized: "已将旧数据库备份到 App 的 Application Support/\($0.lastPathComponent) 目录。") }
+                ?? String(localized: "旧数据库备份失败。")
             return Result(
                 container: container,
-                startupNotice: "本地数据库无法打开，已为你创建新的数据库。\(location)"
+                startupNotice: String(localized: "本地数据库无法打开，已为你创建新的数据库。\(location)")
             )
         } catch {
             logger.fault("Failed to recreate store: \(String(describing: error), privacy: .public)")
@@ -45,7 +45,7 @@ enum PersistenceController {
             let container = try ModelContainer(for: schema, configurations: [memoryConfig])
             return Result(
                 container: container,
-                startupNotice: "本地数据库无法创建，本次运行的数据不会被保存。请检查设备存储空间后重启 App。"
+                startupNotice: String(localized: "本地数据库无法创建，本次运行的数据不会被保存。请检查设备存储空间后重启 App。")
             )
         } catch {
             fatalError("无法初始化任何 ModelContainer: \(error)")

@@ -114,7 +114,7 @@ struct MessageRowView: View {
                         .fill(Color(hex: message.accentHex))
                         .frame(width: 9, height: 9)
 
-                    Text(message.modelDisplayName.isEmpty ? "AI 助手" : message.modelDisplayName)
+                    Text(message.modelDisplayName.isEmpty ? String(localized: "AI 助手") : message.modelDisplayName)
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.primary)
 
@@ -203,7 +203,7 @@ struct MessageRowView: View {
                                 await MainActor.run { copiedToast = false }
                             }
                         } label: {
-                            Label(copiedToast ? "已复制" : "复制", systemImage: copiedToast ? "checkmark" : "doc.on.doc")
+                            Label(copiedToast ? String(localized: "已复制") : String(localized: "复制"), systemImage: copiedToast ? "checkmark" : "doc.on.doc")
                                 .font(.caption2)
                                 .foregroundStyle(copiedToast ? .green : .secondary)
                         }
@@ -215,7 +215,7 @@ struct MessageRowView: View {
                             Button {
                                 onRegenerate()
                             } label: {
-                                Label("使用原模型重答 (\(message.modelDisplayName))", systemImage: "arrow.clockwise")
+                                Label(String(localized: "使用原模型重答 (\(message.modelDisplayName))"), systemImage: "arrow.clockwise")
                             }
                             if let onRegenerateWithCurrentModel {
                                 Button {

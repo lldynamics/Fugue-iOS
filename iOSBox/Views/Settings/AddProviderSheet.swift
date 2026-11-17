@@ -8,7 +8,7 @@ struct AddProviderSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedTemplateID: String = "custom_openai"
-    @State private var name: String = "自定义服务商"
+    @State private var name: String = String(localized: "自定义服务商")
     @State private var protocolType: APIProtocolType = .openAICompatible
     @State private var baseURL: String = "https://api.openai.com/v1"
     @State private var apiKey: String = ""
@@ -136,7 +136,7 @@ struct AddProviderSheet: View {
 
     private func applyTemplate(_ tpl: ProviderTemplate) {
         selectedTemplateID = tpl.id
-        name = tpl.id == "custom_openai" ? "自定义服务商" : tpl.name
+        name = tpl.id == "custom_openai" ? String(localized: "自定义服务商") : tpl.name
         protocolType = tpl.protocolType
         baseURL = tpl.baseURL
         accentHex = tpl.accentHex

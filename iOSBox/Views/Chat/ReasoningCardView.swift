@@ -17,13 +17,13 @@ struct ReasoningCardView: View {
 
     private var headerTitle: String {
         if isActivelyThinking {
-            return "深度思考中…"
+            return String(localized: "深度思考中…")
         }
         if let ms = durationMs, ms > 0 {
             let seconds = Double(ms) / 1000.0
-            return String(format: "已深度思考（%.1f 秒）", seconds)
+            return String(localized: "已深度思考（\(seconds, format: .number.precision(.fractionLength(1))) 秒）")
         }
-        return "已深度思考"
+        return String(localized: "已深度思考")
     }
 
     var body: some View {

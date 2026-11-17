@@ -118,9 +118,9 @@ enum BackupError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unrecognizedFormat:
-            return "无法识别该文件，请选择由 iOSBox 导出的 JSON 备份。"
+            return String(localized: "无法识别该文件，请选择由 iOSBox 导出的 JSON 备份。")
         case .newerFormat(let version):
-            return "该备份来自更新版本的 iOSBox（格式 v\(version)），请先升级 App 再导入。"
+            return String(localized: "该备份来自更新版本的 iOSBox（格式 v\(version)），请先升级 App 再导入。")
         }
     }
 }
@@ -134,11 +134,12 @@ struct ImportSummary: Equatable {
     var skipped = 0
 
     var description: String {
-        var parts = ["对话 \(conversations) 个（消息 \(messages) 条）", "服务商 \(providers) 个", "助手 \(presets) 个"]
+        var parts = [String(localized: "对话 \(conversations) 个（消息 \(messages) 条）"), String(localized: "服务商 \(providers) 个"), String(localized: "助手 \(presets) 个")]
         if skipped > 0 {
-            parts.append("跳过已存在的 \(skipped) 项")
+            parts.append(String(localized: "跳过已存在的 \(skipped) 项"))
         }
-        return "已导入：" + parts.joined(separator: "，") + "。"
+        let list = parts.joined(separator: String(localized: "，"))
+        return String(localized: "已导入：\(list)。")
     }
 }
 

@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		AA00001B0000000000000001 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = AA00001C0000000000000001 /* SwiftMath */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		AA0000010000000000000001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -40,6 +44,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA00001B0000000000000001 /* SwiftMath in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -92,6 +97,7 @@
 			);
 			name = iOSBox;
 			packageProductDependencies = (
+				AA00001C0000000000000001 /* SwiftMath */,
 			);
 			productName = iOSBox;
 			productReference = AA0000030000000000000001 /* iOSBox.app */;
@@ -140,7 +146,7 @@
 				};
 			};
 			buildConfigurationList = AA0000140000000000000001 /* Build configuration list for PBXProject "iOSBox" */;
-			developmentRegion = "zh-Hans";
+			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
@@ -149,6 +155,9 @@
 			);
 			mainGroup = AA00000A0000000000000001;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AA00001D0000000000000001 /* XCRemoteSwiftPackageReference "SwiftMath" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AA00000B0000000000000001 /* Products */;
 			projectDirPath = "";
@@ -377,6 +386,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AA00001D0000000000000001 /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mgriebling/SwiftMath.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.7.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA00001C0000000000000001 /* SwiftMath */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00001D0000000000000001 /* XCRemoteSwiftPackageReference "SwiftMath" */;
+			productName = SwiftMath;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AA0000000000000000000001 /* Project object */;
 }

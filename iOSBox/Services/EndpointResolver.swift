@@ -113,7 +113,7 @@ enum EndpointResolver {
         sampleModel: String = "model-id"
     ) -> String {
         (try? chatEndpoint(baseURL: baseURL, protocolType: protocolType, modelID: sampleModel).absoluteString)
-            ?? "URL 格式待完善"
+            ?? String(localized: "URL 格式待完善")
     }
 
     // MARK: - Helpers

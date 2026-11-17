@@ -29,10 +29,11 @@ struct ComposerBarView: View {
         if conversation.isArenaMode && conversation.arenaTargets.count >= 2 {
             let names = conversation.arenaTargets.filter { !$0.supportsVision }.map(\.modelDisplayName)
             guard !names.isEmpty else { return nil }
-            return "\(names.joined(separator: "、")) 未标记支持识图，图片可能被忽略或导致报错。"
+            let joined = names.joined(separator: String(localized: "、"))
+            return String(localized: "\(joined) 未标记支持识图，图片可能被忽略或导致报错。")
         }
         guard let target = conversation.primaryTarget, !target.supportsVision else { return nil }
-        return "当前模型「\(target.modelDisplayName)」未标记支持识图，图片可能被忽略或导致报错（可在服务商页修改「识图」标记）。"
+        return String(localized: "当前模型「\(target.modelDisplayName)」未标记支持识图，图片可能被忽略或导致报错（可在服务商页修改「识图」标记）。")
     }
 
     var body: some View {
@@ -88,7 +89,7 @@ struct ComposerBarView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "bolt.horizontal.fill")
                             .font(.caption2)
-                        Text(conversation.isArenaMode ? "退出对比" : "多模型对比")
+                        Text(conversation.isArenaMode ? String(localized: "退出对比") : String(localized: "多模型对比"))
                             .font(.caption.weight(.medium))
                     }
                     .foregroundStyle(conversation.isArenaMode ? Color.accentColor : .secondary)
@@ -250,7 +251,7 @@ struct ComposerBarView: View {
                         let att = try AttachmentProcessor.processFileURL(url)
                         pendingAttachments.append(att)
                     } catch {
-                        attachmentError = "读取文件失败：\(error.localizedDescription)"
+                        attachmentError = String(localized: "读取文件失败：\(error.localizedDescription)")
                     }
                 }
             case .failure(let error):
