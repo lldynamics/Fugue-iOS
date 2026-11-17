@@ -12,6 +12,7 @@ struct ConversationListView: View {
 
     @State private var navigationPath: [Conversation] = []
     @State private var searchText: String = ""
+    @State private var deletionError: String?
 
     private var filteredConversations: [Conversation] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -55,6 +56,9 @@ struct ConversationListView: View {
                 }
             }
             .navigationTitle("iOSBox")
+            .alert("删除失败", isPresented: Binding(get: { deletionError != nil }, set: { if !$0 { deletionError = nil } })) {
+                Button("确定", role: .cancel) { }
+            } message: { Text(deletionError ?? "") }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -207,15 +211,19 @@ struct ConversationListView: View {
     private func deleteConversation(_ conv: Conversation) {
         Task {
             await ChatEngine.shared.stopGenerationAndWait(for: conv.id)
+            let id = conv.id
             modelContext.delete(conv)
-            try? modelContext.save()
+            do {
+                try modelContext.save()
+                try ChatDraftStore.shared.remove(id)
+            } catch { deletionError = error.localizedDescription }
         }
     }
 
     private func createNewConversation(arenaMode: Bool) {
         let allTargets = ChatEngine.shared.availableTargets(from: providers)
         let preferredPrimary = providers
-            .filter { $0.isEnabled && KeychainService.shared.hasAPIKey(for: $0.id) }
+            .filter { $0.isEnabled && $0.hasAuthentication }
             .flatMap { p in p.enabledModels.map { p.makeTarget(for: $0) } }
             .first ?? allTargets.first
 

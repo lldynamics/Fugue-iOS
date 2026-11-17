@@ -73,6 +73,12 @@ final class ProviderConfig {
         return specs.filter { seen.insert($0.id).inserted }
     }
 
+    var hasAuthentication: Bool {
+        KeychainService.shared.hasAPIKey(for: id) || resolvedCustomHeaders.contains {
+            $0.isEnabled && CustomHeader.looksSensitive($0.key) && !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
     var enabledModels: [ModelSpec] {
         models.filter(\.isEnabled)
     }
@@ -101,16 +107,15 @@ final class ProviderConfig {
     }
 
     /// Adds a header; secret values go to the Keychain and are never written to the database.
-    func addCustomHeader(key: String, value: String, isSecret: Bool) {
+    @discardableResult
+    func addCustomHeader(key: String, value: String, isSecret: Bool, save: (String, String) -> Bool = { KeychainService.shared.saveSecret($0, account: $1) }) -> Bool {
         var header = CustomHeader(key: key, value: value, isSecret: isSecret)
         if isSecret {
-            KeychainService.shared.saveSecret(
-                value,
-                account: KeychainService.headerAccount(providerID: id, headerID: header.id)
-            )
+            guard save(value, KeychainService.headerAccount(providerID: id, headerID: header.id)) else { return false }
             header.value = ""
         }
         customHeaders = customHeaders + [header]
+        return true
     }
 
     func removeCustomHeader(id headerID: UUID) {

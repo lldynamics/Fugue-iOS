@@ -52,6 +52,7 @@ enum OpenAICompatibleAdapter {
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
         let (bytes, response) = try await session.bytes(for: urlRequest)
+        defer { bytes.task.cancel() }
         try await LLMClient.validateHTTPResponse(response, bytes: bytes)
 
         let contentType = (response as? HTTPURLResponse)?
@@ -69,23 +70,14 @@ enum OpenAICompatibleAdapter {
 
         var thinkParser = ThinkTagStreamParser()
         var receivedNativeReasoning = false
+        var completed = false
         var reportedFinish = false
 
-        for try await rawLine in bytes.lines {
+        for try await dataPart in SSEDecoder.events(bytes) {
             try Task.checkCancellation()
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            if line.isEmpty || line.hasPrefix(":") {
-                continue
-            }
-            guard line.hasPrefix("data:") else { continue }
-            let dataPart = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            if dataPart == "[DONE]" {
-                break
-            }
-            guard let jsonData = dataPart.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-                continue
-            }
+            if dataPart == "[DONE]" { completed = true; break }
+            if dataPart.isEmpty { continue }
+            let obj = try SSEDecoder.jsonObject(dataPart)
 
             if let errDict = obj["error"] as? [String: Any],
                let errMsg = errDict["message"] as? String {
@@ -105,6 +97,7 @@ enum OpenAICompatibleAdapter {
                 continue
             }
 
+            if let finish = first["finish_reason"] as? String, !finish.isEmpty { completed = true }
             let delta = (first["delta"] as? [String: Any]) ?? (first["message"] as? [String: Any]) ?? [:]
 
             if let reasoning = (delta["reasoning_content"] as? String) ?? (delta["reasoning"] as? String),
@@ -128,6 +121,7 @@ enum OpenAICompatibleAdapter {
             }
         }
 
+        guard completed else { throw LLMError.interruptedStream }
         if !receivedNativeReasoning {
             emit(thinkParser.finish(), to: continuation)
         }

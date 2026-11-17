@@ -337,6 +337,10 @@ EN = {
     "%@\n\n...[文件内容较长，已截取前 %lld 个字符]...": "%@\n\n...[File truncated to the first %lld characters]...",
 }
 
+EN.update({'备份包含冲突的标识，未导入任何数据。': 'The backup contains conflicting IDs. No data was imported.', '连接提前结束，回复可能不完整，请重试。': 'The connection ended early. The reply may be incomplete. Please retry.', '保存失败，请保留输入并重试。': 'Save failed. Keep your input and retry.', '草稿保存失败': 'Unable to save draft', '重试': 'Retry', '无法读取图片，或图片超过 20 MB 限制。': 'Unable to read the image, or it exceeds the 20 MB limit.', '附件超出限制：单文件最多 20 MB，每次最多 8 个附件，总内容最多 32 MB。': 'Attachment limit exceeded: 20 MB per file, 8 attachments per message, 32 MB total content.'})
+
+EN.update({'流式响应格式无效，回复可能不完整。': 'Invalid streaming response. The reply may be incomplete.', '正在处理附件': 'Processing attachments', '删除失败': 'Unable to delete', '…[PDF 内容较长，仅提取前 200 页、最多 80000 个字符]…': '…[Long PDF: extracted only the first 200 pages, up to 80000 characters]…'})
+
 INFO_PLIST_EN = {
     "CFBundleDisplayName": "iOSBox",
     "NSCameraUsageDescription": "Used to take photos and send them to AI models for analysis.",

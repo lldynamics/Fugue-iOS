@@ -26,21 +26,17 @@ enum GeminiAdapter {
                     urlRequest.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
                     let (bytes, response) = try await session.bytes(for: urlRequest)
+                    defer { bytes.task.cancel() }
                     try await LLMClient.validateHTTPResponse(response, bytes: bytes)
 
+                    var completed = false
                     var reportedFinish = false
 
-                    for try await rawLine in bytes.lines {
+                    for try await dataPart in SSEDecoder.events(bytes) {
                         try Task.checkCancellation()
-                        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard line.hasPrefix("data:") else { continue }
-                        let dataPart = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        if dataPart == "[DONE]" || dataPart.isEmpty { continue }
-
-                        guard let jsonData = dataPart.data(using: .utf8),
-                              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-                            continue
-                        }
+                        if dataPart == "[DONE]" { completed = true; break }
+                        if dataPart.isEmpty { continue }
+                        let obj = try SSEDecoder.jsonObject(dataPart)
 
                         if let err = obj["error"] as? [String: Any],
                            let msg = err["message"] as? String {
@@ -67,6 +63,7 @@ enum GeminiAdapter {
                                     }
                                 }
                             }
+                            if let finish = first["finishReason"] as? String, !finish.isEmpty { completed = true }
                             if !reportedFinish,
                                let reason = LLMFinishReason.fromProviderValue(first["finishReason"] as? String) {
                                 reportedFinish = true
@@ -87,6 +84,7 @@ enum GeminiAdapter {
                         }
                     }
 
+                    guard completed else { throw LLMError.interruptedStream }
                     continuation.yield(.done)
                     continuation.finish()
                 } catch {

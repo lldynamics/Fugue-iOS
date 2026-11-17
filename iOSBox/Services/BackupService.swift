@@ -112,11 +112,14 @@ struct LegacyExportConversation: Codable {
 }
 
 enum BackupError: LocalizedError {
+    case conflictingIDs
     case unrecognizedFormat
     case newerFormat(Int)
 
     var errorDescription: String? {
         switch self {
+        case .conflictingIDs:
+            return String(localized: "备份包含冲突的标识，未导入任何数据。")
         case .unrecognizedFormat:
             return String(localized: "无法识别该文件，请选择由 iOSBox 导出的 JSON 备份。")
         case .newerFormat(let version):
@@ -278,6 +281,11 @@ enum BackupService {
     @MainActor
     @discardableResult
     static func apply(_ backup: DecodedBackup, to context: ModelContext) throws -> ImportSummary {
+        // Save pending user edits first; the import owns an isolated transaction context.
+        try context.save()
+        let context = ModelContext(context.container)
+        context.autosaveEnabled = false
+        defer { context.rollback() }
         var summary = ImportSummary()
 
         switch backup {
@@ -285,6 +293,19 @@ enum BackupService {
             let existingProviders = Set(try context.fetch(FetchDescriptor<ProviderConfig>()).map(\.id))
             let existingPresets = Set(try context.fetch(FetchDescriptor<AssistantPreset>()).map(\.id))
             let existingConversations = Set(try context.fetch(FetchDescriptor<Conversation>()).map(\.id))
+
+            func unique(_ ids: [UUID]) -> Bool { Set(ids).count == ids.count }
+            let incomingMessages = archive.conversations.flatMap(\.messages)
+            guard unique(archive.providers.map(\.id)), unique(archive.presets.map(\.id)),
+                  unique(archive.conversations.map(\.id)), unique(incomingMessages.map(\.id)) else {
+                throw BackupError.conflictingIDs
+            }
+            let existingMessages = Set(try context.fetch(FetchDescriptor<ChatMessage>()).map(\.id))
+            for conversation in archive.conversations where !existingConversations.contains(conversation.id) {
+                guard conversation.messages.allSatisfy({ !existingMessages.contains($0.id) }) else {
+                    throw BackupError.conflictingIDs
+                }
+            }
 
             for p in archive.providers {
                 guard !existingProviders.contains(p.id) else { summary.skipped += 1; continue }

@@ -641,6 +641,22 @@
         }
       }
     },
+    "…[PDF 内容较长，仅提取前 200 页、最多 80000 个字符]…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "…[Long PDF: extracted only the first 200 pages, up to 80000 characters]…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "…[PDF 内容较长，仅提取前 200 页、最多 80000 个字符]…"
+          }
+        }
+      }
+    },
     "、": {
       "localizations": {
         "en": {
@@ -1025,6 +1041,22 @@
         }
       }
     },
+    "保存失败，请保留输入并重试。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save failed. Keep your input and retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存失败，请保留输入并重试。"
+          }
+        }
+      }
+    },
     "停止生成": {
       "localizations": {
         "en": {
@@ -1245,6 +1277,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "删除"
+          }
+        }
+      }
+    },
+    "删除失败": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to delete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除失败"
           }
         }
       }
@@ -1613,6 +1661,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "基础连接配置"
+          }
+        }
+      }
+    },
+    "备份包含冲突的标识，未导入任何数据。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The backup contains conflicting IDs. No data was imported."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "备份包含冲突的标识，未导入任何数据。"
           }
         }
       }
@@ -2865,6 +2929,22 @@
         }
       }
     },
+    "无法读取图片，或图片超过 20 MB 限制。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to read the image, or it exceeds the 20 MB limit."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取图片，或图片超过 20 MB 限制。"
+          }
+        }
+      }
+    },
     "旧数据库备份失败。": {
       "localizations": {
         "en": {
@@ -3281,6 +3361,22 @@
         }
       }
     },
+    "正在处理附件": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Processing attachments"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在处理附件"
+          }
+        }
+      }
+    },
     "正在导入…": {
       "localizations": {
         "en": {
@@ -3357,6 +3453,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在连接模型生成回复…"
+          }
+        }
+      }
+    },
+    "流式响应格式无效，回复可能不完整。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invalid streaming response. The reply may be incomplete."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "流式响应格式无效，回复可能不完整。"
           }
         }
       }
@@ -3969,6 +4081,22 @@
         }
       }
     },
+    "草稿保存失败": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to save draft"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草稿保存失败"
+          }
+        }
+      }
+    },
     "设为上下文": {
       "localizations": {
         "en": {
@@ -4273,6 +4401,22 @@
         }
       }
     },
+    "连接提前结束，回复可能不完整，请重试。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection ended early. The reply may be incomplete. Please retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接提前结束，回复可能不完整，请重试。"
+          }
+        }
+      }
+    },
     "连接正常，共同步 %lld 个可用模型（新增 %lld 个）。": {
       "localizations": {
         "en": {
@@ -4401,6 +4545,22 @@
         }
       }
     },
+    "重试": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
     "重试请求": {
       "localizations": {
         "en": {
@@ -4429,6 +4589,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "附件提示"
+          }
+        }
+      }
+    },
+    "附件超出限制：单文件最多 20 MB，每次最多 8 个附件，总内容最多 32 MB。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attachment limit exceeded: 20 MB per file, 8 attachments per message, 32 MB total content."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "附件超出限制：单文件最多 20 MB，每次最多 8 个附件，总内容最多 32 MB。"
           }
         }
       }

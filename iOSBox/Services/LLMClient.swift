@@ -5,6 +5,7 @@ enum LLMError: LocalizedError {
     case missingAPIKey(String)
     case httpError(Int, String)
     case apiError(String)
+    case interruptedStream
     case emptyResponse
 
     var errorDescription: String? {
@@ -17,6 +18,8 @@ enum LLMError: LocalizedError {
             return "HTTP \(code)：\(detail)"
         case .apiError(let msg):
             return msg
+        case .interruptedStream:
+            return String(localized: "连接提前结束，回复可能不完整，请重试。")
         case .emptyResponse:
             return String(localized: "服务端未返回有效内容")
         }

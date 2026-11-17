@@ -56,7 +56,7 @@ struct ModelPickerSheet: View {
                                             .frame(width: 8, height: 8)
                                         Text(provider.name)
                                         Spacer()
-                                        if KeychainService.shared.hasAPIKey(for: provider.id) {
+                                        if provider.hasAuthentication {
                                             Text("Key 已就绪")
                                                 .font(.caption2)
                                                 .foregroundStyle(.green)

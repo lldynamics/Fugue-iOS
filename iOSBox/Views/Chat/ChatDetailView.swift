@@ -8,8 +8,14 @@ struct ChatDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
 
-    @State private var draftText: String = ""
-    @State private var pendingAttachments: [MessageAttachment] = []
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var draft: ChatDraftState
+
+    init(conversation: Conversation, onNavigateToProviders: (() -> Void)? = nil) {
+        self.conversation = conversation
+        self.onNavigateToProviders = onNavigateToProviders
+        _draft = State(initialValue: ChatDraftStore.shared.state(for: conversation.id))
+    }
     @State private var activePickerMode: ModelPickerSheet.Mode?
     @State private var showChatSettings = false
     @State private var showRenameAlert = false
@@ -33,7 +39,7 @@ struct ChatDetailView: View {
         guard let target = conversation.primaryTarget else { return true }
         guard let provider = providers.first(where: { $0.id == target.providerID }) else { return true }
         let isLocal = NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL)
-        return !isLocal && !KeychainService.shared.hasAPIKey(for: provider.id)
+        return !isLocal && !provider.hasAuthentication
     }
 
     var body: some View {
@@ -127,8 +133,7 @@ struct ChatDetailView: View {
             .safeAreaInset(edge: .bottom) {
                 ComposerBarView(
                     conversation: conversation,
-                    draftText: $draftText,
-                    pendingAttachments: $pendingAttachments,
+                    draft: draft,
                     isGenerating: engine.isGenerating(in: conversation.id),
                     onOpenModelPicker: { activePickerMode = .single },
                     onOpenArenaPicker: { activePickerMode = .arenaMulti },
@@ -183,7 +188,16 @@ struct ChatDetailView: View {
         }
         .onAppear {
             ensureDefaultModelSelected()
+            loadDraft()
         }
+        .onDisappear { saveDraft() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { saveDraft() } }
+        .alert("草稿保存失败", isPresented: Binding(get: { draft.persistenceError != nil }, set: { if !$0 { draft.persistenceError = nil } })) {
+            Button("重试") {
+                if draft.isLoaded { saveDraft() } else { loadDraft() }
+            }
+            Button("取消", role: .cancel) { }
+        } message: { Text(draft.persistenceError ?? "") }
         .sheet(item: $activePickerMode) { mode in
             ModelPickerSheet(
                 mode: mode,
@@ -223,10 +237,17 @@ struct ChatDetailView: View {
         }
     }
 
+    private func loadDraft() { draft.load() }
+
+    private func saveDraft() { draft.save() }
+
     private func handleSend() {
+        guard draft.canSend else { return }
+        do { try AttachmentProcessor.validate(draft.attachments) }
+        catch { draft.attachmentError = error.localizedDescription; return }
         let outcome = engine.sendUserMessage(
-            text: draftText,
-            attachments: pendingAttachments,
+            text: draft.text,
+            attachments: draft.attachments,
             in: conversation,
             providers: providers,
             context: modelContext
@@ -234,8 +255,9 @@ struct ChatDetailView: View {
         switch outcome {
         case .sent:
             // Only clear the composer once the message is actually in the conversation.
-            draftText = ""
-            pendingAttachments = []
+            draft.text = ""
+            draft.attachments = []
+            saveDraft()
         case .noAvailableModel, .busy:
             sendBlockedReason = outcome
         case .emptyInput:
@@ -272,7 +294,7 @@ struct ChatDetailView: View {
     private func ensureDefaultModelSelected() {
         guard conversation.primaryTarget == nil else { return }
         // Prefer a provider that already has an API key configured
-        for provider in providers where provider.isEnabled && KeychainService.shared.hasAPIKey(for: provider.id) {
+        for provider in providers where provider.isEnabled && provider.hasAuthentication {
             if let firstSpec = provider.enabledModels.first {
                 conversation.primaryTarget = provider.makeTarget(for: firstSpec)
                 return
@@ -337,7 +359,7 @@ struct ChatDetailView: View {
 
     private func quickSuggestionButton(_ prompt: String) -> some View {
         Button {
-            draftText = prompt
+            draft.text = prompt
         } label: {
             HStack {
                 Text(prompt)

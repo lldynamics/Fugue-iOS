@@ -53,7 +53,7 @@ struct MainTabView: View {
     private func startChat(with preset: AssistantPreset) {
         let allTargets = ChatEngine.shared.availableTargets(from: providers)
         let preferred = providers
-            .filter { $0.isEnabled && KeychainService.shared.hasAPIKey(for: $0.id) }
+            .filter { $0.isEnabled && $0.hasAuthentication }
             .flatMap { p in p.enabledModels.map { p.makeTarget(for: $0) } }
             .first ?? allTargets.first
 

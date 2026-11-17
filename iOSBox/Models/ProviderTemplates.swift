@@ -108,9 +108,9 @@ struct ProviderTemplate: Identifiable {
             accentHex: "#D97757",
             note: String(localized: "Anthropic 原生 /v1/messages 协议，支持 Extended Thinking 与原版 PDF 解析"),
             suggestedModels: [
-                ModelSpec(id: "claude-sonnet-4-20250514", displayName: "Claude Sonnet 4", supportsVision: true, supportsReasoning: true),
-                ModelSpec(id: "claude-3-7-sonnet-latest", displayName: "Claude 3.7 Sonnet", supportsVision: true, supportsReasoning: true),
-                ModelSpec(id: "claude-3-5-haiku-latest", displayName: "Claude 3.5 Haiku", supportsVision: true, supportsReasoning: false)
+                ModelSpec(id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", supportsVision: true, supportsReasoning: true),
+                ModelSpec(id: "claude-opus-4-6", displayName: "Claude Opus 4.6", supportsVision: true, supportsReasoning: true),
+                ModelSpec(id: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5", supportsVision: true, supportsReasoning: true)
             ]
         ),
         ProviderTemplate(

@@ -231,7 +231,7 @@ final class ChatEngine {
             }
             let apiKey = KeychainService.shared.loadAPIKey(for: provider.id)
             let isLocalHost = NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL)
-            if apiKey.isEmpty && !isLocalHost {
+            if !provider.hasAuthentication && !isLocalHost {
                 msg.errorMessage = LLMError.missingAPIKey(provider.name).localizedDescription
                 msg.isStreaming = false
                 prepared.append((msg, nil))

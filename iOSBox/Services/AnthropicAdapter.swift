@@ -29,25 +29,24 @@ enum AnthropicAdapter {
                     urlRequest.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
                     let (bytes, response) = try await session.bytes(for: urlRequest)
+                    defer { bytes.task.cancel() }
                     try await LLMClient.validateHTTPResponse(response, bytes: bytes)
 
+                    var completed = false
                     var inputTokens: Int?
                     var outputTokens: Int?
 
-                    for try await rawLine in bytes.lines {
+                    eventLoop: for try await dataPart in SSEDecoder.events(bytes) {
                         try Task.checkCancellation()
-                        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard line.hasPrefix("data:") else { continue }
-                        let dataPart = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        if dataPart == "[DONE]" { break }
-
-                        guard let jsonData = dataPart.data(using: .utf8),
-                              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                              let eventType = obj["type"] as? String else {
-                            continue
-                        }
+                        if dataPart == "[DONE]" { completed = true; break }
+                        if dataPart.isEmpty { continue }
+                        let obj = try SSEDecoder.jsonObject(dataPart)
+                        guard let eventType = obj["type"] as? String else { throw LLMError.interruptedStream }
 
                         switch eventType {
+                        case "message_stop":
+                            completed = true
+                            break eventLoop
                         case "message_start":
                             if let msg = obj["message"] as? [String: Any],
                                let usage = msg["usage"] as? [String: Any],
@@ -87,6 +86,7 @@ enum AnthropicAdapter {
                         }
                     }
 
+                    guard completed else { throw LLMError.interruptedStream }
                     if inputTokens != nil || outputTokens != nil {
                         continuation.yield(.usage(promptTokens: inputTokens, completionTokens: outputTokens))
                     }

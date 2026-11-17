@@ -201,7 +201,7 @@ struct ProviderListView: View {
 
     @ViewBuilder
     private func providerRow(_ provider: ProviderConfig) -> some View {
-        let hasKey = KeychainService.shared.hasAPIKey(for: provider.id)
+        let hasKey = provider.hasAuthentication
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 11, style: .continuous)

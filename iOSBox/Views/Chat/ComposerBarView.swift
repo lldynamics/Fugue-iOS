@@ -4,8 +4,7 @@ import UniformTypeIdentifiers
 
 struct ComposerBarView: View {
     @Bindable var conversation: Conversation
-    @Binding var draftText: String
-    @Binding var pendingAttachments: [MessageAttachment]
+    @Bindable var draft: ChatDraftState
     let isGenerating: Bool
     let onOpenModelPicker: () -> Void
     let onOpenArenaPicker: () -> Void
@@ -17,15 +16,12 @@ struct ComposerBarView: View {
     @State private var showPhotoPicker = false
     @State private var showCameraPicker = false
     @State private var showFileImporter = false
-    @State private var attachmentError: String?
 
-    private var canSend: Bool {
-        !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty
-    }
+    private var canSend: Bool { draft.canSend }
 
     /// Images attached while the target model(s) aren't flagged as vision-capable.
     private var visionWarning: String? {
-        guard pendingAttachments.contains(where: { $0.kind == .image }) else { return nil }
+        guard draft.attachments.contains(where: { $0.kind == .image }) else { return nil }
         if conversation.isArenaMode && conversation.arenaTargets.count >= 2 {
             let names = conversation.arenaTargets.filter { !$0.supportsVision }.map(\.modelDisplayName)
             guard !names.isEmpty else { return nil }
@@ -124,11 +120,15 @@ struct ComposerBarView: View {
             }
             .padding(.horizontal, 12)
 
+            if draft.processingAttachments > 0 {
+                ProgressView().accessibilityLabel("正在处理附件")
+            }
+
             // Pending attachments preview strip
-            if !pendingAttachments.isEmpty {
+            if !draft.attachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(pendingAttachments) { item in
+                        ForEach(draft.attachments) { item in
                             pendingAttachmentChip(item)
                         }
                     }
@@ -171,10 +171,12 @@ struct ComposerBarView: View {
                         .foregroundStyle(Color.accentColor)
                         .padding(.bottom, 3)
                 }
+                .disabled(!draft.isLoaded || draft.processingAttachments > 0)
                 .accessibilityLabel("添加附件")
                 .accessibilityHint("从相册、相机或文件中添加图片与文档")
 
-                TextField("输入消息，支持随时切换模型或发图…", text: $draftText, axis: .vertical)
+                TextField("输入消息，支持随时切换模型或发图…", text: $draft.text, axis: .vertical)
+                    .disabled(!draft.isLoaded)
                     .lineLimit(1...6)
                     .padding(.horizontal, 13)
                     .padding(.vertical, 9)
@@ -217,13 +219,17 @@ struct ComposerBarView: View {
         )
         .onChange(of: selectedPhotoItems) { _, newItems in
             guard !newItems.isEmpty else { return }
+            draft.processingAttachments += 1
             Task {
+                defer { draft.processingAttachments -= 1 }
                 for item in newItems {
-                    if let data = try? await item.loadTransferable(type: Data.self),
-                       let attachment = AttachmentProcessor.processImageData(data, suggestedName: "photo_\(Int(Date().timeIntervalSince1970)).jpg") {
+                    if let imported = try? await item.loadTransferable(type: ImportedPhoto.self) {
+                        let attachment = imported.attachment
                         await MainActor.run {
-                            pendingAttachments.append(attachment)
+                            appendAttachment(attachment)
                         }
+                    } else {
+                        draft.attachmentError = String(localized: "无法读取图片，或图片超过 20 MB 限制。")
                     }
                 }
                 await MainActor.run {
@@ -233,8 +239,12 @@ struct ComposerBarView: View {
         }
         .fullScreenCover(isPresented: $showCameraPicker) {
             CameraPickerView { image in
-                if let attachment = AttachmentProcessor.processImage(image, fileName: "camera_\(Int(Date().timeIntervalSince1970)).jpg") {
-                    pendingAttachments.append(attachment)
+                draft.processingAttachments += 1
+                Task {
+                    defer { draft.processingAttachments -= 1 }
+                    if let attachment = await Task.detached(operation: { AttachmentProcessor.processImage(image) }).value {
+                        appendAttachment(attachment)
+                    }
                 }
             }
             .ignoresSafeArea()
@@ -246,27 +256,37 @@ struct ComposerBarView: View {
         ) { result in
             switch result {
             case .success(let urls):
-                for url in urls {
-                    do {
-                        let att = try AttachmentProcessor.processFileURL(url)
-                        pendingAttachments.append(att)
-                    } catch {
-                        attachmentError = String(localized: "读取文件失败：\(error.localizedDescription)")
+                if urls.count > AttachmentProcessor.maximumAttachmentCount {
+                    draft.attachmentError = AttachmentError.limit.localizedDescription
+                    return
+                }
+                draft.processingAttachments += 1
+                Task {
+                    defer { draft.processingAttachments -= 1 }
+                    for url in urls {
+                        do {
+                            let att = try await Task.detached { try AttachmentProcessor.processFileURL(url) }.value
+                            appendAttachment(att)
+                        } catch {
+                            draft.attachmentError = String(localized: "读取文件失败：\(error.localizedDescription)")
+                        }
                     }
                 }
             case .failure(let error):
-                attachmentError = error.localizedDescription
+                draft.attachmentError = error.localizedDescription
             }
         }
         .alert("附件提示", isPresented: Binding(
-            get: { attachmentError != nil },
-            set: { if !$0 { attachmentError = nil } }
+            get: { draft.attachmentError != nil },
+            set: { if !$0 { draft.attachmentError = nil } }
         )) {
-            Button("确定", role: .cancel) { attachmentError = nil }
+            Button("确定", role: .cancel) { draft.attachmentError = nil }
         } message: {
-            Text(attachmentError ?? "")
+            Text(draft.attachmentError ?? "")
         }
     }
+
+    private func appendAttachment(_ attachment: MessageAttachment) { draft.append(attachment) }
 
     @ViewBuilder
     private func pendingAttachmentChip(_ item: MessageAttachment) -> some View {
@@ -299,7 +319,7 @@ struct ComposerBarView: View {
             }
 
             Button {
-                pendingAttachments.removeAll { $0.id == item.id }
+                draft.attachments.removeAll { $0.id == item.id }
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 17))

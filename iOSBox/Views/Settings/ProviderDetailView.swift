@@ -6,6 +6,9 @@ struct ProviderDetailView: View {
     @Bindable var provider: ProviderConfig
     @Environment(\.modelContext) private var modelContext
 
+    @State private var saveError: String?
+    @State private var keySaved = false
+    @State private var keyWriteFailed = false
     @State private var apiKeyInput: String = ""
     @State private var revealAPIKey: Bool = false
     @State private var isFetchingModels: Bool = false
@@ -34,6 +37,7 @@ struct ProviderDetailView: View {
 
     var body: some View {
         Form {
+            if let saveError { Text(saveError).foregroundStyle(.red) }
             Section("基础连接配置") {
                 HStack {
                     Text("启用该服务商")
@@ -93,7 +97,9 @@ struct ProviderDetailView: View {
                     .autocorrectionDisabled()
                     .font(.subheadline.monospaced())
                     .onChange(of: apiKeyInput) { _, newValue in
-                        KeychainService.shared.saveAPIKey(newValue, for: provider.id)
+                        keySaved = KeychainService.shared.saveAPIKey(newValue, for: provider.id)
+                        keyWriteFailed = !keySaved
+                        saveError = keySaved ? nil : String(localized: "保存失败，请保留输入并重试。")
                     }
 
                     Button {
@@ -122,8 +128,15 @@ struct ProviderDetailView: View {
             } header: {
                 HStack {
                     Text("API Key（iOS 钥匙串加密存储）")
+                    if keyWriteFailed {
+                        Button("重试") {
+                            keySaved = KeychainService.shared.saveAPIKey(apiKeyInput, for: provider.id)
+                            keyWriteFailed = !keySaved
+                            saveError = keySaved ? nil : String(localized: "保存失败，请保留输入并重试。")
+                        }
+                    }
                     Spacer()
-                    if !apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if keySaved && !apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text("已保存")
                             .font(.caption2)
                             .foregroundStyle(.green)
@@ -279,6 +292,7 @@ struct ProviderDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             apiKeyInput = KeychainService.shared.loadAPIKey(for: provider.id)
+            keySaved = !apiKeyInput.isEmpty
         }
         .sheet(isPresented: $showAddModelSheet) {
             addModelSheet
@@ -343,6 +357,7 @@ struct ProviderDetailView: View {
     private var addModelSheet: some View {
         NavigationStack {
             Form {
+                if let saveError { Text(saveError).foregroundStyle(.red) }
                 Section("模型标识") {
                     TextField("模型 ID（必填，如 deepseek-reasoner）", text: $newModelID)
                         .textInputAutocapitalization(.never)
@@ -400,6 +415,7 @@ struct ProviderDetailView: View {
     private var addHeaderSheet: some View {
         NavigationStack {
             Form {
+                if let saveError { Text(saveError).foregroundStyle(.red) }
                 Section("HTTP 请求头") {
                     TextField("Header 名称（如 HTTP-Referer）", text: $newHeaderKey)
                         .textInputAutocapitalization(.never)
@@ -436,8 +452,19 @@ struct ProviderDetailView: View {
                     Button("保存") {
                         let k = newHeaderKey.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !k.isEmpty else { return }
-                        provider.addCustomHeader(key: k, value: newHeaderValue, isSecret: newHeaderIsSecret)
-                        try? modelContext.save()
+                        let oldHeaders = provider.customHeaders
+                        guard provider.addCustomHeader(key: k, value: newHeaderValue, isSecret: newHeaderIsSecret) else {
+                            saveError = String(localized: "保存失败，请保留输入并重试。")
+                            return
+                        }
+                        do { try modelContext.save() } catch {
+                            for header in provider.customHeaders where !oldHeaders.contains(where: { $0.id == header.id }) {
+                                provider.removeCustomHeader(id: header.id)
+                            }
+                            saveError = error.localizedDescription
+                            return
+                        }
+                        saveError = nil
                         showAddHeaderSheet = false
                     }
                     .disabled(newHeaderKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

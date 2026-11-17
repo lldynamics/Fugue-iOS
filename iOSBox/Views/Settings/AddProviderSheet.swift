@@ -7,6 +7,7 @@ struct AddProviderSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
+    @State private var saveError: String?
     @State private var selectedTemplateID: String = "custom_openai"
     @State private var name: String = String(localized: "自定义服务商")
     @State private var protocolType: APIProtocolType = .openAICompatible
@@ -20,6 +21,7 @@ struct AddProviderSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let saveError { Text(saveError).foregroundStyle(.red) }
                 Section("快速选择常见模板（或自定义）") {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
@@ -161,12 +163,20 @@ struct AddProviderSheet: View {
             sortOrder: Int(Date().timeIntervalSince1970),
             models: initialModels
         )
-        modelContext.insert(provider)
 
         if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            KeychainService.shared.saveAPIKey(apiKey, for: provider.id)
+            guard KeychainService.shared.saveAPIKey(apiKey, for: provider.id) else {
+                saveError = String(localized: "保存失败，请保留输入并重试。")
+                return
+            }
         }
-        try? modelContext.save()
+        modelContext.insert(provider)
+        do { try modelContext.save() } catch {
+            modelContext.delete(provider)
+            provider.deleteAllSecrets()
+            saveError = error.localizedDescription
+            return
+        }
         dismiss()
         onCreated(provider)
     }
