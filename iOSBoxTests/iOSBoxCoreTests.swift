@@ -79,6 +79,7 @@ final class iOSBoxCoreTests: XCTestCase {
             apiKey: "sk-ant-test",
             customHeaders: [],
             modelID: "claude-sonnet-4-20250514",
+            supportsReasoning: true,
             systemPrompt: "你是架构师",
             messages: [
                 LLMPromptMessage(role: .user, content: "你好", attachments: [])

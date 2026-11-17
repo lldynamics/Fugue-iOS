@@ -5,27 +5,18 @@ import SwiftData
 struct iOSBoxApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
-    let sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            ProviderConfig.self,
-            AssistantPreset.self,
-            Conversation.self,
-            ChatMessage.self
-        ])
-        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-        do {
-            let container = try ModelContainer(for: schema, configurations: [config])
-            // Runs exactly once per process, before any UI or generation exists.
-            InterruptedStreamRecovery.run(in: container)
-            return container
-        } catch {
-            fatalError("无法初始化本地数据库 ModelContainer: \(error)")
-        }
-    }()
+    private let sharedModelContainer: ModelContainer
+    private let startupNotice: String?
+
+    init() {
+        let result = PersistenceController.makeContainer()
+        sharedModelContainer = result.container
+        startupNotice = result.startupNotice
+    }
 
     var body: some Scene {
         WindowGroup {
-            MainTabView()
+            MainTabView(startupNotice: startupNotice)
         }
         .modelContainer(sharedModelContainer)
         .onChange(of: scenePhase) { _, newPhase in

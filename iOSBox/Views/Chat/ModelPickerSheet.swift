@@ -137,7 +137,7 @@ struct ModelPickerSheet: View {
 
                         if target.supportsReasoning {
                             Text("思考")
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.purple)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 1.5)
@@ -145,7 +145,7 @@ struct ModelPickerSheet: View {
                         }
                         if target.supportsVision {
                             Text("识图")
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.blue)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 1.5)

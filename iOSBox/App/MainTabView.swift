@@ -2,11 +2,15 @@ import SwiftUI
 import SwiftData
 
 struct MainTabView: View {
+    /// Shown once if the local database had to be rebuilt at launch.
+    var startupNotice: String?
+
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
 
     @State private var selectedTab: Int = 0
     @State private var pendingConversationToOpen: Conversation?
+    @State private var showStartupNotice = false
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -35,6 +39,14 @@ struct MainTabView: View {
         }
         .onAppear {
             DataSeeder.seedIfNeeded(context: modelContext)
+            if startupNotice != nil {
+                showStartupNotice = true
+            }
+        }
+        .alert("数据库已重建", isPresented: $showStartupNotice) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(startupNotice ?? "")
         }
     }
 

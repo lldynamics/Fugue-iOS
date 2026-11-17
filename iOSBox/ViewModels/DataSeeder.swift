@@ -4,14 +4,18 @@ import SwiftData
 @MainActor
 enum DataSeeder {
     private static let seededKey = "com.iosbox.hasSeededInitialData.v1"
+    private static let presetsSeededKey = "com.iosbox.hasSeededPresets.v1"
 
     static func seedIfNeeded(context: ModelContext) {
-        let presetDescriptor = FetchDescriptor<AssistantPreset>()
-        let existingPresets = (try? context.fetchCount(presetDescriptor)) ?? 0
-        if existingPresets == 0 {
-            for preset in AssistantPreset.defaultPresets {
-                context.insert(preset)
+        // Seed presets once per install, so deleting all of them doesn't bring them back.
+        if !UserDefaults.standard.bool(forKey: presetsSeededKey) {
+            let existingPresets = (try? context.fetchCount(FetchDescriptor<AssistantPreset>())) ?? 0
+            if existingPresets == 0 {
+                for preset in AssistantPreset.defaultPresets {
+                    context.insert(preset)
+                }
             }
+            UserDefaults.standard.set(true, forKey: presetsSeededKey)
         }
 
         if !UserDefaults.standard.bool(forKey: seededKey) {
@@ -37,6 +41,13 @@ enum DataSeeder {
                 }
             }
             UserDefaults.standard.set(true, forKey: seededKey)
+        }
+
+        // Move credentials saved in plaintext custom headers (pre-secret-header data) into the Keychain.
+        if let providers = try? context.fetch(FetchDescriptor<ProviderConfig>()) {
+            for provider in providers {
+                provider.moveSensitiveHeadersToKeychain()
+            }
         }
 
         try? context.save()

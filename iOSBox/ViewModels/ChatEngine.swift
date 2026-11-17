@@ -186,6 +186,7 @@ final class ChatEngine {
         assistantMessage.completionTokens = nil
         assistantMessage.latencyMs = nil
         assistantMessage.thinkingDurationMs = nil
+        assistantMessage.finishReason = nil
         assistantMessage.isStreaming = true
         try? context.save()
 
@@ -229,11 +230,7 @@ final class ChatEngine {
                 continue
             }
             let apiKey = KeychainService.shared.loadAPIKey(for: provider.id)
-            let isLocalHost = provider.baseURL.contains("localhost")
-                || provider.baseURL.contains("127.0.0.1")
-                || provider.baseURL.contains("192.168.")
-                || provider.baseURL.contains("10.")
-                || provider.baseURL.contains("172.")
+            let isLocalHost = NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL)
             if apiKey.isEmpty && !isLocalHost {
                 msg.errorMessage = LLMError.missingAPIKey(provider.name).localizedDescription
                 msg.isStreaming = false
@@ -241,13 +238,17 @@ final class ChatEngine {
                 continue
             }
 
+            // Prefer the provider's current capability flag: the target stored on the
+            // conversation is a snapshot and may predate the user editing the model.
+            let currentSpec = provider.models.first(where: { $0.id == target.modelID })
             let req = LLMChatRequest(
                 providerName: provider.name,
                 protocolType: provider.protocolType,
                 baseURL: provider.baseURL,
                 apiKey: apiKey,
-                customHeaders: provider.customHeaders,
+                customHeaders: provider.resolvedCustomHeaders,
                 modelID: target.modelID,
+                supportsReasoning: currentSpec?.supportsReasoning ?? target.supportsReasoning,
                 systemPrompt: conversation.systemPrompt,
                 messages: historySnapshot,
                 temperature: conversation.useCustomTemperature ? conversation.temperature : nil,
@@ -298,6 +299,7 @@ final class ChatEngine {
         var pendingReasoning = ""
         var lastFlush = ContinuousClock.now
         var lastSave = ContinuousClock.now
+        var finishReason: LLMFinishReason?
 
         func flushBuffers() {
             guard Self.isAlive(message) else {
@@ -349,6 +351,9 @@ final class ChatEngine {
                     if let prompt { message.promptTokens = prompt }
                     if let completion { message.completionTokens = completion }
 
+                case .finished(let reason):
+                    finishReason = reason
+
                 case .done:
                     flushBuffers()
                 }
@@ -363,8 +368,20 @@ final class ChatEngine {
             if let tStart = thinkingStartTime, !recordedThinkingDuration {
                 message.thinkingDurationMs = Self.milliseconds(tStart.duration(to: ContinuousClock.now))
             }
-            if message.content.isEmpty && message.reasoningContent.isEmpty {
-                message.errorMessage = "服务端返回成功，但回复内容为空"
+            message.finishReason = finishReason?.rawValue
+            if message.content.isEmpty {
+                switch finishReason {
+                case .contentFilter:
+                    message.errorMessage = LLMFinishReason.contentFilter.userNotice
+                case .length:
+                    message.errorMessage = message.reasoningContent.isEmpty
+                        ? LLMFinishReason.length.userNotice
+                        : "思考过程用完了输出长度上限，未生成正文。请调大「最大输出 Tokens」或降低思考预算后重答。"
+                case nil:
+                    if message.reasoningContent.isEmpty {
+                        message.errorMessage = "服务端返回成功，但回复内容为空"
+                    }
+                }
             }
             message.isStreaming = false
         } catch {
@@ -427,6 +444,11 @@ final class ChatEngine {
         Int(duration.components.seconds * 1000) + Int(duration.components.attoseconds / 1_000_000_000_000_000)
     }
 
+    /// How many of the most recent messages carrying images / native PDFs resend their binary
+    /// data. Older ones are reduced to text (PDF extracted text, image placeholders) so every
+    /// turn doesn't re-upload megabytes of base64.
+    static let mediaTurnsToKeep = 2
+
     func buildPromptHistory(messages: [ChatMessage], limit: Int) -> [LLMPromptMessage] {
         var collapsed: [ChatMessage] = []
         var processedGroups = Set<UUID>()
@@ -440,7 +462,9 @@ final class ChatEngine {
                     collapsed.append(winner)
                 }
             } else {
-                if msg.role == .assistant && msg.content.isEmpty && msg.errorMessage != nil {
+                // Empty assistant turns (stopped before any text, failed, still streaming) carry
+                // no context, and some APIs reject empty assistant content.
+                if msg.role == .assistant && msg.content.isEmpty {
                     continue
                 }
                 collapsed.append(msg)
@@ -454,13 +478,32 @@ final class ChatEngine {
             sliced = collapsed[...]
         }
 
-        return sliced.map { msg in
-            LLMPromptMessage(
-                role: msg.role,
-                content: msg.content,
-                attachments: msg.attachments
-            )
+        var mediaTurnsKept = 0
+        var history: [LLMPromptMessage] = []
+        for msg in sliced.reversed() {
+            var attachments = msg.attachments
+            if attachments.contains(where: { $0.dataBase64 != nil }) {
+                if mediaTurnsKept < Self.mediaTurnsToKeep {
+                    mediaTurnsKept += 1
+                } else {
+                    attachments = attachments.map(Self.textOnlyVersion)
+                }
+            }
+            history.append(LLMPromptMessage(role: msg.role, content: msg.content, attachments: attachments))
         }
+        return history.reversed()
+    }
+
+    /// Drops binary payloads: PDFs fall back to their extracted text; images become a short
+    /// "[附件: name]" placeholder so the model still knows an image was shared.
+    static func textOnlyVersion(of attachment: MessageAttachment) -> MessageAttachment {
+        var copy = attachment
+        copy.dataBase64 = nil
+        if attachment.kind == .image {
+            copy.kind = .document
+            copy.extractedText = nil
+        }
+        return copy
     }
 
     private static func makeConversationTitle(from text: String, attachments: [MessageAttachment]) -> String {

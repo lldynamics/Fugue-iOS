@@ -16,6 +16,8 @@ struct AssistantEditorSheet: View {
     @State private var topP: Double = 1.0
     @State private var contextMessageLimit: Int = 20
     @State private var enableThinking: Bool = true
+    @State private var thinkingBudgetTokens: Int = 4096
+    @State private var maxOutputTokens: Int = 0
 
     private let emojiChoices = ["🤖", "✨", "💻", "🧠", "🌐", "✍️", "📊", "🎨", "📚", "🔍", "🧪", "⚖️"]
 
@@ -56,6 +58,15 @@ struct AssistantEditorSheet: View {
 
                 Section("默认参数") {
                     Toggle("默认开启深度思考", isOn: $enableThinking)
+                    if enableThinking {
+                        Stepper(
+                            "思考 Token 预算：\(thinkingBudgetTokens)",
+                            value: $thinkingBudgetTokens,
+                            in: 1024...32768,
+                            step: 1024
+                        )
+                    }
+
                     Toggle("自定义随机度 (Temperature)", isOn: $useCustomTemperature)
                     if useCustomTemperature {
                         HStack {
@@ -67,7 +78,30 @@ struct AssistantEditorSheet: View {
                         }
                         Slider(value: $temperature, in: 0.0...2.0, step: 0.05)
                     }
-                    Stepper("默认携带上下文：\(contextMessageLimit == 0 ? "全部" : "\(contextMessageLimit) 条")", value: $contextMessageLimit, in: 0...60, step: 4)
+
+                    HStack {
+                        Text("Top P")
+                        Spacer()
+                        Text(String(format: "%.2f", topP))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $topP, in: 0.1...1.0, step: 0.05)
+
+                    Picker("默认携带上下文", selection: $contextMessageLimit) {
+                        ForEach(ContextLimitOptions.values(including: contextMessageLimit), id: \.self) { value in
+                            Text(ContextLimitOptions.label(for: value)).tag(value)
+                        }
+                    }
+
+                    HStack {
+                        Text("最大输出 Tokens (0=默认)")
+                        Spacer()
+                        TextField("0", value: $maxOutputTokens, format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 90)
+                    }
                 }
             }
             .navigationTitle(preset == nil ? "新建助手预设" : "编辑助手预设")
@@ -95,6 +129,8 @@ struct AssistantEditorSheet: View {
                     topP = p.topP
                     contextMessageLimit = p.contextMessageLimit
                     enableThinking = p.enableThinking
+                    thinkingBudgetTokens = p.thinkingBudgetTokens
+                    maxOutputTokens = p.maxOutputTokens
                 }
             }
         }
@@ -103,6 +139,8 @@ struct AssistantEditorSheet: View {
     private func savePreset() {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return }
+
+        let sanitizedMaxTokens = max(0, maxOutputTokens)
 
         if let existing = preset {
             existing.name = trimmedName
@@ -114,6 +152,8 @@ struct AssistantEditorSheet: View {
             existing.topP = topP
             existing.contextMessageLimit = contextMessageLimit
             existing.enableThinking = enableThinking
+            existing.thinkingBudgetTokens = thinkingBudgetTokens
+            existing.maxOutputTokens = sanitizedMaxTokens
         } else {
             let created = AssistantPreset(
                 name: trimmedName,
@@ -123,8 +163,10 @@ struct AssistantEditorSheet: View {
                 temperature: temperature,
                 useCustomTemperature: useCustomTemperature,
                 topP: topP,
+                maxOutputTokens: sanitizedMaxTokens,
                 contextMessageLimit: contextMessageLimit,
                 enableThinking: enableThinking,
+                thinkingBudgetTokens: thinkingBudgetTokens,
                 sortOrder: Int(Date().timeIntervalSince1970)
             )
             modelContext.insert(created)

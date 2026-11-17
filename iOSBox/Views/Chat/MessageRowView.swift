@@ -78,6 +78,7 @@ struct MessageRowView: View {
                                     )
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("查看图片 \(att.fileName)")
                         }
                     }
                 }
@@ -154,6 +155,17 @@ struct MessageRowView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 4)
+            }
+
+            // Truncated / filtered answers that still have content (empty ones show as errors).
+            if !message.isStreaming, !message.content.isEmpty, let reason = message.finishReasonValue {
+                Label(reason.userNotice, systemImage: reason == .length ? "scissors" : "shield.lefthalf.filled")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
             }
 
             if let err = message.errorMessage, !err.isEmpty {

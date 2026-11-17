@@ -15,6 +15,10 @@ struct ChatDetailView: View {
     @State private var showRenameAlert = false
     @State private var renameDraft = ""
     @State private var sendBlockedReason: SendOutcome?
+    /// True while the user is at (or near) the bottom; streaming output only auto-scrolls then,
+    /// so scrolling up to re-read earlier content isn't interrupted.
+    @State private var isPinnedToBottom = true
+    @State private var isUserScrolling = false
 
     private var engine: ChatEngine { ChatEngine.shared }
 
@@ -28,9 +32,7 @@ struct ChatDetailView: View {
         }
         guard let target = conversation.primaryTarget else { return true }
         guard let provider = providers.first(where: { $0.id == target.providerID }) else { return true }
-        let isLocal = provider.baseURL.contains("localhost")
-            || provider.baseURL.contains("127.0.0.1")
-            || provider.baseURL.contains("192.168.")
+        let isLocal = NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL)
         return !isLocal && !KeychainService.shared.hasAPIKey(for: provider.id)
     }
 
@@ -97,7 +99,27 @@ struct ChatDetailView: View {
                 .padding(.bottom, 10)
             }
             .scrollDismissesKeyboard(.interactively)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                // "Near bottom" = the visible area reaches within ~120pt of the content end.
+                geometry.visibleRect.maxY >= geometry.contentSize.height - 120
+            } action: { _, nearBottom in
+                if nearBottom {
+                    isPinnedToBottom = true
+                } else if isUserScrolling {
+                    // Only the user scrolling away unpins; a big streamed chunk growing the
+                    // content past the threshold must not stop the follow.
+                    isPinnedToBottom = false
+                }
+            }
+            .onScrollPhaseChange { _, newPhase in
+                isUserScrolling = newPhase == .tracking || newPhase == .interacting || newPhase == .decelerating
+            }
+            .background {
+                // Isolated child so per-token content changes don't re-evaluate this whole view.
+                StreamingAutoScroller(conversation: conversation, proxy: proxy, isEnabled: isPinnedToBottom)
+            }
             .onChange(of: conversation.messages.count) { _, _ in
+                isPinnedToBottom = true
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
                 }
@@ -156,6 +178,7 @@ struct ChatDetailView: View {
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
+                .accessibilityLabel("更多操作")
             }
         }
         .onAppear {
@@ -340,6 +363,30 @@ extension ModelPickerSheet.Mode: Identifiable {
         case .single: return "single"
         case .arenaMulti: return "arena"
         }
+    }
+}
+
+/// Keeps the newest streamed tokens in view. Lives in its own tiny view so that observing the
+/// streaming text (which changes many times per second) only re-evaluates this view.
+private struct StreamingAutoScroller: View {
+    let conversation: Conversation
+    let proxy: ScrollViewProxy
+    let isEnabled: Bool
+
+    private var streamedLength: Int {
+        conversation.messages.reduce(0) { total, message in
+            message.isStreaming
+                ? total + message.content.utf8.count + message.reasoningContent.utf8.count
+                : total
+        }
+    }
+
+    var body: some View {
+        Color.clear
+            .onChange(of: streamedLength) { _, _ in
+                guard isEnabled else { return }
+                proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
+            }
     }
 }
 

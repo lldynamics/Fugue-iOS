@@ -1,52 +1,90 @@
 import Foundation
 import Security
+import os
 
 final class KeychainService: @unchecked Sendable {
     static let shared = KeychainService()
 
     private let serviceName = "com.iosbox.app.provider-keys"
     private let lock = NSLock()
-    private var cache: [UUID: String] = [:]
+    /// Only holds values that were confirmed by the Keychain (successful read/write or a
+    /// definite "not found"), so a transient failure is never cached as "no key".
+    private var cache: [String: String] = [:]
+    private let logger = Logger(subsystem: "com.iosbox.app", category: "Keychain")
 
     private init() {}
 
-    func saveAPIKey(_ rawKey: String, for providerID: UUID) {
-        let trimmed = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        lock.lock()
-        cache[providerID] = trimmed
-        lock.unlock()
+    // MARK: - Provider API keys (account = provider UUID, unchanged for existing installs)
 
-        let account = providerID.uuidString
-        let deleteQuery: [String: Any] = [
+    @discardableResult
+    func saveAPIKey(_ rawKey: String, for providerID: UUID) -> Bool {
+        saveSecret(rawKey, account: providerID.uuidString)
+    }
+
+    func loadAPIKey(for providerID: UUID) -> String {
+        loadSecret(account: providerID.uuidString)
+    }
+
+    func hasAPIKey(for providerID: UUID) -> Bool {
+        !loadAPIKey(for: providerID).isEmpty
+    }
+
+    func deleteAPIKey(for providerID: UUID) {
+        deleteSecret(account: providerID.uuidString)
+    }
+
+    // MARK: - Secret custom header values
+
+    static func headerAccount(providerID: UUID, headerID: UUID) -> String {
+        "\(providerID.uuidString)/header/\(headerID.uuidString)"
+    }
+
+    // MARK: - Generic secrets
+
+    /// Saves (or, for an empty value, deletes) a secret. Returns false if the Keychain rejected it.
+    @discardableResult
+    func saveSecret(_ rawValue: String, account: String) -> Bool {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(deleteQuery as CFDictionary)
 
         guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else {
-            return
+            let status = SecItemDelete(baseQuery as CFDictionary)
+            let ok = status == errSecSuccess || status == errSecItemNotFound
+            updateCache(account: account, value: ok ? "" : nil)
+            if !ok { logger.error("Keychain delete failed: \(status)") }
+            return ok
         }
 
-        let addQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
-        ]
-        SecItemAdd(addQuery as CFDictionary, nil)
+        let updateStatus = SecItemUpdate(
+            baseQuery as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        var status = updateStatus
+        if updateStatus == errSecItemNotFound {
+            var addQuery = baseQuery
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
+
+        let ok = status == errSecSuccess
+        updateCache(account: account, value: ok ? trimmed : nil)
+        if !ok { logger.error("Keychain save failed: \(status)") }
+        return ok
     }
 
-    func loadAPIKey(for providerID: UUID) -> String {
+    func loadSecret(account: String) -> String {
         lock.lock()
-        if let cached = cache[providerID] {
+        if let cached = cache[account] {
             lock.unlock()
             return cached
         }
         lock.unlock()
 
-        let account = providerID.uuidString
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
@@ -57,35 +95,34 @@ final class KeychainService: @unchecked Sendable {
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        let value: String
-        if status == errSecSuccess,
-           let data = result as? Data,
-           let decoded = String(data: data, encoding: .utf8) {
-            value = decoded
-        } else {
-            value = ""
+        switch status {
+        case errSecSuccess:
+            let value = (result as? Data).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            updateCache(account: account, value: value)
+            return value
+        case errSecItemNotFound:
+            updateCache(account: account, value: "")
+            return ""
+        default:
+            // e.g. errSecInteractionNotAllowed before first unlock: don't cache, retry next time.
+            logger.error("Keychain read failed: \(status)")
+            return ""
         }
-
-        lock.lock()
-        cache[providerID] = value
-        lock.unlock()
-        return value
     }
 
-    func hasAPIKey(for providerID: UUID) -> Bool {
-        !loadAPIKey(for: providerID).isEmpty
-    }
-
-    func deleteAPIKey(for providerID: UUID) {
-        lock.lock()
-        cache.removeValue(forKey: providerID)
-        lock.unlock()
-
+    func deleteSecret(account: String) {
+        updateCache(account: account, value: nil)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: providerID.uuidString
+            kSecAttrAccount as String: account
         ]
         SecItemDelete(query as CFDictionary)
+    }
+
+    private func updateCache(account: String, value: String?) {
+        lock.lock()
+        cache[account] = value
+        lock.unlock()
     }
 }

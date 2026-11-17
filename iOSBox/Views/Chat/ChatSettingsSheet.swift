@@ -6,14 +6,6 @@ struct ChatSettingsSheet: View {
     @Query(sort: \AssistantPreset.sortOrder) private var presets: [AssistantPreset]
     @Environment(\.dismiss) private var dismiss
 
-    private let contextChoices: [(label: String, value: Int)] = [
-        ("最近 4 条", 4),
-        ("最近 10 条", 10),
-        ("最近 20 条", 20),
-        ("最近 50 条", 50),
-        ("全部历史", 0)
-    ]
-
     var body: some View {
         NavigationStack {
             Form {
@@ -103,8 +95,8 @@ struct ChatSettingsSheet: View {
                     }
 
                     Picker("携带上下文条数", selection: $conversation.contextMessageLimit) {
-                        ForEach(contextChoices, id: \.value) { choice in
-                            Text(choice.label).tag(choice.value)
+                        ForEach(ContextLimitOptions.values(including: conversation.contextMessageLimit), id: \.self) { value in
+                            Text(ContextLimitOptions.label(for: value)).tag(value)
                         }
                     }
 

@@ -66,6 +66,10 @@ enum AnthropicAdapter {
                             }
 
                         case "message_delta":
+                            if let delta = obj["delta"] as? [String: Any],
+                               let reason = LLMFinishReason.fromProviderValue(delta["stop_reason"] as? String) {
+                                continuation.yield(.finished(reason))
+                            }
                             if let usage = obj["usage"] as? [String: Any],
                                let outTok = usage["output_tokens"] as? Int {
                                 outputTokens = outTok
@@ -168,15 +172,24 @@ enum AnthropicAdapter {
             ], at: 0)
         }
 
-        let supportsExtendedThinking = supportsAnthropicThinking(modelID: request.modelID)
-        let shouldEnableThinking = request.enableThinking && supportsExtendedThinking
-        let budget = max(1024, request.thinkingBudgetTokens)
+        let shouldEnableThinking = request.enableThinking && request.supportsReasoning
         let requestedMax = request.maxOutputTokens ?? 0
         let finalMaxTokens: Int
+        var budget = max(1024, request.thinkingBudgetTokens)
         if shouldEnableThinking {
-            finalMaxTokens = max(requestedMax, budget + 4096)
+            // Respect an explicit, sufficient user limit; otherwise leave room for the visible
+            // answer while staying within the smallest output cap among thinking-capable
+            // Claude models. budget_tokens must stay below max_tokens.
+            if requestedMax > budget + 1024 {
+                finalMaxTokens = requestedMax
+            } else {
+                finalMaxTokens = min(budget + 8192, thinkingOutputCap)
+            }
+            budget = max(1024, min(budget, finalMaxTokens - 2048))
+        } else if requestedMax > 0 {
+            finalMaxTokens = requestedMax
         } else {
-            finalMaxTokens = requestedMax > 0 ? requestedMax : 4096
+            finalMaxTokens = defaultMaxTokens(for: request.modelID)
         }
 
         var body: [String: Any] = [
@@ -203,12 +216,17 @@ enum AnthropicAdapter {
         return body
     }
 
-    private static func supportsAnthropicThinking(modelID: String) -> Bool {
+    /// Smallest max-output limit among thinking-capable Claude models (Claude Opus 4: 32k).
+    static let thinkingOutputCap = 32_000
+
+    /// Legacy Claude 3 models (Haiku / Sonnet / Opus) cap output at 4096 tokens;
+    /// newer models allow far more, so 4096 needlessly truncated long code answers.
+    static func defaultMaxTokens(for modelID: String) -> Int {
         let lower = modelID.lowercased()
-        return lower.contains("claude-3-7")
-            || lower.contains("claude-sonnet-4")
-            || lower.contains("claude-opus-4")
-            || lower.contains("claude-4")
+        let isLegacyClaude3 = lower.contains("claude-3-")
+            && !lower.contains("claude-3-5")
+            && !lower.contains("claude-3-7")
+        return isLegacyClaude3 ? 4096 : 8192
     }
 
     static func fetchModels(

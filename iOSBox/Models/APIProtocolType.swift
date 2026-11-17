@@ -66,8 +66,36 @@ enum APIProtocolType: String, Codable, CaseIterable, Identifiable {
 struct CustomHeader: Codable, Hashable, Identifiable {
     var id: UUID = UUID()
     var key: String
+    /// For secret headers this is empty in the database; the real value lives in the Keychain
+    /// (see `ProviderConfig.resolvedCustomHeaders`).
     var value: String
     var isEnabled: Bool = true
+    var isSecret: Bool = false
+
+    init(id: UUID = UUID(), key: String, value: String, isEnabled: Bool = true, isSecret: Bool = false) {
+        self.id = id
+        self.key = key
+        self.value = value
+        self.isEnabled = isEnabled
+        self.isSecret = isSecret
+    }
+
+    // Tolerates data saved before `isSecret` existed.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        key = try c.decode(String.self, forKey: .key)
+        value = try c.decodeIfPresent(String.self, forKey: .value) ?? ""
+        isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        isSecret = try c.decodeIfPresent(Bool.self, forKey: .isSecret) ?? false
+    }
+
+    /// Header names that typically carry credentials.
+    static func looksSensitive(_ key: String) -> Bool {
+        let lower = key.lowercased()
+        return ["authorization", "api-key", "apikey", "api_key", "token", "secret", "cookie", "password", "x-key"]
+            .contains { lower.contains($0) }
+    }
 }
 
 struct ModelSpec: Codable, Hashable, Identifiable {
@@ -91,9 +119,15 @@ struct ModelSpec: Codable, Hashable, Identifiable {
         self.supportsReasoning = supportsReasoning ?? Self.inferReasoningSupport(modelID: id)
     }
 
+    /// Default for newly added models; users can toggle it per model. This flag decides
+    /// whether thinking / reasoning parameters are sent to the API.
     static func inferReasoningSupport(modelID: String) -> Bool {
         let lower = modelID.lowercased()
-        let keywords = ["reasoner", "r1", "qwq", "o1", "o3", "o4", "thinking", "claude-3-7", "claude-sonnet-4", "claude-opus-4", "gemini-2.5", "gemini-3"]
+        let keywords = [
+            "reasoner", "r1", "qwq", "o1", "o3", "o4", "gpt-5", "thinking", "magistral", "qwen3",
+            "claude-3-7", "claude-sonnet-4", "claude-opus-4", "claude-haiku-4", "claude-4",
+            "gemini-2.5", "gemini-3"
+        ]
         return keywords.contains { lower.contains($0) }
     }
 

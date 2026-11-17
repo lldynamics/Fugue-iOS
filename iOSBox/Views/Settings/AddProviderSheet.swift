@@ -33,7 +33,7 @@ struct AddProviderSheet: View {
                                             Image(systemName: tpl.iconSymbol)
                                                 .foregroundStyle(Color(hex: tpl.accentHex))
                                             Text(tpl.protocolType.shortBadge)
-                                                .font(.system(size: 10, weight: .semibold))
+                                                .font(.caption2.weight(.semibold))
                                                 .foregroundStyle(.secondary)
                                         }
                                         Text(tpl.name)
@@ -83,6 +83,8 @@ struct AddProviderSheet: View {
                         Text("实际对话端点：\(EndpointResolver.previewChatEndpoint(baseURL: baseURL, protocolType: protocolType))")
                             .font(.caption2.monospaced())
                             .foregroundStyle(.secondary)
+
+                        InsecureHTTPWarningView(baseURL: baseURL)
                     }
                 }
 

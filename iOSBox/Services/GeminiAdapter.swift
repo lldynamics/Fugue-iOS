@@ -28,6 +28,8 @@ enum GeminiAdapter {
                     let (bytes, response) = try await session.bytes(for: urlRequest)
                     try await LLMClient.validateHTTPResponse(response, bytes: bytes)
 
+                    var reportedFinish = false
+
                     for try await rawLine in bytes.lines {
                         try Task.checkCancellation()
                         let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -45,26 +47,42 @@ enum GeminiAdapter {
                             throw LLMError.apiError(msg)
                         }
 
+                        // The whole prompt was rejected; there will be no candidates.
+                        if let feedback = obj["promptFeedback"] as? [String: Any],
+                           let blockReason = feedback["blockReason"] as? String, !blockReason.isEmpty {
+                            throw LLMError.apiError("提问内容被 Gemini 安全策略拦截（\(blockReason)），请调整后重试。")
+                        }
+
                         if let candidates = obj["candidates"] as? [[String: Any]],
-                           let first = candidates.first,
-                           let content = first["content"] as? [String: Any],
-                           let parts = content["parts"] as? [[String: Any]] {
-                            for part in parts {
-                                guard let text = part["text"] as? String, !text.isEmpty else { continue }
-                                let isThought = (part["thought"] as? Bool) ?? false
-                                if isThought {
-                                    continuation.yield(.reasoningDelta(text))
-                                } else {
-                                    continuation.yield(.contentDelta(text))
+                           let first = candidates.first {
+                            if let content = first["content"] as? [String: Any],
+                               let parts = content["parts"] as? [[String: Any]] {
+                                for part in parts {
+                                    guard let text = part["text"] as? String, !text.isEmpty else { continue }
+                                    let isThought = (part["thought"] as? Bool) ?? false
+                                    if isThought {
+                                        continuation.yield(.reasoningDelta(text))
+                                    } else {
+                                        continuation.yield(.contentDelta(text))
+                                    }
                                 }
+                            }
+                            if !reportedFinish,
+                               let reason = LLMFinishReason.fromProviderValue(first["finishReason"] as? String) {
+                                reportedFinish = true
+                                continuation.yield(.finished(reason))
                             }
                         }
 
                         if let usage = obj["usageMetadata"] as? [String: Any] {
                             let promptTok = usage["promptTokenCount"] as? Int
                             let candTok = usage["candidatesTokenCount"] as? Int
-                            if promptTok != nil || candTok != nil {
-                                continuation.yield(.usage(promptTokens: promptTok, completionTokens: candTok))
+                            let thoughtTok = usage["thoughtsTokenCount"] as? Int
+                            // Thinking tokens are billed as output, so include them.
+                            let completionTok = (candTok != nil || thoughtTok != nil)
+                                ? (candTok ?? 0) + (thoughtTok ?? 0) : nil
+                            if promptTok != nil || completionTok != nil {
+                                continuation.yield(.usage(promptTokens: promptTok, completionTokens: completionTok))
                             }
                         }
                     }
@@ -152,14 +170,37 @@ enum GeminiAdapter {
         if let maxTokens = request.maxOutputTokens, maxTokens > 0 {
             generationConfig["maxOutputTokens"] = maxTokens
         }
-        let lowerModel = request.modelID.lowercased()
-        if request.enableThinking && (lowerModel.contains("2.5") || lowerModel.contains("gemini-3") || lowerModel.contains("thinking")) {
-            generationConfig["thinkingConfig"] = [
-                "includeThoughts": true
-            ]
+        if let thinkingConfig = thinkingConfig(for: request) {
+            generationConfig["thinkingConfig"] = thinkingConfig
         }
         body["generationConfig"] = generationConfig
         return body
+    }
+
+    /// Gemini 2.5 uses a token `thinkingBudget`; Gemini 3 uses a coarse `thinkingLevel`
+    /// (the two must not be combined). Returns nil to leave the model's default behavior.
+    static func thinkingConfig(for request: LLMChatRequest) -> [String: Any]? {
+        let lower = request.modelID.lowercased()
+        let isGemini3 = lower.contains("gemini-3")
+        let isGemini25 = lower.contains("gemini-2.5")
+        let isThinkingCapable = request.supportsReasoning || isGemini3 || isGemini25 || lower.contains("thinking")
+        guard isThinkingCapable else { return nil }
+
+        let budget = max(1024, request.thinkingBudgetTokens)
+
+        if isGemini3 {
+            // Gemini 3 can't fully disable thinking; "low" is the cheapest level.
+            let level = (!request.enableThinking || budget <= 4096) ? "low" : "high"
+            return ["thinkingLevel": level, "includeThoughts": request.enableThinking]
+        }
+
+        let isFlash = lower.contains("flash")
+        if !request.enableThinking {
+            // Flash / Flash-Lite can turn thinking off; Pro cannot, so keep its default.
+            return isFlash ? ["thinkingBudget": 0] : nil
+        }
+        let maxBudget = isFlash ? 24_576 : 32_768
+        return ["includeThoughts": true, "thinkingBudget": min(budget, maxBudget)]
     }
 
     static func fetchModels(

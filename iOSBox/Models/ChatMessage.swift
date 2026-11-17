@@ -32,7 +32,9 @@ final class ChatMessage {
     var roleRaw: String
     var content: String
     var reasoningContent: String
-    var attachmentsData: Data
+    /// JSON-encoded attachments (images / PDFs as base64). Large values are stored outside
+    /// the SQLite table so conversation lists and queries don't drag megabytes of blobs along.
+    @Attribute(.externalStorage) var attachmentsData: Data
     var providerID: UUID?
     var providerName: String
     var modelID: String
@@ -42,6 +44,8 @@ final class ChatMessage {
     var isSelectedInGroup: Bool
     var isStreaming: Bool
     var errorMessage: String?
+    /// Raw `LLMFinishReason` when the reply ended abnormally (truncated / filtered). Added in schema V2.
+    var finishReason: String?
     var promptTokens: Int?
     var completionTokens: Int?
     var latencyMs: Int?
@@ -94,5 +98,9 @@ final class ChatMessage {
         set {
             attachmentsData = (try? JSONEncoder().encode(newValue)) ?? Data()
         }
+    }
+
+    var finishReasonValue: LLMFinishReason? {
+        finishReason.flatMap(LLMFinishReason.init(rawValue:))
     }
 }

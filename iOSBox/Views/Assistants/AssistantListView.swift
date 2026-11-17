@@ -27,7 +27,7 @@ struct AssistantListView: View {
                                         .font(.body.weight(.semibold))
                                     if preset.enableThinking {
                                         Text("思考")
-                                            .font(.system(size: 10, weight: .semibold))
+                                            .font(.caption2.weight(.semibold))
                                             .foregroundStyle(.purple)
                                             .padding(.horizontal, 5)
                                             .padding(.vertical, 1.5)

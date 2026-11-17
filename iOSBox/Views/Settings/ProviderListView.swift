@@ -20,7 +20,7 @@ struct ProviderListView: View {
                         }
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
-                                KeychainService.shared.deleteAPIKey(for: provider.id)
+                                provider.deleteAllSecrets()
                                 modelContext.delete(provider)
                                 try? modelContext.save()
                             } label: {
@@ -123,7 +123,7 @@ struct ProviderListView: View {
                         .foregroundStyle(provider.isEnabled ? .primary : .secondary)
 
                     Text(provider.protocolType.shortBadge)
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1.5)

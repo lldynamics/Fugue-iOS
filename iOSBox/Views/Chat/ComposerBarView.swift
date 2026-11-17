@@ -23,6 +23,18 @@ struct ComposerBarView: View {
         !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty
     }
 
+    /// Images attached while the target model(s) aren't flagged as vision-capable.
+    private var visionWarning: String? {
+        guard pendingAttachments.contains(where: { $0.kind == .image }) else { return nil }
+        if conversation.isArenaMode && conversation.arenaTargets.count >= 2 {
+            let names = conversation.arenaTargets.filter { !$0.supportsVision }.map(\.modelDisplayName)
+            guard !names.isEmpty else { return nil }
+            return "\(names.joined(separator: "、")) 未标记支持识图，图片可能被忽略或导致报错。"
+        }
+        guard let target = conversation.primaryTarget, !target.supportsVision else { return nil }
+        return "当前模型「\(target.modelDisplayName)」未标记支持识图，图片可能被忽略或导致报错（可在服务商页修改「识图」标记）。"
+    }
+
     var body: some View {
         VStack(spacing: 8) {
             // Quick control strip: Model switcher + Arena toggle + Chat parameters
@@ -123,6 +135,14 @@ struct ComposerBarView: View {
                 }
             }
 
+            if let visionWarning {
+                Label(visionWarning, systemImage: "eye.trianglebadge.exclamationmark")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+            }
+
             // Input row
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
@@ -150,6 +170,8 @@ struct ComposerBarView: View {
                         .foregroundStyle(Color.accentColor)
                         .padding(.bottom, 3)
                 }
+                .accessibilityLabel("添加附件")
+                .accessibilityHint("从相册、相机或文件中添加图片与文档")
 
                 TextField("输入消息，支持随时切换模型或发图…", text: $draftText, axis: .vertical)
                     .lineLimit(1...6)
@@ -165,6 +187,7 @@ struct ComposerBarView: View {
                             .padding(.bottom, 2)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("停止生成")
                 } else {
                     Button(action: onSend) {
                         Image(systemName: "arrow.up.circle.fill")
@@ -174,6 +197,7 @@ struct ComposerBarView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!canSend)
+                    .accessibilityLabel("发送")
                 }
             }
             .padding(.horizontal, 12)
@@ -264,7 +288,7 @@ struct ComposerBarView: View {
                             .font(.caption2.weight(.medium))
                             .lineLimit(1)
                         Text(item.formattedSize)
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -282,6 +306,7 @@ struct ComposerBarView: View {
                     .foregroundStyle(.white, Color.black.opacity(0.68))
             }
             .offset(x: 5, y: -5)
+            .accessibilityLabel("移除附件 \(item.fileName)")
         }
         .padding(.top, 5)
         .padding(.trailing, 5)

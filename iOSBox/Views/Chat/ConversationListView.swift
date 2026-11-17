@@ -109,7 +109,7 @@ struct ConversationListView: View {
 
                         if conv.isArenaMode {
                             Text("对比")
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(.caption2.weight(.semibold))
                                 .foregroundStyle(Color.accentColor)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 1.5)

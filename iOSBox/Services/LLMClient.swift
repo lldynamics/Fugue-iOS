@@ -36,6 +36,9 @@ struct LLMChatRequest: Sendable {
     let apiKey: String
     let customHeaders: [CustomHeader]
     let modelID: String
+    /// Per-model capability flag (user-editable in provider settings). Drives whether
+    /// thinking / reasoning parameters are sent at all.
+    let supportsReasoning: Bool
     let systemPrompt: String
     let messages: [LLMPromptMessage]
     let temperature: Double?
@@ -45,10 +48,43 @@ struct LLMChatRequest: Sendable {
     let thinkingBudgetTokens: Int
 }
 
+/// Abnormal reasons a generation stopped. A normal, complete answer emits nothing.
+enum LLMFinishReason: String, Codable, Sendable {
+    /// Hit the max output token limit; the answer is likely incomplete.
+    case length
+    /// Blocked or truncated by the provider's safety / content policy.
+    case contentFilter = "content_filter"
+
+    /// Maps provider-specific stop reasons (OpenAI `finish_reason`, Anthropic `stop_reason`,
+    /// Gemini `finishReason`) to the abnormal cases we surface. Returns nil for normal stops.
+    static func fromProviderValue(_ raw: String?) -> LLMFinishReason? {
+        guard let value = raw?.lowercased(), !value.isEmpty else { return nil }
+        switch value {
+        case "length", "max_tokens", "model_context_window_exceeded":
+            return .length
+        case "content_filter", "refusal", "safety", "recitation", "prohibited_content",
+             "blocklist", "spii", "image_safety":
+            return .contentFilter
+        default:
+            return nil
+        }
+    }
+
+    var userNotice: String {
+        switch self {
+        case .length:
+            return "回复已达到最大输出长度，内容可能不完整。可在会话参数中调大「最大输出 Tokens」后重答。"
+        case .contentFilter:
+            return "回复被模型服务商的安全策略拦截或截断。"
+        }
+    }
+}
+
 enum LLMStreamEvent: Sendable {
     case reasoningDelta(String)
     case contentDelta(String)
     case usage(promptTokens: Int?, completionTokens: Int?)
+    case finished(LLMFinishReason)
     case done
 }
 

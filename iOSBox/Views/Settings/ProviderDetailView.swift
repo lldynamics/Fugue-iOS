@@ -22,6 +22,7 @@ struct ProviderDetailView: View {
     @State private var showAddHeaderSheet: Bool = false
     @State private var newHeaderKey: String = ""
     @State private var newHeaderValue: String = ""
+    @State private var newHeaderIsSecret: Bool = false
 
     private var filteredModels: [ModelSpec] {
         let q = modelSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -66,6 +67,8 @@ struct ProviderDetailView: View {
                     Text("请求预览：\(EndpointResolver.previewChatEndpoint(baseURL: provider.baseURL, protocolType: provider.protocolType, sampleModel: provider.models.first?.id ?? "model-id"))")
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
+
+                    InsecureHTTPWarningView(baseURL: provider.baseURL)
                 }
             }
 
@@ -92,6 +95,7 @@ struct ProviderDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(revealAPIKey ? "隐藏 API Key" : "显示 API Key")
 
                     Button {
                         if let clip = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -125,30 +129,37 @@ struct ProviderDetailView: View {
                 ForEach(provider.customHeaders) { header in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(header.key)
-                                .font(.caption.monospaced().weight(.semibold))
-                            Text(header.value)
+                            HStack(spacing: 4) {
+                                Text(header.key)
+                                    .font(.caption.monospaced().weight(.semibold))
+                                if header.isSecret {
+                                    Image(systemName: "lock.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.green)
+                                }
+                            }
+                            Text(header.isSecret ? "••••••••（已存入钥匙串）" : header.value)
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
                         Spacer()
                         Button(role: .destructive) {
-                            var copy = provider.customHeaders
-                            copy.removeAll { $0.id == header.id }
-                            provider.customHeaders = copy
+                            provider.removeCustomHeader(id: header.id)
                             try? modelContext.save()
                         } label: {
                             Image(systemName: "minus.circle.fill")
                                 .foregroundStyle(.red)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("删除请求头 \(header.key)")
                     }
                 }
 
                 Button {
                     newHeaderKey = ""
                     newHeaderValue = ""
+                    newHeaderIsSecret = false
                     showAddHeaderSheet = true
                 } label: {
                     Label("添加自定义 HTTP Header", systemImage: "plus.circle")
@@ -211,6 +222,7 @@ struct ProviderDetailView: View {
                                     .foregroundStyle(.secondary)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("清除搜索")
                         }
                     }
                 }
@@ -296,7 +308,7 @@ struct ProviderDetailView: View {
                     updateModel(id: spec.id) { $0.supportsVision.toggle() }
                 } label: {
                     Label("识图", systemImage: spec.supportsVision ? "eye.fill" : "eye.slash")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(spec.supportsVision ? .blue : .secondary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -308,7 +320,7 @@ struct ProviderDetailView: View {
                     updateModel(id: spec.id) { $0.supportsReasoning.toggle() }
                 } label: {
                     Label("思考链", systemImage: "brain")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(spec.supportsReasoning ? .purple : .secondary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -384,9 +396,26 @@ struct ProviderDetailView: View {
                     TextField("Header 名称（如 HTTP-Referer）", text: $newHeaderKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    TextField("Header 值", text: $newHeaderValue)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .onChange(of: newHeaderKey) { _, key in
+                            if CustomHeader.looksSensitive(key) {
+                                newHeaderIsSecret = true
+                            }
+                        }
+                    Group {
+                        if newHeaderIsSecret {
+                            SecureField("Header 值", text: $newHeaderValue)
+                        } else {
+                            TextField("Header 值", text: $newHeaderValue)
+                        }
+                    }
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                }
+
+                Section {
+                    Toggle("敏感信息（存入钥匙串）", isOn: $newHeaderIsSecret)
+                } footer: {
+                    Text("用于鉴权 Token 等敏感值：只保存在 iOS 钥匙串中，不写入本地数据库，界面上也不再显示明文。")
                 }
             }
             .navigationTitle("添加自定义 Header")
@@ -399,9 +428,7 @@ struct ProviderDetailView: View {
                     Button("保存") {
                         let k = newHeaderKey.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !k.isEmpty else { return }
-                        var headers = provider.customHeaders
-                        headers.append(CustomHeader(key: k, value: newHeaderValue))
-                        provider.customHeaders = headers
+                        provider.addCustomHeader(key: k, value: newHeaderValue, isSecret: newHeaderIsSecret)
                         try? modelContext.save()
                         showAddHeaderSheet = false
                     }
@@ -431,7 +458,7 @@ struct ProviderDetailView: View {
                 protocolType: provider.protocolType,
                 baseURL: provider.baseURL,
                 apiKey: apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines),
-                customHeaders: provider.customHeaders
+                customHeaders: provider.resolvedCustomHeaders
             )
 
             guard !remoteSpecs.isEmpty else {
