@@ -46,7 +46,15 @@ struct ProviderDetailView: View {
 
                 Picker("接口协议", selection: Binding(
                     get: { provider.protocolType },
-                    set: { provider.protocolType = $0 }
+                    set: { newProtocol in
+                        let oldProtocol = provider.protocolType
+                        provider.protocolType = newProtocol
+                        provider.baseURL = ProviderTemplate.baseURLAfterProtocolChange(
+                            currentBaseURL: provider.baseURL,
+                            from: oldProtocol,
+                            to: newProtocol
+                        )
+                    }
                 )) {
                     ForEach(APIProtocolType.allCases) { proto in
                         Text(proto.displayName).tag(proto)

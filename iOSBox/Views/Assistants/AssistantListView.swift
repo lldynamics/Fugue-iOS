@@ -76,12 +76,16 @@ struct AssistantListView: View {
                             .tint(.blue)
                         }
                     }
+                    .onMove(perform: movePresets)
                 } header: {
                     Text("点击卡片可编辑提示词与采样参数，点击「对话」立即创建专属会话")
                 }
             }
             .navigationTitle("助手预设")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    EditButton()
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showCreateSheet = true
@@ -97,5 +101,15 @@ struct AssistantListView: View {
                 AssistantEditorSheet(preset: nil)
             }
         }
+    }
+
+    /// Persists the new order (also used by the preset strip in chat settings).
+    private func movePresets(from source: IndexSet, to destination: Int) {
+        var reordered = presets
+        reordered.move(fromOffsets: source, toOffset: destination)
+        for (index, preset) in reordered.enumerated() where preset.sortOrder != index {
+            preset.sortOrder = index
+        }
+        try? modelContext.save()
     }
 }

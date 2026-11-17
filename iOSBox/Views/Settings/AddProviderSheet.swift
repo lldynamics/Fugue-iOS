@@ -67,10 +67,12 @@ struct AddProviderSheet: View {
                             Text(proto.displayName).tag(proto)
                         }
                     }
-                    .onChange(of: protocolType) { _, newProto in
-                        if selectedTemplateID == "custom_openai" {
-                            baseURL = newProto.defaultBaseURL
-                        }
+                    .onChange(of: protocolType) { oldProto, newProto in
+                        baseURL = ProviderTemplate.baseURLAfterProtocolChange(
+                            currentBaseURL: baseURL,
+                            from: oldProto,
+                            to: newProto
+                        )
                     }
 
                     VStack(alignment: .leading, spacing: 5) {

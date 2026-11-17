@@ -1,14 +1,24 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 struct ProviderListView: View {
+    private struct BackupAlert: Identifiable {
+        let id = UUID()
+        let title: String
+        let message: String
+    }
+
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
-    @Query(sort: \Conversation.updatedAt, order: .reverse) private var conversations: [Conversation]
 
     @State private var showAddSheet = false
     @State private var navigationPath: [ProviderConfig] = []
     @State private var exportedJSONURL: URL?
+    @State private var isExporting = false
+    @State private var isImporting = false
+    @State private var showImporter = false
+    @State private var backupAlert: BackupAlert?
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -28,6 +38,7 @@ struct ProviderListView: View {
                             }
                         }
                     }
+                    .onMove(perform: moveProviders)
                 } header: {
                     Text("API 服务商与自定义中转站")
                 } footer: {
@@ -52,7 +63,7 @@ struct ProviderListView: View {
                     }
                 }
 
-                Section("数据与隐私安全") {
+                Section {
                     HStack(spacing: 10) {
                         Image(systemName: "lock.shield.fill")
                             .foregroundStyle(.green)
@@ -66,12 +77,20 @@ struct ProviderListView: View {
                     }
 
                     Button {
-                        exportConversationsJSON()
+                        Task { await exportBackup() }
                     } label: {
-                        Label("导出本地对话记录备份 (JSON)", systemImage: "square.and.arrow.up")
+                        if isExporting {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("正在生成备份…")
+                            }
                             .font(.subheadline)
+                        } else {
+                            Label("导出完整备份 (JSON)", systemImage: "square.and.arrow.up")
+                                .font(.subheadline)
+                        }
                     }
-                    .disabled(conversations.isEmpty)
+                    .disabled(isExporting)
 
                     if let url = exportedJSONURL {
                         ShareLink(item: url) {
@@ -80,10 +99,33 @@ struct ProviderListView: View {
                                 .foregroundStyle(Color.accentColor)
                         }
                     }
+
+                    Button {
+                        showImporter = true
+                    } label: {
+                        if isImporting {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("正在导入…")
+                            }
+                            .font(.subheadline)
+                        } else {
+                            Label("从备份文件导入", systemImage: "square.and.arrow.down")
+                                .font(.subheadline)
+                        }
+                    }
+                    .disabled(isImporting)
+                } header: {
+                    Text("数据与隐私安全")
+                } footer: {
+                    Text("备份包含服务商配置、助手和全部对话（含附件），不含 API Key 与敏感请求头。导入为合并模式：已存在的项目会跳过，不会覆盖或重复。")
                 }
             }
             .navigationTitle("服务商与设置")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    EditButton()
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showAddSheet = true
@@ -100,7 +142,61 @@ struct ProviderListView: View {
                     navigationPath.append(created)
                 }
             }
+            .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
+                switch result {
+                case .success(let url):
+                    Task { await importBackup(from: url) }
+                case .failure(let error):
+                    backupAlert = BackupAlert(title: "无法打开文件", message: error.localizedDescription)
+                }
+            }
+            .alert(item: $backupAlert) { alert in
+                Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("好")))
+            }
         }
+    }
+
+    // MARK: - Backup
+
+    private func exportBackup() async {
+        isExporting = true
+        defer { isExporting = false }
+        do {
+            // Snapshot on the main actor, encode and write off the main thread.
+            let archive = try BackupService.makeArchive(context: modelContext)
+            let url = try await Task.detached(priority: .userInitiated) {
+                try BackupService.writeToTemporaryFile(BackupService.encode(archive))
+            }.value
+            exportedJSONURL = url
+        } catch {
+            backupAlert = BackupAlert(title: "导出失败", message: error.localizedDescription)
+        }
+    }
+
+    private func importBackup(from url: URL) async {
+        isImporting = true
+        defer { isImporting = false }
+        do {
+            let decoded = try await Task.detached(priority: .userInitiated) {
+                let accessed = url.startAccessingSecurityScopedResource()
+                defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+                return try BackupService.decode(Data(contentsOf: url))
+            }.value
+            let summary = try BackupService.apply(decoded, to: modelContext)
+            backupAlert = BackupAlert(title: "导入完成", message: summary.description)
+        } catch {
+            backupAlert = BackupAlert(title: "导入失败", message: error.localizedDescription)
+        }
+    }
+
+    /// Persists the new order; the order also drives the model picker's provider sections.
+    private func moveProviders(from source: IndexSet, to destination: Int) {
+        var reordered = providers
+        reordered.move(fromOffsets: source, toOffset: destination)
+        for (index, provider) in reordered.enumerated() where provider.sortOrder != index {
+            provider.sortOrder = index
+        }
+        try? modelContext.save()
     }
 
     @ViewBuilder
@@ -147,50 +243,5 @@ struct ProviderListView: View {
             }
         }
         .padding(.vertical, 2)
-    }
-
-    private func exportConversationsJSON() {
-        struct ExportMessage: Codable {
-            let role: String
-            let model: String
-            let provider: String
-            let reasoning: String
-            let content: String
-            let createdAt: Date
-        }
-        struct ExportConversation: Codable {
-            let title: String
-            let systemPrompt: String
-            let updatedAt: Date
-            let messages: [ExportMessage]
-        }
-
-        let payload = conversations.map { conv in
-            ExportConversation(
-                title: conv.title,
-                systemPrompt: conv.systemPrompt,
-                updatedAt: conv.updatedAt,
-                messages: conv.sortedMessages.map { m in
-                    ExportMessage(
-                        role: m.roleRaw,
-                        model: m.modelID,
-                        provider: m.providerName,
-                        reasoning: m.reasoningContent,
-                        content: m.content,
-                        createdAt: m.createdAt
-                    )
-                }
-            )
-        }
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(payload) else { return }
-
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("iOSBox_Conversations_\(Int(Date().timeIntervalSince1970)).json")
-        try? data.write(to: tempURL, options: .atomic)
-        exportedJSONURL = tempURL
     }
 }

@@ -10,6 +10,28 @@ struct ProviderTemplate: Identifiable {
     let note: String
     let suggestedModels: [ModelSpec]
 
+    /// When the protocol changes, swap the Base URL only if it is empty, a known default for
+    /// the old protocol, or the placeholder example. A custom gateway URL is kept as-is.
+    static func baseURLAfterProtocolChange(
+        currentBaseURL: String,
+        from oldProtocol: APIProtocolType,
+        to newProtocol: APIProtocolType
+    ) -> String {
+        guard oldProtocol != newProtocol else { return currentBaseURL }
+        let normalized = currentBaseURL
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let replaceable = Set(
+            [oldProtocol.defaultBaseURL, "https://api.example.com/v1"]
+                + catalog.filter { $0.protocolType == oldProtocol && $0.id != "ollama" }.map(\.baseURL)
+        ).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
+
+        if normalized.isEmpty || replaceable.contains(normalized) {
+            return newProtocol.defaultBaseURL
+        }
+        return currentBaseURL
+    }
+
     static let catalog: [ProviderTemplate] = [
         ProviderTemplate(
             id: "custom_openai",
