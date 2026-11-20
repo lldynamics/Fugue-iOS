@@ -5,8 +5,9 @@ import SwiftData
 @MainActor
 final class BackupServiceTests: XCTestCase {
     private func makeContext() throws -> ModelContext {
+        let schema = Schema(versionedSchema: CurrentSchema.self)
         let container = try ModelContainer(
-            for: ProviderConfig.self, AssistantPreset.self, Conversation.self, ChatMessage.self,
+            for: schema,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         // Keep the container alive for the test's duration.
@@ -49,12 +50,16 @@ final class BackupServiceTests: XCTestCase {
     func testFullBackupRoundTripsIntoEmptyStore() throws {
         let source = try makeContext()
         let (provider, conversation) = seed(source)
+        let srcCards = FlashcardStore(fileURL: nil)
+        let dstCards = FlashcardStore(fileURL: nil)
+        let srcKB = PresetKnowledgeStore(fileURL: nil)
+        let dstKB = PresetKnowledgeStore(fileURL: nil)
 
-        let data = try BackupService.encode(BackupService.makeArchive(context: source))
+        let data = try BackupService.encode(BackupService.makeArchive(context: source, flashcardStore: srcCards, knowledgeStore: srcKB))
         XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("should-not-leak"), "secret header values must not be exported")
 
         let target = try makeContext()
-        let summary = try BackupService.apply(BackupService.decode(data), to: target)
+        let summary = try BackupService.apply(BackupService.decode(data), to: target, flashcardStore: dstCards, knowledgeStore: dstKB)
         XCTAssertEqual(summary, ImportSummary(providers: 1, presets: 1, conversations: 1, messages: 2, skipped: 0))
 
         let restoredProvider = try XCTUnwrap(target.fetch(FetchDescriptor<ProviderConfig>()).first)
@@ -81,9 +86,11 @@ final class BackupServiceTests: XCTestCase {
     func testImportingSameBackupTwiceSkipsExistingItems() throws {
         let context = try makeContext()
         _ = seed(context)
-        let data = try BackupService.encode(BackupService.makeArchive(context: context))
+        let cards = FlashcardStore(fileURL: nil)
+        let kb = PresetKnowledgeStore(fileURL: nil)
+        let data = try BackupService.encode(BackupService.makeArchive(context: context, flashcardStore: cards, knowledgeStore: kb))
 
-        let summary = try BackupService.apply(BackupService.decode(data), to: context)
+        let summary = try BackupService.apply(BackupService.decode(data), to: context, flashcardStore: cards, knowledgeStore: kb)
         XCTAssertEqual(summary.conversations, 0)
         XCTAssertEqual(summary.skipped, 3)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<Conversation>()), 1)

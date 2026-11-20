@@ -6,13 +6,45 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "iOSBox"
+            "value": "Fugue"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "iOSBox"
+            "value": "夜奔"
+          }
+        }
+      }
+    },
+    "CFBundleName": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fugue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "夜奔"
+          }
+        }
+      }
+    },
+    "NSCalendarsWriteOnlyAccessUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used to add confirmed schedule items from conversations to your Calendar."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用于在你点击确认后将对话中提炼的日程写入系统日历。"
           }
         }
       }
@@ -49,6 +81,22 @@
         }
       }
     },
+    "NSMicrophoneUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used to dictate chat messages by voice through the microphone."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用于通过麦克风进行语音听写输入对话内容。"
+          }
+        }
+      }
+    },
     "NSPhotoLibraryUsageDescription": {
       "localizations": {
         "en": {
@@ -61,6 +109,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "用于选择图片发送给 AI 模型进行识图与问答"
+          }
+        }
+      }
+    },
+    "NSRemindersFullAccessUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used to add confirmed action items from conversations to your Reminders."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用于在你点击确认后将对话中提炼的待办事项加入系统提醒事项。"
+          }
+        }
+      }
+    },
+    "NSSpeechRecognitionUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used to transcribe your voice into chat message text."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用于将你的语音实时转换为对话文本输入。"
           }
         }
       }

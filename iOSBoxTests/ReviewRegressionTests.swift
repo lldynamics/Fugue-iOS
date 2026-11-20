@@ -48,8 +48,9 @@ private final class ReviewFixtureURLProtocol: URLProtocol {
 @MainActor
 final class ReviewRegressionTests: XCTestCase {
     private func container() throws -> ModelContainer {
-        try ModelContainer(for: ProviderConfig.self, AssistantPreset.self, Conversation.self, ChatMessage.self,
-                           configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let schema = Schema(versionedSchema: CurrentSchema.self)
+        return try ModelContainer(for: schema,
+                                  configurations: ModelConfiguration(isStoredInMemoryOnly: true))
     }
 
     func testHeaderOnlyGatewayHasAuthentication() throws {

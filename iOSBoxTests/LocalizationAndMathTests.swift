@@ -28,6 +28,7 @@ final class LocalizationTests: XCTestCase {
     }
 
     func testRepresentativeStringsAreTranslated() throws {
+        XCTAssertEqual(try english("夜奔"), "Fugue")
         XCTAssertEqual(try english("新对话"), "New Chat")
         XCTAssertEqual(try english("服务商"), "Providers")
         XCTAssertEqual(try english("停止生成"), "Stop Generating")
@@ -45,8 +46,15 @@ final class LocalizationTests: XCTestCase {
     func testEnglishInfoPlistPermissionStrings() throws {
         let path = try XCTUnwrap(try englishBundle.path(forResource: "InfoPlist", ofType: "strings"))
         let strings = try XCTUnwrap(NSDictionary(contentsOfFile: path) as? [String: String])
+        XCTAssertEqual(strings["CFBundleDisplayName"], "Fugue")
         XCTAssertEqual(strings["NSCameraUsageDescription"], "Used to take photos and send them to AI models for analysis.")
         XCTAssertNotNil(strings["NSLocalNetworkUsageDescription"])
+
+        let zhPath = try XCTUnwrap(Bundle.main.path(forResource: "zh-Hans", ofType: "lproj"))
+        let zhBundle = try XCTUnwrap(Bundle(path: zhPath))
+        let zhInfoPath = try XCTUnwrap(zhBundle.path(forResource: "InfoPlist", ofType: "strings"))
+        let zhStrings = try XCTUnwrap(NSDictionary(contentsOfFile: zhInfoPath) as? [String: String])
+        XCTAssertEqual(zhStrings["CFBundleDisplayName"], "夜奔")
     }
 
     /// The compiled English table must cover the catalog (completeness against the compiler-

@@ -4,6 +4,9 @@ import UIKit
 
 struct ProviderDetailView: View {
     @Bindable var provider: ProviderConfig
+    var onVerifiedModel: ((ResolvedModelTarget) -> Void)? = nil
+    @State private var setupModelID: String?
+    @State private var setupTask: Task<Void, Never>?
     @Environment(\.modelContext) private var modelContext
 
     @State private var saveError: String?
@@ -11,10 +14,14 @@ struct ProviderDetailView: View {
     @State private var keyWriteFailed = false
     @State private var apiKeyInput: String = ""
     @State private var revealAPIKey: Bool = false
-    @State private var isFetchingModels: Bool = false
+    @State private var keyCoordinator: APIKeySaveCoordinator?
+    @FocusState private var isAPIKeyFocused: Bool
+    @State private var catalog = ProviderModelCatalog()
+    @State private var isPinging: Bool = false
     @State private var fetchBannerMessage: String?
     @State private var fetchBannerIsError: Bool = false
     @State private var modelSearchText: String = ""
+    @State private var pricingModel: ModelSpec?
 
     @State private var showAddModelSheet: Bool = false
     @State private var newModelID: String = ""
@@ -26,6 +33,42 @@ struct ProviderDetailView: View {
     @State private var newHeaderKey: String = ""
     @State private var newHeaderValue: String = ""
     @State private var newHeaderIsSecret: Bool = false
+
+    @State private var extraAPIKeys: [String] = []
+    @State private var showAddExtraKeySheet: Bool = false
+    @State private var newExtraKeyInput: String = ""
+    @State private var idleTimeoutSelection: Int = 0
+
+    private var activePoolKeyCount: Int {
+        var seen = Set<String>()
+        let all = [apiKeyInput] + extraAPIKeys
+        for raw in all {
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { seen.insert(t) }
+        }
+        return seen.count
+    }
+
+    private var catalogRequest: ModelCatalogRequest {
+        ModelCatalogRequest(protocolType: provider.protocolType, baseURL: provider.baseURL,
+                            apiKey: apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines),
+                            extraKeys: extraAPIKeys, headers: provider.resolvedCustomHeaders)
+    }
+
+    private var setupSelection: String {
+        let enabled = provider.enabledModels
+        if let setupModelID, enabled.contains(where: { $0.id == setupModelID }) { return setupModelID }
+        return enabled.first?.id ?? ""
+    }
+
+    private var isReadyWithDraftKey: Bool {
+        if provider.isReadyForChat { return true }
+        guard provider.isEnabled, !provider.enabledModels.isEmpty,
+              let url = try? EndpointResolver.chatEndpoint(baseURL: provider.baseURL, protocolType: provider.protocolType),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              !NetworkLocation.isPlainHTTPToPublicHost(baseURL: provider.baseURL) else { return false }
+        return activePoolKeyCount > 0
+    }
 
     private var filteredModels: [ModelSpec] {
         let q = modelSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -43,6 +86,7 @@ struct ProviderDetailView: View {
                     Text("启用该服务商")
                     Spacer()
                     Toggle("", isOn: $provider.isEnabled)
+                        .accessibilityIdentifier("provider.enabled")
                         .labelsHidden()
                 }
 
@@ -82,6 +126,23 @@ struct ProviderDetailView: View {
 
                     InsecureHTTPWarningView(baseURL: provider.baseURL)
                 }
+
+                Picker("流式空闲超时", selection: Binding(
+                    get: { idleTimeoutSelection },
+                    set: { newTimeout in
+                        idleTimeoutSelection = newTimeout
+                        provider.idleTimeoutSeconds = newTimeout
+                        try? modelContext.save()
+                    }
+                )) {
+                    ForEach(ProviderConnectionSettingsStore.supportedTimeoutOptions, id: \.self) { secs in
+                        Text(ProviderConnectionSettingsStore.timeoutLabel(for: secs)).tag(secs)
+                    }
+                }
+            }
+
+            if onVerifiedModel == nil {
+                ShareProviderAccessSection(provider: provider, onBeforeToggle: { flushPendingAPIKey() })
             }
 
             Section {
@@ -93,13 +154,24 @@ struct ProviderDetailView: View {
                             SecureField("输入或粘贴 API Key", text: $apiKeyInput)
                         }
                     }
+                    .focused($isAPIKeyFocused)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.subheadline.monospaced())
+                    .submitLabel(.done)
+                    .onSubmit { flushPendingAPIKey() }
+                    .onChange(of: isAPIKeyFocused) { _, focused in
+                        if !focused { flushPendingAPIKey() }
+                    }
                     .onChange(of: apiKeyInput) { _, newValue in
-                        keySaved = KeychainService.shared.saveAPIKey(newValue, for: provider.id)
-                        keyWriteFailed = !keySaved
-                        saveError = keySaved ? nil : String(localized: "保存失败，请保留输入并重试。")
+                        let coordinator = ensureKeyCoordinator()
+                        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if trimmed != coordinator.lastSavedValue {
+                            keySaved = false
+                        } else {
+                            keySaved = !trimmed.isEmpty
+                        }
+                        coordinator.scheduleSave(newValue)
                     }
 
                     Button {
@@ -115,6 +187,7 @@ struct ProviderDetailView: View {
                         if let clip = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
                            !clip.isEmpty {
                             apiKeyInput = clip
+                            flushPendingAPIKey(overrideValue: clip)
                         }
                     } label: {
                         Text("粘贴")
@@ -125,25 +198,85 @@ struct ProviderDetailView: View {
                     }
                     .buttonStyle(.plain)
                 }
+
+                ForEach(Array(extraAPIKeys.enumerated()), id: \.offset) { idx, extraKey in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("轮询 Key #\(idx + 2)")
+                                .font(.caption.weight(.semibold))
+                            Text(KeychainService.maskedKeyPreview(extraKey))
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button(role: .destructive) {
+                            removeExtraAPIKey(at: idx)
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("移除轮询 Key")
+                    }
+                }
+
+                Button {
+                    newExtraKeyInput = ""
+                    showAddExtraKeySheet = true
+                } label: {
+                    Label("添加轮询 / 备用 API Key", systemImage: "key.radiowaves.forward")
+                        .font(.footnote)
+                }
             } header: {
                 HStack {
                     Text("API Key（iOS 钥匙串加密存储）")
                     if keyWriteFailed {
                         Button("重试") {
-                            keySaved = KeychainService.shared.saveAPIKey(apiKeyInput, for: provider.id)
-                            keyWriteFailed = !keySaved
-                            saveError = keySaved ? nil : String(localized: "保存失败，请保留输入并重试。")
+                            flushPendingAPIKey(overrideValue: apiKeyInput)
                         }
                     }
                     Spacer()
-                    if keySaved && !apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if keySaved && activePoolKeyCount > 0 {
                         Text("已保存")
                             .font(.caption2)
                             .foregroundStyle(.green)
                     }
                 }
             } footer: {
-                Text("支持随时修改；若使用末尾带 # 的自定义网关地址可跳过自动拼接 /v1。")
+                if activePoolKeyCount >= 2 {
+                    Text("已启用 \(activePoolKeyCount) 个 Key 自动轮询，遇 429 限流或额度耗尽自动熔断切换。")
+                } else {
+                    Text("支持随时修改；若使用末尾带 # 的自定义网关地址可跳过自动拼接 /v1。")
+                }
+            }
+
+            if let onVerifiedModel {
+                Section {
+                    ModelCatalogPicker(catalog: catalog, request: catalogRequest, fallback: provider.models.filter { $0.catalogStatus != .unlisted },
+                                       fallbackTitle: "已配置的模型", selected: setupSelection, refresh: refreshModels,
+                                       choose: chooseSetupModel)
+                    ModelCatalogRefreshButton(catalog: catalog, request: catalogRequest, refresh: refreshModels)
+                    Button {
+                        flushPendingAPIKey()
+                        guard !keyWriteFailed else { return }
+                        let id = setupSelection
+                        setupTask = Task {
+                            isPinging = true
+                            defer { isPinging = false }
+                            do {
+                                let target = try await ModelSetup.verify(provider: provider, modelID: id, context: modelContext)
+                                onVerifiedModel(target)
+                            } catch {
+                                if !Task.isCancelled { saveError = error.localizedDescription }
+                            }
+                        }
+                    } label: {
+                        if isPinging { ProgressView() } else { Text("验证连接并使用此模型") }
+                    }
+                    .disabled(!isReadyWithDraftKey || setupSelection.isEmpty || keyWriteFailed || catalog.isLoading)
+                } footer: {
+                    Text("验证仅发送一条固定测试消息，可能产生少量 API 费用。验证成功后返回对话。")
+                }
             }
 
             Section {
@@ -191,22 +324,28 @@ struct ProviderDetailView: View {
             }
 
             Section {
-                Button {
-                    Task { await fetchRemoteModels() }
-                } label: {
-                    HStack {
-                        if isFetchingModels {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("正在请求 /models 拉取可用模型…")
-                        } else {
-                            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
-                            Text("一键从接口拉取模型列表 (/models)")
-                                .fontWeight(.semibold)
+                if onVerifiedModel == nil {
+                    ModelCatalogRefreshButton(catalog: catalog, request: catalogRequest, refresh: refreshModels)
+                        .disabled(isPinging)
+                }
+
+                if onVerifiedModel == nil, let probeSpec = provider.enabledModels.first {
+                    Button {
+                        Task { await pingProviderModel(probeSpec) }
+                    } label: {
+                        HStack {
+                            if isPinging {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("正在测速验证…")
+                            } else {
+                                Image(systemName: "bolt.horizontal.circle")
+                                Text("测试连通性与首字测速 (\(probeSpec.displayName))")
+                            }
                         }
                     }
+                    .disabled(isPinging || catalog.isLoading)
                 }
-                .disabled(isFetchingModels)
 
                 Button {
                     newModelID = ""
@@ -280,6 +419,22 @@ struct ProviderDetailView: View {
                                 }
                                 try? modelContext.save()
                             }
+                            Divider()
+                            Button("自动匹配主流参考单价") {
+                                var matchedCount = 0
+                                provider.models = provider.models.map { spec in
+                                    var copy = spec
+                                    if copy.inputPricePerMillion == nil,
+                                       let preset = ModelPricingCatalog.match(modelID: copy.id) {
+                                        ModelPricingCatalog.apply(preset, to: &copy)
+                                        matchedCount += 1
+                                    }
+                                    return copy
+                                }
+                                try? modelContext.save()
+                                fetchBannerIsError = false
+                                fetchBannerMessage = String(localized: "已为 \(matchedCount) 个未设价模型填入参考单价。")
+                            }
                         }
                         .font(.caption)
                     }
@@ -288,17 +443,38 @@ struct ProviderDetailView: View {
                 Text("启用后的模型会出现在聊天框的模型切换器与多模型并发对比列表中。左滑可删除模型。")
             }
         }
+        .disabled(onVerifiedModel != nil && isPinging)
+        .onChange(of: catalogRequest) { _, _ in
+            catalog.reset()
+            fetchBannerMessage = nil
+        }
+        .onDisappear {
+            catalog.reset()
+            flushPendingAPIKey()
+            setupTask?.cancel()
+        }
         .navigationTitle(provider.name)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            apiKeyInput = KeychainService.shared.loadAPIKey(for: provider.id)
-            keySaved = !apiKeyInput.isEmpty
+            let loaded = KeychainService.shared.loadAPIKey(for: provider.id)
+            let loadedExtras = KeychainService.shared.loadExtraAPIKeys(for: provider.id)
+            ensureKeyCoordinator().resetInitial(loaded)
+            apiKeyInput = loaded
+            extraAPIKeys = loadedExtras
+            idleTimeoutSelection = provider.idleTimeoutSeconds
+            keySaved = !loaded.isEmpty || !loadedExtras.isEmpty
         }
         .sheet(isPresented: $showAddModelSheet) {
             addModelSheet
         }
         .sheet(isPresented: $showAddHeaderSheet) {
             addHeaderSheet
+        }
+        .sheet(isPresented: $showAddExtraKeySheet) {
+            addExtraKeySheet
+        }
+        .sheet(item: $pricingModel) { spec in
+            ModelPricingSheet(provider: provider, modelID: spec.id)
         }
     }
 
@@ -312,20 +488,44 @@ struct ProviderDetailView: View {
                     Text(spec.id)
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
+                    if spec.catalogStatus == .unlisted {
+                        Text("已移出可选列表，可手动启用").font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer()
 
                 Toggle("", isOn: Binding(
-                    get: { spec.isEnabled },
+                    get: { spec.isSelectable },
                     set: { newVal in
-                        updateModel(id: spec.id) { $0.isEnabled = newVal }
+                        updateModel(id: spec.id) {
+                            $0.isEnabled = newVal
+                            if newVal && $0.catalogStatus == .unlisted { $0.catalogStatus = .manual }
+                        }
                     }
                 ))
                 .labelsHidden()
             }
 
             HStack(spacing: 8) {
+                Button {
+                    pricingModel = spec
+                } label: {
+                    let hasPrice = spec.inputPricePerMillion != nil && spec.outputPricePerMillion != nil
+                    Label(
+                        hasPrice
+                            ? "\(spec.priceCurrency ?? "USD") \(spec.inputPricePerMillion!.formatted())/\(spec.outputPricePerMillion!.formatted())"
+                            : String(localized: "单价"),
+                        systemImage: "creditcard"
+                    )
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(hasPrice ? .green : .primary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(hasPrice ? Color.green.opacity(0.12) : Color.secondary.opacity(0.08), in: Capsule())
+                }
+                .buttonStyle(.plain)
+
                 Button {
                     updateModel(id: spec.id) { $0.supportsVision.toggle() }
                 } label: {
@@ -388,20 +588,24 @@ struct ProviderDetailView: View {
                         guard !trimmedID.isEmpty else { return }
                         var list = provider.models
                         let disp = newModelDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let spec = ModelSpec(
-                            id: trimmedID,
-                            displayName: disp.isEmpty ? trimmedID : disp,
-                            isEnabled: true,
-                            supportsVision: newModelVision,
-                            supportsReasoning: newModelReasoning
-                        )
-                        if let existingIdx = list.firstIndex(where: { $0.id == trimmedID }) {
+                        let index = list.firstIndex { $0.id == trimmedID }
+                        var spec = index.map { list[$0] } ?? ModelSpec(id: trimmedID)
+                        if !disp.isEmpty { spec.displayName = disp }
+                        spec.supportsVision = newModelVision
+                        spec.supportsReasoning = newModelReasoning
+                        spec.isEnabled = true
+                        spec.catalogStatus = .manual
+                        if let existingIdx = index {
                             list[existingIdx] = spec
                         } else {
                             list.insert(spec, at: 0)
                         }
                         provider.models = list
                         try? modelContext.save()
+                        if onVerifiedModel != nil {
+                            catalog.reset()
+                            setupModelID = trimmedID
+                        }
                         showAddModelSheet = false
                     }
                     .fontWeight(.semibold)
@@ -474,6 +678,87 @@ struct ProviderDetailView: View {
         .presentationDetents([.medium])
     }
 
+    private var addExtraKeySheet: some View {
+        NavigationStack {
+            Form {
+                if let saveError { Text(saveError).foregroundStyle(.red) }
+                Section {
+                    HStack(spacing: 8) {
+                        SecureField("输入或粘贴备用 API Key", text: $newExtraKeyInput)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.subheadline.monospaced())
+
+                        Button {
+                            if let clip = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+                               !clip.isEmpty {
+                                newExtraKeyInput = clip
+                            }
+                        } label: {
+                            Text("粘贴")
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.secondary.opacity(0.14), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } footer: {
+                    Text("多个 API Key 会按轮询（Round-Robin）分摊请求；当某个 Key 返回 429 限流、401/402/403 鉴权或余额不足时将自动冷却并秒切下一个 Key。")
+                }
+            }
+            .navigationTitle("添加轮询 Key")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { showAddExtraKeySheet = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        let candidate = newExtraKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !candidate.isEmpty else { return }
+                        flushPendingAPIKey()
+                        let primaryTrimmed = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if primaryTrimmed.isEmpty {
+                            apiKeyInput = candidate
+                            flushPendingAPIKey(overrideValue: candidate)
+                            showAddExtraKeySheet = false
+                            return
+                        }
+                        guard candidate != primaryTrimmed && !extraAPIKeys.contains(candidate) else {
+                            showAddExtraKeySheet = false
+                            return
+                        }
+                        let updated = extraAPIKeys + [candidate]
+                        guard KeychainService.shared.saveExtraAPIKeys(updated, for: provider.id) else {
+                            saveError = String(localized: "保存失败，请保留输入并重试。")
+                            return
+                        }
+                        extraAPIKeys = updated
+                        keySaved = true
+                        saveError = nil
+                        showAddExtraKeySheet = false
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(newExtraKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+
+    private func removeExtraAPIKey(at index: Int) {
+        guard extraAPIKeys.indices.contains(index) else { return }
+        var updated = extraAPIKeys
+        updated.remove(at: index)
+        guard KeychainService.shared.saveExtraAPIKeys(updated, for: provider.id) else {
+            saveError = String(localized: "保存失败，请保留输入并重试。")
+            return
+        }
+        extraAPIKeys = updated
+        keySaved = !apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !updated.isEmpty
+    }
+
     private func updateModel(id: String, mutate: (inout ModelSpec) -> Void) {
         var copy = provider.models
         guard let idx = copy.firstIndex(where: { $0.id == id }) else { return }
@@ -482,53 +767,84 @@ struct ProviderDetailView: View {
         try? modelContext.save()
     }
 
-    private func fetchRemoteModels() async {
-        isFetchingModels = true
+    private func chooseSetupModel(_ model: ModelSpec) {
+        let previous = provider.models
+        guard let index = previous.firstIndex(where: { $0.id == model.id }) else { return }
+        if !previous[index].isEnabled || index != 0 {
+            var updated = previous
+            var selected = updated.remove(at: index)
+            selected.isEnabled = true
+            updated.insert(selected, at: 0)
+            provider.models = updated
+            do { try modelContext.save() } catch {
+                provider.models = previous
+                saveError = error.localizedDescription
+                return
+            }
+        }
+        setupModelID = model.id
+    }
+
+    private func refreshModels() {
+        let request = catalogRequest
         fetchBannerMessage = nil
-        defer { isFetchingModels = false }
+        catalog.refresh(request: request, onSuccess: { live in
+            guard request == catalogRequest, provider.modelContext != nil, !provider.isDeleted else { throw CancellationError() }
+            let added = try ProviderModelCatalog.save(live, to: provider, in: modelContext)
+            fetchBannerIsError = false
+            fetchBannerMessage = String(localized: "连接正常，共同步 \(live.count) 个可用模型（新增 \(added) 个）。")
+        })
+    }
+
+    private func pingProviderModel(_ spec: ModelSpec) async {
+        flushPendingAPIKey()
+        isPinging = true
+        fetchBannerMessage = nil
+        defer { isPinging = false }
 
         do {
-            let remoteSpecs = try await LLMClient.fetchModels(
+            let ping = try await LLMClient.pingModel(
                 providerName: provider.name,
                 protocolType: provider.protocolType,
                 baseURL: provider.baseURL,
                 apiKey: apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines),
-                customHeaders: provider.resolvedCustomHeaders
+                apiKeys: extraAPIKeys,
+                customHeaders: provider.resolvedCustomHeaders,
+                modelID: spec.id,
+                supportsReasoning: spec.supportsReasoning,
+                idleTimeoutSeconds: provider.customIdleTimeout
             )
-
-            guard !remoteSpecs.isEmpty else {
-                fetchBannerIsError = true
-                fetchBannerMessage = String(localized: "接口返回成功，但未解析到可用模型，请尝试手动添加。")
-                return
-            }
-
-            let existingModels = provider.models
-            let hadNoEnabledModels = existingModels.allSatisfy { !$0.isEnabled }
-            let autoEnableNew = remoteSpecs.count <= 20
-            var merged = existingModels
-            var seenIDs = Set(existingModels.map(\.id))
-            var newlyAddedCount = 0
-
-            // `seenIDs.insert` also skips duplicates inside the remote list itself.
-            for (idx, remote) in remoteSpecs.enumerated() where seenIDs.insert(remote.id).inserted {
-                var item = remote
-                item.isEnabled = autoEnableNew || (hadNoEnabledModels && idx < 6)
-                merged.append(item)
-                newlyAddedCount += 1
-            }
-
-            provider.models = merged
-            try? modelContext.save()
-
             fetchBannerIsError = false
-            if remoteSpecs.count > 20 && newlyAddedCount > 0 {
-                fetchBannerMessage = String(localized: "成功拉取 \(remoteSpecs.count) 个模型（新增 \(newlyAddedCount) 个，已自动启用前几个，可搜索按需开启）。")
-            } else {
-                fetchBannerMessage = String(localized: "连接正常，共同步 \(remoteSpecs.count) 个可用模型（新增 \(newlyAddedCount) 个）。")
-            }
+            fetchBannerMessage = String(localized: "连通正常 · 首字响应 \(ping.ttftMs) ms（总耗时 \(ping.totalMs) ms）")
         } catch {
             fetchBannerIsError = true
             fetchBannerMessage = error.localizedDescription
         }
+    }
+
+    @discardableResult
+    private func ensureKeyCoordinator() -> APIKeySaveCoordinator {
+        if let existing = keyCoordinator {
+            return existing
+        }
+        let providerID = provider.id
+        let coordinator = APIKeySaveCoordinator(
+            initialValue: KeychainService.shared.loadAPIKey(for: providerID),
+            saveHandler: { trimmed in
+                KeychainService.shared.saveAPIKey(trimmed, for: providerID)
+            }
+        )
+        coordinator.onResult = { ok, trimmed in
+            keySaved = ok && (!trimmed.isEmpty || !extraAPIKeys.isEmpty)
+            keyWriteFailed = !ok
+            saveError = ok ? nil : String(localized: "保存失败，请保留输入并重试。")
+        }
+        keyCoordinator = coordinator
+        return coordinator
+    }
+
+    private func flushPendingAPIKey(overrideValue: String? = nil) {
+        let coordinator = ensureKeyCoordinator()
+        _ = coordinator.flushNow(overrideValue: overrideValue)
     }
 }

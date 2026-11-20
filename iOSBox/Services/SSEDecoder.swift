@@ -3,8 +3,14 @@ import Foundation
 /// Pull one complete event at a time. Unlike AsyncBytes.lines, preserve blank lines;
 /// unlike a producer task, do not read ahead into an unbounded event queue.
 enum SSEDecoder {
-    static func events<Bytes: AsyncSequence>(_ bytes: Bytes) -> Events<Bytes> where Bytes.Element == UInt8 {
-        Events(bytes: bytes)
+    static let defaultMaximumBytes = 2 * 1024 * 1024
+
+    static func events<Bytes: AsyncSequence>(
+        _ bytes: Bytes,
+        maximumBytes: Int = defaultMaximumBytes,
+        onActivity: (@Sendable () -> Void)? = nil
+    ) -> Events<Bytes> where Bytes.Element == UInt8 {
+        Events(bytes: bytes, maximumBytes: maximumBytes, onActivity: onActivity)
     }
 
     static func jsonObject(_ data: String) throws -> [String: Any] {
@@ -17,19 +23,36 @@ enum SSEDecoder {
     struct Events<Bytes: AsyncSequence>: AsyncSequence where Bytes.Element == UInt8 {
         typealias Element = String
         let bytes: Bytes
-        func makeAsyncIterator() -> Iterator { Iterator(bytes: bytes.makeAsyncIterator()) }
+        let maximumBytes: Int
+        let onActivity: (@Sendable () -> Void)?
+
+        init(bytes: Bytes, maximumBytes: Int = defaultMaximumBytes, onActivity: (@Sendable () -> Void)? = nil) {
+            self.bytes = bytes
+            self.maximumBytes = maximumBytes
+            self.onActivity = onActivity
+        }
+
+        func makeAsyncIterator() -> Iterator {
+            Iterator(bytes: bytes.makeAsyncIterator(), maximumBytes: maximumBytes, onActivity: onActivity)
+        }
 
         struct Iterator: AsyncIteratorProtocol {
             var bytes: Bytes.AsyncIterator
+            let maximumBytes: Int
+            let onActivity: (@Sendable () -> Void)?
             private var line = Data()
             private var fields: [String] = []
             private var eventSize = 0
+            private var bytesSinceTouch = 0
             private var skipLF = false
             private var firstLine = true
             private var ended = false
-            private let maximumBytes = 2 * 1024 * 1024
 
-            init(bytes: Bytes.AsyncIterator) { self.bytes = bytes }
+            init(bytes: Bytes.AsyncIterator, maximumBytes: Int = defaultMaximumBytes, onActivity: (@Sendable () -> Void)? = nil) {
+                self.bytes = bytes
+                self.maximumBytes = maximumBytes
+                self.onActivity = onActivity
+            }
 
             mutating func next() async throws -> String? {
                 guard !ended else { return nil }
@@ -38,11 +61,18 @@ enum SSEDecoder {
                     try Task.checkCancellation()
                     if skipLF { skipLF = false; if byte == 10 { continue } }
                     if byte == 13 || byte == 10 {
+                        bytesSinceTouch = 0
+                        onActivity?()
                         skipLF = byte == 13
                         if let event = try finishLine() { return event }
                     } else {
                         line.append(byte)
                         guard line.count <= maximumBytes else { throw LLMError.interruptedStream }
+                        bytesSinceTouch += 1
+                        if bytesSinceTouch >= 256 {
+                            bytesSinceTouch = 0
+                            onActivity?()
+                        }
                     }
                 }
                 ended = true

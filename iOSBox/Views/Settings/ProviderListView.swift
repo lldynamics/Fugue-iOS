@@ -18,7 +18,14 @@ struct ProviderListView: View {
     @State private var isExporting = false
     @State private var isImporting = false
     @State private var showImporter = false
+    @State private var showExportPasswordAlert = false
+    @State private var exportPassword = ""
+    @State private var pendingEncryptedImportData: Data?
+    @State private var importPassword = ""
     @State private var backupAlert: BackupAlert?
+    @State private var providerPendingDeletion: ProviderConfig?
+
+    private static let maximumBackupImportBytes = 256 * 1024 * 1024
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -28,11 +35,9 @@ struct ProviderListView: View {
                         NavigationLink(value: provider) {
                             providerRow(provider)
                         }
-                        .swipeActions(edge: .trailing) {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
-                                provider.deleteAllSecrets()
-                                modelContext.delete(provider)
-                                try? modelContext.save()
+                                providerPendingDeletion = provider
                             } label: {
                                 Label("删除", systemImage: "trash")
                             }
@@ -43,6 +48,12 @@ struct ProviderListView: View {
                     Text("API 服务商与自定义中转站")
                 } footer: {
                     Text("点进任意服务商可填入 API Key、修改 Base URL，并支持一键拉取 /models 模型列表或手动添加模型。")
+                }
+
+                Section("个性化与联网") {
+                    NavigationLink { AppearanceSettingsView() } label: { Label("阅读与交互偏好", systemImage: "textformat.size") }
+                    NavigationLink { PersonalMemoryView() } label: { Label("个人长期记忆", systemImage: "brain.head.profile") }
+                    NavigationLink { SearchSettingsView() } label: { Label("联网搜索", systemImage: "globe") }
                 }
 
                 Section("支持接入的协议说明") {
@@ -92,6 +103,15 @@ struct ProviderListView: View {
                     }
                     .disabled(isExporting)
 
+                    Button {
+                        exportPassword = ""
+                        showExportPasswordAlert = true
+                    } label: {
+                        Label("导出密码加密备份 (含 API Key)", systemImage: "lock.doc.fill")
+                            .font(.subheadline)
+                    }
+                    .disabled(isExporting)
+
                     if let url = exportedJSONURL {
                         ShareLink(item: url) {
                             Label("点击分享或保存导出的备份文件", systemImage: "arrow.up.doc.fill")
@@ -115,10 +135,17 @@ struct ProviderListView: View {
                         }
                     }
                     .disabled(isImporting)
+
+                    NavigationLink {
+                        AboutAndPrivacyView()
+                    } label: {
+                        Label("关于与隐私声明", systemImage: "info.circle")
+                            .font(.subheadline)
+                    }
                 } header: {
                     Text("数据与隐私安全")
                 } footer: {
-                    Text("备份包含服务商配置、助手和全部对话（含附件），不含 API Key 与敏感请求头。导入为合并模式：已存在的项目会跳过，不会覆盖或重复。")
+                    Text("导入会补回缺失的对话、附件、分支与助学闪卡，并保留本机已有配置。普通备份会省略密钥、敏感请求头及自定义路径地址；使用「加密导出完整备份」时才会以密码加密包含 API Key 与完整连接地址。")
                 }
             }
             .navigationTitle("服务商与设置")
@@ -153,6 +180,60 @@ struct ProviderListView: View {
             .alert(item: $backupAlert) { alert in
                 Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("好")))
             }
+            .alert("设置加密备份密码", isPresented: $showExportPasswordAlert) {
+                SecureField("至少 8 位字符的密码", text: $exportPassword)
+                Button("取消", role: .cancel) { exportPassword = "" }
+                Button("加密生成") {
+                    let pwd = exportPassword
+                    exportPassword = ""
+                    Task { await exportEncryptedBackup(password: pwd) }
+                }
+            } message: {
+                Text("将使用 AES-GCM 加密导出所有对话、服务商自定义地址及 API Key。请设置至少 8 位密码并妥善保管，遗忘后无法恢复。")
+            }
+            .alert(
+                "确认删除服务商？",
+                isPresented: Binding(
+                    get: { providerPendingDeletion != nil },
+                    set: { if !$0 { providerPendingDeletion = nil } }
+                ),
+                presenting: providerPendingDeletion
+            ) { provider in
+                Button("取消", role: .cancel) {
+                    providerPendingDeletion = nil
+                }
+                Button("删除并清除密钥", role: .destructive) {
+                    provider.deleteAllSecrets()
+                    modelContext.delete(provider)
+                    try? modelContext.save()
+                    providerPendingDeletion = nil
+                }
+            } message: { provider in
+                Text("将移除「\(provider.name)」及其保存在本机钥匙串中的 API Key 与敏感请求头。")
+            }
+            .alert(
+                "输入备份解密密码",
+                isPresented: Binding(
+                    get: { pendingEncryptedImportData != nil },
+                    set: { if !$0 { pendingEncryptedImportData = nil; importPassword = "" } }
+                )
+            ) {
+                SecureField("加密备份密码", text: $importPassword)
+                Button("取消", role: .cancel) {
+                    pendingEncryptedImportData = nil
+                    importPassword = ""
+                }
+                Button("解密并导入") {
+                    if let data = pendingEncryptedImportData {
+                        let pwd = importPassword
+                        pendingEncryptedImportData = nil
+                        importPassword = ""
+                        Task { await applyEncryptedBackup(data: data, password: pwd) }
+                    }
+                }
+            } message: {
+                Text("检测到密码加密备份包，输入密码后将自动恢复数据与 API 凭据。")
+            }
         }
     }
 
@@ -173,17 +254,67 @@ struct ProviderListView: View {
         }
     }
 
+    private func exportEncryptedBackup(password: String) async {
+        isExporting = true
+        defer { isExporting = false }
+        do {
+            let url = try await EncryptedBackupService.exportEncryptedTemporaryFile(
+                context: modelContext,
+                password: password
+            )
+            exportedJSONURL = url
+        } catch {
+            backupAlert = BackupAlert(title: String(localized: "导出失败"), message: error.localizedDescription)
+        }
+    }
+
     private func importBackup(from url: URL) async {
         isImporting = true
         defer { isImporting = false }
         do {
-            let decoded = try await Task.detached(priority: .userInitiated) {
+            let maxBytes = Self.maximumBackupImportBytes
+            let (rawData, isEncrypted) = try await Task.detached(priority: .userInitiated) {
                 let accessed = url.startAccessingSecurityScopedResource()
                 defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-                return try BackupService.decode(Data(contentsOf: url))
+                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                guard values.isRegularFile == true,
+                      let fileSize = values.fileSize,
+                      fileSize <= maxBytes else {
+                    throw BackupError.fileTooLarge
+                }
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                let data = try handle.read(upToCount: maxBytes + 1) ?? Data()
+                guard data.count <= maxBytes else {
+                    throw BackupError.fileTooLarge
+                }
+                return (data, EncryptedBackupService.isEncryptedBackup(data))
+            }.value
+            if isEncrypted {
+                importPassword = ""
+                pendingEncryptedImportData = rawData
+                return
+            }
+            let decoded = try await Task.detached(priority: .userInitiated) {
+                try BackupService.decode(rawData)
             }.value
             let summary = try BackupService.apply(decoded, to: modelContext)
-            backupAlert = BackupAlert(title: String(localized: "导入完成"), message: summary.description)
+            backupAlert = BackupAlert(title: summary.title, message: summary.description)
+        } catch {
+            backupAlert = BackupAlert(title: String(localized: "导入失败"), message: error.localizedDescription)
+        }
+    }
+
+    private func applyEncryptedBackup(data: Data, password: String) async {
+        isImporting = true
+        defer { isImporting = false }
+        do {
+            let summary = try await EncryptedBackupService.decryptAndApplyAsync(
+                data: data,
+                password: password,
+                to: modelContext
+            )
+            backupAlert = BackupAlert(title: summary.title, message: summary.description)
         } catch {
             backupAlert = BackupAlert(title: String(localized: "导入失败"), message: error.localizedDescription)
         }
@@ -202,6 +333,9 @@ struct ProviderListView: View {
     @ViewBuilder
     private func providerRow(_ provider: ProviderConfig) -> some View {
         let hasKey = provider.hasAuthentication
+        let isLocal = NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL)
+        let status: LocalizedStringResource = hasKey ? "Key 已配置" : (isLocal ? "本地地址" : "待填 Key")
+        let statusColor = hasKey || isLocal ? Color.green : Color.orange
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
@@ -229,11 +363,11 @@ struct ProviderListView: View {
                 HStack(spacing: 8) {
                     HStack(spacing: 3) {
                         Circle()
-                            .fill(hasKey ? Color.green : Color.orange)
+                            .fill(statusColor)
                             .frame(width: 6, height: 6)
-                        Text(hasKey ? String(localized: "Key 已配置") : String(localized: "待填 Key"))
+                        Text(status)
                             .font(.caption2)
-                            .foregroundStyle(hasKey ? .green : .orange)
+                            .foregroundStyle(statusColor)
                     }
 
                     Text("· 已启用 \(provider.enabledModels.count) 个模型")

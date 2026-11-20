@@ -103,10 +103,21 @@ enum AttachmentProcessor {
             )
         }
 
-        // Plain text / code / structured text files
-        let decoded = String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .utf16)
-            ?? String(decoding: data.prefix(120_000), as: UTF8.self)
+        // Plain text / code / structured text files: reject binary files containing NUL bytes
+        // instead of forwarding decoded binary garbage to the model.
+        let decoded: String
+        if let utf8 = String(data: data, encoding: .utf8), !utf8.contains("\0") {
+            decoded = utf8
+        } else if (data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF])),
+                  let utf16 = String(data: data, encoding: .utf16), !utf16.contains("\0") {
+            decoded = utf16
+        } else {
+            let sample = data.prefix(8192)
+            if sample.contains(0) {
+                throw AttachmentError.unsupportedBinary
+            }
+            decoded = String(decoding: data.prefix(120_000), as: UTF8.self)
+        }
 
         let mimeType = UTType(filenameExtension: ext)?.preferredMIMEType ?? "text/plain"
         return MessageAttachment(
@@ -124,15 +135,23 @@ enum AttachmentProcessor {
         var pages: [String] = []
         var remaining = maxTextCharacters
         var truncated = document.pageCount > 200
+        var ocrPagesUsed = 0
         for index in 0..<min(document.pageCount, 200) {
-            guard remaining > 0 else { break }
-            if let page = document.page(at: index),
-               let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !text.isEmpty {
-                let excerpt = String(text.prefix(remaining))
-                if excerpt.count < text.count { truncated = true }
-                remaining -= excerpt.count
-                pages.append(String(localized: "--- 第 \(index + 1) 页 ---\n\(excerpt)"))
+            guard remaining > 0, !Task.isCancelled else { break }
+            autoreleasepool {
+                if let page = document.page(at: index) {
+                    var text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if text.isEmpty && ocrPagesUsed < 30 {
+                        ocrPagesUsed += 1
+                        text = PDFOCRService.recognizeText(on: page)
+                    }
+                    if !text.isEmpty {
+                        let excerpt = String(text.prefix(remaining))
+                        if excerpt.count < text.count { truncated = true }
+                        remaining -= excerpt.count
+                        pages.append(String(localized: "--- 第 \(index + 1) 页 ---\n\(excerpt)"))
+                    }
+                }
             }
         }
         if remaining == 0 { truncated = true }
@@ -166,10 +185,12 @@ enum AttachmentProcessor {
 enum AttachmentError: LocalizedError {
     case limit
     case unreadableImage
+    case unsupportedBinary
     var errorDescription: String? {
         switch self {
         case .limit: return String(localized: "附件超出限制：单文件最多 20 MB，每次最多 8 个附件，总内容最多 32 MB。")
         case .unreadableImage: return String(localized: "无法读取图片，或图片超过 20 MB 限制。")
+        case .unsupportedBinary: return String(localized: "不支持的二进制文件格式，请选择图片、PDF 或纯文本/代码文件。")
         }
     }
 }

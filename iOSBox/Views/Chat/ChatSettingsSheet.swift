@@ -4,12 +4,13 @@ import SwiftData
 struct ChatSettingsSheet: View {
     @Bindable var conversation: Conversation
     @Query(sort: \AssistantPreset.sortOrder) private var presets: [AssistantPreset]
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Form {
-                if !presets.isEmpty {
+                if !presets.isEmpty && !conversation.isGroupMode {
                     Section("一键套用助手角色") {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
@@ -47,11 +48,34 @@ struct ChatSettingsSheet: View {
                 Section {
                     TextField("输入系统提示词（System Prompt）…", text: $conversation.systemPrompt, axis: .vertical)
                         .lineLimit(3...10)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(PromptTemplateEngine.availableVariables) { item in
+                                Button {
+                                    if conversation.systemPrompt.isEmpty {
+                                        conversation.systemPrompt = item.token
+                                    } else {
+                                        conversation.systemPrompt += " \(item.token)"
+                                    }
+                                } label: {
+                                    Text(item.token)
+                                        .font(.caption2.monospaced())
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color(.secondarySystemBackground), in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
                 } header: {
                     Text("系统提示词 (System Prompt)")
                 } footer: {
-                    Text("对当前会话内的所有模型（含并发对比模型）生效。")
+                    Text("对当前会话内的所有模型（含并发对比模型）生效。支持插入 {{date}}、{{time}}、{{model}} 等动态变量。")
                 }
+
+                AssistanceSettingsSection(conversation: conversation)
 
                 Section("推理与深度思考") {
                     Toggle("启用深度思考 (Thinking / R1)", isOn: $conversation.enableThinking)
@@ -114,8 +138,14 @@ struct ChatSettingsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                    Button("完成") {
+                        try? modelContext.save()
+                        dismiss()
+                    }
                 }
+            }
+            .onDisappear {
+                try? modelContext.save()
             }
         }
     }

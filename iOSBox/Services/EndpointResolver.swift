@@ -6,105 +6,93 @@ enum EndpointResolver {
         protocolType: APIProtocolType,
         modelID: String = ""
     ) throws -> URL {
-        let cleaned = sanitizeInput(baseURL)
-        let forceRaw = cleaned.hasSuffix("#")
-        let raw = forceRaw ? String(cleaned.dropLast()) : cleaned
-        let trimmed = stripTrailingSlash(raw)
+        var (components, path, forceRaw) = try parseBaseComponents(baseURL)
 
-        guard !trimmed.isEmpty else {
-            throw LLMError.invalidURL(baseURL)
-        }
-
-        let finalString: String
         switch protocolType {
         case .openAICompatible:
-            if trimmed.hasSuffix("/chat/completions") {
-                finalString = trimmed
+            if path.hasSuffix("/chat/completions") {
+                break
             } else if forceRaw {
-                finalString = "\(trimmed)/chat/completions"
+                path += "/chat/completions"
             } else {
-                let versioned = ensureOpenAIVersionPrefix(trimmed)
-                finalString = "\(versioned)/chat/completions"
+                let versioned = ensureOpenAIVersionPrefix(path: path)
+                path = "\(versioned)/chat/completions"
             }
 
         case .anthropic:
-            if trimmed.hasSuffix("/messages") {
-                finalString = trimmed
+            if path.hasSuffix("/messages") {
+                break
             } else if forceRaw {
-                finalString = "\(trimmed)/messages"
+                path += "/messages"
             } else {
-                let versioned = ensureAnthropicVersionPrefix(trimmed)
-                finalString = "\(versioned)/messages"
+                let versioned = ensureAnthropicVersionPrefix(path: path)
+                path = "\(versioned)/messages"
             }
 
         case .gemini:
-            let encodedModel = normalizeGeminiModelPath(modelID)
-            if trimmed.contains(":streamGenerateContent") {
-                finalString = trimmed
+            let trimmedModel = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedModel.contains(where: \.isWhitespace) || !isSafeGeminiModelIdentifier(trimmedModel) {
+                throw LLMError.invalidURL(baseURL)
+            }
+            let encodedModel = normalizeGeminiModelPath(trimmedModel)
+            if path.contains(":streamGenerateContent") {
+                ensureQueryItem(name: "alt", value: "sse", in: &components)
             } else {
-                let root = forceRaw ? trimmed : ensureGeminiVersionPrefix(trimmed)
-                finalString = "\(root)/\(encodedModel):streamGenerateContent?alt=sse"
+                let root = forceRaw ? path : ensureGeminiVersionPrefix(path: path)
+                path = "\(root)/\(encodedModel):streamGenerateContent"
+                ensureQueryItem(name: "alt", value: "sse", in: &components)
             }
         }
 
-        guard let url = URL(string: finalString), url.scheme != nil, url.host != nil else {
-            throw LLMError.invalidURL(finalString)
-        }
-        return url
+        return try finalizeURL(components: components, path: path, forceRaw: forceRaw, rawInput: baseURL)
     }
 
     static func modelsEndpoint(
         baseURL: String,
         protocolType: APIProtocolType
     ) throws -> URL {
-        let cleaned = sanitizeInput(baseURL)
-        let forceRaw = cleaned.hasSuffix("#")
-        let raw = forceRaw ? String(cleaned.dropLast()) : cleaned
-        var trimmed = stripTrailingSlash(raw)
+        var (components, path, forceRaw) = try parseBaseComponents(baseURL)
 
-        guard !trimmed.isEmpty else {
-            throw LLMError.invalidURL(baseURL)
+        if path.hasSuffix("/chat/completions") {
+            path = stripTrailingSlash(String(path.dropLast("/chat/completions".count)))
+        } else if path.hasSuffix("/messages") {
+            path = stripTrailingSlash(String(path.dropLast("/messages".count)))
+        } else if protocolType == .gemini,
+                  (path.contains(":streamGenerateContent") || path.contains(":generateContent")),
+                  let modelsRange = path.range(of: "/models/") {
+            path = stripTrailingSlash(String(path[..<modelsRange.lowerBound]))
         }
 
-        if trimmed.hasSuffix("/chat/completions") {
-            trimmed = String(trimmed.dropLast("/chat/completions".count))
-        } else if trimmed.hasSuffix("/messages") {
-            trimmed = String(trimmed.dropLast("/messages".count))
-        }
-
-        let finalString: String
         switch protocolType {
         case .openAICompatible:
-            if trimmed.hasSuffix("/models") {
-                finalString = trimmed
+            if path.hasSuffix("/models") {
+                break
             } else if forceRaw {
-                finalString = "\(trimmed)/models"
+                path += "/models"
             } else {
-                finalString = "\(ensureOpenAIVersionPrefix(trimmed))/models"
+                path = "\(ensureOpenAIVersionPrefix(path: path))/models"
             }
 
         case .anthropic:
-            if trimmed.hasSuffix("/models") {
-                finalString = trimmed
+            if path.hasSuffix("/models") {
+                break
             } else if forceRaw {
-                finalString = "\(trimmed)/models"
+                path += "/models"
             } else {
-                finalString = "\(ensureAnthropicVersionPrefix(trimmed))/models"
+                path = "\(ensureAnthropicVersionPrefix(path: path))/models"
             }
 
         case .gemini:
-            if trimmed.hasSuffix("/models") {
-                finalString = trimmed
+            if path.hasSuffix("/models") {
+                break
             } else {
-                let root = forceRaw ? trimmed : ensureGeminiVersionPrefix(trimmed)
-                finalString = "\(root)/models?pageSize=200"
+                let root = forceRaw ? path : ensureGeminiVersionPrefix(path: path)
+                path = "\(root)/models"
+                ensureQueryItem(name: "pageSize", value: "200", in: &components)
             }
         }
 
-        guard let url = URL(string: finalString), url.scheme != nil, url.host != nil else {
-            throw LLMError.invalidURL(finalString)
-        }
-        return url
+        return try finalizeURL(components: components, path: path, forceRaw: forceRaw, rawInput: baseURL)
     }
 
     static func previewChatEndpoint(
@@ -130,44 +118,94 @@ enum EndpointResolver {
         return copy
     }
 
-    private static func ensureOpenAIVersionPrefix(_ base: String) -> String {
-        guard let components = URLComponents(string: base) else {
-            return "\(base)/v1"
+    private static func parseBaseComponents(_ baseURL: String) throws -> (URLComponents, String, Bool) {
+        let cleaned = sanitizeInput(baseURL)
+        let forceRaw = cleaned.hasSuffix("#")
+        let raw = forceRaw ? String(cleaned.dropLast()) : cleaned
+        let trimmed = stripTrailingSlash(raw)
+
+        guard !trimmed.isEmpty,
+              let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host, !host.isEmpty else {
+            throw LLMError.invalidURL(baseURL)
         }
-        let path = components.path.lowercased()
-        if path.isEmpty || path == "/" {
-            return "\(base)/v1"
+
+        let normalizedPath = stripTrailingSlash(components.path)
+        return (components, normalizedPath, forceRaw)
+    }
+
+    private static func finalizeURL(
+        components: URLComponents,
+        path: String,
+        forceRaw: Bool,
+        rawInput: String
+    ) throws -> URL {
+        var updated = components
+        updated.path = path.hasPrefix("/") || path.isEmpty ? path : "/\(path)"
+        if forceRaw {
+            updated.fragment = nil
         }
-        let segments = path.split(separator: "/").map(String.init)
+        guard let url = updated.url, url.scheme != nil, url.host != nil else {
+            throw LLMError.invalidURL(rawInput)
+        }
+        return url
+    }
+
+    private static func ensureQueryItem(name: String, value: String, in components: inout URLComponents) {
+        let existingItems = components.queryItems ?? []
+        if existingItems.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            return
+        }
+        if let existingQuery = components.percentEncodedQuery, !existingQuery.isEmpty {
+            components.percentEncodedQuery = "\(existingQuery)&\(name)=\(value)"
+        } else {
+            components.percentEncodedQuery = "\(name)=\(value)"
+        }
+    }
+
+    private static func ensureOpenAIVersionPrefix(path: String) -> String {
+        let lower = path.lowercased()
+        if lower.isEmpty || lower == "/" {
+            return "/v1"
+        }
+        let segments = lower.split(separator: "/").map(String.init)
         let hasVersionSegment = segments.contains { seg in
             seg == "v1" || seg == "v2" || seg == "v3" || seg == "v4" || seg == "v1beta" || seg == "openai"
         }
-        if hasVersionSegment {
-            return base
-        }
-        return "\(base)/v1"
+        return hasVersionSegment ? path : "\(path)/v1"
     }
 
-    private static func ensureAnthropicVersionPrefix(_ base: String) -> String {
-        guard let components = URLComponents(string: base) else {
-            return "\(base)/v1"
+    private static func ensureAnthropicVersionPrefix(path: String) -> String {
+        if path.isEmpty || path == "/" {
+            return "/v1"
         }
-        let segments = components.path.lowercased().split(separator: "/").map(String.init)
-        if segments.contains("v1") {
-            return base
-        }
-        return "\(base)/v1"
+        let segments = path.lowercased().split(separator: "/").map(String.init)
+        return segments.contains("v1") ? path : "\(path)/v1"
     }
 
-    private static func ensureGeminiVersionPrefix(_ base: String) -> String {
-        guard let components = URLComponents(string: base) else {
-            return "\(base)/v1beta"
+    private static func ensureGeminiVersionPrefix(path: String) -> String {
+        if path.isEmpty || path == "/" {
+            return "/v1beta"
         }
-        let segments = components.path.lowercased().split(separator: "/").map(String.init)
-        if segments.contains("v1beta") || segments.contains("v1") {
-            return base
+        let segments = path.lowercased().split(separator: "/").map(String.init)
+        return (segments.contains("v1beta") || segments.contains("v1")) ? path : "\(path)/v1beta"
+    }
+
+    private static func isSafeGeminiModelIdentifier(_ modelID: String) -> Bool {
+        if modelID.isEmpty { return true }
+        let bare = modelID.hasPrefix("models/") ? String(modelID.dropFirst("models/".count)) : modelID
+        guard !bare.isEmpty,
+              !bare.contains(".."),
+              !bare.contains("/"),
+              !bare.contains("\\"),
+              !bare.contains("?"),
+              !bare.contains("#"),
+              !bare.contains("%") else {
+            return false
         }
-        return "\(base)/v1beta"
+        return true
     }
 
     private static func normalizeGeminiModelPath(_ modelID: String) -> String {

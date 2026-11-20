@@ -92,18 +92,39 @@ struct CustomHeader: Codable, Hashable, Identifiable {
 
     /// Header names that typically carry credentials.
     static func looksSensitive(_ key: String) -> Bool {
-        let lower = key.lowercased()
-        return ["authorization", "api-key", "apikey", "api_key", "token", "secret", "cookie", "password", "x-key"]
+        let lower = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lower == "x-auth" || lower.hasSuffix("-key") || ["authorization", "api-key", "apikey", "api_key", "token", "secret", "cookie", "password", "x-key"]
             .contains { lower.contains($0) }
     }
 }
 
 struct ModelSpec: Codable, Hashable, Identifiable {
+    enum CatalogStatus: String, Codable {
+        case listed, unlisted, manual
+    }
+
     var id: String
     var displayName: String
     var isEnabled: Bool = true
     var supportsVision: Bool = true
     var supportsReasoning: Bool = false
+    /// Optional for backwards-compatible decoding of existing model configurations.
+    var inputPricePerMillion: Double?
+    var outputPricePerMillion: Double?
+    var cacheReadPricePerMillion: Double?
+    var cacheWritePricePerMillion: Double?
+    var priceCurrency: String?
+    var isFavorite: Bool?
+    // Older configurations have no provenance until their next catalog refresh.
+    var catalogStatus: CatalogStatus?
+    var retiredStarterDefault: Bool?
+
+    var isSelectable: Bool { isEnabled && catalogStatus != .unlisted }
+
+    var isStarred: Bool {
+        get { isFavorite == true }
+        set { isFavorite = newValue ? true : nil }
+    }
 
     init(
         id: String,
@@ -124,9 +145,9 @@ struct ModelSpec: Codable, Hashable, Identifiable {
     static func inferReasoningSupport(modelID: String) -> Bool {
         let lower = modelID.lowercased()
         let keywords = [
-            "reasoner", "r1", "qwq", "o1", "o3", "o4", "gpt-5", "thinking", "magistral", "qwen3",
+            "reasoner", "r1", "deepseek-flash", "deepseek-v4", "qwq", "o1", "o3", "o4", "gpt-5", "gpt-6", "thinking", "magistral", "qwen3",
             "claude-3-7", "claude-sonnet-4", "claude-opus-4", "claude-haiku-4", "claude-4",
-            "gemini-2.5", "gemini-3"
+            "claude-sonnet-5", "claude-opus-5", "claude-haiku-5", "claude-fable-5", "gemini-2.5", "gemini-3", "gemini-4"
         ]
         return keywords.contains { lower.contains($0) }
     }
@@ -136,7 +157,7 @@ struct ModelSpec: Codable, Hashable, Identifiable {
         if lower.contains("deepseek-chat") || lower.contains("deepseek-reasoner") {
             return false
         }
-        let keywords = ["gpt-4", "gpt-5", "o1", "o3", "o4", "claude", "gemini", "vl", "vision", "pixtral", "qvq", "omni"]
+        let keywords = ["gpt-4", "gpt-5", "gpt-6", "o1", "o3", "o4", "claude", "gemini", "vl", "vision", "pixtral", "qvq", "omni", "deepseek-flash", "deepseek-v4.1-flash"]
         return keywords.contains { lower.contains($0) }
     }
 }

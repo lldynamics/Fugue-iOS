@@ -3,10 +3,17 @@ import SwiftData
 
 @MainActor
 enum DataSeeder {
-    private static let seededKey = "com.iosbox.hasSeededInitialData.v1"
-    private static let presetsSeededKey = "com.iosbox.hasSeededPresets.v1"
+    nonisolated private static let seededKey = "com.iosbox.hasSeededInitialData.v1"
+    nonisolated private static let presetsSeededKey = "com.iosbox.hasSeededPresets.v1"
+
+    nonisolated static func resetSeedFlagsForRebuiltStore(in defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: seededKey)
+        defaults.removeObject(forKey: presetsSeededKey)
+    }
 
     static func seedIfNeeded(context: ModelContext) {
+        let canPersistFlags = PersistenceController.canCommitUserData(in: context)
+
         // Seed presets once per install, so deleting all of them doesn't bring them back.
         if !UserDefaults.standard.bool(forKey: presetsSeededKey) {
             let existingPresets = (try? context.fetchCount(FetchDescriptor<AssistantPreset>())) ?? 0
@@ -15,7 +22,9 @@ enum DataSeeder {
                     context.insert(preset)
                 }
             }
-            UserDefaults.standard.set(true, forKey: presetsSeededKey)
+            if canPersistFlags {
+                UserDefaults.standard.set(true, forKey: presetsSeededKey)
+            }
         }
 
         if !UserDefaults.standard.bool(forKey: seededKey) {
@@ -40,16 +49,59 @@ enum DataSeeder {
                     }
                 }
             }
-            UserDefaults.standard.set(true, forKey: seededKey)
-        }
-
-        // Move credentials saved in plaintext custom headers (pre-secret-header data) into the Keychain.
-        if let providers = try? context.fetch(FetchDescriptor<ProviderConfig>()) {
-            for provider in providers {
-                provider.moveSensitiveHeadersToKeychain()
+            if canPersistFlags {
+                UserDefaults.standard.set(true, forKey: seededKey)
             }
         }
 
+        // Move credentials saved in plaintext custom headers (pre-secret-header data) into the Keychain.
+        for provider in (try? context.fetch(FetchDescriptor<ProviderConfig>())) ?? [] {
+            provider.moveSensitiveHeadersToKeychain()
+            updateStarterModels(in: provider)
+        }
         try? context.save()
     }
+
+    static func updateStarterModels(in provider: ProviderConfig) {
+        guard let template = ProviderTemplate.matching(baseURL: provider.baseURL, protocolType: provider.protocolType),
+              let original = previousModels[template.id] else { return }
+        let saved = provider.models
+        let previouslyUpgraded = ProviderConfig.deduplicated(template.suggestedModels + original)
+        guard saved == original || saved == previouslyUpgraded else { return }
+        // Keep old IDs for history, but offer the current defaults for new conversations.
+        let currentIDs = Set(template.suggestedModels.map(\.id))
+        provider.models = previouslyUpgraded.map { model in
+            var updated = model
+            if !currentIDs.contains(model.id) {
+                updated.catalogStatus = .unlisted
+                updated.retiredStarterDefault = true
+                updated.displayName = model.id
+            }
+            return updated
+        }
+        if template.id == "deepseek", provider.notes == String(localized: "官方直连，支持 DeepSeek-V3 与 DeepSeek-R1 深度思考链") {
+            provider.notes = template.note
+        }
+    }
+
+    // Exact defaults shipped before live discovery. Custom names, flags, prices and favorites break the match.
+    private static let previousModels: [String: [ModelSpec]] = [
+        "deepseek": [ModelSpec(id: "deepseek-chat", displayName: "DeepSeek V3", supportsVision: false, supportsReasoning: false),
+                     ModelSpec(id: "deepseek-reasoner", displayName: "DeepSeek R1", supportsVision: false, supportsReasoning: true)],
+        "openrouter": [ModelSpec(id: "openai/gpt-4.1", displayName: "GPT-4.1", supportsVision: true, supportsReasoning: false),
+                       ModelSpec(id: "anthropic/claude-sonnet-4", displayName: "Claude Sonnet 4", supportsVision: true, supportsReasoning: true),
+                       ModelSpec(id: "google/gemini-2.5-pro", displayName: "Gemini 2.5 Pro", supportsVision: true, supportsReasoning: true),
+                       ModelSpec(id: "deepseek/deepseek-r1", displayName: "DeepSeek R1", supportsVision: false, supportsReasoning: true)],
+        "siliconflow": [ModelSpec(id: "deepseek-ai/DeepSeek-R1", displayName: "DeepSeek-R1", supportsVision: false, supportsReasoning: true),
+                        ModelSpec(id: "deepseek-ai/DeepSeek-V3", displayName: "DeepSeek-V3", supportsVision: false, supportsReasoning: false),
+                        ModelSpec(id: "Qwen/Qwen2.5-VL-72B-Instruct", displayName: "Qwen2.5-VL-72B", supportsVision: true, supportsReasoning: false)],
+        "openai": [ModelSpec(id: "gpt-4.1", displayName: "GPT-4.1", supportsVision: true, supportsReasoning: false),
+                   ModelSpec(id: "gpt-4.1-mini", displayName: "GPT-4.1 Mini", supportsVision: true, supportsReasoning: false),
+                   ModelSpec(id: "o4-mini", displayName: "o4-mini", supportsVision: true, supportsReasoning: true)],
+        "anthropic": [ModelSpec(id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", supportsVision: true, supportsReasoning: true),
+                      ModelSpec(id: "claude-opus-4-6", displayName: "Claude Opus 4.6", supportsVision: true, supportsReasoning: true),
+                      ModelSpec(id: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5", supportsVision: true, supportsReasoning: true)],
+        "gemini": [ModelSpec(id: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro", supportsVision: true, supportsReasoning: true),
+                   ModelSpec(id: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash", supportsVision: true, supportsReasoning: true)]
+    ]
 }

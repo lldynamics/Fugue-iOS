@@ -185,7 +185,8 @@ final class ReviewBoundaryTests: XCTestCase {
     }
 
     func testConflictingImportDoesNotPartiallyInsertProviderOrLosePendingEdits() throws {
-        let store = try ModelContainer(for: ProviderConfig.self, AssistantPreset.self, Conversation.self, ChatMessage.self,
+        let schema = Schema(versionedSchema: CurrentSchema.self)
+        let store = try ModelContainer(for: schema,
                                        configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let context = store.mainContext
         let existing = Conversation(title: "original")

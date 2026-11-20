@@ -10,6 +10,14 @@ struct ProviderTemplate: Identifiable {
     let note: String
     let suggestedModels: [ModelSpec]
 
+    static func matching(baseURL: String, protocolType: APIProtocolType) -> ProviderTemplate? {
+        guard let endpoint = try? EndpointResolver.modelsEndpoint(baseURL: baseURL, protocolType: protocolType) else { return nil }
+        return catalog.first {
+            $0.protocolType == protocolType && !$0.suggestedModels.isEmpty
+                && (try? EndpointResolver.modelsEndpoint(baseURL: $0.baseURL, protocolType: $0.protocolType)) == endpoint
+        }
+    }
+
     /// When the protocol changes, swap the Base URL only if it is empty, a known default for
     /// the old protocol, or the placeholder example. A custom gateway URL is kept as-is.
     static func baseURLAfterProtocolChange(
@@ -50,10 +58,10 @@ struct ProviderTemplate: Identifiable {
             baseURL: "https://api.deepseek.com/v1",
             iconSymbol: "brain.head.profile",
             accentHex: "#4D6BFE",
-            note: String(localized: "官方直连，支持 DeepSeek-V3 与 DeepSeek-R1 深度思考链"),
+            note: String(localized: "DeepSeek 官方接口，支持对话和深度思考。"),
             suggestedModels: [
-                ModelSpec(id: "deepseek-chat", displayName: "DeepSeek V3", supportsVision: false, supportsReasoning: false),
-                ModelSpec(id: "deepseek-reasoner", displayName: "DeepSeek R1", supportsVision: false, supportsReasoning: true)
+                ModelSpec(id: "deepseek-flash", displayName: "DeepSeek V4.1 Flash", supportsVision: true, supportsReasoning: true),
+                ModelSpec(id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", supportsVision: false, supportsReasoning: true)
             ]
         ),
         ProviderTemplate(
@@ -65,10 +73,7 @@ struct ProviderTemplate: Identifiable {
             accentHex: "#6366F1",
             note: String(localized: "一个 Key 聚合全球数百个主流与开源模型，支持一键拉取全部模型"),
             suggestedModels: [
-                ModelSpec(id: "openai/gpt-4.1", displayName: "GPT-4.1", supportsVision: true, supportsReasoning: false),
-                ModelSpec(id: "anthropic/claude-sonnet-4", displayName: "Claude Sonnet 4", supportsVision: true, supportsReasoning: true),
-                ModelSpec(id: "google/gemini-2.5-pro", displayName: "Gemini 2.5 Pro", supportsVision: true, supportsReasoning: true),
-                ModelSpec(id: "deepseek/deepseek-r1", displayName: "DeepSeek R1", supportsVision: false, supportsReasoning: true)
+                ModelSpec(id: "openrouter/auto", displayName: "OpenRouter Auto", supportsVision: true, supportsReasoning: false)
             ]
         ),
         ProviderTemplate(
@@ -80,9 +85,8 @@ struct ProviderTemplate: Identifiable {
             accentHex: "#7C3AED",
             note: String(localized: "国内高速推理平台，聚合 DeepSeek / Qwen / GLM 等模型"),
             suggestedModels: [
-                ModelSpec(id: "deepseek-ai/DeepSeek-R1", displayName: "DeepSeek-R1", supportsVision: false, supportsReasoning: true),
-                ModelSpec(id: "deepseek-ai/DeepSeek-V3", displayName: "DeepSeek-V3", supportsVision: false, supportsReasoning: false),
-                ModelSpec(id: "Qwen/Qwen2.5-VL-72B-Instruct", displayName: "Qwen2.5-VL-72B", supportsVision: true, supportsReasoning: false)
+                ModelSpec(id: "deepseek-ai/DeepSeek-V4.1-Flash", displayName: "DeepSeek V4.1 Flash", supportsVision: true, supportsReasoning: true),
+                ModelSpec(id: "deepseek-ai/DeepSeek-V4-Pro", displayName: "DeepSeek V4 Pro", supportsVision: false, supportsReasoning: true)
             ]
         ),
         ProviderTemplate(
@@ -94,9 +98,9 @@ struct ProviderTemplate: Identifiable {
             accentHex: "#10A37F",
             note: String(localized: "OpenAI 官方接口，支持一键拉取账户可用模型"),
             suggestedModels: [
-                ModelSpec(id: "gpt-4.1", displayName: "GPT-4.1", supportsVision: true, supportsReasoning: false),
-                ModelSpec(id: "gpt-4.1-mini", displayName: "GPT-4.1 Mini", supportsVision: true, supportsReasoning: false),
-                ModelSpec(id: "o4-mini", displayName: "o4-mini", supportsVision: true, supportsReasoning: true)
+                ModelSpec(id: "gpt-6.2-sol", displayName: "GPT-6.2 Sol"),
+                ModelSpec(id: "gpt-6.2-astra", displayName: "GPT-6.2 Astra"),
+                ModelSpec(id: "gpt-6-luna", displayName: "GPT-6 Luna")
             ]
         ),
         ProviderTemplate(
@@ -108,9 +112,10 @@ struct ProviderTemplate: Identifiable {
             accentHex: "#D97757",
             note: String(localized: "Anthropic 原生 /v1/messages 协议，支持 Extended Thinking 与原版 PDF 解析"),
             suggestedModels: [
-                ModelSpec(id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", supportsVision: true, supportsReasoning: true),
-                ModelSpec(id: "claude-opus-4-6", displayName: "Claude Opus 4.6", supportsVision: true, supportsReasoning: true),
-                ModelSpec(id: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5", supportsVision: true, supportsReasoning: true)
+                ModelSpec(id: "claude-sonnet-5-5", displayName: "Claude Sonnet 5.5"),
+                ModelSpec(id: "claude-opus-5-5", displayName: "Claude Opus 5.5"),
+                ModelSpec(id: "claude-haiku-5-5", displayName: "Claude Haiku 5.5"),
+                ModelSpec(id: "claude-fable-5-2", displayName: "Claude Fable 5.2")
             ]
         ),
         ProviderTemplate(
@@ -122,8 +127,9 @@ struct ProviderTemplate: Identifiable {
             accentHex: "#2563EB",
             note: String(localized: "Google AI Studio 原生协议，支持多模态识图、PDF 文档及思考过程展示"),
             suggestedModels: [
-                ModelSpec(id: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro", supportsVision: true, supportsReasoning: true),
-                ModelSpec(id: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash", supportsVision: true, supportsReasoning: true)
+                ModelSpec(id: "gemini-4-neon", displayName: "Gemini 4 Neon"),
+                ModelSpec(id: "gemini-4-hydrogen", displayName: "Gemini 4 Hydrogen"),
+                ModelSpec(id: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash")
             ]
         ),
         ProviderTemplate(

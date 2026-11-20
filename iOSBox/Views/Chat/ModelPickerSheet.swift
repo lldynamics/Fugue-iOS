@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 struct ModelPickerSheet: View {
     enum Mode {
@@ -7,28 +8,62 @@ struct ModelPickerSheet: View {
     }
 
     let mode: Mode
-    let providers: [ProviderConfig]
+    @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
+    let directory: ChatModelDirectory
     @Bindable var conversation: Conversation
+    let selectSingle: (ResolvedModelTarget) throws -> Void
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
+    @State private var showingSetup = false
+    @State private var verified: ResolvedModelTarget?
+    @State private var selectionError: String?
     @State private var searchText: String = ""
     @State private var draftArenaTargets: [ResolvedModelTarget] = []
+    @State private var preferences = AppPreferences.shared
+    @State private var configuredProviders: [ProviderConfig] = []
 
-    private var enabledProviders: [ProviderConfig] {
-        providers.filter { $0.isEnabled && !$0.enabledModels.isEmpty }
+    private var allEnabledTargets: [(provider: ProviderConfig, spec: ModelSpec, target: ResolvedModelTarget)] {
+        configuredProviders.flatMap { provider in
+            provider.enabledModels.map { spec in
+                (provider, spec, provider.makeTarget(for: spec))
+            }
+        }
+    }
+
+    private var favoriteEntries: [(provider: ProviderConfig, spec: ModelSpec, target: ResolvedModelTarget)] {
+        allEnabledTargets.filter { $0.spec.isStarred }
+    }
+
+    private var recentEntries: [(provider: ProviderConfig, spec: ModelSpec, target: ResolvedModelTarget)] {
+        let map = Dictionary(uniqueKeysWithValues: allEnabledTargets.map { ($0.target.id, $0) })
+        let favoriteIDs = Set(favoriteEntries.map { $0.target.id })
+        return preferences.recentModelIDs.compactMap { id in
+            guard !favoriteIDs.contains(id) else { return nil }
+            return map[id]
+        }.prefix(5).map { $0 }
+    }
+
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if enabledProviders.isEmpty {
-                    ContentUnavailableView(
-                        "暂无已启用的模型",
-                        systemImage: "server.rack",
-                        description: Text("请前往底部「服务商」页面填入 API Key，一键拉取或手动添加模型")
-                    )
+                if configuredProviders.isEmpty {
+                    ContentUnavailableView {
+                        Label("尚未配置可用的 API", systemImage: "server.rack")
+                    } description: {
+                        Text("请在「服务商」中配置 API 连接并启用模型。")
+                    } actions: {
+                        configureButton.buttonStyle(.borderedProminent)
+                    }
                 } else {
                     List {
+                        if allEnabledTargets.count < (mode == .arenaMulti ? 2 : 1) {
+                            Section { configureButton }
+                        }
                         if mode == .arenaMulti {
                             Section {
                                 HStack {
@@ -41,13 +76,36 @@ struct ModelPickerSheet: View {
                             }
                         }
 
-                        ForEach(enabledProviders) { provider in
+                        if !isSearching && !favoriteEntries.isEmpty {
+                            Section {
+                                ForEach(favoriteEntries, id: \.target.id) { entry in
+                                    modelRow(target: entry.target, spec: entry.spec, provider: entry.provider, showProviderSubtitle: true)
+                                }
+                            } header: {
+                                Label("常用置顶", systemImage: "star.fill")
+                            }
+                        }
+
+                        if !isSearching && !recentEntries.isEmpty {
+                            Section {
+                                ForEach(recentEntries, id: \.target.id) { entry in
+                                    modelRow(target: entry.target, spec: entry.spec, provider: entry.provider, showProviderSubtitle: true)
+                                }
+                            } header: {
+                                Label("最近使用", systemImage: "clock.arrow.circlepath")
+                            }
+                        }
+
+                        ForEach(configuredProviders) { provider in
                             let filteredModels = filterModels(provider.enabledModels)
-                            if !filteredModels.isEmpty {
+                            if !filteredModels.isEmpty || !isSearching {
                                 Section {
+                                    if filteredModels.isEmpty {
+                                        Text("暂无可选模型，请刷新列表或在「服务商」中启用模型。").foregroundStyle(.secondary)
+                                    }
                                     ForEach(filteredModels) { spec in
                                         let target = provider.makeTarget(for: spec)
-                                        modelRow(target: target, provider: provider)
+                                        modelRow(target: target, spec: spec, provider: provider, showProviderSubtitle: false)
                                     }
                                 } header: {
                                     HStack(spacing: 6) {
@@ -56,15 +114,18 @@ struct ModelPickerSheet: View {
                                             .frame(width: 8, height: 8)
                                         Text(provider.name)
                                         Spacer()
-                                        if provider.hasAuthentication {
-                                            Text("Key 已就绪")
-                                                .font(.caption2)
-                                                .foregroundStyle(.green)
+                                        if directory.catalogs[provider.id]?.isLoading == true {
+                                            ProgressView().controlSize(.small)
                                         } else {
-                                            Text("未填 Key")
-                                                .font(.caption2)
-                                                .foregroundStyle(.orange)
+                                            Button { directory.refresh(provider, in: modelContext) } label: {
+                                                Image(systemName: "arrow.clockwise")
+                                            }
+                                            .accessibilityLabel("刷新模型列表")
                                         }
+                                    }
+                                } footer: {
+                                    if directory.catalogs[provider.id]?.error != nil {
+                                        Text("刷新失败，显示已保存的模型。")
                                     }
                                 }
                             }
@@ -82,8 +143,14 @@ struct ModelPickerSheet: View {
                 if mode == .arenaMulti {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("开启对比 (\(draftArenaTargets.count))") {
-                            conversation.arenaTargets = draftArenaTargets
+                            let valid = validTargets(draftArenaTargets)
+                            guard valid.count >= 2 else { draftArenaTargets = valid; return }
+                            conversation.arenaTargets = valid
+                            conversation.isGroupMode = false
                             conversation.isArenaMode = true
+                            for item in valid {
+                                preferences.recordRecentModel(item)
+                            }
                             dismiss()
                         }
                         .fontWeight(.semibold)
@@ -91,90 +158,164 @@ struct ModelPickerSheet: View {
                     }
                 }
             }
+            .sheet(isPresented: $showingSetup, onDismiss: finishSetup) {
+                FirstModelSetupSheet { verified = $0 }
+            }
+            .alert("操作失败", isPresented: Binding(get: { selectionError != nil }, set: { if !$0 { selectionError = nil } })) {
+                Button("好", role: .cancel) {}
+            } message: { Text(verbatim: selectionError ?? "") }
             .onAppear {
+                reloadProviders()
                 if mode == .arenaMulti {
-                    if !conversation.arenaTargets.isEmpty {
-                        draftArenaTargets = conversation.arenaTargets
-                    } else if let primary = conversation.primaryTarget {
-                        draftArenaTargets = [primary]
+                    let validExisting = validTargets(conversation.arenaTargets)
+                    if !validExisting.isEmpty {
+                        draftArenaTargets = validExisting
+                    } else if let primary = conversation.primaryTarget,
+                              let resolvedPrimary = validTargets([primary]).first {
+                        draftArenaTargets = [resolvedPrimary]
                     }
                 }
             }
+            .onChange(of: SystemIntegration.fingerprint(providers)) { reloadProviders() }
+            .onReceive(NotificationCenter.default.publisher(for: .init("IOSBoxCredentialsChanged"))) { _ in reloadProviders() }
         }
     }
 
+    private var configureButton: some View {
+        Button { showingSetup = true } label: { Label("配置 API 与模型", systemImage: "plus.circle") }
+            .accessibilityIdentifier("modelPicker.configure")
+    }
+
+    private func finishSetup() {
+        guard let target = verified else { return }
+        verified = nil
+        reloadProviders()
+        if mode == .single { choose(target) }
+        else if !draftArenaTargets.contains(where: { $0.id == target.id }), draftArenaTargets.count < 4 {
+            draftArenaTargets.append(target)
+        }
+    }
+
+    private func choose(_ target: ResolvedModelTarget) {
+        do {
+            try selectSingle(target)
+            preferences.recordRecentModel(target)
+            preferences.triggerSelectionHaptic()
+            dismiss()
+        } catch { selectionError = error.localizedDescription }
+    }
+
+    private func validTargets(_ selected: [ResolvedModelTarget]) -> [ResolvedModelTarget] {
+        let ready = ProviderConfig.readyTargets(in: providers)
+        return selected.compactMap { target in ready.first { $0.id == target.id } }
+    }
+
+    private func reloadProviders() {
+        configuredProviders = providers.filter(\.hasConfiguredChatAPI)
+        directory.update(configured: configuredProviders, in: modelContext)
+        if mode == .arenaMulti { draftArenaTargets = validTargets(draftArenaTargets) }
+    }
+
     @ViewBuilder
-    private func modelRow(target: ResolvedModelTarget, provider: ProviderConfig) -> some View {
+    private func modelRow(target: ResolvedModelTarget, spec: ModelSpec, provider: ProviderConfig, showProviderSubtitle: Bool) -> some View {
         let isSelected: Bool = {
             switch mode {
             case .single:
-                return conversation.primaryTarget?.id == target.id && !conversation.isArenaMode
+                return conversation.primaryTarget?.id == target.id && !conversation.isArenaMode && !conversation.isGroupMode
             case .arenaMulti:
                 return draftArenaTargets.contains(where: { $0.id == target.id })
             }
         }()
 
-        Button {
-            switch mode {
-            case .single:
-                conversation.primaryTarget = target
-                conversation.isArenaMode = false
-                dismiss()
-            case .arenaMulti:
-                if let idx = draftArenaTargets.firstIndex(where: { $0.id == target.id }) {
-                    draftArenaTargets.remove(at: idx)
-                } else if draftArenaTargets.count < 4 {
-                    draftArenaTargets.append(target)
+        HStack(spacing: 10) {
+            Button {
+                guard let target = validTargets([target]).first else { reloadProviders(); return }
+                switch mode {
+                case .single:
+                    choose(target)
+                case .arenaMulti:
+                    if let idx = draftArenaTargets.firstIndex(where: { $0.id == target.id }) {
+                        draftArenaTargets.remove(at: idx)
+                    } else if draftArenaTargets.count < 4 {
+                        draftArenaTargets.append(target)
+                    }
+                    preferences.triggerSelectionHaptic()
                 }
-            }
-        } label: {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(target.modelDisplayName)
-                            .font(.body.weight(.medium))
-                            .foregroundStyle(.primary)
+            } label: {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(target.modelDisplayName)
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.primary)
 
-                        if target.supportsReasoning {
-                            Text("思考")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.purple)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1.5)
-                                .background(Color.purple.opacity(0.12), in: Capsule())
+                            if target.supportsReasoning {
+                                Text("思考")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.purple)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Color.purple.opacity(0.12), in: Capsule())
+                            }
+                            if target.supportsVision {
+                                Text("识图")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.blue)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Color.blue.opacity(0.12), in: Capsule())
+                            }
                         }
-                        if target.supportsVision {
-                            Text("识图")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.blue)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1.5)
-                                .background(Color.blue.opacity(0.12), in: Capsule())
+
+                        if showProviderSubtitle {
+                            Text("\(provider.name) · \(target.modelID)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        } else if target.modelID != target.modelDisplayName {
+                            Text(target.modelID)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
                         }
                     }
 
-                    if target.modelID != target.modelDisplayName {
-                        Text(target.modelID)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
+                    Spacer()
+
+                    if isSelected {
+                        Image(systemName: mode == .single ? "checkmark.circle.fill" : "checkmark.square.fill")
+                            .font(.title3)
+                            .foregroundStyle(Color.accentColor)
+                    } else if mode == .arenaMulti {
+                        Image(systemName: "square")
+                            .font(.title3)
+                            .foregroundStyle(.tertiary)
                     }
                 }
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: mode == .single ? "checkmark.circle.fill" : "checkmark.square.fill")
-                        .font(.title3)
-                        .foregroundStyle(Color.accentColor)
-                } else if mode == .arenaMulti {
-                    Image(systemName: "square")
-                        .font(.title3)
-                        .foregroundStyle(.tertiary)
-                }
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            Button {
+                toggleFavorite(provider: provider, modelID: spec.id)
+            } label: {
+                Image(systemName: spec.isStarred ? "star.fill" : "star")
+                    .font(.subheadline)
+                    .foregroundStyle(spec.isStarred ? .yellow : .secondary.opacity(0.5))
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(spec.isStarred ? String(localized: "取消置顶模型") : String(localized: "置顶常用模型"))
         }
-        .buttonStyle(.plain)
+    }
+
+    private func toggleFavorite(provider: ProviderConfig, modelID: String) {
+        var list = provider.models
+        guard let idx = list.firstIndex(where: { $0.id == modelID }) else { return }
+        list[idx].isStarred.toggle()
+        provider.models = list
+        try? modelContext.save()
+        preferences.triggerSelectionHaptic()
     }
 
     private func filterModels(_ models: [ModelSpec]) -> [ModelSpec] {

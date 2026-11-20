@@ -3,15 +3,17 @@ import UIKit
 
 struct MarkdownContentView: View {
     let text: String
+    var isStreaming: Bool = false
+    @State private var preferences = AppPreferences.shared
+    @ScaledMetric(relativeTo: .body) private var baseBodySize: CGFloat = 17
 
     var body: some View {
-        // Parsing is a cheap line scan; the expensive work (inline markdown + syntax
-        // highlighting) lives in `MarkdownBlockView`, which is Equatable so that during
-        // streaming only the block that actually changed (usually the last) re-renders.
-        let blocks = MarkdownBlockParser.parse(text)
+        let blocks = isStreaming ? MarkdownBlockParser.parse(text) : MarkdownBlockParser.parseCached(text)
+        let lastIndex = blocks.count - 1
+        let effectiveBodySize = baseBodySize * preferences.fontScale
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                MarkdownBlockView(block: block)
+            ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                MarkdownBlockView(block: block, isStreaming: isStreaming && index == lastIndex, bodySize: effectiveBodySize)
                     .equatable()
             }
         }
@@ -21,26 +23,29 @@ struct MarkdownContentView: View {
 
 private struct MarkdownBlockView: View, Equatable {
     let block: MarkdownBlock
+    var isStreaming: Bool = false
+    var bodySize: CGFloat = 17
 
     var body: some View {
+        let bodyFont = Font.system(size: bodySize)
         switch block {
         case .heading(let level, let content):
             InlineMarkdownText(raw: content)
-                .font(headingFont(for: level))
+                .font(headingFont(for: level, baseSize: bodySize))
                 .fontWeight(.bold)
                 .padding(.top, level == 1 ? 6 : 3)
                 .accessibilityAddTraits(.isHeader)
 
         case .paragraph(let content):
             InlineMarkdownText(raw: content)
-                .font(.body)
+                .font(bodyFont)
                 .lineSpacing(4)
 
         case .codeBlock(let language, let code):
-            CodeBlockCard(language: language, code: code)
+            CodeBlockCard(language: language, code: code, cacheable: !isStreaming)
 
         case .mathBlock(let tex):
-            MathBlockCard(tex: tex)
+            MathBlockCard(tex: tex, isStreaming: isStreaming)
 
         case .table(let table):
             MarkdownTableView(table: table)
@@ -51,7 +56,7 @@ private struct MarkdownBlockView: View, Equatable {
                     .fill(Color.accentColor.opacity(0.65))
                     .frame(width: 3.5)
                 InlineMarkdownText(raw: content)
-                    .font(.callout)
+                    .font(.system(size: max(13, bodySize - 1)))
                     .foregroundStyle(.secondary)
                     .lineSpacing(3)
             }
@@ -62,10 +67,10 @@ private struct MarkdownBlockView: View, Equatable {
         case .listItem(let marker, let content, let level):
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(marker)
-                    .font(.body.monospacedDigit().weight(.semibold))
+                    .font(bodyFont.monospacedDigit().weight(.semibold))
                     .foregroundStyle(.secondary)
                 InlineMarkdownText(raw: content)
-                    .font(.body)
+                    .font(bodyFont)
                     .lineSpacing(3)
             }
             .padding(.leading, CGFloat(level) * 18)
@@ -76,11 +81,11 @@ private struct MarkdownBlockView: View, Equatable {
         }
     }
 
-    private func headingFont(for level: Int) -> Font {
+    private func headingFont(for level: Int, baseSize: CGFloat) -> Font {
         switch level {
-        case 1: return .title3
-        case 2: return .headline
-        default: return .subheadline
+        case 1: return .system(size: baseSize * 1.24, weight: .bold)
+        case 2: return .system(size: baseSize * 1.12, weight: .bold)
+        default: return .system(size: baseSize * 1.02, weight: .semibold)
         }
     }
 }
@@ -99,9 +104,7 @@ private struct InlineMarkdownText: View {
         }
     }
 
-    /// Text and typeset math joined into one `Text`, so it wraps and selects like normal text.
     private func composedText(_ segments: [InlineMathSegment]) -> Text {
-        // Match the body text size, following Dynamic Type.
         let fontSize = UIFont.preferredFont(
             forTextStyle: .body,
             compatibleWith: UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
@@ -115,7 +118,6 @@ private struct InlineMarkdownText: View {
                 if let rendered = MathRenderer.render(latex: tex, fontSize: fontSize, colorScheme: colorScheme, displayStyle: display) {
                     return partial + Text(Image(uiImage: rendered.image)).baselineOffset(-rendered.descent)
                 }
-                // Unparseable LaTeX: show the source rather than dropping it.
                 return partial + Text(verbatim: display ? "$$\(tex)$$" : "$\(tex)$")
             }
         }
@@ -211,32 +213,157 @@ private struct CardHeader: View {
 private struct CodeBlockCard: View {
     let language: String
     let code: String
+    var cacheable: Bool = true
+
+    @State private var showLineNumbers = AppPreferences.shared.codeDefaultLineNumbers
+    @State private var isExpanded = false
+    @State private var showArtifactPreview = false
+    @State private var showInlinePreview = false
+
+    private var lines: [String] {
+        code.components(separatedBy: "\n")
+    }
+
+    private var isLongCode: Bool {
+        cacheable && lines.count > 30
+    }
+
+    private var displayCode: String {
+        if isLongCode && !isExpanded {
+            return lines.prefix(20).joined(separator: "\n")
+        }
+        return code
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            CardHeader(title: language.isEmpty ? "code" : language.lowercased(), copyText: code, copyTitle: String(localized: "复制代码"))
+            HStack(spacing: 8) {
+                Text(language.isEmpty ? "code" : language.lowercased())
+                    .font(.caption.monospaced().weight(.medium))
+                    .foregroundStyle(.secondary)
+
+                if ArtifactDocumentBuilder.isPreviewable(language: language) && cacheable {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            showInlinePreview.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: showInlinePreview ? "chevron.left.forwardslash.chevron.right" : "eye.fill")
+                            Text(showInlinePreview ? String(localized: "源码") : String(localized: "内嵌预览"))
+                        }
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3.5)
+                        .background(Color.accentColor.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        showArtifactPreview = true
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            Text("预览")
+                        }
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3.5)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer()
+
+                Button {
+                    showLineNumbers.toggle()
+                } label: {
+                    Image(systemName: showLineNumbers ? "list.number" : "number")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(showLineNumbers ? Color.accentColor : .secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("显示行号")
+
+                CopyButton(text: code, idleTitle: String(localized: "复制代码"))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Color.primary.opacity(0.05))
+
             Divider().opacity(0.4)
-            ScrollView(.horizontal, showsIndicators: true) {
-                Text(SyntaxHighlighter.highlight(code: code))
-                    .font(.footnote.monospaced())
-                    .lineSpacing(3)
+
+            if showInlinePreview && ArtifactDocumentBuilder.isPreviewable(language: language) && cacheable {
+                SandboxedArtifactWebView(
+                    html: ArtifactDocumentBuilder.htmlDocument(language: language, code: code),
+                    allowsJavaScript: ArtifactDocumentBuilder.allowsJavaScript(for: language)
+                )
+                .frame(height: 230)
+                .background(Color(.systemBackground))
+            } else {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    HStack(alignment: .top, spacing: 10) {
+                        if showLineNumbers {
+                            let visibleLines = isLongCode && !isExpanded ? Array(lines.prefix(20)) : lines
+                            Text((1...max(1, visibleLines.count)).map(String.init).joined(separator: "\n"))
+                                .font(.footnote.monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.trailing)
+                                .lineSpacing(3)
+                        }
+
+                        Text(SyntaxHighlighter.highlight(code: displayCode, cacheable: cacheable))
+                            .font(.footnote.monospaced())
+                            .lineSpacing(3)
+                            .textSelection(.enabled)
+                    }
                     .padding(12)
-                    .textSelection(.enabled)
+                }
+
+                if isLongCode {
+                    Divider().opacity(0.4)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            Text(isExpanded
+                                 ? String(localized: "收起代码（共 \(lines.count) 行）")
+                                 : String(localized: "展开全部代码（共 \(lines.count) 行）"))
+                        }
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(Color.primary.opacity(0.03))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
         .cardStyle()
+        .sheet(isPresented: $showArtifactPreview) {
+            ArtifactPreviewSheet(language: language, code: code)
+        }
     }
 }
 
-/// Display math (`$$…$$`, `\[…\]`) typeset with SwiftMath. Falls back to the LaTeX source
-/// when the expression can't be parsed (or is still streaming in incomplete).
 private struct MathBlockCard: View {
     let tex: String
+    var isStreaming: Bool = false
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var fontSize: CGFloat = 19
 
     var body: some View {
-        if let rendered = MathRenderer.render(latex: tex, fontSize: fontSize, colorScheme: colorScheme, displayStyle: true) {
+        if !isStreaming, let rendered = MathRenderer.render(latex: tex, fontSize: fontSize, colorScheme: colorScheme, displayStyle: true) {
             ScrollView(.horizontal, showsIndicators: false) {
                 Image(uiImage: rendered.image)
                     .padding(.vertical, 6)
@@ -277,22 +404,33 @@ private struct MarkdownTableView: View {
 
     var body: some View {
         let widths = table.estimatedColumnWidths()
-        ScrollView(.horizontal, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 0) {
-                row(table.header, widths: widths, isHeader: true)
-                    .background(Color.primary.opacity(0.06))
-                ForEach(Array(table.rows.enumerated()), id: \.offset) { index, cells in
-                    Divider().opacity(0.5)
-                    row(cells, widths: widths, isHeader: false)
-                        .background(index.isMultiple(of: 2) ? Color.clear : Color.primary.opacity(0.025))
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Image(systemName: "tablecells")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                CopyButton(text: table.toTSV(), idleTitle: String(localized: "复制表格"))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.primary.opacity(0.04))
+
+            Divider().opacity(0.5)
+
+            ScrollView(.horizontal, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 0) {
+                    row(table.header, widths: widths, isHeader: true)
+                        .background(Color.primary.opacity(0.06))
+                    ForEach(Array(table.rows.enumerated()), id: \.offset) { index, cells in
+                        Divider().opacity(0.5)
+                        row(cells, widths: widths, isHeader: false)
+                            .background(index.isMultiple(of: 2) ? Color.clear : Color.primary.opacity(0.025))
+                    }
                 }
             }
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
+        .cardStyle()
     }
 
     private func row(_ cells: [String], widths: [CGFloat], isHeader: Bool) -> some View {
@@ -362,15 +500,16 @@ struct MarkdownTable: Equatable {
         column < alignments.count ? alignments[column] : .leading
     }
 
-    /// Text inside a horizontal ScrollView gets no width proposal and would never wrap, so
-    /// columns get explicit widths estimated from their longest cell (CJK glyphs ≈ 2× Latin),
-    /// clamped so long cells wrap instead of producing very wide columns.
     func estimatedColumnWidths(minWidth: CGFloat = 44, maxWidth: CGFloat = 240) -> [CGFloat] {
         (0..<columnCount).map { column in
             let cells = ([header] + rows).compactMap { column < $0.count ? $0[column] : nil }
             let widest = cells.map(Self.estimatedWidth).max() ?? minWidth
             return min(max(widest, minWidth), maxWidth)
         }
+    }
+
+    func toTSV() -> String {
+        ([header] + rows).map { $0.joined(separator: "\t") }.joined(separator: "\n")
     }
 
     private static func estimatedWidth(_ text: String) -> CGFloat {
@@ -393,7 +532,29 @@ enum MarkdownBlock: Equatable {
 
 // MARK: - Block Parser
 
+private final class CachedBlocksBox: NSObject {
+    let blocks: [MarkdownBlock]
+    init(_ blocks: [MarkdownBlock]) { self.blocks = blocks }
+}
+
 enum MarkdownBlockParser {
+    private nonisolated(unsafe) static let parseCache: NSCache<NSString, CachedBlocksBox> = {
+        let c = NSCache<NSString, CachedBlocksBox>()
+        c.countLimit = 256
+        return c
+    }()
+
+    static func parseCached(_ source: String) -> [MarkdownBlock] {
+        guard !source.isEmpty else { return [] }
+        let key = source as NSString
+        if let hit = parseCache.object(forKey: key) {
+            return hit.blocks
+        }
+        let parsed = parse(source)
+        parseCache.setObject(CachedBlocksBox(parsed), forKey: key)
+        return parsed
+    }
+
     static func parse(_ source: String) -> [MarkdownBlock] {
         guard !source.isEmpty else { return [] }
         let lines = source.components(separatedBy: "\n")
@@ -411,7 +572,6 @@ enum MarkdownBlockParser {
             let line = lines[index]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-            // Fenced code: ``` or ~~~, closed by the same fence character.
             if let fence = fenceMarker(trimmed) {
                 flushParagraph()
                 let language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
@@ -422,11 +582,10 @@ enum MarkdownBlockParser {
                     index += 1
                 }
                 blocks.append(.codeBlock(language: language, code: codeLines.joined(separator: "\n")))
-                index += 1 // skip closing fence (or run past the end while streaming)
+                index += 1
                 continue
             }
 
-            // Display math: $$ … $$ or \[ … \], single- or multi-line.
             if let math = parseMathBlock(lines: lines, from: index) {
                 flushParagraph()
                 blocks.append(.mathBlock(math.tex))
@@ -434,7 +593,6 @@ enum MarkdownBlockParser {
                 continue
             }
 
-            // GFM table: a pipe row followed by a delimiter row.
             if let table = parseTable(lines: lines, from: index) {
                 flushParagraph()
                 blocks.append(.table(table.table))
@@ -508,7 +666,6 @@ enum MarkdownBlockParser {
         return nil
     }
 
-    /// Two spaces (or one tab) per nesting level, capped at 4.
     private static func indentLevel(of line: String) -> Int {
         var width = 0
         for char in line {
@@ -517,7 +674,6 @@ enum MarkdownBlockParser {
         return min(width / 2, 4)
     }
 
-    /// ATX headings `#` … `######` followed by a space.
     private static func parseHeading(_ trimmed: String) -> (level: Int, text: String)? {
         let hashes = trimmed.prefix(while: { $0 == "#" })
         let level = hashes.count
@@ -545,12 +701,10 @@ enum MarkdownBlockParser {
 
         for (open, close) in delimiters where first.hasPrefix(open) {
             let afterOpen = String(first.dropFirst(open.count))
-            // Single line: $$ x^2 $$
             if afterOpen.hasSuffix(close), afterOpen.count >= close.count {
                 let tex = String(afterOpen.dropLast(close.count)).trimmingCharacters(in: .whitespaces)
                 if !tex.isEmpty { return (tex, start + 1) }
             }
-            // Multi-line: opening line holds only the delimiter (plus optional content).
             var body: [String] = afterOpen.trimmingCharacters(in: .whitespaces).isEmpty ? [] : [afterOpen]
             var index = start + 1
             while index < lines.count {
@@ -563,7 +717,6 @@ enum MarkdownBlockParser {
                 body.append(lines[index])
                 index += 1
             }
-            // Unclosed (still streaming): show what we have as math only for a bare opener.
             if afterOpen.trimmingCharacters(in: .whitespaces).isEmpty {
                 return (body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines), index)
             }
@@ -594,7 +747,6 @@ enum MarkdownBlockParser {
         return (MarkdownTable(header: header, alignments: alignments, rows: rows), index)
     }
 
-    /// `| :--- | :---: | ---: |` → alignments; nil if the line isn't a delimiter row.
     private static func parseDelimiterRow(_ line: String) -> [MarkdownTable.Alignment]? {
         guard line.contains("-") else { return nil }
         let cells = splitRow(line)
@@ -610,7 +762,6 @@ enum MarkdownBlockParser {
         return result
     }
 
-    /// Splits a pipe row, honoring `\|` escapes and optional outer pipes.
     private static func splitRow(_ line: String) -> [String] {
         var content = Substring(line)
         if content.hasPrefix("|") { content = content.dropFirst() }
@@ -638,66 +789,116 @@ enum MarkdownBlockParser {
     }
 }
 
-// MARK: - Syntax Highlighter
+// MARK: - Syntax Highlighter (with LRU Cache)
+
+private final class HighlightedBox: NSObject {
+    let value: AttributedString
+    init(_ value: AttributedString) { self.value = value }
+}
 
 enum SyntaxHighlighter {
+    private nonisolated(unsafe) static let cache: NSCache<NSString, HighlightedBox> = {
+        let c = NSCache<NSString, HighlightedBox>()
+        c.countLimit = 180
+        return c
+    }()
+
     private static let keywords: Set<String> = [
         "func", "let", "var", "struct", "class", "enum", "protocol", "extension", "import",
-        "return", "if", "else", "switch", "case", "for", "while", "in", "guard", "async",
-        "await", "try", "catch", "throw", "throws", "private", "public", "static", "final",
-        "def", "from", "const", "function", "export", "interface", "type", "true", "false",
-        "nil", "null", "None", "self", "init", "some", "View"
+        "return", "if", "else", "switch", "case", "default", "break", "continue", "for", "while",
+        "in", "guard", "async", "await", "try", "catch", "throw", "throws", "defer", "do",
+        "private", "public", "internal", "fileprivate", "open", "static", "final", "override",
+        "def", "from", "as", "with", "yield", "lambda", "pass", "raise", "const", "function",
+        "export", "interface", "type", "true", "false", "nil", "null", "None", "self", "Self",
+        "super", "init", "some", "any", "View", "fn", "pub", "mut", "impl", "match", "use",
+        "SELECT", "FROM", "WHERE", "INSERT", "INTO", "UPDATE", "DELETE", "CREATE", "TABLE", "JOIN"
     ]
 
-    // Compiled once instead of on every render.
     private static let wordRegex = try? NSRegularExpression(pattern: "\\b[A-Za-z_][A-Za-z0-9_]*\\b")
-    /// Single-line string literals only, so prose apostrophes / Rust lifetimes can't span lines.
+    private static let numberRegex = try? NSRegularExpression(pattern: "\\b\\d+(?:\\.\\d+)?\\b")
     private static let stringRegex = try? NSRegularExpression(
         pattern: "\"(?:[^\"\\\\\\n]|\\\\.)*\"|'(?:[^'\\\\\\n]|\\\\.)*'"
     )
-    /// `//` comments, and `#` comments only when `#` starts a token and is followed by
-    /// whitespace (Python / shell), so `#include`, `#fff`, `#!/bin/sh` aren't treated as comments.
     private static let commentRegex = try? NSRegularExpression(
         pattern: "//.*$|(?:^|(?<=\\s))#(?=\\s|$).*$",
         options: [.anchorsMatchLines]
     )
 
-    static func highlight(code: String) -> AttributedString {
-        var result = AttributedString(code)
-        guard code.count < 12_000 else { return result }
+    static func highlight(code: String, cacheable: Bool = true) -> AttributedString {
+        guard code.count < 40_000 else { return AttributedString(code) }
+        // Defer expensive multi-pass regex & AttributedString range conversion on large trailing blocks
+        // while tokens are actively streaming; full highlighting runs as soon as the fence closes.
+        if !cacheable && code.count > 1_200 {
+            return AttributedString(code)
+        }
+        let cacheKey = code as NSString
+        if cacheable, let hit = cache.object(forKey: cacheKey) {
+            return hit.value
+        }
 
+        var result = AttributedString(code)
         let nsString = code as NSString
         let fullRange = NSRange(location: 0, length: nsString.length)
+
+        let stringRanges = stringRegex?.matches(in: code, range: fullRange).map(\.range) ?? []
+        let commentRanges = commentRegex?.matches(in: code, range: fullRange).map(\.range).filter { range in
+            !containsLocation(range.location, inSortedRanges: stringRanges)
+        } ?? []
+
+        if let numberRegex {
+            for match in numberRegex.matches(in: code, range: fullRange) {
+                let inside = containsLocation(match.range.location, inSortedRanges: stringRanges)
+                    || containsLocation(match.range.location, inSortedRanges: commentRanges)
+                if !inside, let swiftRange = Range(match.range, in: result) {
+                    result[swiftRange].foregroundColor = .blue
+                }
+            }
+        }
 
         if let wordRegex {
             for match in wordRegex.matches(in: code, range: fullRange) {
                 let word = nsString.substring(with: match.range)
-                if keywords.contains(word),
-                   let swiftRange = Range(match.range, in: result) {
+                guard keywords.contains(word) else { continue }
+                let inside = containsLocation(match.range.location, inSortedRanges: stringRanges)
+                    || containsLocation(match.range.location, inSortedRanges: commentRanges)
+                if !inside, let swiftRange = Range(match.range, in: result) {
                     result[swiftRange].foregroundColor = .purple
                 }
             }
         }
 
-        let stringRanges = stringRegex?.matches(in: code, range: fullRange).map(\.range) ?? []
         for range in stringRanges {
             if let swiftRange = Range(range, in: result) {
                 result[swiftRange].foregroundColor = Color(red: 0.80, green: 0.32, blue: 0.16)
             }
         }
 
-        if let commentRegex {
-            for match in commentRegex.matches(in: code, range: fullRange) {
-                // A "//" inside a string literal (e.g. a URL) is not a comment.
-                let startsInsideString = stringRanges.contains {
-                    NSLocationInRange(match.range.location, $0)
-                }
-                if !startsInsideString, let swiftRange = Range(match.range, in: result) {
-                    result[swiftRange].foregroundColor = .secondary
-                }
+        for range in commentRanges {
+            if let swiftRange = Range(range, in: result) {
+                result[swiftRange].foregroundColor = .secondary
             }
         }
 
+        if cacheable {
+            cache.setObject(HighlightedBox(result), forKey: cacheKey)
+        }
         return result
+    }
+
+    private static func containsLocation(_ location: Int, inSortedRanges ranges: [NSRange]) -> Bool {
+        var low = 0
+        var high = ranges.count - 1
+        while low <= high {
+            let mid = (low + high) / 2
+            let r = ranges[mid]
+            if location < r.location {
+                high = mid - 1
+            } else if location >= r.location + r.length {
+                low = mid + 1
+            } else {
+                return true
+            }
+        }
+        return false
     }
 }

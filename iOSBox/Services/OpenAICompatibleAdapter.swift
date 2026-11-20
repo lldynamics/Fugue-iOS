@@ -1,69 +1,125 @@
 import Foundation
 
 enum OpenAICompatibleAdapter {
-    static func streamChat(
-        _ request: LLMChatRequest,
-        session: URLSession
-    ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    do {
-                        try await performStream(request, includeUsageOption: true, session: session, continuation: continuation)
-                    } catch LLMError.httpError(let code, let detail)
-                                where (400...422).contains(code) && detail.lowercased().contains("stream_options") {
-                        // Some strict gateways reject `stream_options`; retry once without it.
-                        try await performStream(request, includeUsageOption: false, session: session, continuation: continuation)
-                    }
-                    continuation.yield(.done)
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { @Sendable _ in
-                task.cancel()
-            }
-        }
+    private struct WireOptions: Sendable {
+        var useUsageOption: Bool
+        var useNativeSearch: Bool
+        var useReasoningContent: Bool
     }
 
-    private static func performStream(
+    static func streamChat(
         _ request: LLMChatRequest,
-        includeUsageOption: Bool,
-        session: URLSession,
+        capabilityCache: GatewayCapabilityCache = .shared,
+        keyRouter: APIKeyPoolRouter = .shared,
+        session: URLSession
+    ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
+        let initial = WireOptions(
+            useUsageOption: !capabilityCache.isUnsupported(
+                .streamOptions,
+                protocolType: .openAICompatible,
+                baseURL: request.baseURL,
+                modelID: request.modelID
+            ),
+            useNativeSearch: request.enableNativeSearch && !capabilityCache.isUnsupported(
+                .nativeSearch,
+                protocolType: .openAICompatible,
+                baseURL: request.baseURL,
+                modelID: request.modelID
+            ),
+            useReasoningContent: !capabilityCache.isUnsupported(
+                .reasoningContent,
+                protocolType: .openAICompatible,
+                baseURL: request.baseURL,
+                modelID: request.modelID
+            )
+        )
+        return LLMClient.streamWithResilience(
+            request: request,
+            initialState: initial,
+            capabilityCache: capabilityCache,
+            keyRouter: keyRouter,
+            session: session,
+            buildURLRequest: { activeKey, state in
+                let url = try EndpointResolver.chatEndpoint(
+                    baseURL: request.baseURL,
+                    protocolType: .openAICompatible,
+                    modelID: request.modelID
+                )
+                var urlRequest = URLRequest(url: url)
+                urlRequest.httpMethod = "POST"
+                urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                if !activeKey.isEmpty {
+                    urlRequest.setValue("Bearer \(activeKey)", forHTTPHeaderField: "Authorization")
+                }
+                LLMClient.applyCustomHeaders(request.customHeaders, to: &urlRequest)
+                let payload = buildRequestBody(
+                    request,
+                    includeUsageOption: state.useUsageOption,
+                    includeNativeSearch: state.useNativeSearch,
+                    includeReasoningContent: state.useReasoningContent
+                )
+                urlRequest.httpBody = try JSONSerialization.data(withJSONObject: payload)
+                return urlRequest
+            },
+            degradeOn400: { _, detail, state, newlyDisabled in
+                let lower = detail.lowercased()
+                if state.useUsageOption && lower.contains("stream_options") {
+                    state.useUsageOption = false
+                    newlyDisabled.insert(.streamOptions)
+                    return true
+                }
+                if state.useReasoningContent && lower.contains("reasoning_content") {
+                    state.useReasoningContent = false
+                    newlyDisabled.insert(.reasoningContent)
+                    return true
+                }
+                if state.useNativeSearch && (lower.contains("web_search") || lower.contains("plugins") || lower.contains("unknown") || lower.contains("unrecognized")) {
+                    state.useNativeSearch = false
+                    newlyDisabled.insert(.nativeSearch)
+                    return true
+                }
+                return false
+            },
+            consumeStream: { bytes, response, touch, continuation in
+                try await consumeAcceptedResponse(
+                    bytes: bytes,
+                    response: response,
+                    onActivity: touch,
+                    continuation: continuation
+                )
+            }
+        )
+    }
+
+    private static func consumeAcceptedResponse(
+        bytes: URLSession.AsyncBytes,
+        response: URLResponse,
+        onActivity: @escaping @Sendable () -> Void,
         continuation: AsyncThrowingStream<LLMStreamEvent, Error>.Continuation
     ) async throws {
-        let url = try EndpointResolver.chatEndpoint(
-            baseURL: request.baseURL,
-            protocolType: .openAICompatible,
-            modelID: request.modelID
-        )
-        var urlRequest = URLRequest(url: url)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        if !request.apiKey.isEmpty {
-            urlRequest.setValue("Bearer \(request.apiKey)", forHTTPHeaderField: "Authorization")
-        }
-        LLMClient.applyCustomHeaders(request.customHeaders, to: &urlRequest)
-
-        let payload = buildRequestBody(request, includeUsageOption: includeUsageOption)
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: payload)
-
-        let (bytes, response) = try await session.bytes(for: urlRequest)
-        defer { bytes.task.cancel() }
-        try await LLMClient.validateHTTPResponse(response, bytes: bytes)
-
         let contentType = (response as? HTTPURLResponse)?
             .value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
 
         // Graceful fallback for custom gateways that return non-streaming JSON
         if contentType.contains("application/json") && !contentType.contains("event-stream") {
+            continuation.yield(.nonStreamingResponse)
+            let maxJSONBytes = 16 * 1024 * 1024
             var fullData = Data()
+            var sinceTouch = 0
             for try await b in bytes {
+                try Task.checkCancellation()
                 fullData.append(b)
+                guard fullData.count <= maxJSONBytes else {
+                    throw LLMError.interruptedStream
+                }
+                sinceTouch += 1
+                if sinceTouch >= 1024 {
+                    sinceTouch = 0
+                    onActivity()
+                }
             }
+            onActivity()
             try emitNonStreamingJSON(fullData, continuation: continuation)
             return
         }
@@ -72,8 +128,9 @@ enum OpenAICompatibleAdapter {
         var receivedNativeReasoning = false
         var completed = false
         var reportedFinish = false
+        var pendingToolCalls: [Int: (id: String, name: String, args: String)] = [:]
 
-        for try await dataPart in SSEDecoder.events(bytes) {
+        for try await dataPart in SSEDecoder.events(bytes, onActivity: onActivity) {
             try Task.checkCancellation()
             if dataPart == "[DONE]" { completed = true; break }
             if dataPart.isEmpty { continue }
@@ -89,6 +146,11 @@ enum OpenAICompatibleAdapter {
                 let completion = usage["completion_tokens"] as? Int
                 if prompt != nil || completion != nil {
                     continuation.yield(.usage(promptTokens: prompt, completionTokens: completion))
+                }
+                let cached = ((usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int)
+                    ?? (usage["prompt_cache_hit_tokens"] as? Int)
+                if let cached, cached > 0 {
+                    continuation.yield(.cacheUsage(cachedTokens: cached, cacheWriteTokens: nil))
                 }
             }
 
@@ -114,6 +176,45 @@ enum OpenAICompatibleAdapter {
                 }
             }
 
+            if let annotations = delta["annotations"] as? [[String: Any]] {
+                for ann in annotations where (ann["type"] as? String) == "url_citation" {
+                    if let cite = ann["url_citation"] as? [String: Any],
+                       let url = cite["url"] as? String, !url.isEmpty {
+                        let title = (cite["title"] as? String) ?? url
+                        continuation.yield(.groundingSource(title: title, url: url))
+                    }
+                }
+            }
+
+            if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
+                for (offset, tc) in toolCalls.enumerated() {
+                    let index: Int
+                    if let explicit = tc["index"] as? Int {
+                        index = explicit
+                    } else if let tcID = tc["id"] as? String, !tcID.isEmpty,
+                              let matchedKey = pendingToolCalls.first(where: { $0.value.id == tcID })?.key {
+                        index = matchedKey
+                    } else if toolCalls.count > 1 {
+                        index = offset
+                    } else if let tcID = tc["id"] as? String, !tcID.isEmpty,
+                              let maxKey = pendingToolCalls.keys.max(),
+                              !(pendingToolCalls[maxKey]?.id.isEmpty ?? true) {
+                        index = maxKey + 1
+                    } else {
+                        index = pendingToolCalls.keys.max() ?? 0
+                    }
+                    var entry = pendingToolCalls[index] ?? (id: "", name: "", args: "")
+                    if let tcID = tc["id"] as? String, !tcID.isEmpty {
+                        entry.id = tcID
+                    }
+                    if let fn = tc["function"] as? [String: Any] {
+                        if let name = fn["name"] as? String { entry.name += name }
+                        if let args = fn["arguments"] as? String { entry.args += args }
+                    }
+                    pendingToolCalls[index] = entry
+                }
+            }
+
             if !reportedFinish,
                let reason = LLMFinishReason.fromProviderValue(first["finish_reason"] as? String) {
                 reportedFinish = true
@@ -124,6 +225,15 @@ enum OpenAICompatibleAdapter {
         guard completed else { throw LLMError.interruptedStream }
         if !receivedNativeReasoning {
             emit(thinkParser.finish(), to: continuation)
+        }
+        for index in pendingToolCalls.keys.sorted() {
+            if let entry = pendingToolCalls[index], !entry.name.isEmpty {
+                continuation.yield(.toolCall(LLMToolCall(
+                    id: entry.id.isEmpty ? UUID().uuidString : entry.id,
+                    name: entry.name,
+                    argumentsJSON: entry.args.isEmpty ? "{}" : entry.args
+                )))
+            }
         }
     }
 
@@ -143,8 +253,19 @@ enum OpenAICompatibleAdapter {
 
     // MARK: - Request Body
 
-    static func buildRequestBody(_ request: LLMChatRequest, includeUsageOption: Bool = true) -> [String: Any] {
+    static func buildRequestBody(
+        _ request: LLMChatRequest,
+        includeUsageOption: Bool = true,
+        includeNativeSearch: Bool? = nil,
+        includeReasoningContent: Bool = true
+    ) -> [String: Any] {
+        let useNativeSearch = includeNativeSearch ?? request.enableNativeSearch
+        let sanitizedMessages = LLMClient.sanitizeToolHistory(request.messages)
         var wireMessages: [[String: Any]] = []
+        let baseModel = baseModelName(request.modelID)
+        let viaOpenRouter = isOpenRouter(request.baseURL)
+        let isOpenAIReasoning = isOpenAIReasoningModel(baseModel)
+        let directOpenAIHost = isDirectOpenAIHost(request.baseURL)
 
         let trimmedSystem = request.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedSystem.isEmpty {
@@ -154,7 +275,38 @@ enum OpenAICompatibleAdapter {
             ])
         }
 
-        for msg in request.messages {
+        for msg in sanitizedMessages {
+            if msg.role == .tool {
+                wireMessages.append([
+                    "role": "tool",
+                    "tool_call_id": msg.toolCallID ?? "",
+                    "content": msg.content
+                ])
+                continue
+            }
+
+            if msg.role == .assistant && !msg.toolCalls.isEmpty {
+                var assistantObj: [String: Any] = [
+                    "role": "assistant",
+                    "tool_calls": msg.toolCalls.map { call in
+                        [
+                            "id": call.id,
+                            "type": "function",
+                            "function": [
+                                "name": call.name,
+                                "arguments": call.argumentsJSON
+                            ]
+                        ] as [String: Any]
+                    }
+                ]
+                assistantObj["content"] = msg.content.isEmpty ? NSNull() : msg.content
+                if includeReasoningContent && !msg.reasoningContent.isEmpty && !directOpenAIHost && (!isOpenAIReasoning || viaOpenRouter) {
+                    assistantObj["reasoning_content"] = msg.reasoningContent
+                }
+                wireMessages.append(assistantObj)
+                continue
+            }
+
             let roleStr = msg.role == .assistant ? "assistant" : "user"
             let combinedText = LLMClient.composeTextWithDocuments(
                 text: msg.content,
@@ -163,11 +315,13 @@ enum OpenAICompatibleAdapter {
             )
             let imageAttachments = msg.attachments.filter { $0.kind == .image && $0.dataBase64 != nil }
 
+            let newContent: Any
             if imageAttachments.isEmpty || msg.role == .assistant {
-                wireMessages.append([
-                    "role": roleStr,
-                    "content": combinedText
-                ])
+                if combinedText.isEmpty && msg.role == .assistant && !msg.attachments.isEmpty {
+                    newContent = "[Generated image: \(msg.attachments.map(\.fileName).joined(separator: ", "))]"
+                } else {
+                    newContent = combinedText.isEmpty ? "..." : combinedText
+                }
             } else {
                 var parts: [[String: Any]] = []
                 if !combinedText.isEmpty {
@@ -186,11 +340,37 @@ enum OpenAICompatibleAdapter {
                         ])
                     }
                 }
+                if parts.isEmpty {
+                    parts.append(["type": "text", "text": "..."])
+                }
+                newContent = parts
+            }
+
+            if let last = wireMessages.last, (last["role"] as? String) == roleStr,
+               last["tool_calls"] == nil {
+                let mergedContent: Any
+                if let prevStr = last["content"] as? String, let newStr = newContent as? String {
+                    mergedContent = prevStr.isEmpty ? newStr : (newStr.isEmpty ? prevStr : "\(prevStr)\n\n\(newStr)")
+                } else {
+                    var combinedParts = asContentParts(last["content"])
+                    combinedParts.append(contentsOf: asContentParts(newContent))
+                    mergedContent = combinedParts
+                }
+                wireMessages[wireMessages.count - 1]["content"] = mergedContent
+            } else {
                 wireMessages.append([
                     "role": roleStr,
-                    "content": parts
+                    "content": newContent
                 ])
             }
+        }
+
+        if let firstNonSystem = wireMessages.firstIndex(where: { ($0["role"] as? String) != "system" }),
+           (wireMessages[firstNonSystem]["role"] as? String) == "assistant" {
+            wireMessages.insert([
+                "role": "user",
+                "content": String(localized: "继续")
+            ], at: firstNonSystem)
         }
 
         var body: [String: Any] = [
@@ -199,10 +379,6 @@ enum OpenAICompatibleAdapter {
             "stream": true
         ]
 
-        let baseModel = baseModelName(request.modelID)
-        let viaOpenRouter = isOpenRouter(request.baseURL)
-        let isOpenAIReasoning = isOpenAIReasoningModel(baseModel)
-        // OpenAI reasoning models reject temperature/top_p; DeepSeek reasoner ignores them.
         let omitSampling = isOpenAIReasoning || baseModel.contains("reasoner")
 
         if let temp = request.temperature, !omitSampling {
@@ -212,20 +388,35 @@ enum OpenAICompatibleAdapter {
             body["top_p"] = request.topP
         }
         if let maxTokens = request.maxOutputTokens, maxTokens > 0 {
-            // OpenAI reasoning models require `max_completion_tokens`; OpenRouter normalizes `max_tokens`.
             let key = (isOpenAIReasoning && !viaOpenRouter) ? "max_completion_tokens" : "max_tokens"
             body[key] = maxTokens
         }
         if includeUsageOption {
-            // Without this, OpenAI-style streams never report token usage.
             body["stream_options"] = ["include_usage": true]
+        }
+        if !request.tools.isEmpty {
+            body["tools"] = request.tools.map { tool in
+                [
+                    "type": "function",
+                    "function": [
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parametersObject
+                    ] as [String: Any]
+                ] as [String: Any]
+            }
+        }
+        if useNativeSearch {
+            if viaOpenRouter {
+                body["plugins"] = [["id": "web"]]
+            } else {
+                body["web_search_options"] = ["search_context_size": "medium"]
+            }
         }
         body.merge(reasoningParameters(for: request)) { _, new in new }
         return body
     }
 
-    /// Maps the conversation's thinking switch / budget onto vendor-specific parameters.
-    /// Only sent when the model is flagged as reasoning-capable.
     static func reasoningParameters(for request: LLMChatRequest) -> [String: Any] {
         guard request.supportsReasoning else { return [:] }
         let baseModel = baseModelName(request.modelID)
@@ -236,9 +427,11 @@ enum OpenAICompatibleAdapter {
         }
 
         if isOpenAIReasoningModel(baseModel) {
+            if baseModel.hasPrefix("o1-mini") || baseModel.hasPrefix("o1-preview") {
+                return [:]
+            }
             let effort: String
             if !request.enableThinking || budget <= 2048 {
-                // "low" is the lowest effort accepted by every OpenAI reasoning model generation.
                 effort = "low"
             } else if budget <= 8192 {
                 effort = "medium"
@@ -248,8 +441,11 @@ enum OpenAICompatibleAdapter {
             return ["reasoning_effort": effort]
         }
 
-        // Qwen3 hybrid models (DashScope / SiliconFlow / vLLM). Fixed-mode variants
-        // (`-instruct-*`, `-thinking-*`) don't accept the switch.
+        if URLComponents(string: request.baseURL)?.host?.lowercased() == "api.deepseek.com",
+           baseModel == "deepseek-flash" || baseModel.hasPrefix("deepseek-v4") {
+            return ["thinking": ["type": request.enableThinking ? "enabled" : "disabled"]]
+        }
+
         if baseModel.contains("qwen3"), !baseModel.contains("instruct"), !baseModel.contains("thinking") {
             var params: [String: Any] = ["enable_thinking": request.enableThinking]
             if request.enableThinking {
@@ -261,20 +457,34 @@ enum OpenAICompatibleAdapter {
         return [:]
     }
 
-    /// "openai/o3-mini" → "o3-mini" (lowercased).
     static func baseModelName(_ modelID: String) -> String {
         let lower = modelID.lowercased()
         return lower.split(separator: "/").last.map(String.init) ?? lower
     }
 
+    private static func asContentParts(_ content: Any?) -> [[String: Any]] {
+        if let parts = content as? [[String: Any]] {
+            return parts
+        }
+        if let text = content as? String, !text.isEmpty {
+            return [["type": "text", "text": text]]
+        }
+        return []
+    }
+
     static func isOpenAIReasoningModel(_ baseModel: String) -> Bool {
-        if baseModel.contains("-chat") { return false } // e.g. gpt-5-chat-latest is non-reasoning
-        return ["o1", "o3", "o4", "gpt-5"].contains { baseModel.hasPrefix($0) }
+        if baseModel.contains("-chat") { return false }
+        return ["o1", "o3", "o4", "gpt-5", "gpt-6"].contains { baseModel.hasPrefix($0) }
     }
 
     static func isOpenRouter(_ baseURL: String) -> Bool {
         let host = URLComponents(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased() ?? ""
         return host == "openrouter.ai" || host.hasSuffix(".openrouter.ai")
+    }
+
+    private static func isDirectOpenAIHost(_ baseURL: String) -> Bool {
+        let host = URLComponents(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased() ?? ""
+        return host == "api.openai.com" || host.hasSuffix(".openai.com")
     }
 
     private static func emitNonStreamingJSON(
@@ -296,11 +506,35 @@ enum OpenAICompatibleAdapter {
             var parser = ThinkTagStreamParser()
             emit(parser.feed(content) + parser.finish(), to: continuation)
         }
+        if let annotations = message["annotations"] as? [[String: Any]] {
+            for ann in annotations where (ann["type"] as? String) == "url_citation" {
+                if let cite = ann["url_citation"] as? [String: Any],
+                   let url = cite["url"] as? String, !url.isEmpty {
+                    let title = (cite["title"] as? String) ?? url
+                    continuation.yield(.groundingSource(title: title, url: url))
+                }
+            }
+        }
+        if let toolCalls = message["tool_calls"] as? [[String: Any]] {
+            for tc in toolCalls {
+                let tcID = (tc["id"] as? String) ?? UUID().uuidString
+                if let fn = tc["function"] as? [String: Any],
+                   let name = fn["name"] as? String, !name.isEmpty {
+                    let args = (fn["arguments"] as? String) ?? "{}"
+                    continuation.yield(.toolCall(LLMToolCall(id: tcID, name: name, argumentsJSON: args)))
+                }
+            }
+        }
         if let usage = obj["usage"] as? [String: Any] {
             continuation.yield(.usage(
                 promptTokens: usage["prompt_tokens"] as? Int,
                 completionTokens: usage["completion_tokens"] as? Int
             ))
+            let cached = ((usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int)
+                ?? (usage["prompt_cache_hit_tokens"] as? Int)
+            if let cached, cached > 0 {
+                continuation.yield(.cacheUsage(cachedTokens: cached, cacheWriteTokens: nil))
+            }
         }
         if let reason = LLMFinishReason.fromProviderValue(first["finish_reason"] as? String) {
             continuation.yield(.finished(reason))
@@ -308,6 +542,12 @@ enum OpenAICompatibleAdapter {
     }
 
     // MARK: - Models
+
+    private static let nonChatModelPrefixes = [
+        "gpt-image", "gpt-realtime", "gpt-live", "gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe",
+        "gpt-4o-mini-tts", "gpt-4o-realtime", "text-embedding", "omni-moderation", "text-moderation",
+        "whisper-", "tts-", "dall-e", "sora-"
+    ]
 
     static func fetchModels(
         baseURL: String,
@@ -323,10 +563,7 @@ enum OpenAICompatibleAdapter {
         }
         LLMClient.applyCustomHeaders(customHeaders, to: &req)
 
-        let (data, response) = try await session.data(for: req)
-        try LLMClient.validateDataResponse(response, data: data)
-
-        let json = try JSONSerialization.jsonObject(with: data)
+        let json = try await ModelListTransport.json(for: req, session: session)
         let items: [[String: Any]]
         if let dict = json as? [String: Any], let arr = dict["data"] as? [[String: Any]] {
             items = arr
@@ -335,21 +572,31 @@ enum OpenAICompatibleAdapter {
         } else if let arr = json as? [[String: Any]] {
             items = arr
         } else {
-            return []
+            throw URLError(.cannotParseResponse)
         }
 
-        var specs: [ModelSpec] = []
+        var ranked: [(model: ModelSpec, created: Double, position: Int)] = []
         var seen = Set<String>()
-        for item in items {
-            guard let id = (item["id"] as? String) ?? (item["name"] as? String),
-                  !id.isEmpty,
-                  !seen.contains(id) else {
-                continue
-            }
+        for (position, item) in items.enumerated() {
+            guard let rawID = (item["id"] as? String) ?? (item["name"] as? String) else { throw URLError(.cannotParseResponse) }
+            let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty else { throw URLError(.cannotParseResponse) }
+            guard !seen.contains(id) else { continue }
+            let architecture = item["architecture"] as? [String: Any]
+            let outputs = (item["output_modalities"] ?? architecture?["output_modalities"]) as? [String]
+            if let outputs, !outputs.contains("text") { continue }
+            if url.host?.lowercased() == "api.openai.com", nonChatModelPrefixes.contains(where: id.hasPrefix) { continue }
             seen.insert(id)
             let displayName = (item["name"] as? String) ?? id
-            specs.append(ModelSpec(id: id, displayName: displayName, isEnabled: true))
+            let inputs = (item["input_modalities"] ?? architecture?["input_modalities"]) as? [String]
+            let efforts = ((item["effort"] as? [String: Any])?["supported_levels"] ?? item["supported_reasoning_efforts"]) as? [String]
+            let spec = ModelSpec(id: id, displayName: displayName, supportsVision: inputs?.contains("image"),
+                                 supportsReasoning: efforts.map { !$0.isEmpty })
+            ranked.append((spec, (item["created"] as? NSNumber)?.doubleValue ?? 0, position))
         }
-        return specs.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+        return ranked.sorted {
+            if $0.created != $1.created { return $0.created > $1.created }
+            return $0.position < $1.position
+        }.map(\.model)
     }
 }

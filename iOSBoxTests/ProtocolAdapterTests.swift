@@ -13,7 +13,9 @@ final class ProtocolAdapterTests: XCTestCase {
         topP: Double = 0.9,
         maxOutputTokens: Int? = nil,
         enableThinking: Bool = true,
-        thinkingBudgetTokens: Int = 4096
+        thinkingBudgetTokens: Int = 4096,
+        systemPrompt: String = "",
+        messages: [LLMPromptMessage] = [LLMPromptMessage(role: .user, content: "hi", attachments: [])]
     ) -> LLMChatRequest {
         LLMChatRequest(
             providerName: "Test",
@@ -23,8 +25,8 @@ final class ProtocolAdapterTests: XCTestCase {
             customHeaders: [],
             modelID: modelID,
             supportsReasoning: supportsReasoning,
-            systemPrompt: "",
-            messages: [LLMPromptMessage(role: .user, content: "hi", attachments: [])],
+            systemPrompt: systemPrompt,
+            messages: messages,
             temperature: temperature,
             topP: topP,
             maxOutputTokens: maxOutputTokens,
@@ -54,7 +56,7 @@ final class ProtocolAdapterTests: XCTestCase {
     }
 
     func testOpenAIReasoningModelsUseMaxCompletionTokensAndDropSampling() {
-        for model in ["o3-mini", "o4-mini", "gpt-5", "gpt-5-mini"] {
+        for model in ["o3-mini", "o4-mini", "gpt-5", "gpt-5-mini", "gpt-6.2-sol", "gpt-6.2-astra"] {
             let body = OpenAICompatibleAdapter.buildRequestBody(
                 makeRequest(modelID: model, supportsReasoning: true, maxOutputTokens: 3000)
             )
@@ -186,6 +188,22 @@ final class ProtocolAdapterTests: XCTestCase {
         XCTAssertNil(config?["thinkingBudget"])
     }
 
+    func testCurrentSuggestedModelsSendCompatibleThinkingParameters() {
+        for enabled in [true, false] {
+            let gemini = GeminiAdapter.thinkingConfig(for: makeRequest(protocolType: .gemini, modelID: "gemini-4-neon", enableThinking: enabled))
+            XCTAssertNotNil(gemini?["thinkingLevel"])
+            XCTAssertNil(gemini?["thinkingBudget"])
+            let claude = AnthropicAdapter.buildRequestBody(makeRequest(protocolType: .anthropic, modelID: "claude-sonnet-5-5", supportsReasoning: true, enableThinking: enabled))
+            XCTAssertNil(claude["temperature"])
+            let thinking = claude["thinking"] as? [String: Any]
+            XCTAssertEqual(thinking?["type"] as? String, enabled ? "adaptive" : nil)
+            XCTAssertNil(thinking?["budget_tokens"])
+            let deepseek = OpenAICompatibleAdapter.buildRequestBody(makeRequest(baseURL: "https://api.deepseek.com/v1",
+                                                                                modelID: "deepseek-flash", supportsReasoning: true, enableThinking: enabled))
+            XCTAssertEqual((deepseek["thinking"] as? [String: String])?["type"], enabled ? "enabled" : "disabled")
+        }
+    }
+
     func testGeminiNonThinkingModelGetsNoThinkingConfig() {
         XCTAssertNil(GeminiAdapter.thinkingConfig(for: makeRequest(protocolType: .gemini, modelID: "gemini-2.0-flash")))
     }
@@ -242,5 +260,49 @@ final class ProtocolAdapterTests: XCTestCase {
     func testUnclosedThinkBlockIsReasoningAndPlainTextIsContent() {
         XCTAssertEqual(run(["<think>还没想完"]).reasoning, "还没想完")
         XCTAssertEqual(run(["<", "b>粗体</b>"]).content, "<b>粗体</b>")
+    }
+
+    func testOpenAIAndGeminiNormalizeLeadingAssistantAndConsecutiveRoles() throws {
+        let messages = [
+            LLMPromptMessage(role: .assistant, content: "First answer", attachments: []),
+            LLMPromptMessage(role: .assistant, content: "Second answer", attachments: []),
+            LLMPromptMessage(role: .user, content: "Follow-up", attachments: []),
+            LLMPromptMessage(role: .user, content: "More detail", attachments: [])
+        ]
+
+        let openAIBody = OpenAICompatibleAdapter.buildRequestBody(
+            makeRequest(protocolType: .openAICompatible, modelID: "deepseek-reasoner", systemPrompt: "Sys", messages: messages)
+        )
+        let wire = try XCTUnwrap(openAIBody["messages"] as? [[String: Any]])
+        XCTAssertEqual(wire.compactMap { $0["role"] as? String }, ["system", "user", "assistant", "user"])
+        XCTAssertEqual(wire[1]["content"] as? String, String(localized: "继续"))
+        XCTAssertEqual(wire[2]["content"] as? String, "First answer\n\nSecond answer")
+        XCTAssertEqual(wire[3]["content"] as? String, "Follow-up\n\nMore detail")
+
+        let imgAttachment = MessageAttachment(kind: .image, fileName: "pic.jpg", mimeType: "image/jpeg", dataBase64: "QUJD", byteSize: 3)
+        let multimodalOpenAI = OpenAICompatibleAdapter.buildRequestBody(
+            makeRequest(
+                protocolType: .openAICompatible,
+                modelID: "gpt-4.1",
+                messages: [
+                    LLMPromptMessage(role: .user, content: "Part 1", attachments: []),
+                    LLMPromptMessage(role: .user, content: "Part 2", attachments: [imgAttachment])
+                ]
+            )
+        )
+        let multiWire = try XCTUnwrap(multimodalOpenAI["messages"] as? [[String: Any]])
+        XCTAssertEqual(multiWire.count, 1)
+        let mergedParts = try XCTUnwrap(multiWire[0]["content"] as? [[String: Any]])
+        XCTAssertEqual(mergedParts.count, 3)
+
+        let geminiBody = GeminiAdapter.buildRequestBody(
+            makeRequest(protocolType: .gemini, modelID: "gemini-2.5-flash", messages: messages)
+        )
+        let contents = try XCTUnwrap(geminiBody["contents"] as? [[String: Any]])
+        XCTAssertEqual(contents.compactMap { $0["role"] as? String }, ["user", "model", "user"])
+        let leadingParts = try XCTUnwrap(contents[0]["parts"] as? [[String: Any]])
+        XCTAssertEqual(leadingParts.first?["text"] as? String, String(localized: "继续"))
+        XCTAssertEqual((contents[1]["parts"] as? [[String: Any]])?.count, 2)
+        XCTAssertEqual((contents[2]["parts"] as? [[String: Any]])?.count, 2)
     }
 }

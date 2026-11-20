@@ -8,8 +8,9 @@ final class ChatEngineLifecycleTests: XCTestCase {
     private var context: ModelContext!
 
     override func setUp() async throws {
+        let schema = Schema(versionedSchema: CurrentSchema.self)
         container = try ModelContainer(
-            for: ProviderConfig.self, AssistantPreset.self, Conversation.self, ChatMessage.self,
+            for: schema,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         context = container.mainContext

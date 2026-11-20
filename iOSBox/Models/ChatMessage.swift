@@ -1,31 +1,6 @@
 import Foundation
 import SwiftData
 
-enum MessageRole: String, Codable {
-    case system
-    case user
-    case assistant
-}
-
-enum AttachmentKind: String, Codable {
-    case image
-    case document
-}
-
-struct MessageAttachment: Codable, Hashable, Identifiable {
-    var id: UUID = UUID()
-    var kind: AttachmentKind
-    var fileName: String
-    var mimeType: String
-    var dataBase64: String?
-    var extractedText: String?
-    var byteSize: Int
-
-    var formattedSize: String {
-        ByteCountFormatter.string(fromByteCount: Int64(byteSize), countStyle: .file)
-    }
-}
-
 @Model
 final class ChatMessage {
     @Attribute(.unique) var id: UUID
@@ -48,12 +23,22 @@ final class ChatMessage {
     var finishReason: String?
     var promptTokens: Int?
     var completionTokens: Int?
+    var cachedTokens: Int?
     var latencyMs: Int?
     var thinkingDurationMs: Int?
+    var synthesisSourceDigest: String?
+    @Attribute(.externalStorage) var assistanceMetadataData: Data?
+    var parentMessageID: UUID?
+    @Relationship(deleteRule: .nullify) var latestRequest: RequestRecord?
     var sortIndex: Int
     var createdAt: Date
 
     var conversation: Conversation?
+
+    @Transient private var cachedAttachmentsSource: Data?
+    @Transient private var cachedAttachmentsDecoded: [MessageAttachment]?
+    @Transient private var cachedMetadataSource: Data?
+    @Transient private var cachedMetadataDecoded: AssistanceMetadata?
 
     init(
         id: UUID = UUID(),
@@ -72,7 +57,8 @@ final class ChatMessage {
         self.roleRaw = role.rawValue
         self.content = content
         self.reasoningContent = reasoningContent
-        self.attachmentsData = (try? JSONEncoder().encode(attachments)) ?? Data()
+        let encoded = attachments.isEmpty ? Data() : ((try? JSONEncoder().encode(attachments)) ?? Data())
+        self.attachmentsData = encoded
         self.providerID = target?.providerID
         self.providerName = target?.providerName ?? ""
         self.modelID = target?.modelID ?? ""
@@ -83,6 +69,10 @@ final class ChatMessage {
         self.isStreaming = isStreaming
         self.sortIndex = sortIndex
         self.createdAt = createdAt
+        if !encoded.isEmpty {
+            self.cachedAttachmentsSource = encoded
+            self.cachedAttachmentsDecoded = attachments
+        }
     }
 
     var role: MessageRole {
@@ -92,15 +82,50 @@ final class ChatMessage {
 
     var attachments: [MessageAttachment] {
         get {
-            guard !attachmentsData.isEmpty else { return [] }
-            return (try? JSONDecoder().decode([MessageAttachment].self, from: attachmentsData)) ?? []
+            let raw = attachmentsData
+            guard !raw.isEmpty else { return [] }
+            if let cached = cachedAttachmentsDecoded, cachedAttachmentsSource == raw {
+                return cached
+            }
+            let decoded = (try? JSONDecoder().decode([MessageAttachment].self, from: raw)) ?? []
+            cachedAttachmentsSource = raw
+            cachedAttachmentsDecoded = decoded
+            return decoded
         }
         set {
-            attachmentsData = (try? JSONEncoder().encode(newValue)) ?? Data()
+            let encoded = newValue.isEmpty ? Data() : ((try? JSONEncoder().encode(newValue)) ?? Data())
+            attachmentsData = encoded
+            cachedAttachmentsSource = encoded
+            cachedAttachmentsDecoded = newValue
         }
     }
 
     var finishReasonValue: LLMFinishReason? {
         finishReason.flatMap(LLMFinishReason.init(rawValue:))
+    }
+
+    var isSynthesis: Bool {
+        synthesisSourceDigest != nil
+    }
+
+    var assistanceMetadata: AssistanceMetadata {
+        get {
+            guard let raw = assistanceMetadataData, !raw.isEmpty else {
+                return AssistanceMetadata()
+            }
+            if let cached = cachedMetadataDecoded, cachedMetadataSource == raw {
+                return cached
+            }
+            let decoded = (try? JSONDecoder().decode(AssistanceMetadata.self, from: raw)) ?? AssistanceMetadata()
+            cachedMetadataSource = raw
+            cachedMetadataDecoded = decoded
+            return decoded
+        }
+        set {
+            let encoded = try? JSONEncoder().encode(newValue)
+            assistanceMetadataData = encoded
+            cachedMetadataSource = encoded
+            cachedMetadataDecoded = newValue
+        }
     }
 }

@@ -51,6 +51,47 @@ final class SchemaMigrationTests: XCTestCase {
         XCTAssertNil(migrated.finishReason)
         XCTAssertEqual(migrated.conversation?.title, "旧对话")
     }
+
+    func testV4StoreMigratesToV5PreservingAllEntitiesAndNewDefaults() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("migration-v4-\(UUID().uuidString).store")
+        let convID = UUID()
+        let msgID = UUID()
+        do {
+            let v4Schema = Schema(versionedSchema: SchemaV4.self)
+            let container = try ModelContainer(
+                for: v4Schema,
+                configurations: [ModelConfiguration(schema: v4Schema, url: url)]
+            )
+            let context = ModelContext(container)
+            let conv = SchemaV4.Conversation(id: convID, title: "V4对话")
+            let msg = SchemaV4.ChatMessage(id: msgID, role: .assistant, content: "V4回复")
+            msg.conversation = conv
+            let mem = SchemaV4.PersonalMemory(content: "V4记忆")
+            context.insert(conv)
+            context.insert(msg)
+            context.insert(mem)
+            try context.save()
+        }
+
+        let schema = Schema(versionedSchema: CurrentSchema.self)
+        let container = try PersistenceController.open(
+            schema: schema,
+            configuration: ModelConfiguration(schema: schema, url: url)
+        )
+        let verify = ModelContext(container)
+        let conv = try XCTUnwrap(verify.fetch(FetchDescriptor<Conversation>()).first)
+        let msg = try XCTUnwrap(verify.fetch(FetchDescriptor<ChatMessage>()).first)
+        let mem = try XCTUnwrap(verify.fetch(FetchDescriptor<PersonalMemory>()).first)
+        XCTAssertEqual(conv.id, convID)
+        XCTAssertEqual(conv.title, "V4对话")
+        XCTAssertNil(conv.activeLeafMessageID)
+        XCTAssertNil(conv.folderTag)
+        XCTAssertEqual(msg.id, msgID)
+        XCTAssertNil(msg.parentMessageID)
+        XCTAssertNil(msg.cachedTokens)
+        XCTAssertEqual(mem.content, "V4记忆")
+    }
 }
 
 final class NetworkLocationTests: XCTestCase {
@@ -66,11 +107,16 @@ final class NetworkLocationTests: XCTestCase {
             "http://my-mac.local:1234/v1",
             "http://nas:8000/v1",
             "http://[::1]:11434/v1",
+            "http://0.0.0.0:11434/v1",
+            "http://198.18.0.10:8080/v1",
+            "http://[::ffff:127.0.0.1]:8080/v1",
             "http://192.168.1.100:11434/v1#"
         ]
         for url in local {
             XCTAssertTrue(NetworkLocation.isLocalOrPrivate(baseURL: url), url)
         }
+        XCTAssertThrowsError(try URLReader.validate(URL(string: "https://app.localtest.me/doc")!))
+        XCTAssertThrowsError(try URLReader.validate(URL(string: "https://api.lvh.me/doc")!))
     }
 
     func testPublicHostsAreNotMistakenForPrivate() {

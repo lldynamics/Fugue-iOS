@@ -7,12 +7,13 @@ struct ReasoningCardView: View {
 
     @State private var isExpanded: Bool = false
     @State private var hasUserToggled: Bool = false
+    @State private var preferences = AppPreferences.shared
 
     private var effectiveExpanded: Bool {
         if hasUserToggled {
             return isExpanded
         }
-        return isActivelyThinking
+        return isActivelyThinking || !preferences.autoCollapseReasoning
     }
 
     private var headerTitle: String {
@@ -68,12 +69,32 @@ struct ReasoningCardView: View {
                         .fill(Color.purple.opacity(0.38))
                         .frame(width: 2.5)
 
-                    Text(reasoning)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(3.5)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if isActivelyThinking && !hasUserToggled {
+                        ScrollViewReader { proxy in
+                            ScrollView {
+                                Text(reasoning)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .lineSpacing(3.5)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id("REASONING_END")
+                            }
+                            .frame(maxHeight: 165)
+                            .onChange(of: reasoning.utf8.count) { _, _ in
+                                proxy.scrollTo("REASONING_END", anchor: .bottom)
+                            }
+                        }
+                    } else {
+                        Text(reasoning)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineSpacing(3.5)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 .padding(.leading, 8)
                 .padding(.vertical, 2)

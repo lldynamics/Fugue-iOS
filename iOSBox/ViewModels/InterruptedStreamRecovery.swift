@@ -13,8 +13,12 @@ enum InterruptedStreamRecovery {
         let descriptor = FetchDescriptor<ChatMessage>(
             predicate: #Predicate { $0.isStreaming == true }
         )
-        guard let stuckMessages = try? context.fetch(descriptor), !stuckMessages.isEmpty else {
-            return 0
+        let stuckMessages = (try? context.fetch(descriptor)) ?? []
+        let running = RequestStatus.running.rawValue
+        let requests = (try? context.fetch(FetchDescriptor<RequestRecord>(predicate: #Predicate { $0.statusRaw == running }))) ?? []
+        for request in requests {
+            // Exact termination time and final usage are unknown after a process exit.
+            request.status = .interrupted
         }
         for message in stuckMessages {
             message.isStreaming = false

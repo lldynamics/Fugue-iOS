@@ -115,25 +115,31 @@ enum SchemaV1: VersionedSchema {
     }
 }
 
-/// V2: `ChatMessage.attachmentsData` moved to external storage; added `ChatMessage.finishReason`.
-/// Lists the live model types.
-enum SchemaV2: VersionedSchema {
-    static let versionIdentifier = Schema.Version(2, 0, 0)
-
+/// V7 moves large JSON metadata/settings columns to external storage and caches book byte size.
+enum SchemaV7: VersionedSchema {
+    static let versionIdentifier = Schema.Version(7, 0, 0)
     static var models: [any PersistentModel.Type] {
-        [ProviderConfig.self, AssistantPreset.self, Conversation.self, ChatMessage.self]
+        [
+            ProviderConfig.self,
+            AssistantPreset.self,
+            Conversation.self,
+            ChatMessage.self,
+            RequestRecord.self,
+            PersonalMemory.self,
+            BookVolume.self
+        ]
     }
 }
 
-typealias CurrentSchema = SchemaV2
+typealias CurrentSchema = SchemaV7
 
 enum IOSBoxMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7]
     }
 
     /// Additive optional column + external-storage flag: no data transformation needed.
@@ -141,4 +147,19 @@ enum IOSBoxMigrationPlan: SchemaMigrationPlan {
         fromVersion: SchemaV1.self,
         toVersion: SchemaV2.self
     )
+
+    static let migrateV2toV3 = MigrationStage.lightweight(
+        fromVersion: SchemaV2.self,
+        toVersion: SchemaV3.self
+    )
+    static let migrateV3toV4 = MigrationStage.lightweight(
+        fromVersion: SchemaV3.self,
+        toVersion: SchemaV4.self
+    )
+    static let migrateV4toV5 = MigrationStage.lightweight(
+        fromVersion: SchemaV4.self,
+        toVersion: SchemaV5.self
+    )
+    static let migrateV5toV6 = MigrationStage.lightweight(fromVersion: SchemaV5.self, toVersion: SchemaV6.self)
+    static let migrateV6toV7 = MigrationStage.lightweight(fromVersion: SchemaV6.self, toVersion: SchemaV7.self)
 }

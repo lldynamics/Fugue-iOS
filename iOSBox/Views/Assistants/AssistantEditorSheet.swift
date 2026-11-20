@@ -18,6 +18,8 @@ struct AssistantEditorSheet: View {
     @State private var enableThinking: Bool = true
     @State private var thinkingBudgetTokens: Int = 4096
     @State private var maxOutputTokens: Int = 0
+    @State private var knowledgeVolumeIDs: [UUID] = []
+    @State private var showKnowledgePicker = false
 
     private let emojiChoices = ["🤖", "✨", "💻", "🧠", "🌐", "✍️", "📊", "🎨", "📚", "🔍", "🧪", "⚖️"]
 
@@ -54,6 +56,27 @@ struct AssistantEditorSheet: View {
                 Section("System Prompt（系统提示词）") {
                     TextField("定义角色身份、输出风格与约束条件…", text: $systemPrompt, axis: .vertical)
                         .lineLimit(5...12)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(PromptTemplateEngine.availableVariables) { item in
+                                Button {
+                                    if systemPrompt.isEmpty {
+                                        systemPrompt = item.token
+                                    } else {
+                                        systemPrompt += " \(item.token)"
+                                    }
+                                } label: {
+                                    Text(item.token)
+                                        .font(.caption2.monospaced())
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color(.secondarySystemBackground), in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
                 }
 
                 Section("默认参数") {
@@ -103,6 +126,27 @@ struct AssistantEditorSheet: View {
                             .frame(width: 90)
                     }
                 }
+
+                Section {
+                    Button {
+                        showKnowledgePicker = true
+                    } label: {
+                        HStack {
+                            Label("绑定本地参考知识库", systemImage: "books.vertical")
+                            Spacer()
+                            Text(knowledgeVolumeIDs.isEmpty ? String(localized: "未绑定") : String(localized: "已绑定 \(knowledgeVolumeIDs.count) 份"))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("专属知识库 (NotebookLM 模式)")
+                } footer: {
+                    Text("使用此助手开启新对话时，将自动挂载所选书架文档并支持章节引用问答。")
+                }
+            }
+            .sheet(isPresented: $showKnowledgePicker) {
+                KnowledgeBindingSheet(selectedVolumeIDs: $knowledgeVolumeIDs)
             }
             .navigationTitle(preset == nil ? String(localized: "新建助手预设") : String(localized: "编辑助手预设"))
             .navigationBarTitleDisplayMode(.inline)
@@ -131,6 +175,7 @@ struct AssistantEditorSheet: View {
                     enableThinking = p.enableThinking
                     thinkingBudgetTokens = p.thinkingBudgetTokens
                     maxOutputTokens = p.maxOutputTokens
+                    knowledgeVolumeIDs = p.knowledgeVolumeIDs
                 }
             }
         }
@@ -154,6 +199,7 @@ struct AssistantEditorSheet: View {
             existing.enableThinking = enableThinking
             existing.thinkingBudgetTokens = thinkingBudgetTokens
             existing.maxOutputTokens = sanitizedMaxTokens
+            existing.knowledgeVolumeIDs = knowledgeVolumeIDs
         } else {
             let created = AssistantPreset(
                 name: trimmedName,
@@ -170,6 +216,7 @@ struct AssistantEditorSheet: View {
                 sortOrder: Int(Date().timeIntervalSince1970)
             )
             modelContext.insert(created)
+            created.knowledgeVolumeIDs = knowledgeVolumeIDs
         }
         try? modelContext.save()
         dismiss()
