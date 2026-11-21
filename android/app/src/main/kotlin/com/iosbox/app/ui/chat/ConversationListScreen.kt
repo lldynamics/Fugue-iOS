@@ -1,0 +1,290 @@
+package com.iosbox.app.ui.chat
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iosbox.app.AppContainer
+import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.storage.ChatRepository
+import com.iosbox.app.core.storage.ConversationItem
+import com.iosbox.app.ui.theme.DS
+import kotlinx.coroutines.launch
+import java.text.DateFormat
+import java.util.Date
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ConversationListScreen(
+    container: AppContainer,
+    onOpenConversation: (String) -> Unit,
+    onCreateConversation: () -> Unit,
+    onGoToProviders: () -> Unit
+) {
+    val conversations by container.chatRepository.observeConversations().collectAsStateWithLifecycle(initialValue = emptyList())
+    val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
+    val readyCount = remember(providers) { ChatRepository.readyTargets(providers).size }
+
+    var searchQuery by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+
+    val filtered = remember(conversations, searchQuery) {
+        val q = searchQuery.trim().lowercase()
+        if (q.isEmpty()) conversations
+        else conversations.filter {
+            it.title.lowercase().contains(q) ||
+                (it.primaryTarget?.modelDisplayName?.lowercase()?.contains(q) == true)
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        text = L10n.text("夜奔", "Fugue"),
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(onClick = onCreateConversation) {
+                Icon(Icons.Filled.Add, contentDescription = L10n.text("新对话", "New Chat"))
+            }
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            if (readyCount == 0) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = DS.Spacing.lg, vertical = DS.Spacing.sm)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(DS.Spacing.md),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = L10n.text("连接第一个 AI 模型", "Connect Your First Model"),
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        Text(
+                            text = L10n.text(
+                                "填入 OpenAI、Claude、Gemini 或中转站 API Key 即可开始纯本地直连对话。",
+                                "Add an OpenAI, Claude, Gemini, or custom gateway API key to start chatting directly."
+                            ),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Button(onClick = onGoToProviders) {
+                            Text(L10n.text("前往配置服务商", "Configure Providers"))
+                        }
+                    }
+                }
+            }
+
+            if (conversations.isNotEmpty()) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    placeholder = { Text(L10n.text("搜索对话标题或模型…", "Search chats…")) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = DS.Spacing.lg, vertical = DS.Spacing.xs)
+                )
+            }
+
+            if (filtered.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = if (conversations.isEmpty()) {
+                                L10n.text("点击右下角 + 开启第一段对话", "Tap + below to start a conversation")
+                            } else {
+                                L10n.text("没有匹配的对话", "No matching conversations")
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 88.dp)
+                ) {
+                    items(filtered, key = { it.id }) { conv ->
+                        ConversationRow(
+                            conversation = conv,
+                            onClick = { onOpenConversation(conv.id) },
+                            onTogglePin = {
+                                scope.launch {
+                                    container.chatRepository.saveConversation(
+                                        conv.copy(isPinned = !conv.isPinned)
+                                    )
+                                }
+                            },
+                            onDelete = {
+                                scope.launch {
+                                    container.chatRepository.deleteConversation(conv.id)
+                                }
+                            }
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationRow(
+    conversation: ConversationItem,
+    onClick: () -> Unit,
+    onTogglePin: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    val dateText = remember(conversation.updatedAtEpochMs) {
+        DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+            .format(Date(conversation.updatedAtEpochMs))
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = DS.Spacing.lg, vertical = DS.Spacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = conversation.assistantEmoji.ifBlank { "✨" },
+                style = MaterialTheme.typography.headlineSmall
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (conversation.isPinned) {
+                        Icon(
+                            imageVector = Icons.Filled.PushPin,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                    Text(
+                        text = conversation.title,
+                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = listOfNotNull(
+                        conversation.primaryTarget?.let { "${it.providerName} · ${it.modelDisplayName}" },
+                        dateText
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = null)
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Filled.PushPin, contentDescription = null) },
+                        text = {
+                            Text(
+                                if (conversation.isPinned) L10n.text("取消置顶", "Unpin")
+                                else L10n.text("置顶对话", "Pin")
+                            )
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            onTogglePin()
+                        }
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                        text = { Text(L10n.text("删除对话", "Delete")) },
+                        onClick = {
+                            menuExpanded = false
+                            onDelete()
+                        }
+                    )
+                }
+            }
+        }
+    }
+}

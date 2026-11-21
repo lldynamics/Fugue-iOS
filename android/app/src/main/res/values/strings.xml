@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Fugue</string>
+    <string name="tab_chats">Chats</string>
+    <string name="tab_assistants">Assistants</string>
+    <string name="tab_providers">Providers</string>
+    <string name="tab_usage">Usage</string>
+</resources>

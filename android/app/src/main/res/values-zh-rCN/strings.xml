@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">夜奔</string>
+    <string name="tab_chats">对话</string>
+    <string name="tab_assistants">助手</string>
+    <string name="tab_providers">服务商</string>
+    <string name="tab_usage">用量</string>
+</resources>

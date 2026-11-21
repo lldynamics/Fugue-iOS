@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android networkSecurityConfig does not support private CIDR wildcards (10.0.0.0/8, 172.16.0.0/12,
+  192.168.0.0/16, 100.64.0.0/10, *.local). Cleartext is therefore enabled at the OS manifest level
+  ONLY in tandem with PrivateCleartextOnlyInterceptor on every OkHttpClient (plus followSslRedirects=false),
+  which rejects any http:// request to a non-private/public host before any socket connection is opened.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -16,3 +16,14 @@ xcuserdata/
 # Python
 __pycache__/
 *.py[cod]
+
+# Android / Gradle
+android/.gradle/
+android/.idea/
+android/local.properties
+android/**/build/
+android/.cxx/
+android/.kotlin/
+*.iml
+*.keystore
+*.jks
