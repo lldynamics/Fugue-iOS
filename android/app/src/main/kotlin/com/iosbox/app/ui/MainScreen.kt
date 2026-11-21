@@ -12,6 +12,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,6 +33,7 @@ import com.iosbox.app.AppContainer
 import com.iosbox.app.R
 import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.PresetItem
+import com.iosbox.app.core.system.IncomingEntryRequest
 import com.iosbox.app.ui.assistants.AssistantListScreen
 import com.iosbox.app.ui.chat.ChatDetailScreen
 import com.iosbox.app.ui.chat.ConversationListScreen
@@ -40,6 +42,7 @@ import com.iosbox.app.ui.providers.ProviderDetailScreen
 import com.iosbox.app.ui.providers.ProviderListScreen
 import com.iosbox.app.ui.settings.PersonalMemoryScreen
 import com.iosbox.app.ui.study.FlashcardReviewScreen
+import com.iosbox.app.ui.system.ExternalShareDialog
 import com.iosbox.app.ui.usage.UsageScreen
 import kotlinx.coroutines.launch
 
@@ -66,14 +69,15 @@ fun MainScreen(container: AppContainer) {
     var showCreateGroupSheet by remember { mutableStateOf(false) }
     val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
     val personaProfiles by container.chatRepository.observePersonaProfiles().collectAsStateWithLifecycle(initialValue = emptyList())
+    val incomingRequest by container.externalEntryRouter.pendingRequest.collectAsStateWithLifecycle()
 
     val topLevelRoutes = setOf(Routes.CHATS, Routes.ASSISTANTS, Routes.PROVIDERS, Routes.USAGE)
     val showBottomBar = currentDestination?.route in topLevelRoutes
 
     val openNewChat: (PresetItem?) -> Unit = { preset ->
         scope.launch {
-            val providers = container.chatRepository.getProviders()
-            val ready = ChatRepository.readyTargets(providers)
+            val currentProviders = container.chatRepository.getProviders()
+            val ready = ChatRepository.readyTargets(currentProviders)
             val defaultId = container.preferences.state.value.defaultTargetID
             val target = defaultId?.let { id -> ready.firstOrNull { it.id == id } } ?: ready.firstOrNull()
             val created = container.chatRepository.createConversation(preset = preset, primaryTarget = target)
@@ -83,13 +87,39 @@ fun MainScreen(container: AppContainer) {
 
     val openNewArena: () -> Unit = {
         scope.launch {
-            val providers = container.chatRepository.getProviders()
-            val ready = ChatRepository.readyTargets(providers)
+            val currentProviders = container.chatRepository.getProviders()
+            val ready = ChatRepository.readyTargets(currentProviders)
             val created = container.chatRepository.createConversation(
                 isArenaMode = true,
                 arenaTargets = ready.take(2)
             )
             navController.navigate(Routes.chatDetail(created.id))
+        }
+    }
+
+    LaunchedEffect(incomingRequest) {
+        when (val req = incomingRequest) {
+            is IncomingEntryRequest.OpenConversation -> {
+                container.externalEntryRouter.clearPendingRequest()
+                navController.navigate(Routes.chatDetail(req.conversationId)) {
+                    launchSingleTop = true
+                }
+            }
+            IncomingEntryRequest.NewChat -> {
+                container.externalEntryRouter.clearPendingRequest()
+                openNewChat(null)
+            }
+            IncomingEntryRequest.NewArena -> {
+                container.externalEntryRouter.clearPendingRequest()
+                openNewArena()
+            }
+            IncomingEntryRequest.OpenFlashcards -> {
+                container.externalEntryRouter.clearPendingRequest()
+                navController.navigate(Routes.FLASHCARDS) {
+                    launchSingleTop = true
+                }
+            }
+            is IncomingEntryRequest.SharedContent, null -> Unit
         }
     }
 
@@ -260,6 +290,21 @@ fun MainScreen(container: AppContainer) {
                 }
             },
             onDismiss = { showCreateGroupSheet = false }
+        )
+    }
+
+    val shareReq = incomingRequest as? IncomingEntryRequest.SharedContent
+    if (shareReq != null) {
+        ExternalShareDialog(
+            payload = shareReq.payload,
+            container = container,
+            onDismiss = { container.externalEntryRouter.clearPendingRequest() },
+            onOpenConversation = { id ->
+                container.externalEntryRouter.clearPendingRequest()
+                navController.navigate(Routes.chatDetail(id)) {
+                    launchSingleTop = true
+                }
+            }
         )
     }
 }

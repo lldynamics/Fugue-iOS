@@ -1,10 +1,12 @@
 package com.iosbox.app.ui.chat
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.speech.RecognizerIntent
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -36,6 +38,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Bookmark
@@ -48,10 +51,12 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
@@ -62,6 +67,7 @@ import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Style
 import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material.icons.filled.Tune
@@ -114,6 +120,7 @@ import com.iosbox.app.core.model.GroupSourceNotice
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.MessageRole
+import com.iosbox.app.core.model.ProposedScheduleItem
 import com.iosbox.app.core.model.ReadingCitation
 import com.iosbox.app.core.model.StudyCardDraft
 import com.iosbox.app.core.model.StudyCoachMode
@@ -123,6 +130,8 @@ import com.iosbox.app.core.storage.ConversationExporter
 import com.iosbox.app.core.storage.ConversationSearch
 import com.iosbox.app.core.storage.ModelMentionParser
 import com.iosbox.app.core.storage.SlashPromptCommand
+import com.iosbox.app.core.system.CalendarIntentLauncher
+import java.util.Locale
 import com.iosbox.app.ui.books.BookReaderSheet
 import com.iosbox.app.ui.study.MessageStudyDeckCard
 import com.iosbox.app.ui.theme.DS
@@ -243,6 +252,21 @@ fun ChatDetailScreen(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         vm.attachUris(context.contentResolver, uris, imageOnly = false)
+    }
+
+    val speechLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spoken = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+                ?.trim()
+                .orEmpty()
+            if (spoken.isNotEmpty()) {
+                vm.appendDictatedText(spoken)
+            }
+        }
     }
 
     val timelineEntries = remember(state.messages) { groupTimelineEntries(state.messages) }
@@ -656,12 +680,21 @@ fun ChatDetailScreen(
                                         msg.assistanceMetadata.sourceNotice == null &&
                                         msg.content.isNotBlank(),
                                     isStudyGenerating = state.studyGeneratingMessageID == msg.id,
+                                    canExtractSchedule = !state.isGenerating &&
+                                        state.scheduleExtractingMessageID == null &&
+                                        msg.role == MessageRole.ASSISTANT &&
+                                        msg.assistanceMetadata.sourceNotice == null &&
+                                        msg.content.isNotBlank(),
+                                    isScheduleExtracting = state.scheduleExtractingMessageID == msg.id,
+                                    isSpeaking = state.speakingMessageID == msg.id,
                                     onSwitchBranch = vm::switchBranch,
                                     onEditUserMessage = {
                                         editingBranchMessage = msg
                                         editingBranchText = msg.content
                                     },
                                     onQuoteReply = { vm.quoteMessageForFollowUp(msg) },
+                                    onToggleSpeak = { vm.toggleSpeakMessage(msg) },
+                                    onExtractSchedules = { vm.extractSchedulesForMessage(msg) },
                                     onRegenerate = { vm.regenerateMessage(msg) },
                                     onCompareWithAnother = { compareSourceMessage = msg },
                                     onApproveMemory = { fact -> vm.approveProposedMemory(msg, fact) },
@@ -1119,6 +1152,31 @@ fun ChatDetailScreen(
                             }
                         )
                     }
+                }
+
+                IconButton(
+                    onClick = {
+                        val speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+                            putExtra(RecognizerIntent.EXTRA_PROMPT, L10n.text("请说话…", "Speak now…"))
+                        }
+                        val launched = runCatching { speechLauncher.launch(speechIntent) }.isSuccess
+                        if (!launched) {
+                            vm.reportBannerError(
+                                L10n.text(
+                                    "当前设备未安装系统语音识别服务。",
+                                    "No system speech recognizer is available on this device."
+                                )
+                            )
+                        }
+                    },
+                    enabled = !state.isGenerating
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Mic,
+                        contentDescription = L10n.text("语音输入", "Voice Input")
+                    )
                 }
 
                 OutlinedTextField(
@@ -1661,10 +1719,15 @@ private fun MessageBubbleRow(
     canCompareWithAnother: Boolean,
     canStudyGenerate: Boolean,
     isStudyGenerating: Boolean,
+    canExtractSchedule: Boolean,
+    isScheduleExtracting: Boolean,
+    isSpeaking: Boolean,
     onSwitchBranch: (ChatMessageItem) -> Unit,
     onEditUserMessage: () -> Unit,
     onQuoteReply: () -> Unit,
     onRegenerate: () -> Unit,
+    onToggleSpeak: () -> Unit,
+    onExtractSchedules: () -> Unit,
     onCompareWithAnother: () -> Unit,
     onApproveMemory: (String) -> Unit,
     onDismissMemory: (String) -> Unit,
@@ -1974,6 +2037,10 @@ private fun MessageBubbleRow(
                 onOpenFlashcardLibrary = onOpenFlashcardLibrary
             )
 
+            if (meta.proposedSchedules.isNotEmpty()) {
+                ProposedSchedulesCard(items = meta.proposedSchedules)
+            }
+
             message.finishReasonValue?.let { reason ->
                 Text(
                     text = reason.userNotice,
@@ -2057,6 +2124,17 @@ private fun MessageBubbleRow(
                                 )
                             }
                         }
+                        IconButton(
+                            onClick = onToggleSpeak,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isSpeaking) Icons.Filled.StopCircle else Icons.AutoMirrored.Filled.VolumeUp,
+                                contentDescription = if (isSpeaking) L10n.text("停止朗读", "Stop Speaking") else L10n.text("语音朗读", "Read Aloud"),
+                                tint = if (isSpeaking) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
                     }
                     if (canRegenerate) {
                         IconButton(
@@ -2115,6 +2193,18 @@ private fun MessageBubbleRow(
                             Icon(
                                 imageVector = Icons.Filled.Quiz,
                                 contentDescription = L10n.text("随堂测验", "Generate Quiz"),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                    }
+                    if (isScheduleExtracting) {
+                        CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 1.8.dp)
+                    } else if (canExtractSchedule) {
+                        IconButton(onClick = onExtractSchedules, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                imageVector = Icons.Filled.EventAvailable,
+                                contentDescription = L10n.text("提取日程", "Extract Schedule"),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(15.dp)
                             )
@@ -2256,6 +2346,88 @@ private fun SourceNoticeCard(notice: GroupSourceNotice) {
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProposedSchedulesCard(items: List<ProposedScheduleItem>) {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        for (item in items) {
+            Surface(
+                shape = RoundedCornerShape(DS.Radius.sm),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(DS.Spacing.md),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = item.kind.badgeTitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                        ProposedScheduleItem.formatDisplaySchedule(item)?.let { formattedTime ->
+                            Text(
+                                text = formattedTime,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Text(
+                        text = item.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (item.notes.isNotBlank()) {
+                        Text(
+                            text = item.notes,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Surface(
+                        onClick = { CalendarIntentLauncher.launchCalendarInsert(context, item) },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.EventAvailable,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = item.kind.confirmButtonTitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                        }
+                    }
                 }
             }
         }

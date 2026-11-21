@@ -116,7 +116,7 @@ object StudyGeneratorService {
         return parseQuizJSON(raw, fallbackTitle = fallbackTitle)
     }
 
-    private suspend fun runRawCompletion(
+    internal suspend fun runRawCompletion(
         systemPrompt: String,
         userPrompt: String,
         target: ResolvedModelTarget,

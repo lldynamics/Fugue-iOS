@@ -1,5 +1,6 @@
 package com.iosbox.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,6 +19,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val container = (application as FugueApplication).container
+        container.externalEntryRouter.ingestIntent(intent)
 
         setContent {
             val prefs by container.preferences.state.collectAsStateWithLifecycle()
@@ -33,5 +35,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        (application as FugueApplication).container.externalEntryRouter.ingestIntent(intent)
     }
 }

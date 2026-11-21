@@ -14,13 +14,17 @@ import com.iosbox.app.core.storage.ExternalBlobStore
 import com.iosbox.app.core.storage.FileExternalBlobStore
 import com.iosbox.app.core.storage.FlashcardRepository
 import com.iosbox.app.core.storage.FugueDatabase
+import com.iosbox.app.core.system.ExternalEntryRouter
+import com.iosbox.app.core.system.SpeechController
 import java.io.File
 
 class AppContainer(context: Context) {
-    private val appContext = context.applicationContext
+    val appContext: Context = context.applicationContext
 
     val preferences: AppPreferences = AppPreferences(appContext)
     val secretStore: SecretStore = TinkSecretStore(appContext)
+    val externalEntryRouter: ExternalEntryRouter = ExternalEntryRouter()
+    val speechController: SpeechController by lazy { SpeechController(appContext) }
     val blobStore: ExternalBlobStore = FileExternalBlobStore(File(appContext.filesDir, "blobs"))
     val database: FugueDatabase = FugueDatabase.build(appContext)
     val capabilityCache: GatewayCapabilityCache = GatewayCapabilityCache(preferences)

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new_chat"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher_round"
+        android:shortcutShortLabel="@string/shortcut_new_chat">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="fugue://new-chat"
+            android:targetPackage="com.iosbox.app"
+            android:targetClass="com.iosbox.app.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="new_arena"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher_round"
+        android:shortcutShortLabel="@string/shortcut_new_arena">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="fugue://new-arena"
+            android:targetPackage="com.iosbox.app"
+            android:targetClass="com.iosbox.app.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="flashcards"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher_round"
+        android:shortcutShortLabel="@string/shortcut_flashcards">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="fugue://flashcards"
+            android:targetPackage="com.iosbox.app"
+            android:targetClass="com.iosbox.app.MainActivity" />
+    </shortcut>
+</shortcuts>

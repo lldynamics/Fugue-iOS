@@ -152,7 +152,8 @@ data class MessageAssistanceMetadata(
     val groupReplyToExcerpt: String? = null,
     val groupReactions: List<GroupReaction> = emptyList(),
     val groupAskedHost: Boolean = false,
-    val sourceNotice: GroupSourceNotice? = null
+    val sourceNotice: GroupSourceNotice? = null,
+    val proposedSchedules: List<ProposedScheduleItem> = emptyList()
 ) {
     val isDefault: Boolean
         get() = this == MessageAssistanceMetadata()

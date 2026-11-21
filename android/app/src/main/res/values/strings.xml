@@ -4,4 +4,9 @@
     <string name="tab_assistants">Assistants</string>
     <string name="tab_providers">Providers</string>
     <string name="tab_usage">Usage</string>
+    <string name="process_text_label">Ask Fugue</string>
+    <string name="quick_tile_label">Ask Fugue</string>
+    <string name="shortcut_new_chat">New Chat</string>
+    <string name="shortcut_new_arena">Model Arena</string>
+    <string name="shortcut_flashcards">Flashcard Review</string>
 </resources>

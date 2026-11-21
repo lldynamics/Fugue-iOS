@@ -41,6 +41,7 @@ import com.iosbox.app.core.network.LLMThinkingBlock
 import com.iosbox.app.core.network.LLMToolCall
 import com.iosbox.app.core.network.PersonaFeedReader
 import com.iosbox.app.core.network.PersonaMaterials
+import com.iosbox.app.core.network.ScheduleExtractorService
 import com.iosbox.app.core.network.SearchError
 import com.iosbox.app.core.network.SearchEvidence
 import com.iosbox.app.core.network.SearchSource
@@ -48,6 +49,8 @@ import com.iosbox.app.core.network.StudyGeneratorService
 import com.iosbox.app.core.network.TavilySearchClient
 import com.iosbox.app.core.network.WebpageApprovalDecision
 import com.iosbox.app.core.security.SecretStore
+import com.iosbox.app.core.system.GenerationNotificationState
+import com.iosbox.app.core.system.GenerationServiceBridge
 import com.iosbox.app.core.storage.AttachmentProcessor
 import com.iosbox.app.core.storage.BookImporter
 import com.iosbox.app.core.storage.BookReferenceSearch
@@ -78,6 +81,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -115,6 +119,8 @@ data class ChatDetailUiState(
     val isGenerating: Boolean = false,
     val isRefreshingFeeds: Boolean = false,
     val studyGeneratingMessageID: String? = null,
+    val speakingMessageID: String? = null,
+    val scheduleExtractingMessageID: String? = null,
     val activeGroupSpeaker: String? = null,
     val useWebSearchOnce: Boolean = false,
     val hasTavilyKey: Boolean = false,
@@ -143,6 +149,7 @@ class ChatViewModel(
     private val temporaryTargetOverride = MutableStateFlow<ResolvedModelTarget?>(null)
     private val feedStatusNotice = MutableStateFlow<String?>(null)
     private val isRefreshingFeeds = MutableStateFlow(false)
+    private val scheduleExtractingMessageID = MutableStateFlow<String?>(null)
 
     @Volatile
     private var latestAllMessages: List<ChatMessageItem> = emptyList()
@@ -178,9 +185,10 @@ class ChatViewModel(
         quotedExcerpt,
         temporaryTargetOverride,
         feedStatusNotice,
-        isRefreshingFeeds
-    ) { quote, targetOverride, notice, refreshing ->
-        PowerToolsState(quote, targetOverride, notice, refreshing)
+        isRefreshingFeeds,
+        combine(container.speechController.speakingMessageID, scheduleExtractingMessageID) { s, sc -> s to sc }
+    ) { quote, targetOverride, notice, refreshing, (speakingId, scheduleId) ->
+        PowerToolsState(quote, targetOverride, notice, refreshing, speakingId, scheduleId)
     }
 
     private val extrasFlow = combine(
@@ -237,6 +245,8 @@ class ChatViewModel(
             isGenerating = overlays.isNotEmpty() || extras.speaker != null || mergedMessages.any { it.isStreaming },
             isRefreshingFeeds = extras.powerTools.isRefreshingFeeds,
             studyGeneratingMessageID = base.studyGeneratingMessageID,
+            speakingMessageID = extras.powerTools.speakingMessageID,
+            scheduleExtractingMessageID = extras.powerTools.scheduleExtractingMessageID,
             activeGroupSpeaker = extras.speaker,
             useWebSearchOnce = extras.useWebSearchOnce,
             hasTavilyKey = extras.hasTavilyKey,
@@ -246,6 +256,27 @@ class ChatViewModel(
             pendingWebpageApproval = extras.pendingWebpageApproval
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ChatDetailUiState())
+
+    init {
+        viewModelScope.launch {
+            GenerationServiceBridge.stopRequests.collect { targetConvId ->
+                if (targetConvId.equals(conversationId, ignoreCase = true)) {
+                    stopGeneration()
+                }
+            }
+        }
+        val staged = container.externalEntryRouter.consumeInitialDraft(conversationId)
+        if (staged != null) {
+            draftText.value = staged.text
+            draftAttachments.value = staged.attachments
+            if (staged.autoSend && container.preferences.isConsentAccepted) {
+                viewModelScope.launch {
+                    uiState.first { it.conversation != null && it.providers.isNotEmpty() }
+                    sendCurrentDraft()
+                }
+            }
+        }
+    }
 
     private data class BaseData(
         val conversation: ConversationItem?,
@@ -262,7 +293,9 @@ class ChatViewModel(
         val quotedExcerpt: String?,
         val temporaryTargetOverride: ResolvedModelTarget?,
         val feedStatusNotice: String?,
-        val isRefreshingFeeds: Boolean
+        val isRefreshingFeeds: Boolean,
+        val speakingMessageID: String?,
+        val scheduleExtractingMessageID: String?
     )
 
     private data class ExtraUiState(
@@ -304,6 +337,7 @@ class ChatViewModel(
 
     override fun onCleared() {
         cancelPendingWebpageApproval()
+        container.speechController.stopSpeaking()
         super.onCleared()
     }
 
@@ -788,6 +822,69 @@ class ChatViewModel(
         if (uiState.value.isGenerating) return
         draftText.value = promptText
         sendCurrentDraft()
+    }
+
+    fun toggleSpeakMessage(message: ChatMessageItem) {
+        container.speechController.toggleSpeak(message.id, message.content)
+    }
+
+    fun appendDictatedText(spoken: String) {
+        val clean = spoken.trim()
+        if (clean.isEmpty()) return
+        val cur = draftText.value
+        draftText.value = when {
+            cur.isBlank() -> clean
+            cur.endsWith(' ') || cur.endsWith('\n') -> "$cur$clean"
+            else -> "$cur $clean"
+        }
+    }
+
+    fun reportBannerError(message: String) {
+        bannerError.value = message
+    }
+
+    fun extractSchedulesForMessage(message: ChatMessageItem) {
+        val state = uiState.value
+        val conv = state.conversation ?: return
+        if (state.scheduleExtractingMessageID != null || state.isGenerating) return
+        val ready = ChatRepository.readyTargets(state.providers)
+        val target = resolveReplyTarget(message, conv, state.providers, ready)
+        val provider = target?.let { t ->
+            state.providers.firstOrNull { it.id.equals(t.providerID, ignoreCase = true) }
+        }
+        if (target == null || provider == null) {
+            bannerError.value = L10n.text("没有可用的模型用于提炼日程。", "No ready model available to extract schedules.")
+            return
+        }
+        runWithConsent(consentSummaryFor(listOf(target to provider))) {
+            bannerError.value = null
+            viewModelScope.launch {
+                scheduleExtractingMessageID.value = message.id
+                try {
+                    val items = ScheduleExtractorService.requestScheduleItems(
+                        sourceText = message.content,
+                        target = target,
+                        provider = provider,
+                        conversationID = conv.id,
+                        messageID = message.id,
+                        repo = repo,
+                        secretStore = container.secretStore,
+                        llmClient = container.llmClient
+                    )
+                    repo.saveMessage(
+                        message.copy(
+                            assistanceMetadata = message.assistanceMetadata.copy(proposedSchedules = items)
+                        )
+                    )
+                } catch (t: Throwable) {
+                    if (t !is CancellationException) {
+                        bannerError.value = t.message ?: L10n.text("提取日程失败", "Failed to extract schedules")
+                    }
+                } finally {
+                    scheduleExtractingMessageID.value = null
+                }
+            }
+        }
     }
 
     fun generateFlashcardsForMessage(message: ChatMessageItem) {
@@ -2138,6 +2235,14 @@ class ChatViewModel(
                 val (member, target, provider) = matchedPair
                 val liveActiveMembers = livePairs.map { it.first }
                 activeGroupSpeaker.value = "${member.avatarEmoji} ${member.displayLabel}"
+                GenerationServiceBridge.start(
+                    container.appContext,
+                    buildNotificationState(
+                        conv = liveConv,
+                        speakerOrModel = "${member.avatarEmoji} ${member.displayLabel}",
+                        phaseText = L10n.text("正在发言…", "Speaking…")
+                    )
+                )
 
                 val allCurrentMessages = repo.getMessages(liveConv.id)
                 val priorMessages = if (treeActive) {
@@ -2407,6 +2512,7 @@ class ChatViewModel(
         } finally {
             activeGroupSpeaker.value = null
             streamingOverlays.value = emptyMap()
+            GenerationServiceBridge.stop(container.appContext)
             val fresh = repo.getConversation(initialConversation.id) ?: initialConversation
             repo.saveConversation(
                 fresh.copy(
@@ -2967,6 +3073,15 @@ class ChatViewModel(
             repo.saveMessage(slot.message)
         }
 
+        GenerationServiceBridge.start(
+            container.appContext,
+            buildNotificationState(
+                conv = conversation,
+                speakerOrModel = slots.firstOrNull()?.target?.modelDisplayName.orEmpty(),
+                phaseText = L10n.text("正在流式生成…", "Streaming…")
+            )
+        )
+
         try {
             var effectiveSlots = slots
             if (!preTurnSearchQuery.isNullOrBlank() && effectiveSlots.isNotEmpty()) {
@@ -3063,8 +3178,29 @@ class ChatViewModel(
         } finally {
             val ids = slots.mapTo(HashSet()) { it.message.id }
             streamingOverlays.update { current -> current - ids }
+            GenerationServiceBridge.stop(container.appContext)
             repo.saveConversation(conversation.copy(updatedAtEpochMs = System.currentTimeMillis()))
         }
+    }
+
+    private fun buildNotificationState(
+        conv: ConversationItem,
+        speakerOrModel: String,
+        phaseText: String
+    ): GenerationNotificationState {
+        val modeBadge = when {
+            conv.isGroupMode -> L10n.text("圆桌群聊", "Group")
+            conv.isArenaMode -> L10n.text("模型竞技场", "Arena")
+            else -> L10n.text("夜奔对话", "Fugue")
+        }
+        return GenerationNotificationState(
+            conversationID = conv.id,
+            chatTitle = conv.title,
+            modeBadge = modeBadge,
+            speakerOrModel = speakerOrModel,
+            phaseText = phaseText,
+            isBlind = conv.isArenaMode && conv.assistanceSettings.blindArenaMode
+        )
     }
 
     private suspend fun runSingleSlot(
