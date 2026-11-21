@@ -1,13 +1,17 @@
 package com.iosbox.app.ui.chat
 
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
-import android.net.Uri
+import android.os.Build
 import android.speech.RecognizerIntent
 import android.util.Base64
+import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -102,6 +106,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -266,6 +271,23 @@ fun ChatDetailScreen(
             if (spoken.isNotEmpty()) {
                 vm.appendDictatedText(spoken)
             }
+        }
+    }
+
+    var promptedNotificationsThisSession by rememberSaveable { mutableStateOf(false) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    LaunchedEffect(state.isGenerating) {
+        if (
+            state.isGenerating &&
+            !promptedNotificationsThisSession &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            promptedNotificationsThisSession = true
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
@@ -2324,7 +2346,7 @@ private fun SourceNoticeCard(notice: GroupSourceNotice) {
             Surface(
                 onClick = {
                     runCatching {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(notice.url)))
+                        context.startActivity(Intent(Intent.ACTION_VIEW, notice.url.toUri()))
                     }
                 },
                 shape = CircleShape,

@@ -1,8 +1,8 @@
 package com.iosbox.app.ui.chat
 
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.BorderStroke
+import androidx.core.net.toUri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -192,7 +192,7 @@ internal fun SearchCitationsCard(search: SearchEvidence) {
                             .fillMaxWidth()
                             .clickable {
                                 runCatching {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(src.url)))
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, src.url.toUri()))
                                 }
                             }
                             .padding(vertical = 2.dp),

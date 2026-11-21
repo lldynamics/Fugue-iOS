@@ -299,7 +299,8 @@ data class RequestRecordItem(
 class ChatRepository(
     private val db: FugueDatabase,
     private val blobStore: ExternalBlobStore,
-    private val secretStore: SecretStore
+    private val secretStore: SecretStore,
+    private val draftStore: ChatDraftStore? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
 
@@ -946,6 +947,7 @@ class ChatRepository(
             m.assistanceMetadataBlobKey?.let { blobStore.delete(it) }
         }
         conv?.assistanceSettingsBlobKey?.let { blobStore.delete(it) }
+        draftStore?.remove(cid)
         db.conversationDao().deleteById(cid)
     }
 

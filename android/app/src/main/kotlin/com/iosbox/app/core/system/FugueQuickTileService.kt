@@ -1,5 +1,6 @@
 package com.iosbox.app.core.system
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
@@ -31,8 +32,13 @@ class FugueQuickTileService : TileService() {
             )
             startActivityAndCollapse(pending)
         } else {
-            @Suppress("DEPRECATION")
-            startActivityAndCollapse(intent)
+            startActivityLegacy(intent)
         }
+    }
+
+    @Suppress("DEPRECATION")
+    @SuppressLint("StartActivityAndCollapseDeprecated")
+    private fun startActivityLegacy(intent: Intent) {
+        startActivityAndCollapse(intent)
     }
 }

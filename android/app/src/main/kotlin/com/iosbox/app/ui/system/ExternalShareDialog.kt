@@ -1,6 +1,5 @@
 package com.iosbox.app.ui.system
 
-import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -39,6 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iosbox.app.AppContainer
 import com.iosbox.app.core.model.L10n
@@ -68,7 +68,8 @@ fun ExternalShareDialog(
     val scope = rememberCoroutineScope()
     val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
     val readyTargets = remember(providers) { ChatRepository.readyTargets(providers) }
-    val defaultTargetId = container.preferences.state.value.defaultTargetID
+    val prefs by container.preferences.state.collectAsStateWithLifecycle()
+    val defaultTargetId = prefs.defaultTargetID
 
     var selectedTarget by remember(readyTargets, defaultTargetId) {
         mutableStateOf<ResolvedModelTarget?>(
@@ -252,7 +253,7 @@ fun ExternalShareDialog(
                             withContext(Dispatchers.IO) {
                                 val list = payload.streamUris.mapNotNull { rawUri ->
                                     runCatching {
-                                        val parsed = Uri.parse(rawUri)
+                                        val parsed = rawUri.toUri()
                                         val mime = context.contentResolver.getType(parsed).orEmpty()
                                         AttachmentProcessor.processUri(
                                             contentResolver = context.contentResolver,

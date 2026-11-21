@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
+import androidx.core.graphics.scale
 import com.iosbox.app.core.model.AttachmentKind
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.MessageAttachment
@@ -161,7 +162,7 @@ object AttachmentProcessor {
         val scale = maxDimension.toDouble() / longest.toDouble()
         val w = max(1, floor(bitmap.width * scale).roundToInt())
         val h = max(1, floor(bitmap.height * scale).roundToInt())
-        return Bitmap.createScaledBitmap(bitmap, w, h, true)
+        return bitmap.scale(w, h)
     }
 
     private fun decodePlainTextOrThrow(data: ByteArray): String {

@@ -8,6 +8,7 @@ import com.iosbox.app.core.network.LLMClient
 import com.iosbox.app.core.security.SecretStore
 import com.iosbox.app.core.security.TinkSecretStore
 import com.iosbox.app.core.storage.AppPreferences
+import com.iosbox.app.core.storage.ChatDraftStore
 import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.DataSeeder
 import com.iosbox.app.core.storage.ExternalBlobStore
@@ -26,6 +27,7 @@ class AppContainer(context: Context) {
     val externalEntryRouter: ExternalEntryRouter = ExternalEntryRouter()
     val speechController: SpeechController by lazy { SpeechController(appContext) }
     val blobStore: ExternalBlobStore = FileExternalBlobStore(File(appContext.filesDir, "blobs"))
+    val draftStore: ChatDraftStore = ChatDraftStore(File(appContext.filesDir, "drafts"))
     val database: FugueDatabase = FugueDatabase.build(appContext)
     val capabilityCache: GatewayCapabilityCache = GatewayCapabilityCache(preferences)
     val keyRouter: APIKeyPoolRouter = APIKeyPoolRouter()
@@ -39,7 +41,8 @@ class AppContainer(context: Context) {
     val chatRepository: ChatRepository = ChatRepository(
         db = database,
         blobStore = blobStore,
-        secretStore = secretStore
+        secretStore = secretStore,
+        draftStore = draftStore
     )
 
     val flashcardRepository: FlashcardRepository = FlashcardRepository(blobStore = blobStore)

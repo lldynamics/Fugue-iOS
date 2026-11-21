@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.iosbox.app.MainActivity
+import com.iosbox.app.R
 import com.iosbox.app.core.model.L10n
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -129,7 +130,7 @@ class GenerationForegroundService : Service() {
         )
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(R.drawable.ic_stat_fugue)
             .setContentTitle(GenerationProgressFormatter.formatTitle(state))
             .setContentText(GenerationProgressFormatter.formatBody(state))
             .setOngoing(true)

@@ -55,6 +55,7 @@ import com.iosbox.app.core.storage.AttachmentProcessor
 import com.iosbox.app.core.storage.BookImporter
 import com.iosbox.app.core.storage.BookReferenceSearch
 import com.iosbox.app.core.storage.BookVolumeItem
+import com.iosbox.app.core.storage.ChatDraft
 import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.ConversationItem
@@ -80,6 +81,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -153,6 +155,9 @@ class ChatViewModel(
 
     @Volatile
     private var latestAllMessages: List<ChatMessageItem> = emptyList()
+
+    @Volatile
+    private var draftLoaded: Boolean = false
 
     private val approvedWebpageHosts = HashSet<String>()
     private var pendingApprovalDeferred: CompletableDeferred<WebpageApprovalDecision>? = null
@@ -269,10 +274,49 @@ class ChatViewModel(
         if (staged != null) {
             draftText.value = staged.text
             draftAttachments.value = staged.attachments
+            draftLoaded = true
             if (staged.autoSend && container.preferences.isConsentAccepted) {
                 viewModelScope.launch {
                     uiState.first { it.conversation != null && it.providers.isNotEmpty() }
                     sendCurrentDraft()
+                }
+            } else {
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        container.draftStore.save(
+                            conversationId,
+                            ChatDraft(text = staged.text, attachments = staged.attachments)
+                        )
+                    }
+                }
+            }
+        } else {
+            viewModelScope.launch {
+                val restored = withContext(Dispatchers.IO) {
+                    runCatching { container.draftStore.load(conversationId) }.getOrNull()
+                }
+                if (
+                    restored != null &&
+                    !restored.isEmpty &&
+                    draftText.value.isEmpty() &&
+                    draftAttachments.value.isEmpty() &&
+                    quotedExcerpt.value == null
+                ) {
+                    draftText.value = restored.text
+                    draftAttachments.value = restored.attachments
+                    quotedExcerpt.value = restored.quotedExcerpt
+                }
+                draftLoaded = true
+            }
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            combine(draftText, draftAttachments, quotedExcerpt) { t, a, q ->
+                ChatDraft(text = t, attachments = a, quotedExcerpt = q)
+            }.collectLatest { draft ->
+                if (draftLoaded) {
+                    delay(400)
+                    runCatching { container.draftStore.save(conversationId, draft) }
                 }
             }
         }
@@ -338,6 +382,14 @@ class ChatViewModel(
     override fun onCleared() {
         cancelPendingWebpageApproval()
         container.speechController.stopSpeaking()
+        if (draftLoaded) {
+            val snapshot = ChatDraft(
+                text = draftText.value,
+                attachments = draftAttachments.value,
+                quotedExcerpt = quotedExcerpt.value
+            )
+            runCatching { container.draftStore.save(conversationId, snapshot) }
+        }
         super.onCleared()
     }
 
