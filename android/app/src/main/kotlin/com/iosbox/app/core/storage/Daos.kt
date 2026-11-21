@@ -156,11 +156,23 @@ interface BookVolumeDao {
 
 @Dao
 interface PersonaProfileDao {
+    @Query("SELECT * FROM persona_profiles ORDER BY updatedAtEpochMs DESC")
+    fun observeAll(): Flow<List<PersonaProfileEntity>>
+
     @Query("SELECT * FROM persona_profiles")
     suspend fun getAll(): List<PersonaProfileEntity>
 
+    @Query("SELECT * FROM persona_profiles WHERE id = :id LIMIT 1")
+    suspend fun getById(id: String): PersonaProfileEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: PersonaProfileEntity)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(entities: List<PersonaProfileEntity>)
+
+    @Query("DELETE FROM persona_profiles WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
 
 @Dao

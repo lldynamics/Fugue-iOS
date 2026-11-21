@@ -74,7 +74,7 @@ data class ArenaBallot(
 }
 
 /**
- * Subset of iOS `AssistanceSettings` directly managed in Android Phase 2.1.
+ * Subset of iOS `AssistanceSettings` directly managed in Android.
  * Unknown iOS keys in the underlying JSON blob are preserved via [mergeInto].
  */
 @Serializable
@@ -85,7 +85,13 @@ data class ConversationAssistanceSettings(
     val enableAgentTools: Boolean = false,
     val enableNativeGrounding: Boolean = false,
     val knowledgeVolumeIDs: List<String> = emptyList(),
-    val isGroupMode: Boolean = false
+    val isGroupMode: Boolean = false,
+    val groupMembers: List<GroupMember> = emptyList(),
+    val groupSpeakingMode: GroupSpeakingMode = GroupSpeakingMode.SMART_RELAY,
+    val groupSpeechStyle: GroupSpeechStyle = GroupSpeechStyle.NATURAL_SHORT,
+    val groupMaxRelayTurns: Int = 3,
+    val groupSplitShortBubbles: Boolean = true,
+    val privatePersona: GroupMember? = null
 ) {
     val isDefault: Boolean
         get() = this == ConversationAssistanceSettings()
@@ -96,12 +102,15 @@ data class ConversationAssistanceSettings(
         for ((k, v) in encoded) {
             merged[k] = v
         }
+        if (privatePersona == null) {
+            merged.remove("privatePersona")
+        }
         return JsonObject(merged)
     }
 }
 
 /**
- * Subset of iOS `AssistanceMetadata` directly managed in Android Phase 2.1.
+ * Subset of iOS `AssistanceMetadata` directly managed in Android.
  * Unknown iOS keys in the underlying JSON blob are preserved via [mergeInto].
  */
 @Serializable
@@ -110,10 +119,34 @@ data class MessageAssistanceMetadata(
     val omittedMemory: Boolean = false,
     val omittedKnowledge: Boolean = false,
     val blindArenaRevealed: Boolean = false,
-    val blindArenaBallot: ArenaBallot? = null
+    val blindArenaBallot: ArenaBallot? = null,
+    val groupMemberID: String? = null,
+    val groupMemberName: String? = null,
+    val groupMemberTitle: String? = null,
+    val groupMemberEmoji: String? = null,
+    val isPersonaSimulation: Boolean = false,
+    val personaExcerpts: List<PersonaExcerpt>? = null,
+    val groupSpeechIntent: GroupSpeechIntent? = null,
+    val groupReplyToMessageID: String? = null,
+    val groupReplyToSpeaker: String? = null,
+    val groupReplyToExcerpt: String? = null,
+    val groupReactions: List<GroupReaction> = emptyList(),
+    val groupAskedHost: Boolean = false
 ) {
     val isDefault: Boolean
         get() = this == MessageAssistanceMetadata()
+
+    val groupSpeakerDisplayTitle: String?
+        get() {
+            val cleanTitle = groupMemberTitle?.trim().orEmpty()
+            val cleanName = groupMemberName?.trim().orEmpty()
+            return when {
+                cleanTitle.isNotEmpty() && cleanName.isNotEmpty() -> "$cleanTitle·$cleanName"
+                cleanName.isNotEmpty() -> cleanName
+                cleanTitle.isNotEmpty() -> cleanTitle
+                else -> null
+            }
+        }
 
     fun mergeInto(existing: JsonObject?, json: Json): JsonObject {
         val merged = existing?.toMutableMap() ?: LinkedHashMap()
@@ -121,9 +154,16 @@ data class MessageAssistanceMetadata(
         for ((k, v) in encoded) {
             merged[k] = v
         }
-        if (blindArenaBallot == null) {
-            merged.remove("blindArenaBallot")
-        }
+        if (blindArenaBallot == null) merged.remove("blindArenaBallot")
+        if (groupMemberID == null) merged.remove("groupMemberID")
+        if (groupMemberName == null) merged.remove("groupMemberName")
+        if (groupMemberTitle == null) merged.remove("groupMemberTitle")
+        if (groupMemberEmoji == null) merged.remove("groupMemberEmoji")
+        if (personaExcerpts == null) merged.remove("personaExcerpts")
+        if (groupSpeechIntent == null) merged.remove("groupSpeechIntent")
+        if (groupReplyToMessageID == null) merged.remove("groupReplyToMessageID")
+        if (groupReplyToSpeaker == null) merged.remove("groupReplyToSpeaker")
+        if (groupReplyToExcerpt == null) merged.remove("groupReplyToExcerpt")
         return JsonObject(merged)
     }
 }

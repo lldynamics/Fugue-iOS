@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
@@ -66,6 +67,7 @@ fun ConversationListScreen(
     onOpenConversation: (String) -> Unit,
     onCreateConversation: () -> Unit,
     onCreateArenaConversation: () -> Unit,
+    onCreateGroupConversation: () -> Unit,
     onGoToProviders: () -> Unit
 ) {
     val conversations by container.chatRepository.observeConversations().collectAsStateWithLifecycle(initialValue = emptyList())
@@ -94,6 +96,12 @@ fun ConversationListScreen(
                     )
                 },
                 actions = {
+                    IconButton(onClick = onCreateGroupConversation) {
+                        Icon(
+                            imageVector = Icons.Filled.Groups,
+                            contentDescription = L10n.text("新建圆桌群聊", "New Group Chat")
+                        )
+                    }
                     IconButton(onClick = onCreateArenaConversation) {
                         Icon(
                             imageVector = Icons.Filled.ViewColumn,
@@ -253,7 +261,19 @@ private fun ConversationRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (conversation.isArenaMode) {
+                    if (conversation.isGroupMode) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.secondaryContainer
+                        ) {
+                            Text(
+                                text = L10n.text("群聊", "Group"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                            )
+                        }
+                    } else if (conversation.isArenaMode) {
                         Surface(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.primaryContainer
@@ -268,10 +288,16 @@ private fun ConversationRow(
                     }
                 }
                 Spacer(modifier = Modifier.height(2.dp))
-                val modelOrArenaLabel = if (conversation.isArenaMode) {
-                    L10n.text("竞技场 · ${conversation.arenaTargets.size} 模型", "Arena · ${conversation.arenaTargets.size} models")
-                } else {
-                    conversation.primaryTarget?.let { "${it.providerName} · ${it.modelDisplayName}" }
+                val modelOrArenaLabel = when {
+                    conversation.isGroupMode -> L10n.text(
+                        "群聊 · ${conversation.groupMembers.size} 人",
+                        "Group · ${conversation.groupMembers.size} members"
+                    )
+                    conversation.isArenaMode -> L10n.text(
+                        "竞技场 · ${conversation.arenaTargets.size} 模型",
+                        "Arena · ${conversation.arenaTargets.size} models"
+                    )
+                    else -> conversation.primaryTarget?.let { "${it.providerName} · ${it.modelDisplayName}" }
                 }
                 Text(
                     text = listOfNotNull(

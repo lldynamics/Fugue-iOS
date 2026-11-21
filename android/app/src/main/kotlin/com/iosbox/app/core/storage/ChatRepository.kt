@@ -4,6 +4,9 @@ import com.iosbox.app.core.model.APIProtocolType
 import com.iosbox.app.core.model.AttachmentKind
 import com.iosbox.app.core.model.ConversationAssistanceSettings
 import com.iosbox.app.core.model.CustomHeader
+import com.iosbox.app.core.model.GroupMember
+import com.iosbox.app.core.model.GroupSpeakingMode
+import com.iosbox.app.core.model.GroupSpeechStyle
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.MessageAssistanceMetadata
 import com.iosbox.app.core.model.MessageAttachment
@@ -123,6 +126,15 @@ data class ConversationItem(
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long
 ) {
+    val isGroupMode: Boolean
+        get() = assistanceSettings.isGroupMode
+
+    val groupMembers: List<GroupMember>
+        get() = assistanceSettings.groupMembers
+
+    val activeGroupMembers: List<GroupMember>
+        get() = assistanceSettings.groupMembers.filter { !it.isMuted }
+
     companion object {
         val defaultTitle: String
             get() = L10n.text("新对话", "New Chat")
@@ -348,6 +360,159 @@ class ChatRepository(
         )
         saveConversation(item)
         item
+    }
+
+    suspend fun createGroupConversation(
+        title: String,
+        emoji: String = "👥",
+        systemPrompt: String = "",
+        members: List<GroupMember>,
+        speakingMode: GroupSpeakingMode = GroupSpeakingMode.SMART_RELAY,
+        speechStyle: GroupSpeechStyle = GroupSpeechStyle.NATURAL_SHORT,
+        maxRelayTurns: Int = 3,
+        splitShortBubbles: Boolean = true
+    ): ConversationItem = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val id = UUID.randomUUID().toString().uppercase()
+        val item = ConversationItem(
+            id = id,
+            title = title.trim().ifEmpty { L10n.text("圆桌群聊", "Group Chat") },
+            isPinned = false,
+            assistantID = null,
+            assistantEmoji = emoji.trim().ifEmpty { "👥" },
+            systemPrompt = systemPrompt.trim(),
+            temperature = 0.75,
+            useCustomTemperature = true,
+            topP = 1.0,
+            maxOutputTokens = 0,
+            contextMessageLimit = 24,
+            enableThinking = true,
+            thinkingBudgetTokens = 4096,
+            isArenaMode = false,
+            primaryTarget = members.firstOrNull()?.target,
+            arenaTargets = emptyList(),
+            assistanceSettings = ConversationAssistanceSettings(
+                isGroupMode = true,
+                groupMembers = members,
+                groupSpeakingMode = speakingMode,
+                groupSpeechStyle = speechStyle,
+                groupMaxRelayTurns = maxRelayTurns.coerceIn(1, 6),
+                groupSplitShortBubbles = splitShortBubbles
+            ),
+            folderTag = null,
+            createdAtEpochMs = now,
+            updatedAtEpochMs = now
+        )
+        saveConversation(item)
+        item
+    }
+
+    fun observePersonaProfiles(): Flow<List<GroupMember>> =
+        db.personaProfileDao().observeAll().map { entities ->
+            entities.mapNotNull { entity ->
+                blobStore.readText(entity.payloadBlobKey)?.let { raw ->
+                    runCatching { json.decodeFromString<GroupMember>(raw) }.getOrNull()
+                }
+            }
+        }.flowOn(Dispatchers.IO)
+
+    suspend fun savePersonaProfile(draft: GroupMember): GroupMember = withContext(Dispatchers.IO) {
+        val saved = draft.portableProfile().let { p ->
+            p.copy(name = p.name.trim())
+        }
+        val key = "persona_${saved.id}.json"
+        val now = System.currentTimeMillis()
+        blobStore.writeText(key, json.encodeToString(saved))
+        db.personaProfileDao().upsert(
+            PersonaProfileEntity(
+                id = saved.id,
+                payloadBlobKey = key,
+                updatedAtEpochMs = now
+            )
+        )
+
+        val conversations = db.conversationDao().getAll().map(::toConversationItem)
+        for (conv in conversations) {
+            var changed = false
+            var settings = conv.assistanceSettings
+            val updatedMembers = settings.groupMembers.map { existing ->
+                if (existing.profileID.equals(saved.id, ignoreCase = true)) {
+                    changed = true
+                    saved.inRoom(replacing = existing)
+                } else {
+                    existing
+                }
+            }
+            if (changed) {
+                settings = settings.copy(groupMembers = updatedMembers)
+            }
+            var updatedConv = conv
+            val oldPrivate = settings.privatePersona
+            if (oldPrivate != null && oldPrivate.profileID.equals(saved.id, ignoreCase = true)) {
+                settings = settings.copy(privatePersona = saved)
+                updatedConv = updatedConv.copy(
+                    title = if (conv.title == oldPrivate.name) saved.name else conv.title,
+                    assistantEmoji = saved.avatarEmoji,
+                    primaryTarget = if (conv.primaryTarget?.id == oldPrivate.target.id) saved.target else conv.primaryTarget
+                )
+                changed = true
+            }
+            if (changed) {
+                saveConversation(updatedConv.copy(assistanceSettings = settings, updatedAtEpochMs = now))
+            }
+        }
+        saved
+    }
+
+    suspend fun deletePersonaProfile(id: String) = withContext(Dispatchers.IO) {
+        val pid = id.uppercase()
+        db.personaProfileDao().getById(pid)?.payloadBlobKey?.let { blobStore.delete(it) }
+        db.personaProfileDao().deleteById(pid)
+    }
+
+    suspend fun openOrCreatePrivatePersonaChat(profile: GroupMember): ConversationItem = withContext(Dispatchers.IO) {
+        val member = profile.portableProfile()
+        val existing = db.conversationDao().getAll().map(::toConversationItem).firstOrNull { conv ->
+            !conv.isArenaMode &&
+                !conv.isGroupMode &&
+                conv.assistanceSettings.privatePersona?.profileID.equals(member.profileID, ignoreCase = true)
+        }
+        if (existing != null) return@withContext existing
+
+        val now = System.currentTimeMillis()
+        val id = UUID.randomUUID().toString().uppercase()
+        val created = ConversationItem(
+            id = id,
+            title = member.name.ifBlank { L10n.text("角色私聊", "Persona Chat") },
+            isPinned = false,
+            assistantID = null,
+            assistantEmoji = member.avatarEmoji,
+            systemPrompt = member.rolePrompt,
+            temperature = member.temperature,
+            useCustomTemperature = true,
+            topP = 1.0,
+            maxOutputTokens = 0,
+            contextMessageLimit = 20,
+            enableThinking = true,
+            thinkingBudgetTokens = 4096,
+            isArenaMode = false,
+            primaryTarget = member.target,
+            arenaTargets = emptyList(),
+            assistanceSettings = ConversationAssistanceSettings(privatePersona = member),
+            folderTag = null,
+            createdAtEpochMs = now,
+            updatedAtEpochMs = now
+        )
+        saveConversation(created)
+        created
+    }
+
+    suspend fun deleteMessage(messageID: String) = withContext(Dispatchers.IO) {
+        val mid = messageID.uppercase()
+        val existing = db.chatMessageDao().getById(mid)
+        existing?.attachmentsBlobKey?.let { blobStore.delete(it) }
+        existing?.assistanceMetadataBlobKey?.let { blobStore.delete(it) }
+        db.chatMessageDao().deleteById(mid)
     }
 
     suspend fun saveConversation(item: ConversationItem) = withContext(Dispatchers.IO) {

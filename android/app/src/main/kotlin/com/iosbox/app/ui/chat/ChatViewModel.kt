@@ -7,18 +7,28 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.iosbox.app.AppContainer
 import com.iosbox.app.core.model.ArenaBallot
+import com.iosbox.app.core.model.GroupMember
+import com.iosbox.app.core.model.GroupSpeakingMode
+import com.iosbox.app.core.model.GroupSpeechIntent
+import com.iosbox.app.core.model.GroupSpeechStyle
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.model.MessageAssistanceMetadata
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.MessageRole
+import com.iosbox.app.core.model.PersonaExcerpt
 import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestMetrics
 import com.iosbox.app.core.model.RequestStatus
 import com.iosbox.app.core.model.ResolvedModelTarget
 import com.iosbox.app.core.network.ArenaSynthesis
+import com.iosbox.app.core.network.GroupDiscussionCoordinator
+import com.iosbox.app.core.network.GroupStreamSanitizer
+import com.iosbox.app.core.network.GroupTurnDirective
 import com.iosbox.app.core.network.LLMChatRequest
 import com.iosbox.app.core.network.LLMError
 import com.iosbox.app.core.network.LLMPromptMessage
 import com.iosbox.app.core.network.LLMStreamEvent
+import com.iosbox.app.core.network.PersonaMaterials
 import com.iosbox.app.core.storage.AttachmentProcessor
 import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.core.storage.ChatRepository
@@ -32,7 +42,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -54,9 +67,11 @@ data class ChatDetailUiState(
     val messages: List<ChatMessageItem> = emptyList(),
     val providers: List<ProviderItem> = emptyList(),
     val presets: List<PresetItem> = emptyList(),
+    val personaProfiles: List<GroupMember> = emptyList(),
     val draftText: String = "",
     val draftAttachments: List<MessageAttachment> = emptyList(),
     val isGenerating: Boolean = false,
+    val activeGroupSpeaker: String? = null,
     val bannerError: String? = null,
     val pendingConsent: PendingConsentAction? = null
 )
@@ -70,6 +85,7 @@ class ChatViewModel(
     private val draftText = MutableStateFlow("")
     private val draftAttachments = MutableStateFlow<List<MessageAttachment>>(emptyList())
     private val streamingOverlays = MutableStateFlow<Map<String, ChatMessageItem>>(emptyMap())
+    private val activeGroupSpeaker = MutableStateFlow<String?>(null)
     private val bannerError = MutableStateFlow<String?>(null)
     private val pendingConsent = MutableStateFlow<PendingConsentAction?>(null)
 
@@ -79,9 +95,10 @@ class ChatViewModel(
         repo.observeConversation(conversationId),
         repo.observeMessages(conversationId),
         repo.observeProviders(),
-        repo.observePresets()
-    ) { conv, msgs, providers, presets ->
-        BaseData(conv, msgs, providers, presets)
+        repo.observePresets(),
+        repo.observePersonaProfiles()
+    ) { conv, msgs, providers, presets, profiles ->
+        BaseData(conv, msgs, providers, presets, profiles)
     }
 
     val uiState: StateFlow<ChatDetailUiState> = combine(
@@ -89,8 +106,10 @@ class ChatViewModel(
         draftText,
         draftAttachments,
         streamingOverlays,
-        combine(bannerError, pendingConsent) { err, consent -> err to consent }
-    ) { base, draft, atts, overlays, (err, consent) ->
+        combine(bannerError, pendingConsent, activeGroupSpeaker) { err, consent, speaker ->
+            Triple(err, consent, speaker)
+        }
+    ) { base, draft, atts, overlays, (err, consent, speaker) ->
         val mergedMessages = if (overlays.isEmpty()) {
             base.messages
         } else {
@@ -107,9 +126,11 @@ class ChatViewModel(
             messages = mergedMessages,
             providers = base.providers,
             presets = base.presets,
+            personaProfiles = base.personaProfiles,
             draftText = draft,
             draftAttachments = atts,
-            isGenerating = overlays.isNotEmpty() || mergedMessages.any { it.isStreaming },
+            isGenerating = overlays.isNotEmpty() || speaker != null || mergedMessages.any { it.isStreaming },
+            activeGroupSpeaker = speaker,
             bannerError = err,
             pendingConsent = consent
         )
@@ -119,7 +140,8 @@ class ChatViewModel(
         val conversation: ConversationItem?,
         val messages: List<ChatMessageItem>,
         val providers: List<ProviderItem>,
-        val presets: List<PresetItem>
+        val presets: List<PresetItem>,
+        val personaProfiles: List<GroupMember>
     )
 
     private data class StreamSlot(
@@ -128,11 +150,35 @@ class ChatViewModel(
         val provider: ProviderItem,
         val history: List<LLMPromptMessage>,
         val kind: RequestKind,
-        val systemPromptOverride: String? = null
+        val systemPromptOverride: String? = null,
+        val temperatureOverride: Double? = null,
+        val groupSanitizer: GroupStreamSanitizer? = null
     )
+
+    private data class SlotOutcome(
+        val message: ChatMessageItem,
+        val directive: GroupTurnDirective?
+    )
+
+    private sealed interface GroupRunMode {
+        data class AfterUserMessage(val userMessage: ChatMessageItem) : GroupRunMode
+        data object ContinueDiscussion : GroupRunMode
+        data object GroupVote : GroupRunMode
+        data class Summarize(val preferred: GroupMember?) : GroupRunMode
+    }
 
     fun updateDraftText(text: String) {
         draftText.value = text
+    }
+
+    fun appendMentionToDraft(member: GroupMember) {
+        val token = "@${member.mentionToken} "
+        val current = draftText.value
+        draftText.value = if (current.isEmpty() || current.endsWith(' ') || current.endsWith('\n')) {
+            current + token
+        } else {
+            "$current $token"
+        }
     }
 
     fun clearBannerError() {
@@ -217,6 +263,54 @@ class ChatViewModel(
         }
     }
 
+    fun updateGroupConfiguration(
+        title: String,
+        emoji: String,
+        systemPrompt: String,
+        members: List<GroupMember>,
+        speakingMode: GroupSpeakingMode,
+        speechStyle: GroupSpeechStyle,
+        maxRelayTurns: Int,
+        splitShortBubbles: Boolean
+    ) {
+        val conv = uiState.value.conversation ?: return
+        viewModelScope.launch {
+            repo.saveConversation(
+                conv.copy(
+                    title = title.trim().ifEmpty { conv.title },
+                    assistantEmoji = emoji.trim().ifEmpty { conv.assistantEmoji },
+                    systemPrompt = systemPrompt.trim(),
+                    isArenaMode = false,
+                    primaryTarget = members.firstOrNull()?.target ?: conv.primaryTarget,
+                    assistanceSettings = conv.assistanceSettings.copy(
+                        isGroupMode = true,
+                        groupMembers = members,
+                        groupSpeakingMode = speakingMode,
+                        groupSpeechStyle = speechStyle,
+                        groupMaxRelayTurns = maxRelayTurns.coerceIn(1, 6),
+                        groupSplitShortBubbles = splitShortBubbles
+                    ),
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    fun toggleGroupMemberMuted(memberID: String) {
+        val conv = uiState.value.conversation ?: return
+        val updatedMembers = conv.groupMembers.map { m ->
+            if (m.id.equals(memberID, ignoreCase = true)) m.copy(isMuted = !m.isMuted) else m
+        }
+        viewModelScope.launch {
+            repo.saveConversation(
+                conv.copy(
+                    assistanceSettings = conv.assistanceSettings.copy(groupMembers = updatedMembers),
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
     fun updateConversationSettings(updated: ConversationItem) {
         viewModelScope.launch {
             repo.saveConversation(updated)
@@ -234,13 +328,30 @@ class ChatViewModel(
 
     fun sendCurrentDraft() {
         val state = uiState.value
-        if (state.isGenerating) return
         val conv = state.conversation ?: return
         val text = state.draftText.trim()
         val attachments = state.draftAttachments
         if (text.isEmpty() && attachments.isEmpty()) return
 
         val ready = ChatRepository.readyTargets(state.providers)
+
+        if (conv.isGroupMode) {
+            val activePairs = resolveGroupPairs(conv, state.providers, ready)
+            if (activePairs.isEmpty()) {
+                bannerError.value = L10n.text(
+                    "群内暂无未静音且模型可用的成员，请检查群设置或服务商 API Key。",
+                    "No unmuted group member has a ready model configured."
+                )
+                return
+            }
+            val summary = consentSummaryFor(activePairs.map { it.second to it.third }.distinctBy { it.first.id })
+            runWithConsent(summary) {
+                executeSendGroupMessage(text, attachments, conv)
+            }
+            return
+        }
+
+        if (state.isGenerating) return
 
         if (conv.isArenaMode) {
             val resolvedTargets = conv.arenaTargets.mapNotNull { chosen ->
@@ -287,6 +398,89 @@ class ChatViewModel(
         }
     }
 
+    fun continueGroupDiscussion() {
+        val state = uiState.value
+        val conv = state.conversation ?: return
+        if (!conv.isGroupMode || state.isGenerating) return
+        val ready = ChatRepository.readyTargets(state.providers)
+        val activePairs = resolveGroupPairs(conv, state.providers, ready)
+        if (activePairs.isEmpty()) {
+            bannerError.value = L10n.text("群内暂无可发言成员。", "No active group member available.")
+            return
+        }
+        val summary = consentSummaryFor(activePairs.map { it.second to it.third }.distinctBy { it.first.id })
+        runWithConsent(summary) {
+            bannerError.value = null
+            launchGroupRelayJob(conv, GroupRunMode.ContinueDiscussion)
+        }
+    }
+
+    fun startGroupVote() {
+        val state = uiState.value
+        val conv = state.conversation ?: return
+        if (!conv.isGroupMode || state.isGenerating) return
+        val ready = ChatRepository.readyTargets(state.providers)
+        val activePairs = resolveGroupPairs(conv, state.providers, ready)
+        if (activePairs.isEmpty()) {
+            bannerError.value = L10n.text("群内暂无可发言成员。", "No active group member available.")
+            return
+        }
+        val summary = consentSummaryFor(activePairs.map { it.second to it.third }.distinctBy { it.first.id })
+        runWithConsent(summary) {
+            bannerError.value = null
+            viewModelScope.launch {
+                val now = System.currentTimeMillis()
+                val nextSort = (uiState.value.messages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+                val votePrompt = makeUserMessage(
+                    conversationID = conv.id,
+                    text = L10n.text(
+                        "🗳️ 发起圆桌表决：请各位明确亮牌（赞成 / 反对 / 中立），并用 1～3 句话说明核心理由。",
+                        "🗳️ Roundtable Vote: State your stance (Agree / Disagree / Neutral) and explain your core reasoning in 1–3 sentences."
+                    ),
+                    attachments = emptyList(),
+                    sortIndex = nextSort,
+                    createdAtEpochMs = now
+                )
+                repo.saveMessage(votePrompt)
+                launchGroupRelayJob(conv, GroupRunMode.GroupVote)
+            }
+        }
+    }
+
+    fun summarizeGroupDiscussion(preferred: GroupMember? = null) {
+        val state = uiState.value
+        val conv = state.conversation ?: return
+        if (!conv.isGroupMode || state.isGenerating) return
+        val ready = ChatRepository.readyTargets(state.providers)
+        val activePairs = resolveGroupPairs(conv, state.providers, ready)
+        if (activePairs.isEmpty()) {
+            bannerError.value = L10n.text("群内暂无可发言成员。", "No active group member available.")
+            return
+        }
+        val chosen = preferred?.let { p -> activePairs.firstOrNull { it.first.id == p.id }?.first }
+            ?: activePairs.last().first
+        val summary = consentSummaryFor(activePairs.map { it.second to it.third }.distinctBy { it.first.id })
+        runWithConsent(summary) {
+            bannerError.value = null
+            viewModelScope.launch {
+                val now = System.currentTimeMillis()
+                val nextSort = (uiState.value.messages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+                val sumPrompt = makeUserMessage(
+                    conversationID = conv.id,
+                    text = L10n.text(
+                        "📋 @${chosen.mentionToken} 请帮大家梳理总结目前讨论的核心共识、关键分歧与下一步行动建议。",
+                        "📋 @${chosen.mentionToken} Please synthesize our core consensus, key disagreements, and recommended next steps."
+                    ),
+                    attachments = emptyList(),
+                    sortIndex = nextSort,
+                    createdAtEpochMs = now
+                )
+                repo.saveMessage(sumPrompt)
+                launchGroupRelayJob(conv, GroupRunMode.Summarize(chosen))
+            }
+        }
+    }
+
     fun regenerateMessage(assistantMessage: ChatMessageItem) {
         val state = uiState.value
         if (state.isGenerating) return
@@ -310,7 +504,14 @@ class ChatViewModel(
             state.messages.indexOfFirst { it.comparisonGroupID.equals(gid, ignoreCase = true) }
         }?.takeIf { it >= 0 } ?: idx
 
-        val resolved = resolveReplyTarget(assistantMessage, conv, state.providers, ready)
+        val groupSpeaker = if (conv.isGroupMode) {
+            assistantMessage.assistanceMetadata.groupMemberID?.let { gid ->
+                conv.groupMembers.firstOrNull { it.id.equals(gid, ignoreCase = true) }
+            }
+        } else null
+
+        val resolved = groupSpeaker?.target?.let { gt -> ready.firstOrNull { it.id == gt.id } }
+            ?: resolveReplyTarget(assistantMessage, conv, state.providers, ready)
         val provider = resolved?.let { r -> state.providers.firstOrNull { it.id.equals(r.providerID, ignoreCase = true) } }
         if (resolved == null || provider == null) {
             bannerError.value = L10n.text("没有可用的模型用于重答。", "No ready model available to regenerate.")
@@ -318,7 +519,68 @@ class ChatViewModel(
         }
 
         val priorMessages = state.messages.subList(0, sliceIndex)
-        val history = ChatRepository.buildPromptHistory(priorMessages, conv.contextMessageLimit)
+        if (groupSpeaker != null) {
+            val preferEng = GroupDiscussionCoordinator.prefersEnglishPrompts(priorMessages)
+            val intent = assistantMessage.assistanceMetadata.groupSpeechIntent ?: GroupSpeechIntent.OPEN_PERSPECTIVE
+            var excerpts: List<PersonaExcerpt>? = null
+            val memberHistory = GroupDiscussionCoordinator.buildPromptHistory(
+                messages = priorMessages,
+                speaker = groupSpeaker,
+                limit = conv.contextMessageLimit,
+                preferEnglish = preferEng,
+                recordReferences = { excerpts = it }
+            )
+            val sysPrompt = GroupDiscussionCoordinator.buildSystemPrompt(
+                speaker = groupSpeaker,
+                activeMembers = conv.activeGroupMembers.ifEmpty { listOf(groupSpeaker) },
+                speechStyle = conv.assistanceSettings.groupSpeechStyle,
+                intent = intent,
+                baseSystemPrompt = conv.systemPrompt,
+                allowPass = false,
+                preferEnglish = preferEng
+            )
+            val resetReply = assistantMessage.copy(
+                providerID = resolved.providerID,
+                providerName = resolved.providerName,
+                modelID = resolved.modelID,
+                modelDisplayName = resolved.modelDisplayName,
+                accentHex = groupSpeaker.accentHex,
+                content = "",
+                reasoningContent = "",
+                attachments = emptyList(),
+                isStreaming = true,
+                errorMessage = null,
+                finishReason = null,
+                promptTokens = null,
+                completionTokens = null,
+                cachedTokens = null,
+                latencyMs = null,
+                thinkingDurationMs = null,
+                assistanceMetadata = assistantMessage.assistanceMetadata.copy(personaExcerpts = excerpts)
+            )
+            runWithConsent(consentSummaryFor(listOf(resolved to provider))) {
+                bannerError.value = null
+                launchSlots(
+                    conversation = conv.copy(updatedAtEpochMs = System.currentTimeMillis()),
+                    extraMessagesToInsert = emptyList(),
+                    slots = listOf(
+                        StreamSlot(
+                            message = resetReply,
+                            target = resolved,
+                            provider = provider,
+                            history = memberHistory,
+                            kind = RequestKind.REGENERATION,
+                            systemPromptOverride = sysPrompt,
+                            temperatureOverride = groupSpeaker.temperature,
+                            groupSanitizer = GroupStreamSanitizer(groupSpeaker.name, groupSpeaker.displayLabel)
+                        )
+                    )
+                )
+            }
+            return
+        }
+
+        val history = buildSinglePromptHistoryWithPersona(priorMessages, conv)
         if (history.isEmpty()) return
 
         runWithConsent(consentSummaryFor(listOf(resolved to provider))) {
@@ -733,6 +995,404 @@ class ChatViewModel(
         )
     }
 
+    private fun executeSendGroupMessage(
+        text: String,
+        attachments: List<MessageAttachment>,
+        conv: ConversationItem
+    ) {
+        draftText.value = ""
+        draftAttachments.value = emptyList()
+        bannerError.value = null
+
+        val previousJob = activeJob
+        activeJob = viewModelScope.launch {
+            if (previousJob != null && previousJob.isActive) {
+                previousJob.cancelAndJoin()
+                cleanupInterruptedGroupTail(conv.id)
+            }
+            val currentMessages = repo.getMessages(conv.id)
+            val nextSort = (currentMessages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+            val now = System.currentTimeMillis()
+            val userMsg = makeUserMessage(conv.id, text, attachments, nextSort, now)
+            repo.saveMessage(userMsg)
+
+            val updatedTitle = if (currentMessages.none { it.role == MessageRole.USER } &&
+                ConversationItem.isDefaultTitle(conv.title)
+            ) {
+                ChatRepository.makeConversationTitle(text, attachments)
+            } else {
+                conv.title
+            }
+            val updatedConv = conv.copy(title = updatedTitle, updatedAtEpochMs = now)
+            repo.saveConversation(updatedConv)
+
+            runGroupRelaySession(updatedConv, GroupRunMode.AfterUserMessage(userMsg))
+        }
+    }
+
+    private fun launchGroupRelayJob(
+        conv: ConversationItem,
+        mode: GroupRunMode
+    ) {
+        activeJob?.cancel()
+        activeJob = viewModelScope.launch {
+            runGroupRelaySession(conv, mode)
+        }
+    }
+
+    private suspend fun cleanupInterruptedGroupTail(convId: String) {
+        val last = repo.getMessages(convId).lastOrNull() ?: return
+        if (last.role != MessageRole.ASSISTANT) return
+        if (last.content.isBlank() && last.reasoningContent.isBlank() && last.attachments.isEmpty()) {
+            repo.deleteMessage(last.id)
+        } else if (last.errorMessage == L10n.text("已停止生成", "Generation stopped") ||
+            last.errorMessage == "Generation stopped" ||
+            last.errorMessage == "已停止生成"
+        ) {
+            repo.saveMessage(last.copy(errorMessage = null))
+        }
+    }
+
+    private suspend fun runGroupRelaySession(
+        initialConversation: ConversationItem,
+        mode: GroupRunMode
+    ) {
+        val providers = repo.getProviders()
+        val ready = ChatRepository.readyTargets(providers)
+        val initialPairs = resolveGroupPairs(initialConversation, providers, ready)
+        if (initialPairs.isEmpty()) return
+
+        val settings = initialConversation.assistanceSettings
+        val activeMembers = initialPairs.map { it.first }
+
+        data class RelayStep(
+            val member: GroupMember,
+            val intent: GroupSpeechIntent,
+            val allowPass: Boolean
+        )
+
+        val priorBeforeRound = repo.getMessages(initialConversation.id)
+        val explicitQueue = ArrayDeque<RelayStep>()
+        var maxRelayTurns = 1
+        var dynamicSmartRelay = false
+
+        when (mode) {
+            is GroupRunMode.AfterUserMessage -> {
+                val priorOnly = priorBeforeRound.filterNot { it.id == mode.userMessage.id }
+                val planned = GroupDiscussionCoordinator.selectInitialPlan(
+                    userText = mode.userMessage.content,
+                    activeMembers = activeMembers,
+                    speakingMode = settings.groupSpeakingMode,
+                    maxRelayTurns = settings.groupMaxRelayTurns,
+                    priorMessages = priorOnly
+                )
+                if (planned.isEmpty()) {
+                    if (settings.groupSpeakingMode == GroupSpeakingMode.MENTION_ONLY) {
+                        bannerError.value = L10n.text(
+                            "仅 @点名模式下，使用 @成员名 点名才会触发发言。",
+                            "In @Mention Only mode, use @MemberName to trigger a reply."
+                        )
+                    }
+                    return
+                }
+                val hasExplicitMentions = planned.any { it.explicitMention }
+                if (settings.groupSpeakingMode == GroupSpeakingMode.SMART_RELAY && !hasExplicitMentions) {
+                    explicitQueue.add(RelayStep(planned[0].member, planned[0].intent, allowPass = false))
+                    maxRelayTurns = minOf(maxOf(settings.groupMaxRelayTurns, 1), maxOf(activeMembers.size + 1, 2))
+                    dynamicSmartRelay = true
+                } else if (settings.groupSpeakingMode == GroupSpeakingMode.SMART_RELAY && hasExplicitMentions) {
+                    planned.forEach { explicitQueue.add(RelayStep(it.member, it.intent, allowPass = false)) }
+                    maxRelayTurns = maxOf(planned.size, settings.groupMaxRelayTurns)
+                    dynamicSmartRelay = true
+                } else {
+                    planned.forEach { explicitQueue.add(RelayStep(it.member, it.intent, allowPass = !hasExplicitMentions)) }
+                    maxRelayTurns = planned.size
+                    dynamicSmartRelay = false
+                }
+            }
+            GroupRunMode.ContinueDiscussion -> {
+                val lastSpeakerID = priorBeforeRound.lastOrNull { it.role == MessageRole.ASSISTANT }
+                    ?.assistanceMetadata?.groupMemberID
+                val lastIdx = lastSpeakerID?.let { lid ->
+                    activeMembers.indexOfFirst { it.id.equals(lid, ignoreCase = true) }
+                } ?: -1
+                val startIdx = if (lastIdx >= 0) (lastIdx + 1) % activeMembers.size else 0
+                explicitQueue.add(RelayStep(activeMembers[startIdx], GroupSpeechIntent.REBUTTAL, allowPass = false))
+                maxRelayTurns = minOf(maxOf(settings.groupMaxRelayTurns, 2), maxOf(activeMembers.size, 2))
+                dynamicSmartRelay = true
+            }
+            GroupRunMode.GroupVote -> {
+                activeMembers.forEach { explicitQueue.add(RelayStep(it, GroupSpeechIntent.VOTE, allowPass = false)) }
+                maxRelayTurns = activeMembers.size
+                dynamicSmartRelay = false
+            }
+            is GroupRunMode.Summarize -> {
+                val chosen = mode.preferred?.let { p ->
+                    activeMembers.firstOrNull { it.id.equals(p.id, ignoreCase = true) }
+                } ?: activeMembers.last()
+                explicitQueue.add(RelayStep(chosen, GroupSpeechIntent.SUMMARIZE, allowPass = false))
+                maxRelayTurns = 1
+                dynamicSmartRelay = false
+            }
+        }
+
+        val englishPreferred = GroupDiscussionCoordinator.prefersEnglishPrompts(priorBeforeRound)
+        var turnsCompleted = 0
+        val spokenMemberIDs = HashSet<String>()
+        val roundMessages = mutableListOf<ChatMessageItem>()
+        var nextStep: RelayStep? = if (explicitQueue.isEmpty()) null else explicitQueue.removeFirst()
+
+        try {
+            while (nextStep != null && turnsCompleted < maxRelayTurns) {
+                coroutineScope { ensureActive() }
+                val step = nextStep
+                val liveConv = repo.getConversation(initialConversation.id) ?: initialConversation
+                val livePairs = resolveGroupPairs(liveConv, providers, ready)
+                val matchedPair = livePairs.firstOrNull { it.first.id.equals(step.member.id, ignoreCase = true) }
+                if (!liveConv.isGroupMode || matchedPair == null) {
+                    nextStep = if (explicitQueue.isEmpty()) null else explicitQueue.removeFirst()
+                    continue
+                }
+
+                val (member, target, provider) = matchedPair
+                val liveActiveMembers = livePairs.map { it.first }
+                activeGroupSpeaker.value = "${member.avatarEmoji} ${member.displayLabel}"
+
+                val priorMessages = repo.getMessages(liveConv.id)
+                val nextSort = (priorMessages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+                val now = System.currentTimeMillis()
+                var replyMeta = MessageAssistanceMetadata(
+                    groupMemberID = member.id,
+                    groupMemberName = member.name,
+                    groupMemberTitle = member.title,
+                    groupMemberEmoji = member.avatarEmoji,
+                    isPersonaSimulation = member.isSimulatedPersona,
+                    groupSpeechIntent = step.intent
+                )
+
+                val trailingCue = when (step.intent) {
+                    GroupSpeechIntent.VOTE -> if (englishPreferred) {
+                        "[State your explicit vote now (Agree / Disagree / Neutral) and briefly explain why]"
+                    } else {
+                        "[请现在亮出你的表决态度（赞成 / 反对 / 中立）并简述理由]"
+                    }
+                    GroupSpeechIntent.SUMMARIZE -> if (englishPreferred) {
+                        "[Synthesize and output the key consensus, disagreements, and next steps from the discussion now]"
+                    } else {
+                        "[请现在梳理并输出本轮群讨论纪要]"
+                    }
+                    else -> null
+                }
+
+                var recordedExcerpts: List<PersonaExcerpt>? = null
+                val memberHistory = GroupDiscussionCoordinator.buildPromptHistory(
+                    messages = priorMessages,
+                    speaker = member,
+                    limit = liveConv.contextMessageLimit,
+                    trailingCueIfNeeded = trailingCue,
+                    preferEnglish = englishPreferred,
+                    recordReferences = { recordedExcerpts = it }
+                )
+                if (recordedExcerpts != null) {
+                    replyMeta = replyMeta.copy(personaExcerpts = recordedExcerpts)
+                }
+
+                val replyPlaceholder = ChatMessageItem(
+                    id = UUID.randomUUID().toString().uppercase(),
+                    conversationID = liveConv.id,
+                    role = MessageRole.ASSISTANT,
+                    content = "",
+                    reasoningContent = "",
+                    attachments = emptyList(),
+                    providerID = target.providerID,
+                    providerName = target.providerName,
+                    modelID = target.modelID,
+                    modelDisplayName = target.modelDisplayName,
+                    accentHex = member.accentHex,
+                    comparisonGroupID = null,
+                    isSelectedInGroup = true,
+                    isStreaming = true,
+                    errorMessage = null,
+                    finishReason = null,
+                    promptTokens = null,
+                    completionTokens = null,
+                    cachedTokens = null,
+                    latencyMs = null,
+                    thinkingDurationMs = null,
+                    synthesisSourceDigest = null,
+                    latestRequestID = null,
+                    assistanceMetadata = replyMeta,
+                    parentMessageID = priorMessages.lastOrNull()?.id,
+                    sortIndex = nextSort,
+                    createdAtEpochMs = now
+                )
+
+                streamingOverlays.update { it + (replyPlaceholder.id to replyPlaceholder) }
+                repo.saveMessage(replyPlaceholder)
+
+                val systemPrompt = GroupDiscussionCoordinator.buildSystemPrompt(
+                    speaker = member,
+                    activeMembers = liveActiveMembers,
+                    speechStyle = liveConv.assistanceSettings.groupSpeechStyle,
+                    intent = step.intent,
+                    baseSystemPrompt = liveConv.systemPrompt,
+                    allowPass = step.allowPass || turnsCompleted > 0,
+                    preferEnglish = englishPreferred
+                )
+
+                val slot = StreamSlot(
+                    message = replyPlaceholder,
+                    target = target,
+                    provider = provider,
+                    history = memberHistory,
+                    kind = if (step.intent == GroupSpeechIntent.SUMMARIZE) RequestKind.SYNTHESIS else RequestKind.ANSWER,
+                    systemPromptOverride = systemPrompt,
+                    temperatureOverride = if (step.intent == GroupSpeechIntent.SUMMARIZE) 0.3 else member.temperature,
+                    groupSanitizer = GroupStreamSanitizer(member.name, member.displayLabel)
+                )
+
+                val outcome = runSingleSlot(slot, liveConv)
+                val directive = outcome.directive ?: GroupTurnDirective()
+                var replyMsg = outcome.message
+
+                val canHonorPass = (step.allowPass || turnsCompleted > 0 || explicitQueue.isNotEmpty()) && directive.isPass
+                if (canHonorPass && replyMsg.errorMessage == null) {
+                    repo.deleteMessage(replyMsg.id)
+                    if (explicitQueue.isNotEmpty()) {
+                        nextStep = explicitQueue.removeFirst()
+                    } else {
+                        spokenMemberIDs.add(member.id.uppercase())
+                        val remaining = liveActiveMembers.filter {
+                            !spokenMemberIDs.contains(it.id.uppercase()) && !it.id.equals(member.id, ignoreCase = true)
+                        }
+                        nextStep = remaining.firstOrNull()?.let { RelayStep(it, step.intent, allowPass = false) }
+                    }
+                    continue
+                }
+
+                if (replyMsg.errorMessage != null) {
+                    if (explicitQueue.isNotEmpty()) {
+                        nextStep = explicitQueue.removeFirst()
+                    } else if (dynamicSmartRelay) {
+                        spokenMemberIDs.add(member.id.uppercase())
+                        val remaining = liveActiveMembers.filter { !spokenMemberIDs.contains(it.id.uppercase()) }
+                        nextStep = remaining.firstOrNull()?.let { RelayStep(it, step.intent, allowPass = true) }
+                    } else {
+                        nextStep = null
+                    }
+                    continue
+                }
+
+                val quote = GroupDiscussionCoordinator.resolveReplyQuote(
+                    speaker = member,
+                    visibleReply = replyMsg.content,
+                    directive = directive,
+                    intent = step.intent,
+                    roundMessages = roundMessages,
+                    activeMembers = liveActiveMembers
+                )
+                val updatedMeta = replyMsg.assistanceMetadata.copy(
+                    groupAskedHost = directive.asksHost,
+                    groupReplyToMessageID = quote?.messageID,
+                    groupReplyToSpeaker = quote?.speakerName,
+                    groupReplyToExcerpt = quote?.excerpt
+                )
+
+                if (directive.reactionEmoji != null) {
+                    val targetForReaction = roundMessages.lastOrNull() ?: priorMessages.lastOrNull()
+                    if (targetForReaction != null) {
+                        val tMeta = targetForReaction.assistanceMetadata
+                        if (tMeta.groupReactions.size < 2) {
+                            val excluding = tMeta.groupReactions.map { it.memberID }.toSet() + member.id
+                            val reaction = GroupDiscussionCoordinator.pickBystanderReaction(
+                                emojiHint = directive.reactionEmoji,
+                                excludingMemberIDs = excluding,
+                                activeMembers = liveActiveMembers
+                            )
+                            if (reaction != null) {
+                                val updatedTarget = targetForReaction.copy(
+                                    assistanceMetadata = tMeta.copy(groupReactions = tMeta.groupReactions + reaction)
+                                )
+                                repo.saveMessage(updatedTarget)
+                                val idx = roundMessages.indexOfFirst { it.id == updatedTarget.id }
+                                if (idx >= 0) roundMessages[idx] = updatedTarget
+                            }
+                        }
+                    }
+                }
+
+                val fullTextForRouting = replyMsg.content
+                val burstParts = GroupDiscussionCoordinator.splitShortBubbles(
+                    text = fullTextForRouting,
+                    style = liveConv.assistanceSettings.groupSpeechStyle,
+                    enabled = liveConv.assistanceSettings.groupSplitShortBubbles,
+                    intent = step.intent
+                )
+                if (burstParts.size == 2) {
+                    val firstMeta = if (directive.asksHost) updatedMeta.copy(groupAskedHost = false) else updatedMeta
+                    val firstBubble = replyMsg.copy(content = burstParts[0], assistanceMetadata = firstMeta)
+                    repo.saveMessage(firstBubble)
+                    delay(200)
+                    val burstSort = (repo.getMessages(liveConv.id).maxOfOrNull { it.sortIndex } ?: replyMsg.sortIndex) + 1
+                    val secondBubble = replyMsg.copy(
+                        id = UUID.randomUUID().toString().uppercase(),
+                        content = burstParts[1],
+                        reasoningContent = "",
+                        parentMessageID = firstBubble.id,
+                        sortIndex = burstSort,
+                        createdAtEpochMs = System.currentTimeMillis(),
+                        assistanceMetadata = MessageAssistanceMetadata(
+                            groupMemberID = member.id,
+                            groupMemberName = member.name,
+                            groupMemberTitle = member.title,
+                            groupMemberEmoji = member.avatarEmoji,
+                            isPersonaSimulation = member.isSimulatedPersona,
+                            personaExcerpts = firstMeta.personaExcerpts,
+                            groupAskedHost = directive.asksHost
+                        )
+                    )
+                    repo.saveMessage(secondBubble)
+                    roundMessages.add(firstBubble)
+                    roundMessages.add(secondBubble)
+                } else {
+                    replyMsg = replyMsg.copy(assistanceMetadata = updatedMeta)
+                    repo.saveMessage(replyMsg)
+                    roundMessages.add(replyMsg)
+                }
+
+                spokenMemberIDs.add(member.id.uppercase())
+                turnsCompleted++
+
+                nextStep = if (directive.asksHost) {
+                    null
+                } else if (explicitQueue.isNotEmpty()) {
+                    explicitQueue.removeFirst()
+                } else if (dynamicSmartRelay) {
+                    GroupDiscussionCoordinator.selectNextRelaySpeaker(
+                        after = member,
+                        visibleReply = fullTextForRouting,
+                        directive = directive,
+                        activeMembers = liveActiveMembers,
+                        spokenMemberIDs = spokenMemberIDs,
+                        turnsCompleted = turnsCompleted,
+                        maxRelayTurns = maxRelayTurns,
+                        speakingMode = liveConv.assistanceSettings.groupSpeakingMode
+                    )?.let { (nextM, nextI) -> RelayStep(nextM, nextI, allowPass = true) }
+                } else {
+                    null
+                }
+
+                if (nextStep != null) {
+                    delay(160)
+                }
+            }
+        } finally {
+            activeGroupSpeaker.value = null
+            streamingOverlays.value = emptyMap()
+            repo.saveConversation(initialConversation.copy(updatedAtEpochMs = System.currentTimeMillis()))
+        }
+    }
+
     private fun executeSendSingleMessage(
         text: String,
         attachments: List<MessageAttachment>,
@@ -789,7 +1449,7 @@ class ChatViewModel(
             primaryTarget = conv.primaryTarget ?: target,
             updatedAtEpochMs = now
         )
-        val history = ChatRepository.buildPromptHistory(currentMessages + userMsg, conv.contextMessageLimit)
+        val history = buildSinglePromptHistoryWithPersona(currentMessages + userMsg, conv)
 
         launchSlots(
             conversation = updatedConv,
@@ -804,6 +1464,19 @@ class ChatViewModel(
                 )
             )
         )
+    }
+
+    private fun buildSinglePromptHistoryWithPersona(
+        messages: List<ChatMessageItem>,
+        conv: ConversationItem
+    ): List<LLMPromptMessage> {
+        val base = ChatRepository.buildPromptHistory(messages, conv.contextMessageLimit)
+        val privatePersona = conv.assistanceSettings.privatePersona ?: return base
+        val materials = privatePersona.persona?.materials.orEmpty()
+        if (materials.isEmpty() || base.isEmpty()) return base
+        val last = base.last()
+        val ref = PersonaMaterials.referenceBlock(materials, last.content) ?: return base
+        return base.dropLast(1) + last.copy(content = "${last.content}\n\n$ref")
     }
 
     private fun executeSendArenaMessage(
@@ -957,7 +1630,7 @@ class ChatViewModel(
     private suspend fun runSingleSlot(
         slot: StreamSlot,
         conversation: ConversationItem
-    ) {
+    ): SlotOutcome {
         var liveReply = slot.message
         val target = slot.target
         val provider = slot.provider
@@ -1012,7 +1685,7 @@ class ChatViewModel(
             supportsReasoning = target.supportsReasoning,
             systemPrompt = renderedSystem,
             messages = slot.history,
-            temperature = if (conversation.useCustomTemperature) conversation.temperature else null,
+            temperature = slot.temperatureOverride ?: if (conversation.useCustomTemperature) conversation.temperature else null,
             topP = conversation.topP,
             maxOutputTokens = conversation.maxOutputTokens.takeIf { it > 0 },
             enableThinking = conversation.enableThinking,
@@ -1025,6 +1698,7 @@ class ChatViewModel(
         var thinkingEndMs: Int? = null
         var lastDbFlushMs = 0L
         var abnormalFinish = false
+        var finalizedDirective: GroupTurnDirective? = null
 
         try {
             container.llmClient.streamChat(llmRequest).collect { event ->
@@ -1045,24 +1719,27 @@ class ChatViewModel(
                         liveReply = liveReply.copy(reasoningContent = liveReply.reasoningContent + event.text)
                         streamingOverlays.update { it + (liveReply.id to liveReply) }
                     }
-                    is LLMStreamEvent.ContentDelta -> if (event.text.isNotEmpty()) {
-                        if (reasoningStartMs != null && thinkingEndMs == null) {
-                            thinkingEndMs = elapsedMs
+                    is LLMStreamEvent.ContentDelta -> {
+                        val visibleDelta = slot.groupSanitizer?.ingest(event.text) ?: event.text
+                        if (visibleDelta.isNotEmpty()) {
+                            if (reasoningStartMs != null && thinkingEndMs == null) {
+                                thinkingEndMs = elapsedMs
+                            }
+                            if (record.firstContentMs == null) {
+                                record = record.copy(firstContentMs = elapsedMs)
+                            }
+                            record = record.copy(
+                                lastOutputMs = elapsedMs,
+                                outputChunkCount = record.outputChunkCount + 1
+                            )
+                            liveReply = liveReply.copy(
+                                content = liveReply.content + visibleDelta,
+                                thinkingDurationMs = thinkingEndMs?.let { end ->
+                                    reasoningStartMs?.let { start -> maxOf(0, end - start) }
+                                } ?: liveReply.thinkingDurationMs
+                            )
+                            streamingOverlays.update { it + (liveReply.id to liveReply) }
                         }
-                        if (record.firstContentMs == null) {
-                            record = record.copy(firstContentMs = elapsedMs)
-                        }
-                        record = record.copy(
-                            lastOutputMs = elapsedMs,
-                            outputChunkCount = record.outputChunkCount + 1
-                        )
-                        liveReply = liveReply.copy(
-                            content = liveReply.content + event.text,
-                            thinkingDurationMs = thinkingEndMs?.let { end ->
-                                reasoningStartMs?.let { start -> maxOf(0, end - start) }
-                            } ?: liveReply.thinkingDurationMs
-                        )
-                        streamingOverlays.update { it + (liveReply.id to liveReply) }
                     }
                     is LLMStreamEvent.AttachmentDelta -> {
                         record = record.copy(
@@ -1109,6 +1786,12 @@ class ChatViewModel(
                     lastDbFlushMs = nowClock
                     repo.saveMessage(liveReply)
                 }
+            }
+
+            if (slot.groupSanitizer != null) {
+                val finalized = slot.groupSanitizer.finalize()
+                liveReply = liveReply.copy(content = finalized.visibleText)
+                finalizedDirective = finalized.directive
             }
 
             val totalMs = ((System.nanoTime() - startNanos) / 1_000_000L).toInt().coerceAtLeast(0)
@@ -1161,7 +1844,20 @@ class ChatViewModel(
             repo.saveRequestRecord(record)
             streamingOverlays.update { it - liveReply.id }
         }
+        return SlotOutcome(liveReply, finalizedDirective)
     }
+
+    private fun resolveGroupPairs(
+        conv: ConversationItem,
+        providers: List<ProviderItem>,
+        ready: List<ResolvedModelTarget>
+    ): List<Triple<GroupMember, ResolvedModelTarget, ProviderItem>> =
+        conv.activeGroupMembers.mapNotNull { member ->
+            val resolved = ready.firstOrNull { it.id == member.target.id } ?: return@mapNotNull null
+            val provider = providers.firstOrNull { it.id.equals(resolved.providerID, ignoreCase = true) }
+                ?: return@mapNotNull null
+            Triple(member.copy(target = resolved), resolved, provider)
+        }
 
     private fun makeUserMessage(
         conversationID: String,

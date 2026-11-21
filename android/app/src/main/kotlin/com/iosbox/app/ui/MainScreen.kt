@@ -13,9 +13,13 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
@@ -31,6 +35,7 @@ import com.iosbox.app.core.storage.PresetItem
 import com.iosbox.app.ui.assistants.AssistantListScreen
 import com.iosbox.app.ui.chat.ChatDetailScreen
 import com.iosbox.app.ui.chat.ConversationListScreen
+import com.iosbox.app.ui.chat.GroupSetupSheet
 import com.iosbox.app.ui.providers.ProviderDetailScreen
 import com.iosbox.app.ui.providers.ProviderListScreen
 import com.iosbox.app.ui.usage.UsageScreen
@@ -54,6 +59,9 @@ fun MainScreen(container: AppContainer) {
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
     val scope = rememberCoroutineScope()
+    var showCreateGroupSheet by remember { mutableStateOf(false) }
+    val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
+    val personaProfiles by container.chatRepository.observePersonaProfiles().collectAsStateWithLifecycle(initialValue = emptyList())
 
     val topLevelRoutes = setOf(Routes.CHATS, Routes.ASSISTANTS, Routes.PROVIDERS, Routes.USAGE)
     val showBottomBar = currentDestination?.route in topLevelRoutes
@@ -148,6 +156,7 @@ fun MainScreen(container: AppContainer) {
                     onOpenConversation = { id -> navController.navigate(Routes.chatDetail(id)) },
                     onCreateConversation = { openNewChat(null) },
                     onCreateArenaConversation = openNewArena,
+                    onCreateGroupConversation = { showCreateGroupSheet = true },
                     onGoToProviders = {
                         navController.navigate(Routes.PROVIDERS) {
                             popUpTo(navController.graph.findStartDestination().id) { saveState = true }
@@ -160,7 +169,13 @@ fun MainScreen(container: AppContainer) {
             composable(Routes.ASSISTANTS) {
                 AssistantListScreen(
                     container = container,
-                    onStartChatWithPreset = { preset -> openNewChat(preset) }
+                    onStartChatWithPreset = { preset -> openNewChat(preset) },
+                    onStartPrivatePersonaChat = { member ->
+                        scope.launch {
+                            val conv = container.chatRepository.openOrCreatePrivatePersonaChat(member)
+                            navController.navigate(Routes.chatDetail(conv.id))
+                        }
+                    }
                 )
             }
             composable(Routes.PROVIDERS) {
@@ -199,5 +214,29 @@ fun MainScreen(container: AppContainer) {
                 )
             }
         }
+    }
+
+    if (showCreateGroupSheet) {
+        GroupSetupSheet(
+            existing = null,
+            providers = providers,
+            personaProfiles = personaProfiles,
+            onSave = { title, emoji, systemPrompt, members, speakingMode, speechStyle, maxRelayTurns, splitShortBubbles ->
+                scope.launch {
+                    val created = container.chatRepository.createGroupConversation(
+                        title = title,
+                        emoji = emoji,
+                        systemPrompt = systemPrompt,
+                        members = members,
+                        speakingMode = speakingMode,
+                        speechStyle = speechStyle,
+                        maxRelayTurns = maxRelayTurns,
+                        splitShortBubbles = splitShortBubbles
+                    )
+                    navController.navigate(Routes.chatDetail(created.id))
+                }
+            },
+            onDismiss = { showCreateGroupSheet = false }
+        )
     }
 }

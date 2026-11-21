@@ -7,6 +7,7 @@ import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -37,9 +38,13 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ViewColumn
 import androidx.compose.material3.AlertDialog
@@ -133,6 +138,7 @@ fun ChatDetailScreen(
 
     var showModelPicker by remember { mutableStateOf(false) }
     var showArenaConfig by remember { mutableStateOf(false) }
+    var showGroupSetup by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
@@ -167,7 +173,16 @@ fun ChatDetailScreen(
 
     val topBarSubtitle: String
     val topBarSubtitleOk: Boolean
-    if (conv?.isArenaMode == true) {
+    if (conv?.isGroupMode == true) {
+        val activeCount = conv.activeGroupMembers.size
+        val totalCount = conv.groupMembers.size
+        val modeBadge = conv.assistanceSettings.groupSpeakingMode.shortBadge
+        topBarSubtitle = L10n.text(
+            "群聊 · $activeCount/$totalCount 人 · $modeBadge",
+            "Group · $activeCount/$totalCount · $modeBadge"
+        )
+        topBarSubtitleOk = activeCount >= 1
+    } else if (conv?.isArenaMode == true) {
         val count = conv.arenaTargets.size
         val blindSuffix = if (conv.assistanceSettings.blindArenaMode) L10n.text(" · 双盲", " · Blind") else ""
         topBarSubtitle = if (count >= 2) {
@@ -222,19 +237,33 @@ fun ChatDetailScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.clickable(enabled = conv != null) {
-                                if (conv?.isArenaMode == true) showArenaConfig = true else showModelPicker = true
+                                when {
+                                    conv?.isGroupMode == true -> showGroupSetup = true
+                                    conv?.isArenaMode == true -> showArenaConfig = true
+                                    else -> showModelPicker = true
+                                }
                             }
                         )
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showArenaConfig = true }, enabled = conv != null && !state.isGenerating) {
-                        Icon(
-                            imageVector = Icons.Filled.ViewColumn,
-                            contentDescription = L10n.text("模型竞技场", "Model Arena"),
-                            tint = if (conv?.isArenaMode == true) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface
-                        )
+                    if (conv?.isGroupMode == true) {
+                        IconButton(onClick = { showGroupSetup = true }, enabled = !state.isGenerating) {
+                            Icon(
+                                imageVector = Icons.Filled.Groups,
+                                contentDescription = L10n.text("群成员与设置", "Group Settings"),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    } else {
+                        IconButton(onClick = { showArenaConfig = true }, enabled = conv != null && !state.isGenerating) {
+                            Icon(
+                                imageVector = Icons.Filled.ViewColumn,
+                                contentDescription = L10n.text("模型竞技场", "Model Arena"),
+                                tint = if (conv?.isArenaMode == true) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                     }
                     IconButton(onClick = { showSettings = true }, enabled = conv != null) {
                         Icon(Icons.Filled.Tune, contentDescription = L10n.text("会话参数", "Chat Settings"))
@@ -265,6 +294,26 @@ fun ChatDetailScreen(
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.padding(horizontal = DS.Spacing.lg, vertical = DS.Spacing.sm)
                     )
+                }
+            }
+
+            state.activeGroupSpeaker?.let { speakerLabel ->
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = DS.Spacing.lg, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.8.dp)
+                        Text(
+                            text = L10n.text("$speakerLabel 正在发言…", "$speakerLabel is speaking…"),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
                 }
             }
 
@@ -315,10 +364,13 @@ fun ChatDetailScreen(
                                     style = MaterialTheme.typography.displaySmall
                                 )
                                 Text(
-                                    text = if (conv?.isArenaMode == true) {
-                                        L10n.text("多模型竞技场 · 同台竞技", "Model Arena · Side-by-Side")
-                                    } else {
-                                        L10n.text("纯本地直连 · 开始提问", "Local Direct · Ask anything")
+                                    text = when {
+                                        conv?.isGroupMode == true -> L10n.text(
+                                            "圆桌群聊 · 抛出话题或 @点名",
+                                            "Roundtable · Throw a topic or @mention"
+                                        )
+                                        conv?.isArenaMode == true -> L10n.text("多模型竞技场 · 同台竞技", "Model Arena · Side-by-Side")
+                                        else -> L10n.text("纯本地直连 · 开始提问", "Local Direct · Ask anything")
                                     },
                                     style = MaterialTheme.typography.titleSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -346,6 +398,7 @@ fun ChatDetailScreen(
                                     message = msg,
                                     canRegenerate = !state.isGenerating && msg.role == MessageRole.ASSISTANT,
                                     canCompareWithAnother = !state.isGenerating &&
+                                        conv?.isGroupMode != true &&
                                         msg.role == MessageRole.ASSISTANT &&
                                         readyTargets.size >= 2,
                                     onRegenerate = { vm.regenerateMessage(msg) },
@@ -372,6 +425,76 @@ fun ChatDetailScreen(
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
+            if (conv?.isGroupMode == true) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = DS.Spacing.md, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (state.isGenerating) 0.4f else 0.9f),
+                        modifier = Modifier.clickable(enabled = !state.isGenerating) { vm.continueGroupDiscussion() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Text(L10n.text("继续讨论", "Continue"), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (state.isGenerating) 0.4f else 0.9f),
+                        modifier = Modifier.clickable(enabled = !state.isGenerating) { vm.startGroupVote() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Filled.HowToVote, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Text(L10n.text("全员表决", "Vote"), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (state.isGenerating) 0.4f else 0.9f),
+                        modifier = Modifier.clickable(enabled = !state.isGenerating) { vm.summarizeGroupDiscussion() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Filled.Summarize, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Text(L10n.text("生成纪要", "Summary"), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+
+                    for (member in conv.activeGroupMembers) {
+                        Surface(
+                            shape = CircleShape,
+                            border = BorderStroke(1.dp, DS.parseHexColor(member.accentHex).copy(alpha = 0.5f)),
+                            color = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.clickable { vm.appendMentionToDraft(member) }
+                        ) {
+                            Text(
+                                text = "@${member.mentionToken}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = DS.parseHexColor(member.accentHex),
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+                }
+            }
 
             if (state.draftAttachments.isNotEmpty()) {
                 Row(
@@ -433,6 +556,8 @@ fun ChatDetailScreen(
                     shape = RoundedCornerShape(DS.Radius.lg)
                 )
 
+                val canSendDraft = state.draftText.isNotBlank() || state.draftAttachments.isNotEmpty()
+                val canBargeIn = conv?.isGroupMode == true && state.isGenerating && canSendDraft
                 if (state.isGenerating) {
                     IconButton(
                         onClick = { vm.stopGeneration() },
@@ -447,23 +572,23 @@ fun ChatDetailScreen(
                             tint = MaterialTheme.colorScheme.onError
                         )
                     }
-                } else {
-                    val canSend = state.draftText.isNotBlank() || state.draftAttachments.isNotEmpty()
+                }
+                if (!state.isGenerating || canBargeIn) {
                     IconButton(
                         onClick = { vm.sendCurrentDraft() },
-                        enabled = canSend,
+                        enabled = canSendDraft,
                         modifier = Modifier
                             .size(44.dp)
                             .clip(CircleShape)
                             .background(
-                                if (canSend) MaterialTheme.colorScheme.primary
+                                if (canSendDraft) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.surfaceVariant
                             )
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = L10n.text("发送", "Send"),
-                            tint = if (canSend) MaterialTheme.colorScheme.onPrimary
+                            contentDescription = if (canBargeIn) L10n.text("插话发送", "Barge In") else L10n.text("发送", "Send"),
+                            tint = if (canSendDraft) MaterialTheme.colorScheme.onPrimary
                             else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -489,6 +614,16 @@ fun ChatDetailScreen(
             blindArenaMode = conv.assistanceSettings.blindArenaMode,
             onApply = vm::setArenaConfiguration,
             onDismiss = { showArenaConfig = false }
+        )
+    }
+
+    if (showGroupSetup && conv != null) {
+        GroupSetupSheet(
+            existing = conv,
+            providers = state.providers,
+            personaProfiles = state.personaProfiles,
+            onSave = vm::updateGroupConfiguration,
+            onDismiss = { showGroupSetup = false }
         )
     }
 
@@ -612,6 +747,10 @@ private fun MessageBubbleRow(
             }
         }
     } else {
+        val meta = message.assistanceMetadata
+        val groupSpeaker = meta.groupSpeakerDisplayTitle
+        val speakerColor = DS.parseHexColor(message.accentHex)
+
         Column(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(DS.Spacing.xs)
@@ -620,22 +759,85 @@ private fun MessageBubbleRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(DS.parseHexColor(message.accentHex))
-                )
-                Text(
-                    text = listOf(message.providerName, message.modelDisplayName)
-                        .filter { it.isNotBlank() }
-                        .joinToString(" · ")
-                        .ifEmpty { "Assistant" },
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (groupSpeaker != null) {
+                    Text(
+                        text = meta.groupMemberEmoji ?: "🤖",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = groupSpeaker,
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                        color = speakerColor
+                    )
+                    if (message.modelDisplayName.isNotBlank()) {
+                        Text(
+                            text = "· ${message.modelDisplayName}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    meta.groupSpeechIntent?.badgeTitle?.let { intentBadge ->
+                        Surface(
+                            shape = CircleShape,
+                            color = speakerColor.copy(alpha = 0.14f)
+                        ) {
+                            Text(
+                                text = intentBadge,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = speakerColor,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                    if (meta.groupAskedHost) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.tertiaryContainer
+                        ) {
+                            Text(
+                                text = L10n.text("@群主 等你拍板", "@Host"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(speakerColor)
+                    )
+                    Text(
+                        text = listOf(message.providerName, message.modelDisplayName)
+                            .filter { it.isNotBlank() }
+                            .joinToString(" · ")
+                            .ifEmpty { "Assistant" },
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 if (message.isStreaming) {
                     CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.8.dp)
+                }
+            }
+
+            if (!meta.groupReplyToSpeaker.isNullOrBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(DS.Radius.xs),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                ) {
+                    Text(
+                        text = "↩ @${meta.groupReplyToSpeaker}：${meta.groupReplyToExcerpt.orEmpty()}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
                 }
             }
 
@@ -679,6 +881,26 @@ private fun MessageBubbleRow(
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.padding(DS.Spacing.sm)
                     )
+                }
+            }
+
+            if (!message.isStreaming && meta.groupReactions.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    for (reaction in meta.groupReactions) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+                        ) {
+                            Text(
+                                text = "${reaction.emoji} ${reaction.memberName}",
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 }
             }
 
