@@ -39,6 +39,7 @@ import com.iosbox.app.ui.chat.GroupSetupSheet
 import com.iosbox.app.ui.providers.ProviderDetailScreen
 import com.iosbox.app.ui.providers.ProviderListScreen
 import com.iosbox.app.ui.settings.PersonalMemoryScreen
+import com.iosbox.app.ui.study.FlashcardReviewScreen
 import com.iosbox.app.ui.usage.UsageScreen
 import kotlinx.coroutines.launch
 
@@ -50,6 +51,7 @@ private object Routes {
     const val CHAT_DETAIL = "chat/{conversationId}"
     const val PROVIDER_DETAIL = "provider/{providerId}"
     const val MEMORIES = "memories"
+    const val FLASHCARDS = "flashcards"
 
     fun chatDetail(id: String) = "chat/$id"
     fun providerDetail(id: String) = "provider/$id"
@@ -165,7 +167,8 @@ fun MainScreen(container: AppContainer) {
                             launchSingleTop = true
                             restoreState = true
                         }
-                    }
+                    },
+                    onOpenFlashcards = { navController.navigate(Routes.FLASHCARDS) }
                 )
             }
             composable(Routes.ASSISTANTS) {
@@ -185,7 +188,8 @@ fun MainScreen(container: AppContainer) {
                 ProviderListScreen(
                     container = container,
                     onOpenProvider = { id -> navController.navigate(Routes.providerDetail(id)) },
-                    onOpenMemories = { navController.navigate(Routes.MEMORIES) }
+                    onOpenMemories = { navController.navigate(Routes.MEMORIES) },
+                    onOpenFlashcards = { navController.navigate(Routes.FLASHCARDS) }
                 )
             }
             composable(Routes.USAGE) {
@@ -193,6 +197,12 @@ fun MainScreen(container: AppContainer) {
             }
             composable(Routes.MEMORIES) {
                 PersonalMemoryScreen(
+                    container = container,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+            composable(Routes.FLASHCARDS) {
+                FlashcardReviewScreen(
                     container = container,
                     onBack = { navController.popBackStack() }
                 )
@@ -211,7 +221,8 @@ fun MainScreen(container: AppContainer) {
                         navController.navigate(Routes.PROVIDERS)
                     },
                     onOpenMemories = { navController.navigate(Routes.MEMORIES) },
-                    onOpenConversation = { id -> navController.navigate(Routes.chatDetail(id)) }
+                    onOpenConversation = { id -> navController.navigate(Routes.chatDetail(id)) },
+                    onOpenFlashcards = { navController.navigate(Routes.FLASHCARDS) }
                 )
             }
             composable(

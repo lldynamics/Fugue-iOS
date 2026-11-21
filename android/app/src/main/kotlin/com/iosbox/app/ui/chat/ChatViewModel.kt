@@ -25,6 +25,8 @@ import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestMetrics
 import com.iosbox.app.core.model.RequestStatus
 import com.iosbox.app.core.model.ResolvedModelTarget
+import com.iosbox.app.core.model.StudyCardDraft
+import com.iosbox.app.core.model.StudyCoachMode
 import com.iosbox.app.core.network.AgentToolRunner
 import com.iosbox.app.core.network.ArenaSynthesis
 import com.iosbox.app.core.network.GroupDiscussionCoordinator
@@ -40,6 +42,7 @@ import com.iosbox.app.core.network.PersonaMaterials
 import com.iosbox.app.core.network.SearchError
 import com.iosbox.app.core.network.SearchEvidence
 import com.iosbox.app.core.network.SearchSource
+import com.iosbox.app.core.network.StudyGeneratorService
 import com.iosbox.app.core.network.TavilySearchClient
 import com.iosbox.app.core.network.WebpageApprovalDecision
 import com.iosbox.app.core.security.SecretStore
@@ -102,6 +105,7 @@ data class ChatDetailUiState(
     val draftText: String = "",
     val draftAttachments: List<MessageAttachment> = emptyList(),
     val isGenerating: Boolean = false,
+    val studyGeneratingMessageID: String? = null,
     val activeGroupSpeaker: String? = null,
     val useWebSearchOnce: Boolean = false,
     val hasTavilyKey: Boolean = false,
@@ -124,6 +128,7 @@ class ChatViewModel(
     private val bannerError = MutableStateFlow<String?>(null)
     private val pendingConsent = MutableStateFlow<PendingConsentAction?>(null)
     private val pendingWebpageApproval = MutableStateFlow<PendingWebpageApproval?>(null)
+    private val studyGeneratingMessageID = MutableStateFlow<String?>(null)
 
     private val approvedWebpageHosts = HashSet<String>()
     private var pendingApprovalDeferred: CompletableDeferred<WebpageApprovalDecision>? = null
@@ -131,10 +136,15 @@ class ChatViewModel(
 
     private val libraryFlow = combine(
         repo.observeBooks(),
-        repo.observePersonalMemories()
-    ) { books, memories ->
-        books to memories.count { it.isEnabled && it.content.isNotBlank() }
-            .coerceAtMost(PersonalMemoryPrompt.MAXIMUM_COUNT)
+        repo.observePersonalMemories(),
+        studyGeneratingMessageID
+    ) { books, memories, studyMsgId ->
+        Triple(
+            books,
+            memories.count { it.isEnabled && it.content.isNotBlank() }
+                .coerceAtMost(PersonalMemoryPrompt.MAXIMUM_COUNT),
+            studyMsgId
+        )
     }
 
     private val baseDataFlow = combine(
@@ -144,7 +154,7 @@ class ChatViewModel(
         repo.observePresets(),
         combine(repo.observePersonaProfiles(), libraryFlow) { profiles, lib -> profiles to lib }
     ) { conv, msgs, providers, presets, (profiles, lib) ->
-        BaseData(conv, msgs, providers, presets, profiles, lib.first, lib.second)
+        BaseData(conv, msgs, providers, presets, profiles, lib.first, lib.second, lib.third)
     }
 
     private val extrasFlow = combine(
@@ -191,6 +201,7 @@ class ChatViewModel(
             draftText = draft,
             draftAttachments = atts,
             isGenerating = overlays.isNotEmpty() || extras.speaker != null || mergedMessages.any { it.isStreaming },
+            studyGeneratingMessageID = base.studyGeneratingMessageID,
             activeGroupSpeaker = extras.speaker,
             useWebSearchOnce = extras.useWebSearchOnce,
             hasTavilyKey = extras.hasTavilyKey,
@@ -207,7 +218,8 @@ class ChatViewModel(
         val presets: List<PresetItem>,
         val personaProfiles: List<GroupMember>,
         val books: List<BookVolumeItem>,
-        val enabledMemoryCount: Int
+        val enabledMemoryCount: Int,
+        val studyGeneratingMessageID: String?
     )
 
     private data class ExtraUiState(
@@ -362,6 +374,207 @@ class ChatViewModel(
             BookImporter.readUri(contentResolver, uri)
         }
         return repo.storePreparedBook(prepared)
+    }
+
+    fun setStudyCoachMode(mode: StudyCoachMode) {
+        val conv = uiState.value.conversation ?: return
+        viewModelScope.launch {
+            repo.saveConversation(
+                conv.copy(
+                    assistanceSettings = conv.assistanceSettings.copy(studyCoachMode = mode),
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    fun toggleBookmark(message: ChatMessageItem) {
+        val meta = message.assistanceMetadata
+        viewModelScope.launch {
+            repo.saveMessage(
+                message.copy(
+                    assistanceMetadata = meta.copy(isBookmarked = !meta.isBookmarked)
+                )
+            )
+        }
+    }
+
+    fun toggleExcludedFromContext(message: ChatMessageItem) {
+        val meta = message.assistanceMetadata
+        viewModelScope.launch {
+            repo.saveMessage(
+                message.copy(
+                    assistanceMetadata = meta.copy(isExcludedFromContext = !meta.isExcludedFromContext)
+                )
+            )
+        }
+    }
+
+    fun insertContextDivider() {
+        val state = uiState.value
+        val conv = state.conversation ?: return
+        if (state.isGenerating) return
+        val nextSort = (state.messages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+        val divider = ChatMessageItem(
+            id = UUID.randomUUID().toString().uppercase(),
+            conversationID = conv.id,
+            role = MessageRole.SYSTEM,
+            content = L10n.text("以上内容不计入后续上下文", "Context cleared above"),
+            reasoningContent = "",
+            attachments = emptyList(),
+            providerID = null,
+            providerName = "",
+            modelID = "",
+            modelDisplayName = "",
+            accentHex = "#3F6EF6",
+            comparisonGroupID = null,
+            isSelectedInGroup = true,
+            isStreaming = false,
+            errorMessage = null,
+            finishReason = null,
+            promptTokens = null,
+            completionTokens = null,
+            cachedTokens = null,
+            latencyMs = null,
+            thinkingDurationMs = null,
+            synthesisSourceDigest = null,
+            latestRequestID = null,
+            assistanceMetadata = MessageAssistanceMetadata(isContextDivider = true),
+            parentMessageID = null,
+            sortIndex = nextSort,
+            createdAtEpochMs = System.currentTimeMillis()
+        )
+        viewModelScope.launch {
+            repo.saveMessage(divider)
+        }
+    }
+
+    fun deleteContextDivider(message: ChatMessageItem) {
+        if (!message.assistanceMetadata.isContextDivider) return
+        viewModelScope.launch {
+            repo.deleteMessage(message.id)
+        }
+    }
+
+    fun sendQuickPrompt(promptText: String) {
+        if (uiState.value.isGenerating) return
+        draftText.value = promptText
+        sendCurrentDraft()
+    }
+
+    fun generateFlashcardsForMessage(message: ChatMessageItem) {
+        val state = uiState.value
+        val conv = state.conversation ?: return
+        if (state.studyGeneratingMessageID != null || state.isGenerating) return
+        val ready = ChatRepository.readyTargets(state.providers)
+        val target = resolveReplyTarget(message, conv, state.providers, ready)
+        val provider = target?.let { t ->
+            state.providers.firstOrNull { it.id.equals(t.providerID, ignoreCase = true) }
+        }
+        if (target == null || provider == null) {
+            bannerError.value = L10n.text("没有可用的模型用于生成闪卡。", "No ready model available to generate flashcards.")
+            return
+        }
+        runWithConsent(consentSummaryFor(listOf(target to provider))) {
+            bannerError.value = null
+            viewModelScope.launch {
+                studyGeneratingMessageID.value = message.id
+                try {
+                    val cards = StudyGeneratorService.requestFlashcards(
+                        sourceText = message.content,
+                        target = target,
+                        provider = provider,
+                        conversationID = conv.id,
+                        messageID = message.id,
+                        repo = repo,
+                        secretStore = container.secretStore,
+                        llmClient = container.llmClient
+                    )
+                    repo.saveMessage(
+                        message.copy(
+                            assistanceMetadata = message.assistanceMetadata.copy(generatedFlashcards = cards)
+                        )
+                    )
+                } catch (t: Throwable) {
+                    if (t !is CancellationException) {
+                        bannerError.value = t.message ?: L10n.text("生成闪卡失败", "Failed to generate flashcards")
+                    }
+                } finally {
+                    studyGeneratingMessageID.value = null
+                }
+            }
+        }
+    }
+
+    fun generateQuizForMessage(message: ChatMessageItem) {
+        val state = uiState.value
+        val conv = state.conversation ?: return
+        if (state.studyGeneratingMessageID != null || state.isGenerating) return
+        val ready = ChatRepository.readyTargets(state.providers)
+        val target = resolveReplyTarget(message, conv, state.providers, ready)
+        val provider = target?.let { t ->
+            state.providers.firstOrNull { it.id.equals(t.providerID, ignoreCase = true) }
+        }
+        if (target == null || provider == null) {
+            bannerError.value = L10n.text("没有可用的模型用于生成测验。", "No ready model available to generate quiz.")
+            return
+        }
+        runWithConsent(consentSummaryFor(listOf(target to provider))) {
+            bannerError.value = null
+            viewModelScope.launch {
+                studyGeneratingMessageID.value = message.id
+                try {
+                    val quiz = StudyGeneratorService.requestQuiz(
+                        sourceText = message.content,
+                        fallbackTitle = conv.title,
+                        target = target,
+                        provider = provider,
+                        conversationID = conv.id,
+                        messageID = message.id,
+                        repo = repo,
+                        secretStore = container.secretStore,
+                        llmClient = container.llmClient
+                    )
+                    repo.saveMessage(
+                        message.copy(
+                            assistanceMetadata = message.assistanceMetadata.copy(generatedQuiz = quiz)
+                        )
+                    )
+                } catch (t: Throwable) {
+                    if (t !is CancellationException) {
+                        bannerError.value = t.message ?: L10n.text("生成测验失败", "Failed to generate quiz")
+                    }
+                } finally {
+                    studyGeneratingMessageID.value = null
+                }
+            }
+        }
+    }
+
+    fun selectQuizOption(message: ChatMessageItem, questionID: String, optionIndex: Int) {
+        val quiz = message.assistanceMetadata.generatedQuiz ?: return
+        val updatedQuestions = quiz.questions.map { q ->
+            if (q.id == questionID) q.copy(selectedIndex = optionIndex) else q
+        }
+        viewModelScope.launch {
+            repo.saveMessage(
+                message.copy(
+                    assistanceMetadata = message.assistanceMetadata.copy(
+                        generatedQuiz = quiz.copy(questions = updatedQuestions)
+                    )
+                )
+            )
+        }
+    }
+
+    fun saveDraftCardsToDeck(message: ChatMessageItem, drafts: List<StudyCardDraft>) {
+        val convTitle = uiState.value.conversation?.title ?: ""
+        container.flashcardRepository.addDrafts(
+            drafts = drafts,
+            deckName = convTitle,
+            conversationID = message.conversationID,
+            messageID = message.id
+        )
     }
 
     fun approveProposedMemory(message: ChatMessageItem, fact: String) {
@@ -2143,6 +2356,14 @@ class ChatViewModel(
                     assistanceMetadata = liveReply.assistanceMetadata.copy(memoryCount = memCount)
                 )
                 streamingOverlays.update { it + (liveReply.id to liveReply) }
+            }
+        }
+        val coachMode = conversation.assistanceSettings.studyCoachMode
+        if (!conversation.isGroupMode && slot.kind != RequestKind.SYNTHESIS && coachMode != StudyCoachMode.OFF) {
+            renderedSystem = if (renderedSystem.isBlank()) {
+                coachMode.systemInstruction
+            } else {
+                "$renderedSystem\n\n${coachMode.systemInstruction}"
             }
         }
         val allKeys = container.secretStore.loadAllAPIKeys(provider.id)

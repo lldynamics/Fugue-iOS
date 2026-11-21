@@ -1,6 +1,7 @@
 package com.iosbox.app.ui.chat
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,21 +15,29 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ViewColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -38,8 +47,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,15 +58,23 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iosbox.app.AppContainer
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.ConversationItem
+import com.iosbox.app.core.storage.ConversationSearch
+import com.iosbox.app.core.storage.ConversationSearchHit
 import com.iosbox.app.ui.theme.DS
+import com.iosbox.app.ui.theme.LocalAccentColors
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -68,23 +87,48 @@ fun ConversationListScreen(
     onCreateConversation: () -> Unit,
     onCreateArenaConversation: () -> Unit,
     onCreateGroupConversation: () -> Unit,
-    onGoToProviders: () -> Unit
+    onGoToProviders: () -> Unit,
+    onOpenFlashcards: () -> Unit
 ) {
     val conversations by container.chatRepository.observeConversations().collectAsStateWithLifecycle(initialValue = emptyList())
     val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
+    val flashcards by container.flashcardRepository.cards.collectAsStateWithLifecycle()
     val readyCount = remember(providers) { ChatRepository.readyTargets(providers).size }
+    val dueCardsCount = remember(flashcards) {
+        val now = System.currentTimeMillis()
+        flashcards.count { it.isDue(now) }
+    }
 
     var searchQuery by remember { mutableStateOf("") }
+    var selectedFolderTag by remember { mutableStateOf<String?>(null) }
+    var bookmarkedOnly by remember { mutableStateOf(false) }
+    var messagesByConversation by remember { mutableStateOf<Map<String, List<ChatMessageItem>>>(emptyMap()) }
+    var editingTagFor by remember { mutableStateOf<ConversationItem?>(null) }
     val scope = rememberCoroutineScope()
 
-    val filtered = remember(conversations, searchQuery) {
-        val q = searchQuery.trim().lowercase()
-        if (q.isEmpty()) conversations
-        else conversations.filter {
-            it.title.lowercase().contains(q) ||
-                (it.primaryTarget?.modelDisplayName?.lowercase()?.contains(q) == true)
+    val availableTags = remember(conversations) {
+        conversations.mapNotNull { it.folderTag?.trim()?.takeIf { tag -> tag.isNotEmpty() } }
+            .distinct()
+            .sorted()
+    }
+
+    LaunchedEffect(conversations, searchQuery, bookmarkedOnly) {
+        if (searchQuery.isNotBlank() || bookmarkedOnly) {
+            if (searchQuery.isNotBlank()) delay(160)
+            messagesByConversation = container.chatRepository.getAllMessagesGroupedByConversation()
         }
     }
+
+    val searchResults = remember(conversations, messagesByConversation, searchQuery, selectedFolderTag, bookmarkedOnly) {
+        ConversationSearch.search(
+            conversations = conversations,
+            messagesByConversation = messagesByConversation,
+            query = searchQuery,
+            folderTag = selectedFolderTag,
+            bookmarkedChatsOnly = bookmarkedOnly
+        )
+    }
+    val conversationMap = remember(conversations) { conversations.associateBy { it.id } }
 
     Scaffold(
         topBar = {
@@ -96,6 +140,21 @@ fun ConversationListScreen(
                     )
                 },
                 actions = {
+                    IconButton(onClick = onOpenFlashcards) {
+                        if (dueCardsCount > 0) {
+                            BadgedBox(badge = { Badge { Text(dueCardsCount.toString()) } }) {
+                                Icon(
+                                    imageVector = Icons.Filled.School,
+                                    contentDescription = L10n.text("学习闪卡", "Flashcards")
+                                )
+                            }
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.School,
+                                contentDescription = L10n.text("学习闪卡", "Flashcards")
+                            )
+                        }
+                    }
                     IconButton(onClick = onCreateGroupConversation) {
                         Icon(
                             imageVector = Icons.Filled.Groups,
@@ -157,14 +216,48 @@ fun ConversationListScreen(
                     onValueChange = { searchQuery = it },
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                    placeholder = { Text(L10n.text("搜索对话标题或模型…", "Search chats…")) },
+                    placeholder = { Text(L10n.text("全文检索对话、消息内容、标签…", "Search chats and message text…")) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = DS.Spacing.lg, vertical = DS.Spacing.xs)
                 )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = DS.Spacing.lg, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    FilterChip(
+                        selected = selectedFolderTag == null && !bookmarkedOnly,
+                        onClick = {
+                            selectedFolderTag = null
+                            bookmarkedOnly = false
+                        },
+                        label = { Text(L10n.text("全部", "All")) }
+                    )
+                    FilterChip(
+                        selected = bookmarkedOnly,
+                        onClick = { bookmarkedOnly = !bookmarkedOnly },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Bookmark, contentDescription = null, modifier = Modifier.size(14.dp))
+                        },
+                        label = { Text(L10n.text("有收藏", "Bookmarked")) }
+                    )
+                    for (tag in availableTags) {
+                        FilterChip(
+                            selected = selectedFolderTag == tag,
+                            onClick = {
+                                selectedFolderTag = if (selectedFolderTag == tag) null else tag
+                            },
+                            label = { Text(tag) }
+                        )
+                    }
+                }
             }
 
-            if (filtered.isEmpty()) {
+            if (searchResults.isEmpty()) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -189,9 +282,11 @@ fun ConversationListScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 88.dp)
                 ) {
-                    items(filtered, key = { it.id }) { conv ->
+                    items(searchResults, key = { it.conversationID }) { res ->
+                        val conv = conversationMap[res.conversationID] ?: return@items
                         ConversationRow(
                             conversation = conv,
+                            hits = res.hits,
                             onClick = { onOpenConversation(conv.id) },
                             onTogglePin = {
                                 scope.launch {
@@ -200,6 +295,7 @@ fun ConversationListScreen(
                                     )
                                 }
                             },
+                            onSetFolderTag = { editingTagFor = conv },
                             onDelete = {
                                 scope.launch {
                                     container.chatRepository.deleteConversation(conv.id)
@@ -212,16 +308,53 @@ fun ConversationListScreen(
             }
         }
     }
+
+    editingTagFor?.let { target ->
+        var tagDraft by remember(target.id) { mutableStateOf(target.folderTag.orEmpty()) }
+        AlertDialog(
+            onDismissRequest = { editingTagFor = null },
+            title = { Text(L10n.text("设置分组标签", "Set Folder Tag")) },
+            text = {
+                OutlinedTextField(
+                    value = tagDraft,
+                    onValueChange = { tagDraft = it },
+                    singleLine = true,
+                    placeholder = { Text(L10n.text("例如：工作、学习、读书笔记（留空清除）", "e.g. Work, Study (blank to clear)")) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val cleaned = tagDraft.trim().takeIf { it.isNotEmpty() }?.take(32)
+                    val conv = target
+                    editingTagFor = null
+                    scope.launch {
+                        container.chatRepository.saveConversation(conv.copy(folderTag = cleaned))
+                    }
+                }) {
+                    Text(L10n.text("保存", "Save"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingTagFor = null }) {
+                    Text(L10n.text("取消", "Cancel"))
+                }
+            }
+        )
+    }
 }
 
 @Composable
 private fun ConversationRow(
     conversation: ConversationItem,
+    hits: List<ConversationSearchHit>,
     onClick: () -> Unit,
     onTogglePin: () -> Unit,
+    onSetFolderTag: () -> Unit,
     onDelete: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val accent = LocalAccentColors.current
     val dateText = remember(conversation.updatedAtEpochMs) {
         DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
             .format(Date(conversation.updatedAtEpochMs))
@@ -286,6 +419,19 @@ private fun ConversationRow(
                             )
                         }
                     }
+                    conversation.folderTag?.takeIf { it.isNotBlank() }?.let { tag ->
+                        Surface(
+                            shape = CircleShape,
+                            color = accent.softFill
+                        ) {
+                            Text(
+                                text = tag,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = accent.readableText,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 val modelOrArenaLabel = when {
@@ -309,6 +455,24 @@ private fun ConversationRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                for (hit in hits.take(2)) {
+                    val annotated = buildAnnotatedString {
+                        append("${hit.speaker}: ")
+                        append(hit.excerpt.before)
+                        withStyle(SpanStyle(color = accent.readableText, fontWeight = FontWeight.Bold)) {
+                            append(hit.excerpt.match)
+                        }
+                        append(hit.excerpt.after)
+                    }
+                    Text(
+                        text = annotated,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
             }
             Box {
                 IconButton(onClick = { menuExpanded = true }) {
@@ -329,6 +493,14 @@ private fun ConversationRow(
                         onClick = {
                             menuExpanded = false
                             onTogglePin()
+                        }
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.Label, contentDescription = null) },
+                        text = { Text(L10n.text("设置分组标签", "Folder Tag")) },
+                        onClick = {
+                            menuExpanded = false
+                            onSetFolderTag()
                         }
                     )
                     DropdownMenuItem(

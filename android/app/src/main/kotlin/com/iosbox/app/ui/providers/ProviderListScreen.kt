@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -82,10 +83,12 @@ import java.util.Locale
 fun ProviderListScreen(
     container: AppContainer,
     onOpenProvider: (String) -> Unit,
-    onOpenMemories: () -> Unit
+    onOpenMemories: () -> Unit,
+    onOpenFlashcards: () -> Unit
 ) {
     val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
     val memories by container.chatRepository.observePersonalMemories().collectAsStateWithLifecycle(initialValue = emptyList())
+    val flashcards by container.flashcardRepository.cards.collectAsStateWithLifecycle()
     val prefs by container.preferences.state.collectAsStateWithLifecycle()
     val secretVersion by container.secretStore.versionFlow.collectAsStateWithLifecycle()
     val savedTavilyKey = remember(secretVersion) {
@@ -140,6 +143,7 @@ fun ProviderListScreen(
                     pendingEncryptedImport = bytes
                 } else {
                     val summary = container.backupRepository.importPlainJsonBytes(bytes)
+                    container.flashcardRepository.reload()
                     alertInfo = summary.title to summary.description
                 }
             } catch (t: Throwable) {
@@ -239,6 +243,51 @@ fun ProviderListScreen(
                         }
                         Text(
                             text = L10n.text("编辑", "Edit"),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+
+            item {
+                val dueCount = remember(flashcards) {
+                    val now = System.currentTimeMillis()
+                    flashcards.count { it.isDue(now) }
+                }
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenFlashcards() }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(DS.Spacing.md),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.School,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = L10n.text("学习闪卡库 (SM-2)", "Study Flashcard Library (SM-2)"),
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                            Text(
+                                text = L10n.text(
+                                    "待复习 $dueCount 张 · 共 ${flashcards.size} 张",
+                                    "$dueCount due · ${flashcards.size} total"
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            text = L10n.text("复习", "Study"),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -607,6 +656,7 @@ fun ProviderListScreen(
                             isBusyBackup = true
                             try {
                                 val summary = container.backupRepository.importEncryptedBytes(encBytes, pwd)
+                                container.flashcardRepository.reload()
                                 alertInfo = summary.title to summary.description
                             } catch (t: Throwable) {
                                 alertInfo = L10n.text("导入失败", "Import Failed") to (t.message ?: "Error")

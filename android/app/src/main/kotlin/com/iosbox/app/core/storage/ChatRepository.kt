@@ -941,6 +941,13 @@ class ChatRepository(
         db.chatMessageDao().getByConversation(conversationID.uppercase()).map { toChatMessageItem(it) }
     }
 
+    suspend fun getAllMessagesGroupedByConversation(): Map<String, List<ChatMessageItem>> = withContext(Dispatchers.IO) {
+        db.chatMessageDao().getAll()
+            .sortedWith(compareBy<ChatMessageEntity> { it.sortIndex }.thenBy { it.createdAtEpochMs })
+            .map(::toChatMessageItem)
+            .groupBy { it.conversationID.uppercase() }
+    }
+
     fun observeArenaMessages(): Flow<List<ChatMessageItem>> =
         db.chatMessageDao().observeArenaMessages()
             .map { list -> list.map(::toChatMessageItem) }
@@ -1232,18 +1239,22 @@ class ChatRepository(
             }
 
         fun buildPromptHistory(messages: List<ChatMessageItem>, limit: Int): List<LLMPromptMessage> {
+            val dividerIdx = messages.indexOfLast { it.assistanceMetadata.isContextDivider }
+            val activeRange = if (dividerIdx >= 0) messages.subList(dividerIdx + 1, messages.size) else messages
+
             val collapsed = mutableListOf<ChatMessageItem>()
             val processedGroups = HashSet<String>()
 
-            for (msg in messages) {
-                if (msg.role == MessageRole.SYSTEM) continue
+            for (msg in activeRange) {
+                if (msg.role == MessageRole.SYSTEM || msg.assistanceMetadata.isExcludedFromContext) continue
                 val gid = msg.comparisonGroupID
                 if (gid != null) {
                     if (!processedGroups.add(gid)) continue
-                    val candidates = messages.filter { c ->
+                    val candidates = activeRange.filter { c ->
                         c.comparisonGroupID == gid &&
+                            !c.assistanceMetadata.isExcludedFromContext &&
                             (c.content.isNotEmpty() || c.attachments.isNotEmpty()) &&
-                            (!c.isSynthesis || (ArenaSynthesis.isComplete(c) && ArenaSynthesis.isCurrent(c, messages)))
+                            (!c.isSynthesis || (ArenaSynthesis.isComplete(c) && ArenaSynthesis.isCurrent(c, activeRange)))
                     }
                     val winner = candidates.firstOrNull { it.isSelectedInGroup }
                         ?: candidates.firstOrNull { !it.isSynthesis }

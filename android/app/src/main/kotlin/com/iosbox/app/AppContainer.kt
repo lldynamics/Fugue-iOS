@@ -12,6 +12,7 @@ import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.DataSeeder
 import com.iosbox.app.core.storage.ExternalBlobStore
 import com.iosbox.app.core.storage.FileExternalBlobStore
+import com.iosbox.app.core.storage.FlashcardRepository
 import com.iosbox.app.core.storage.FugueDatabase
 import java.io.File
 
@@ -36,6 +37,8 @@ class AppContainer(context: Context) {
         blobStore = blobStore,
         secretStore = secretStore
     )
+
+    val flashcardRepository: FlashcardRepository = FlashcardRepository(blobStore = blobStore)
 
     val backupRepository: BackupRepository = BackupRepository(
         db = database,

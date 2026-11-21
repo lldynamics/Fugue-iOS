@@ -96,6 +96,26 @@ Review your peers' strongest points, catch any errors, gaps, or unsupported assu
     fun isGroupRevealed(groupMessages: List<ChatMessageItem>, isBlindMode: Boolean): Boolean =
         !isBlindMode || groupMessages.filter { !it.isSynthesis }.any { it.assistanceMetadata.blindArenaRevealed }
 
+    fun visibleSpeakerName(
+        message: ChatMessageItem,
+        allGroupCandidates: List<ChatMessageItem>,
+        blindArenaMode: Boolean
+    ): String {
+        val meta = message.assistanceMetadata
+        meta.groupSpeakerDisplayTitle?.let { return it }
+        meta.bookReply?.let { return it.byline }
+        val gid = message.comparisonGroupID
+        if (blindArenaMode && gid != null && !message.isSynthesis) {
+            val group = allGroupCandidates.filter { it.comparisonGroupID.equals(gid, ignoreCase = true) }
+            if (group.isNotEmpty() && !isGroupRevealed(group, blindArenaMode)) {
+                val ordered = blindDisplayOrder(group, gid)
+                val idx = ordered.indexOfFirst { it.id.equals(message.id, ignoreCase = true) }
+                if (idx >= 0) return blindLabel(idx)
+            }
+        }
+        return message.modelDisplayName.ifBlank { message.providerName }.ifBlank { "Assistant" }
+    }
+
     fun candidatePrompt(
         eligible: List<ChatMessageItem>,
         totalCount: Int,

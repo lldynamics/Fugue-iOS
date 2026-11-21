@@ -266,7 +266,7 @@ class BooksAndMemoryTest {
         assertFalse(prompt.contains("Preference #20"))
 
         val codec = BackupJson.codec
-        val convExisting = codec.parseToJsonElement("""{"studyCoachMode":"quiz"}""").jsonObject
+        val convExisting = codec.parseToJsonElement("""{"autoGenerateTitle":true}""").jsonObject
         val friend = BookFriend("B1", "红楼梦", "林黛玉", listOf("颦儿"), throughChapter = 3)
         val convMerged = ConversationAssistanceSettings(
             usePersonalMemory = true,
@@ -274,14 +274,14 @@ class BooksAndMemoryTest {
             bookFriend = friend,
             companionBookID = "B1"
         ).mergeInto(convExisting, codec)
-        assertEquals("quiz", convMerged["studyCoachMode"]?.jsonPrimitive?.content)
+        assertEquals("true", convMerged["autoGenerateTitle"]?.jsonPrimitive?.content)
         assertEquals("B1", convMerged["companionBookID"]?.jsonPrimitive?.content)
         assertEquals("林黛玉", convMerged["bookFriend"]?.jsonObject?.get("name")?.jsonPrimitive?.content)
 
         val clearedConv = ConversationAssistanceSettings().mergeInto(convMerged, codec)
         assertNull(clearedConv["bookFriend"])
         assertNull(clearedConv["companionBookID"])
-        assertEquals("quiz", clearedConv["studyCoachMode"]?.jsonPrimitive?.content)
+        assertEquals("true", clearedConv["autoGenerateTitle"]?.jsonPrimitive?.content)
 
         val msgExisting = codec.parseToJsonElement("""{"studyQuizScore":95}""").jsonObject
         val kev = KnowledgeEvidence("q", listOf(KnowledgePassage(1, "B1", "红楼梦", "第一回", "片段原文", 0, 12)))

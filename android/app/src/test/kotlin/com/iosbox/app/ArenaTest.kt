@@ -213,12 +213,12 @@ class ArenaTest {
     fun assistanceModelsMergePreservesUnknownIosBackupFields() {
         val codec = BackupJson.codec
         val existingConvJson = codec.parseToJsonElement(
-            """{"backupState":{"legacyImportID":"AAAA"},"studyCoachMode":"active","blindArenaMode":false}"""
+            """{"backupState":{"legacyImportID":"AAAA"},"autoGenerateTitle":true,"blindArenaMode":false}"""
         ).jsonObject
         val convSettings = ConversationAssistanceSettings(blindArenaMode = true, usePersonalMemory = true)
         val mergedConv = convSettings.mergeInto(existingConvJson, codec)
         assertEquals("true", mergedConv["blindArenaMode"]?.jsonPrimitive?.content)
-        assertEquals("active", mergedConv["studyCoachMode"]?.jsonPrimitive?.content)
+        assertEquals("true", mergedConv["autoGenerateTitle"]?.jsonPrimitive?.content)
         assertEquals("AAAA", mergedConv["backupState"]?.jsonObject?.get("legacyImportID")?.jsonPrimitive?.content)
 
         val ballot = ArenaBallot(winnerID = "M1")

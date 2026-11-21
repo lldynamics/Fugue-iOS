@@ -87,6 +87,7 @@ data class ConversationAssistanceSettings(
     val enableAgentTools: Boolean = false,
     val enableNativeGrounding: Boolean = false,
     val knowledgeVolumeIDs: List<String> = emptyList(),
+    val studyCoachMode: StudyCoachMode = StudyCoachMode.OFF,
     val isGroupMode: Boolean = false,
     val bookFriend: BookFriend? = null,
     val companionBookID: String? = null,
@@ -123,6 +124,8 @@ data class ConversationAssistanceSettings(
 data class MessageAssistanceMetadata(
     val memoryCount: Int = 0,
     val isBookmarked: Boolean = false,
+    val isContextDivider: Boolean = false,
+    val isExcludedFromContext: Boolean = false,
     val omittedMemory: Boolean = false,
     val omittedKnowledge: Boolean = false,
     val quotedExcerpt: String? = null,
@@ -133,6 +136,8 @@ data class MessageAssistanceMetadata(
     val handledMemories: List<String> = emptyList(),
     val knowledgeEvidence: KnowledgeEvidence? = null,
     val bookReply: BookReplyEvidence? = null,
+    val generatedFlashcards: List<StudyCardDraft> = emptyList(),
+    val generatedQuiz: StudyQuizBundle? = null,
     val blindArenaRevealed: Boolean = false,
     val blindArenaBallot: ArenaBallot? = null,
     val groupMemberID: String? = null,
@@ -174,6 +179,7 @@ data class MessageAssistanceMetadata(
         if (search == null) merged.remove("search")
         if (knowledgeEvidence == null) merged.remove("knowledgeEvidence")
         if (bookReply == null) merged.remove("bookReply")
+        if (generatedQuiz == null) merged.remove("generatedQuiz")
         if (blindArenaBallot == null) merged.remove("blindArenaBallot")
         if (groupMemberID == null) merged.remove("groupMemberID")
         if (groupMemberName == null) merged.remove("groupMemberName")

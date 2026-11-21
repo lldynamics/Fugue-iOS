@@ -35,7 +35,10 @@ import androidx.compose.material.icons.automirrored.filled.CompareArrows
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.AutoStories
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
@@ -43,16 +46,25 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Quiz
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.School
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Style
 import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.ViewColumn
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.alpha
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -64,6 +76,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -75,6 +88,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -93,11 +107,22 @@ import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.MessageRole
 import com.iosbox.app.core.model.ReadingCitation
+import com.iosbox.app.core.model.StudyCardDraft
+import com.iosbox.app.core.model.StudyCoachMode
 import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.core.storage.ChatRepository
+import com.iosbox.app.core.storage.ConversationExporter
+import com.iosbox.app.core.storage.ConversationSearch
 import com.iosbox.app.ui.books.BookReaderSheet
+import com.iosbox.app.ui.study.MessageStudyDeckCard
 import com.iosbox.app.ui.theme.DS
 import com.iosbox.app.ui.theme.LocalAccentColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 
 private data class ReaderLaunchState(
     val volumeID: String,
@@ -144,7 +169,8 @@ fun ChatDetailScreen(
     onBack: () -> Unit,
     onGoToProviders: () -> Unit,
     onOpenMemories: () -> Unit,
-    onOpenConversation: (String) -> Unit
+    onOpenConversation: (String) -> Unit,
+    onOpenFlashcards: () -> Unit
 ) {
     val vm: ChatViewModel = viewModel(
         key = "chat_$conversationId",
@@ -152,6 +178,7 @@ fun ChatDetailScreen(
     )
     val state by vm.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
     var showModelPicker by remember { mutableStateOf(false) }
@@ -160,6 +187,11 @@ fun ChatDetailScreen(
     var showSettings by remember { mutableStateOf(false) }
     var showKnowledgeSheet by remember { mutableStateOf(false) }
     var showBookProgressDialog by remember { mutableStateOf(false) }
+    var showCoachDialog by remember { mutableStateOf(false) }
+    var showInChatSearch by remember { mutableStateOf(false) }
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var pendingMarkdownExport by remember { mutableStateOf<String?>(null) }
+    var exportStatusAlert by remember { mutableStateOf<String?>(null) }
     var readingRequest by remember { mutableStateOf<ReaderLaunchState?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
@@ -167,6 +199,27 @@ fun ChatDetailScreen(
     var activeBallotGroupID by remember { mutableStateOf<String?>(null) }
     var judgeGroupID by remember { mutableStateOf<String?>(null) }
     var compareSourceMessage by remember { mutableStateOf<ChatMessageItem?>(null) }
+
+    val markdownExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/markdown")
+    ) { uri ->
+        val md = pendingMarkdownExport
+        pendingMarkdownExport = null
+        if (uri == null || md == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use {
+                        it.write(md.toByteArray(Charsets.UTF_8))
+                    } ?: error("Cannot write markdown file")
+                }
+            }.onSuccess {
+                exportStatusAlert = L10n.text("Markdown 对话记录已保存。", "Markdown transcript saved.")
+            }.onFailure { err ->
+                exportStatusAlert = err.message ?: L10n.text("导出失败", "Export failed")
+            }
+        }
+    }
 
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 4)
@@ -326,6 +379,54 @@ fun ChatDetailScreen(
                     }
                     IconButton(onClick = { showSettings = true }, enabled = conv != null) {
                         Icon(Icons.Filled.Tune, contentDescription = L10n.text("会话参数", "Chat Settings"))
+                    }
+                    Box {
+                        IconButton(onClick = { showMoreMenu = true }, enabled = conv != null) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = L10n.text("更多操作", "More"))
+                        }
+                        DropdownMenu(
+                            expanded = showMoreMenu,
+                            onDismissRequest = { showMoreMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                                text = { Text(L10n.text("搜消息 / 收藏夹", "Search / Bookmarks")) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    showInChatSearch = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                leadingIcon = { Icon(Icons.Filled.ClearAll, contentDescription = null) },
+                                text = { Text(L10n.text("插入上下文清空分隔线", "Insert Context Divider")) },
+                                enabled = !state.isGenerating && state.messages.isNotEmpty(),
+                                onClick = {
+                                    showMoreMenu = false
+                                    vm.insertContextDivider()
+                                }
+                            )
+                            DropdownMenuItem(
+                                leadingIcon = { Icon(Icons.Filled.Upload, contentDescription = null) },
+                                text = { Text(L10n.text("导出 Markdown", "Export Markdown")) },
+                                enabled = state.messages.isNotEmpty() && conv != null,
+                                onClick = {
+                                    showMoreMenu = false
+                                    conv?.let { c ->
+                                        pendingMarkdownExport = ConversationExporter.makeMarkdown(c, state.messages)
+                                        val name = ConversationExporter.sanitizedFileName(c.title)
+                                        markdownExportLauncher.launch("$name.md")
+                                    }
+                                }
+                            )
+                            DropdownMenuItem(
+                                leadingIcon = { Icon(Icons.Filled.School, contentDescription = null) },
+                                text = { Text(L10n.text("学习闪卡库", "Flashcards")) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    onOpenFlashcards()
+                                }
+                            )
+                        }
                     }
                 }
             )
@@ -493,11 +594,25 @@ fun ChatDetailScreen(
                                         conv?.isGroupMode != true &&
                                         msg.role == MessageRole.ASSISTANT &&
                                         readyTargets.size >= 2,
+                                    canStudyGenerate = !state.isGenerating &&
+                                        state.studyGeneratingMessageID == null &&
+                                        msg.role == MessageRole.ASSISTANT &&
+                                        msg.content.isNotBlank(),
+                                    isStudyGenerating = state.studyGeneratingMessageID == msg.id,
                                     onRegenerate = { vm.regenerateMessage(msg) },
                                     onCompareWithAnother = { compareSourceMessage = msg },
                                     onApproveMemory = { fact -> vm.approveProposedMemory(msg, fact) },
                                     onDismissMemory = { fact -> vm.dismissProposedMemory(msg, fact) },
-                                    onOpenCitation = openCitation
+                                    onOpenCitation = openCitation,
+                                    onToggleBookmark = { vm.toggleBookmark(msg) },
+                                    onToggleExcluded = { vm.toggleExcludedFromContext(msg) },
+                                    onDeleteDivider = { vm.deleteContextDivider(msg) },
+                                    onGenerateFlashcards = { vm.generateFlashcardsForMessage(msg) },
+                                    onGenerateQuiz = { vm.generateQuizForMessage(msg) },
+                                    onSaveCard = { card -> vm.saveDraftCardsToDeck(msg, listOf(card)) },
+                                    onSaveAllCards = { vm.saveDraftCardsToDeck(msg, msg.assistanceMetadata.generatedFlashcards) },
+                                    onSelectQuizOption = { qId, optIdx -> vm.selectQuizOption(msg, qId, optIdx) },
+                                    onOpenFlashcardLibrary = onOpenFlashcards
                                 )
                             }
                             is ChatTimelineEntry.ArenaGroup -> {
@@ -676,6 +791,53 @@ fun ChatDetailScreen(
                             )
                         }
                     )
+                    if (!conv.isArenaMode) {
+                        val coachMode = conv.assistanceSettings.studyCoachMode
+                        FilterChip(
+                            selected = coachMode != StudyCoachMode.OFF,
+                            onClick = { showCoachDialog = true },
+                            enabled = !state.isGenerating,
+                            leadingIcon = {
+                                Icon(Icons.Filled.School, contentDescription = null, modifier = Modifier.size(15.dp))
+                            },
+                            label = {
+                                Text(
+                                    text = coachMode.shortBadge,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        )
+                    }
+                }
+
+                val coachMode = conv.assistanceSettings.studyCoachMode
+                if (!conv.isArenaMode && coachMode != StudyCoachMode.OFF && coachMode.quickChips.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = DS.Spacing.md, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for (chip in coachMode.quickChips) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.secondaryContainer.copy(
+                                    alpha = if (state.isGenerating) 0.4f else 0.9f
+                                ),
+                                modifier = Modifier.clickable(enabled = !state.isGenerating) {
+                                    vm.sendQuickPrompt(chip.prompt)
+                                }
+                            ) {
+                                Text(
+                                    text = chip.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -944,6 +1106,191 @@ fun ChatDetailScreen(
         }
     }
 
+    if (showCoachDialog && conv != null) {
+        val currentCoach = conv.assistanceSettings.studyCoachMode
+        AlertDialog(
+            onDismissRequest = { showCoachDialog = false },
+            title = { Text(L10n.text("选择助学导师模式", "Study Coach Mode")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (mode in StudyCoachMode.entries) {
+                        val selected = currentCoach == mode
+                        Surface(
+                            shape = RoundedCornerShape(DS.Radius.sm),
+                            color = if (selected) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    vm.setStudyCoachMode(mode)
+                                    showCoachDialog = false
+                                }
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(DS.Spacing.sm),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = mode.displayName,
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
+                                )
+                                Text(
+                                    text = mode.subtitle,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCoachDialog = false }) {
+                    Text(L10n.text("关闭", "Close"))
+                }
+            }
+        )
+    }
+
+    if (showInChatSearch) {
+        var inChatQuery by remember { mutableStateOf("") }
+        var inChatBookmarksOnly by remember { mutableStateOf(false) }
+        val accent = LocalAccentColors.current
+        val inChatHits = remember(state.messages, inChatQuery, inChatBookmarksOnly) {
+            ConversationSearch.inConversation(
+                messages = state.messages,
+                query = inChatQuery,
+                bookmarksOnly = inChatBookmarksOnly
+            )
+        }
+        val msgById = remember(state.messages) { state.messages.associateBy { it.id } }
+
+        ModalBottomSheet(onDismissRequest = { showInChatSearch = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = DS.Spacing.lg)
+                    .padding(bottom = DS.Spacing.xxl),
+                verticalArrangement = Arrangement.spacedBy(DS.Spacing.sm)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = L10n.text("本对话搜索与收藏", "Search & Bookmarks"),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    FilterChip(
+                        selected = inChatBookmarksOnly,
+                        onClick = { inChatBookmarksOnly = !inChatBookmarksOnly },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Bookmark, contentDescription = null, modifier = Modifier.size(15.dp))
+                        },
+                        label = { Text(L10n.text("仅看收藏", "Bookmarked Only")) }
+                    )
+                }
+
+                OutlinedTextField(
+                    value = inChatQuery,
+                    onValueChange = { inChatQuery = it },
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    placeholder = { Text(L10n.text("搜索关键词、代码或文件名…", "Search messages…")) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (inChatHits.isEmpty()) {
+                    Text(
+                        text = L10n.text("暂无匹配消息或收藏记录。", "No matching messages or bookmarks."),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 18.dp)
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        for (hit in inChatHits) {
+                            val hitMsg = msgById[hit.messageID] ?: continue
+                            Surface(
+                                shape = RoundedCornerShape(DS.Radius.sm),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val entryIndex = timelineEntries.indexOfFirst { entry ->
+                                            when (entry) {
+                                                is ChatTimelineEntry.SingleMessage -> entry.message.id == hit.messageID
+                                                is ChatTimelineEntry.ArenaGroup -> entry.messages.any { it.id == hit.messageID }
+                                            }
+                                        }
+                                        showInChatSearch = false
+                                        if (entryIndex >= 0) {
+                                            scope.launch { listState.animateScrollToItem(entryIndex) }
+                                        }
+                                    }
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(DS.Spacing.sm),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Text(
+                                        text = if (hitMsg.role == MessageRole.USER) L10n.text("提问", "You")
+                                        else hitMsg.modelDisplayName.ifBlank { "Assistant" },
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = accent.readableText
+                                    )
+                                    val ex = hit.excerpt
+                                    if (ex != null) {
+                                        val annotated = buildAnnotatedString {
+                                            append(ex.before)
+                                            withStyle(SpanStyle(color = accent.readableText, fontWeight = FontWeight.Bold)) {
+                                                append(ex.match)
+                                            }
+                                            append(ex.after)
+                                        }
+                                        Text(
+                                            text = annotated,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    } else {
+                                        Text(
+                                            text = hitMsg.content,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    exportStatusAlert?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { exportStatusAlert = null },
+            title = { Text(L10n.text("导出提示", "Export")) },
+            text = { Text(msg) },
+            confirmButton = {
+                Button(onClick = { exportStatusAlert = null }) {
+                    Text(L10n.text("好", "OK"))
+                }
+            }
+        )
+    }
+
     if (showRenameDialog) {
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
@@ -1037,20 +1384,72 @@ private fun MessageBubbleRow(
     activeBookID: String?,
     canRegenerate: Boolean,
     canCompareWithAnother: Boolean,
+    canStudyGenerate: Boolean,
+    isStudyGenerating: Boolean,
     onRegenerate: () -> Unit,
     onCompareWithAnother: () -> Unit,
     onApproveMemory: (String) -> Unit,
     onDismissMemory: (String) -> Unit,
-    onOpenCitation: (ReadingCitation) -> Unit
+    onOpenCitation: (ReadingCitation) -> Unit,
+    onToggleBookmark: () -> Unit,
+    onToggleExcluded: () -> Unit,
+    onDeleteDivider: () -> Unit,
+    onGenerateFlashcards: () -> Unit,
+    onGenerateQuiz: () -> Unit,
+    onSaveCard: (StudyCardDraft) -> Unit,
+    onSaveAllCards: () -> Unit,
+    onSelectQuizOption: (String, Int) -> Unit,
+    onOpenFlashcardLibrary: () -> Unit
 ) {
     val context = LocalContext.current
     val accent = LocalAccentColors.current
+    val meta = message.assistanceMetadata
+
+    if (meta.isContextDivider) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = L10n.text("移除分隔线", "Remove divider"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .size(14.dp)
+                            .clickable(onClick = onDeleteDivider)
+                    )
+                }
+            }
+            HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+        }
+        return
+    }
+
+    val excludedModifier = if (meta.isExcludedFromContext) Modifier.alpha(0.55f) else Modifier
 
     if (message.role == MessageRole.USER) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = excludedModifier.fillMaxWidth(),
             horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             if (message.attachments.isNotEmpty()) {
                 AttachmentStrip(message.attachments)
@@ -1069,14 +1468,42 @@ private fun MessageBubbleRow(
                     )
                 }
             }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                if (meta.isExcludedFromContext) {
+                    Text(
+                        text = L10n.text("已排除", "Excluded"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
+                }
+                IconButton(onClick = onToggleBookmark, modifier = Modifier.size(24.dp)) {
+                    Icon(
+                        imageVector = if (meta.isBookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                        contentDescription = L10n.text("收藏", "Bookmark"),
+                        tint = if (meta.isBookmarked) accent.readableText else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                IconButton(onClick = onToggleExcluded, modifier = Modifier.size(24.dp)) {
+                    Icon(
+                        imageVector = if (meta.isExcludedFromContext) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                        contentDescription = L10n.text("从上下文排除", "Toggle Context"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
         }
     } else {
-        val meta = message.assistanceMetadata
         val groupSpeaker = meta.groupSpeakerDisplayTitle
         val speakerColor = DS.parseHexColor(message.accentHex)
 
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = excludedModifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(DS.Spacing.xs)
         ) {
             Row(
@@ -1213,6 +1640,15 @@ private fun MessageBubbleRow(
                 onDismiss = onDismissMemory
             )
 
+            MessageStudyDeckCard(
+                drafts = meta.generatedFlashcards,
+                quiz = meta.generatedQuiz,
+                onSaveCard = onSaveCard,
+                onSaveAllCards = onSaveAllCards,
+                onSelectQuizOption = onSelectQuizOption,
+                onOpenFlashcardLibrary = onOpenFlashcardLibrary
+            )
+
             message.finishReasonValue?.let { reason ->
                 Text(
                     text = reason.userNotice,
@@ -1303,7 +1739,44 @@ private fun MessageBubbleRow(
                             )
                         }
                     }
+                    IconButton(onClick = onToggleBookmark, modifier = Modifier.size(28.dp)) {
+                        Icon(
+                            imageVector = if (meta.isBookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                            contentDescription = L10n.text("收藏消息", "Bookmark"),
+                            tint = if (meta.isBookmarked) accent.readableText else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                    IconButton(onClick = onToggleExcluded, modifier = Modifier.size(28.dp)) {
+                        Icon(
+                            imageVector = if (meta.isExcludedFromContext) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                            contentDescription = L10n.text("切换是否计入上下文", "Toggle Context Inclusion"),
+                            tint = if (meta.isExcludedFromContext) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                    if (isStudyGenerating) {
+                        CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 1.8.dp)
+                    } else if (canStudyGenerate) {
+                        IconButton(onClick = onGenerateFlashcards, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                imageVector = Icons.Filled.Style,
+                                contentDescription = L10n.text("提炼闪卡", "Generate Flashcards"),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                        IconButton(onClick = onGenerateQuiz, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                imageVector = Icons.Filled.Quiz,
+                                contentDescription = L10n.text("随堂测验", "Generate Quiz"),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                    }
                     val metaParts = buildList {
+                        if (meta.isExcludedFromContext) add(L10n.text("已排除", "Excluded"))
                         message.latencyMs?.let { add("TTFT ${it}ms") }
                         if (message.promptTokens != null || message.completionTokens != null) {
                             val total = (message.promptTokens ?: 0) + (message.completionTokens ?: 0)
