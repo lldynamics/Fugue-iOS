@@ -309,9 +309,11 @@ fun AssistantListScreen(
                                             )
                                         }
                                         val matCount = persona.persona?.materials?.size ?: 0
+                                        val feedCount = persona.persona?.feeds?.size ?: 0
                                         val detail = listOfNotNull(
                                             "${persona.target.providerName} · ${persona.target.modelDisplayName}",
-                                            if (matCount > 0) L10n.text("$matCount 份参考资料", "$matCount materials") else null
+                                            if (matCount > 0) L10n.text("$matCount 份参考资料", "$matCount materials") else null,
+                                            if (feedCount > 0) L10n.text("$feedCount 个订阅源", "$feedCount feeds") else null
                                         ).joinToString(" · ")
                                         Text(
                                             text = detail,
@@ -376,6 +378,7 @@ fun AssistantListScreen(
         PersonaEditorSheet(
             existing = editingPersona,
             providers = providers,
+            secretStore = container.secretStore,
             onSave = { member ->
                 scope.launch { container.chatRepository.savePersonaProfile(member) }
             },

@@ -11,6 +11,7 @@ import com.iosbox.app.core.model.ArenaBallot
 import com.iosbox.app.core.model.BookFriend
 import com.iosbox.app.core.model.BookReplyEvidence
 import com.iosbox.app.core.model.GroupMember
+import com.iosbox.app.core.model.GroupSourceNotice
 import com.iosbox.app.core.model.GroupSpeakingMode
 import com.iosbox.app.core.model.GroupSpeechIntent
 import com.iosbox.app.core.model.GroupSpeechStyle
@@ -38,6 +39,7 @@ import com.iosbox.app.core.network.LLMPromptMessage
 import com.iosbox.app.core.network.LLMStreamEvent
 import com.iosbox.app.core.network.LLMThinkingBlock
 import com.iosbox.app.core.network.LLMToolCall
+import com.iosbox.app.core.network.PersonaFeedReader
 import com.iosbox.app.core.network.PersonaMaterials
 import com.iosbox.app.core.network.SearchError
 import com.iosbox.app.core.network.SearchEvidence
@@ -53,12 +55,15 @@ import com.iosbox.app.core.storage.BookVolumeItem
 import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.ConversationItem
+import com.iosbox.app.core.storage.ConversationTree
 import com.iosbox.app.core.storage.KnowledgeDocumentInput
+import com.iosbox.app.core.storage.ModelMentionParser
 import com.iosbox.app.core.storage.PresetItem
 import com.iosbox.app.core.storage.ProjectKnowledgeSearch
 import com.iosbox.app.core.storage.PromptTemplateEngine
 import com.iosbox.app.core.storage.ProviderItem
 import com.iosbox.app.core.storage.RequestRecordItem
+import com.iosbox.app.core.storage.SlashPromptCommand
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -97,6 +102,7 @@ data class PendingWebpageApproval(
 data class ChatDetailUiState(
     val conversation: ConversationItem? = null,
     val messages: List<ChatMessageItem> = emptyList(),
+    val branchSiblings: Map<String, List<ChatMessageItem>> = emptyMap(),
     val providers: List<ProviderItem> = emptyList(),
     val presets: List<PresetItem> = emptyList(),
     val personaProfiles: List<GroupMember> = emptyList(),
@@ -104,12 +110,16 @@ data class ChatDetailUiState(
     val enabledMemoryCount: Int = 0,
     val draftText: String = "",
     val draftAttachments: List<MessageAttachment> = emptyList(),
+    val quotedExcerpt: String? = null,
+    val temporaryTargetOverride: ResolvedModelTarget? = null,
     val isGenerating: Boolean = false,
+    val isRefreshingFeeds: Boolean = false,
     val studyGeneratingMessageID: String? = null,
     val activeGroupSpeaker: String? = null,
     val useWebSearchOnce: Boolean = false,
     val hasTavilyKey: Boolean = false,
     val bannerError: String? = null,
+    val feedStatusNotice: String? = null,
     val pendingConsent: PendingConsentAction? = null,
     val pendingWebpageApproval: PendingWebpageApproval? = null
 )
@@ -129,6 +139,13 @@ class ChatViewModel(
     private val pendingConsent = MutableStateFlow<PendingConsentAction?>(null)
     private val pendingWebpageApproval = MutableStateFlow<PendingWebpageApproval?>(null)
     private val studyGeneratingMessageID = MutableStateFlow<String?>(null)
+    private val quotedExcerpt = MutableStateFlow<String?>(null)
+    private val temporaryTargetOverride = MutableStateFlow<ResolvedModelTarget?>(null)
+    private val feedStatusNotice = MutableStateFlow<String?>(null)
+    private val isRefreshingFeeds = MutableStateFlow(false)
+
+    @Volatile
+    private var latestAllMessages: List<ChatMessageItem> = emptyList()
 
     private val approvedWebpageHosts = HashSet<String>()
     private var pendingApprovalDeferred: CompletableDeferred<WebpageApprovalDecision>? = null
@@ -157,6 +174,15 @@ class ChatViewModel(
         BaseData(conv, msgs, providers, presets, profiles, lib.first, lib.second, lib.third)
     }
 
+    private val powerToolsFlow = combine(
+        quotedExcerpt,
+        temporaryTargetOverride,
+        feedStatusNotice,
+        isRefreshingFeeds
+    ) { quote, targetOverride, notice, refreshing ->
+        PowerToolsState(quote, targetOverride, notice, refreshing)
+    }
+
     private val extrasFlow = combine(
         bannerError,
         pendingConsent,
@@ -166,10 +192,11 @@ class ChatViewModel(
             pendingWebpageApproval,
             container.secretStore.versionFlow.map {
                 container.secretStore.loadSecret(SecretStore.TAVILY_KEY_ACCOUNT).isNotEmpty()
-            }
-        ) { approval, hasKey -> approval to hasKey }
-    ) { err, consent, speaker, webSearchOnce, (approval, hasKey) ->
-        ExtraUiState(err, consent, speaker, webSearchOnce, approval, hasKey)
+            },
+            powerToolsFlow
+        ) { approval, hasKey, powerTools -> Triple(approval, hasKey, powerTools) }
+    ) { err, consent, speaker, webSearchOnce, (approval, hasKey, powerTools) ->
+        ExtraUiState(err, consent, speaker, webSearchOnce, approval, hasKey, powerTools)
     }
 
     val uiState: StateFlow<ChatDetailUiState> = combine(
@@ -190,9 +217,14 @@ class ChatViewModel(
                 compareBy<ChatMessageItem> { it.sortIndex }.thenBy { it.createdAtEpochMs }
             )
         }
+        latestAllMessages = mergedMessages
+        val activeLeaf = base.conversation?.activeLeafMessageID
+        val visibleMessages = ConversationTree.activeMessages(activeLeaf, mergedMessages)
+        val siblingsMap = ConversationTree.branchSiblingsMap(activeLeaf, mergedMessages)
         ChatDetailUiState(
             conversation = base.conversation,
-            messages = mergedMessages,
+            messages = visibleMessages,
+            branchSiblings = siblingsMap,
             providers = base.providers,
             presets = base.presets,
             personaProfiles = base.personaProfiles,
@@ -200,12 +232,16 @@ class ChatViewModel(
             enabledMemoryCount = base.enabledMemoryCount,
             draftText = draft,
             draftAttachments = atts,
+            quotedExcerpt = extras.powerTools.quotedExcerpt,
+            temporaryTargetOverride = extras.powerTools.temporaryTargetOverride,
             isGenerating = overlays.isNotEmpty() || extras.speaker != null || mergedMessages.any { it.isStreaming },
+            isRefreshingFeeds = extras.powerTools.isRefreshingFeeds,
             studyGeneratingMessageID = base.studyGeneratingMessageID,
             activeGroupSpeaker = extras.speaker,
             useWebSearchOnce = extras.useWebSearchOnce,
             hasTavilyKey = extras.hasTavilyKey,
             bannerError = extras.bannerError,
+            feedStatusNotice = extras.powerTools.feedStatusNotice,
             pendingConsent = extras.pendingConsent,
             pendingWebpageApproval = extras.pendingWebpageApproval
         )
@@ -222,13 +258,21 @@ class ChatViewModel(
         val studyGeneratingMessageID: String?
     )
 
+    private data class PowerToolsState(
+        val quotedExcerpt: String?,
+        val temporaryTargetOverride: ResolvedModelTarget?,
+        val feedStatusNotice: String?,
+        val isRefreshingFeeds: Boolean
+    )
+
     private data class ExtraUiState(
         val bannerError: String?,
         val pendingConsent: PendingConsentAction?,
         val speaker: String?,
         val useWebSearchOnce: Boolean,
         val pendingWebpageApproval: PendingWebpageApproval?,
-        val hasTavilyKey: Boolean
+        val hasTavilyKey: Boolean,
+        val powerTools: PowerToolsState
     )
 
     private data class StreamSlot(
@@ -414,45 +458,329 @@ class ChatViewModel(
         val state = uiState.value
         val conv = state.conversation ?: return
         if (state.isGenerating) return
-        val nextSort = (state.messages.maxOfOrNull { it.sortIndex } ?: 0) + 1
-        val divider = ChatMessageItem(
-            id = UUID.randomUUID().toString().uppercase(),
-            conversationID = conv.id,
-            role = MessageRole.SYSTEM,
-            content = L10n.text("以上内容不计入后续上下文", "Context cleared above"),
-            reasoningContent = "",
-            attachments = emptyList(),
-            providerID = null,
-            providerName = "",
-            modelID = "",
-            modelDisplayName = "",
-            accentHex = "#3F6EF6",
-            comparisonGroupID = null,
-            isSelectedInGroup = true,
-            isStreaming = false,
-            errorMessage = null,
-            finishReason = null,
-            promptTokens = null,
-            completionTokens = null,
-            cachedTokens = null,
-            latencyMs = null,
-            thinkingDurationMs = null,
-            synthesisSourceDigest = null,
-            latestRequestID = null,
-            assistanceMetadata = MessageAssistanceMetadata(isContextDivider = true),
-            parentMessageID = null,
-            sortIndex = nextSort,
-            createdAtEpochMs = System.currentTimeMillis()
-        )
         viewModelScope.launch {
-            repo.saveMessage(divider)
+            val allMsgs = repo.getMessages(conv.id)
+            val treeActive = ConversationTree.usesTree(conv.activeLeafMessageID, allMsgs)
+            val parentId = if (treeActive) ConversationTree.currentAnchorID(conv.activeLeafMessageID, allMsgs) else null
+            val nextSort = (allMsgs.maxOfOrNull { it.sortIndex } ?: 0) + 1
+            val now = System.currentTimeMillis()
+            val dividerId = UUID.randomUUID().toString().uppercase()
+            val divider = ChatMessageItem(
+                id = dividerId,
+                conversationID = conv.id,
+                role = MessageRole.SYSTEM,
+                content = L10n.text("以上内容不计入后续上下文", "Context cleared above"),
+                reasoningContent = "",
+                attachments = emptyList(),
+                providerID = null,
+                providerName = "",
+                modelID = "",
+                modelDisplayName = "",
+                accentHex = "#3F6EF6",
+                comparisonGroupID = null,
+                isSelectedInGroup = true,
+                isStreaming = false,
+                errorMessage = null,
+                finishReason = null,
+                promptTokens = null,
+                completionTokens = null,
+                cachedTokens = null,
+                latencyMs = null,
+                thinkingDurationMs = null,
+                synthesisSourceDigest = null,
+                latestRequestID = null,
+                assistanceMetadata = MessageAssistanceMetadata(isContextDivider = true),
+                parentMessageID = parentId,
+                sortIndex = nextSort,
+                createdAtEpochMs = now
+            )
+            if (treeActive) {
+                repo.saveConversationAndMessages(
+                    conv.copy(activeLeafMessageID = dividerId, updatedAtEpochMs = now),
+                    listOf(divider)
+                )
+            } else {
+                repo.saveMessage(divider)
+            }
         }
     }
 
     fun deleteContextDivider(message: ChatMessageItem) {
         if (!message.assistanceMetadata.isContextDivider) return
         viewModelScope.launch {
+            val conv = uiState.value.conversation
+            val allMsgs = if (conv != null) repo.getMessages(conv.id) else emptyList()
+            val treeActive = conv != null && ConversationTree.usesTree(conv.activeLeafMessageID, allMsgs)
+            if (conv != null && treeActive) {
+                val parentNorm = message.parentMessageID?.trim()?.uppercase()
+                val reParented = allMsgs.filter {
+                    it.parentMessageID?.trim()?.uppercase() == message.id.uppercase()
+                }.map { it.copy(parentMessageID = message.parentMessageID) }
+                val nextLeaf = if (conv.activeLeafMessageID.equals(message.id, ignoreCase = true)) {
+                    if (parentNorm == ConversationTree.VIRTUAL_ROOT_ID) null else parentNorm
+                } else {
+                    conv.activeLeafMessageID
+                }
+                repo.saveConversationAndMessages(
+                    conv.copy(activeLeafMessageID = nextLeaf, updatedAtEpochMs = System.currentTimeMillis()),
+                    reParented
+                )
+            }
             repo.deleteMessage(message.id)
+        }
+    }
+
+    fun setQuotedExcerpt(excerpt: String?) {
+        quotedExcerpt.value = excerpt?.trim()?.take(280)?.takeIf { it.isNotEmpty() }
+    }
+
+    fun quoteMessageForFollowUp(message: ChatMessageItem) {
+        setQuotedExcerpt(message.content)
+    }
+
+    fun clearFeedStatusNotice() {
+        feedStatusNotice.value = null
+    }
+
+    fun setTemporaryTargetOverride(target: ResolvedModelTarget?) {
+        temporaryTargetOverride.value = target
+    }
+
+    fun selectMentionOverride(target: ResolvedModelTarget) {
+        temporaryTargetOverride.value = target
+        draftText.value = ModelMentionParser.stripTrailingMention(draftText.value)
+    }
+
+    fun applySlashCommand(command: SlashPromptCommand) {
+        if (command.id == "clear-context") {
+            draftText.value = ""
+            insertContextDivider()
+            return
+        }
+        if (command.id == "socratic-coach") {
+            setStudyCoachMode(StudyCoachMode.SOCRATIC)
+        } else if (command.id == "feynman-coach") {
+            setStudyCoachMode(StudyCoachMode.FEYNMAN)
+        }
+        draftText.value = command.templatePrefix
+    }
+
+    fun switchBranch(targetMessage: ChatMessageItem) {
+        val state = uiState.value
+        val conv = state.conversation ?: return
+        if (state.isGenerating) return
+        viewModelScope.launch {
+            val allMsgs = repo.getMessages(conv.id)
+            val newLeaf = ConversationTree.resolveBranchLeaf(targetMessage, allMsgs)
+            repo.saveConversation(conv.copy(activeLeafMessageID = newLeaf))
+        }
+    }
+
+    fun editAndBranchUserMessage(original: ChatMessageItem, newContent: String) {
+        val state = uiState.value
+        val conv = state.conversation ?: return
+        val trimmed = newContent.trim()
+        if (state.isGenerating || trimmed.isEmpty() || original.role != MessageRole.USER) return
+
+        val ready = ChatRepository.readyTargets(state.providers)
+
+        if (conv.isGroupMode) {
+            val activePairs = resolveGroupPairs(conv, state.providers, ready)
+            if (activePairs.isEmpty()) {
+                bannerError.value = L10n.text(
+                    "群内暂无未静音且模型可用的成员，请检查群设置或服务商 API Key。",
+                    "No unmuted group member has a ready model configured."
+                )
+                return
+            }
+            val summary = consentSummaryFor(activePairs.map { it.second to it.third }.distinctBy { it.first.id })
+            runWithConsent(summary) {
+                executeEditBranchGroup(original, trimmed, conv)
+            }
+            return
+        }
+
+        if (conv.isArenaMode) {
+            val resolvedPairs = conv.arenaTargets.mapNotNull { chosen ->
+                val target = ready.firstOrNull { it.id == chosen.id } ?: return@mapNotNull null
+                val provider = state.providers.firstOrNull { it.id.equals(target.providerID, ignoreCase = true) }
+                    ?: return@mapNotNull null
+                target to provider
+            }
+            if (resolvedPairs.size < 2) {
+                bannerError.value = L10n.text(
+                    "竞技场模式需至少选择 2 个可用模型（点击顶部模型栏配置）。",
+                    "Arena mode requires at least 2 ready models."
+                )
+                return
+            }
+            runWithConsent(consentSummaryFor(resolvedPairs)) {
+                executeEditBranchArena(original, trimmed, conv, resolvedPairs)
+            }
+            return
+        }
+
+        val target = resolveActiveTarget(conv, state.providers, ready)
+        val provider = target?.let { t ->
+            state.providers.firstOrNull { it.id.equals(t.providerID, ignoreCase = true) }
+        }
+        if (target == null || provider == null) {
+            bannerError.value = L10n.text(
+                "请先在「服务商」配置 API Key 并启用至少一个模型。",
+                "Configure an API key and enable at least one model in Providers first."
+            )
+            return
+        }
+        runWithConsent(consentSummaryFor(listOf(target to provider))) {
+            executeEditBranchSingle(original, trimmed, conv, target, provider)
+        }
+    }
+
+    fun refreshPersonaFeeds() {
+        val state = uiState.value
+        val conv = state.conversation ?: return
+        if (!conv.isGroupMode || state.isGenerating || isRefreshingFeeds.value) return
+        val hasEnabledFeeds = conv.groupMembers.any { m ->
+            !m.isMuted && m.persona?.feeds?.any { it.enabled } == true
+        }
+        if (!hasEnabledFeeds) {
+            feedStatusNotice.value = L10n.text(
+                "群成员暂未配置并启用博客 RSS 或 X 订阅源，可在「助手 -> 人物档案」中添加。",
+                "No enabled blog RSS or X feeds on group members. Add feeds in Assistants -> Personas."
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            isRefreshingFeeds.value = true
+            bannerError.value = null
+            try {
+                val reader = PersonaFeedReader(
+                    tokenProvider = { container.secretStore.loadSecret(SecretStore.PERSONA_X_TOKEN_ACCOUNT) }
+                )
+                val now = System.currentTimeMillis()
+                var checked = 0
+                var added = 0
+                var baselines = 0
+                val errors = mutableListOf<String>()
+
+                val liveConv = repo.getConversation(conv.id) ?: conv
+                val currentAllMsgs = repo.getMessages(liveConv.id)
+                val treeActive = ConversationTree.usesTree(liveConv.activeLeafMessageID, currentAllMsgs)
+                var currentLeaf = if (treeActive) ConversationTree.currentAnchorID(liveConv.activeLeafMessageID, currentAllMsgs) else null
+                var nextSort = (currentAllMsgs.maxOfOrNull { it.sortIndex } ?: 0) + 1
+                val noticesToInsert = mutableListOf<ChatMessageItem>()
+
+                val updatedMembers = liveConv.groupMembers.map { member ->
+                    val persona = member.persona ?: return@map member
+                    if (member.isMuted || persona.feeds.none { it.enabled }) return@map member
+                    val nextFeeds = persona.feeds.map { feed ->
+                        if (!feed.enabled) {
+                            feed
+                        } else {
+                            checked++
+                            val wasInitial = feed.checkpoint == null
+                            val res = runCatching { reader.read(feed, nowMs = now) }
+                            res.fold(
+                                onSuccess = { batch ->
+                                    if (wasInitial) {
+                                        baselines++
+                                    } else {
+                                        for (item in batch.items) {
+                                            added++
+                                            val notice = GroupSourceNotice(
+                                                memberName = member.displayLabel,
+                                                title = item.title,
+                                                url = item.url,
+                                                published = item.published,
+                                                excerpt = item.excerpt
+                                            )
+                                            val noticeId = UUID.randomUUID().toString().uppercase()
+                                            val noticeMsg = ChatMessageItem(
+                                                id = noticeId,
+                                                conversationID = liveConv.id,
+                                                role = MessageRole.ASSISTANT,
+                                                content = notice.body,
+                                                reasoningContent = "",
+                                                attachments = emptyList(),
+                                                providerID = null,
+                                                providerName = feed.kind.displayName,
+                                                modelID = feed.kind.rawValue,
+                                                modelDisplayName = member.displayLabel,
+                                                accentHex = member.accentHex,
+                                                comparisonGroupID = null,
+                                                isSelectedInGroup = true,
+                                                isStreaming = false,
+                                                errorMessage = null,
+                                                finishReason = null,
+                                                promptTokens = null,
+                                                completionTokens = null,
+                                                cachedTokens = null,
+                                                latencyMs = null,
+                                                thinkingDurationMs = null,
+                                                synthesisSourceDigest = null,
+                                                latestRequestID = null,
+                                                assistanceMetadata = MessageAssistanceMetadata(
+                                                    groupMemberID = member.id,
+                                                    groupMemberName = member.name,
+                                                    groupMemberTitle = member.title,
+                                                    groupMemberEmoji = member.avatarEmoji,
+                                                    isPersonaSimulation = member.isSimulatedPersona,
+                                                    sourceNotice = notice
+                                                ),
+                                                parentMessageID = currentLeaf,
+                                                sortIndex = nextSort++,
+                                                createdAtEpochMs = now + added
+                                            )
+                                            if (treeActive) currentLeaf = noticeId
+                                            noticesToInsert.add(noticeMsg)
+                                        }
+                                    }
+                                    feed.copy(
+                                        checkpoint = batch.checkpoint,
+                                        lastChecked = now,
+                                        lastError = null
+                                    )
+                                },
+                                onFailure = { err ->
+                                    val msg = err.message ?: L10n.text("读取失败", "Fetch failed")
+                                    errors.add("${member.name} · $msg")
+                                    feed.copy(
+                                        lastChecked = now,
+                                        lastError = msg
+                                    )
+                                }
+                            )
+                        }
+                    }
+                    member.copy(persona = persona.copy(feeds = nextFeeds))
+                }
+
+                val savedConv = liveConv.copy(
+                    assistanceSettings = liveConv.assistanceSettings.copy(groupMembers = updatedMembers),
+                    activeLeafMessageID = if (treeActive) currentLeaf else liveConv.activeLeafMessageID,
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+                repo.saveConversationAndMessages(savedConv, noticesToInsert)
+
+                val summaryParts = mutableListOf<String>()
+                if (checked > 0) {
+                    summaryParts.add(
+                        L10n.text("已检查 $checked 个订阅，新增 $added 条动态。", "Checked $checked feeds; $added new updates.")
+                    )
+                }
+                if (baselines > 0) {
+                    summaryParts.add(
+                        L10n.text("首次检查已记录现有内容基线，之后仅推送新动态。", "Baseline recorded on initial check; future checks will post new items.")
+                    )
+                }
+                summaryParts.addAll(errors)
+                feedStatusNotice.value = summaryParts.joinToString("\n").ifEmpty {
+                    L10n.text("没有待检查的订阅。", "No feeds checked.")
+                }
+            } finally {
+                isRefreshingFeeds.value = false
+            }
         }
     }
 
@@ -701,6 +1029,10 @@ class ChatViewModel(
         splitShortBubbles: Boolean
     ) {
         val conv = uiState.value.conversation ?: return
+        val existingById = conv.groupMembers.associateBy { it.id.uppercase() }
+        val preservedMembers = members.map { m ->
+            m.preservingFeedProgress(existingById[m.id.uppercase()], keepEnabled = false)
+        }
         viewModelScope.launch {
             repo.saveConversation(
                 conv.copy(
@@ -708,10 +1040,10 @@ class ChatViewModel(
                     assistantEmoji = emoji.trim().ifEmpty { conv.assistantEmoji },
                     systemPrompt = systemPrompt.trim(),
                     isArenaMode = false,
-                    primaryTarget = members.firstOrNull()?.target ?: conv.primaryTarget,
+                    primaryTarget = preservedMembers.firstOrNull()?.target ?: conv.primaryTarget,
                     assistanceSettings = conv.assistanceSettings.copy(
                         isGroupMode = true,
-                        groupMembers = members,
+                        groupMembers = preservedMembers,
                         groupSpeakingMode = speakingMode,
                         groupSpeechStyle = speechStyle,
                         groupMaxRelayTurns = maxRelayTurns.coerceIn(1, 6),
@@ -758,7 +1090,8 @@ class ChatViewModel(
         val conv = state.conversation ?: return
         val text = state.draftText.trim()
         val attachments = state.draftAttachments
-        if (text.isEmpty() && attachments.isEmpty()) return
+        val activeQuote = state.quotedExcerpt
+        if (text.isEmpty() && attachments.isEmpty() && activeQuote.isNullOrBlank()) return
 
         val ready = ChatRepository.readyTargets(state.providers)
 
@@ -773,7 +1106,7 @@ class ChatViewModel(
             }
             val summary = consentSummaryFor(activePairs.map { it.second to it.third }.distinctBy { it.first.id })
             runWithConsent(summary) {
-                executeSendGroupMessage(text, attachments, conv)
+                executeSendGroupMessage(text, attachments, conv, activeQuote)
             }
             return
         }
@@ -806,12 +1139,15 @@ class ChatViewModel(
             val summary = consentSummaryFor(resolvedPairs)
             runWithConsent(summary) {
                 useWebSearchOnce.value = false
-                executeSendArenaMessage(text, attachments, conv, resolvedPairs, capturedSearch)
+                executeSendArenaMessage(text, attachments, conv, resolvedPairs, capturedSearch, activeQuote)
             }
             return
         }
 
-        val target = resolveActiveTarget(conv, state.providers, ready)
+        val overrideTarget = state.temporaryTargetOverride?.let { ov ->
+            ready.firstOrNull { it.id == ov.id }
+        }
+        val target = overrideTarget ?: resolveActiveTarget(conv, state.providers, ready)
         if (target == null) {
             bannerError.value = L10n.text(
                 "请先在「服务商」配置 API Key 并启用至少一个模型。",
@@ -827,7 +1163,16 @@ class ChatViewModel(
 
         runWithConsent(consentSummaryFor(listOf(target to provider))) {
             useWebSearchOnce.value = false
-            executeSendSingleMessage(text, attachments, conv, target, provider, capturedSearch)
+            executeSendSingleMessage(
+                text = text,
+                attachments = attachments,
+                conv = conv,
+                target = target,
+                provider = provider,
+                searchQuery = capturedSearch,
+                quotedExcerptText = activeQuote,
+                isTemporaryOverride = (overrideTarget != null)
+            )
         }
     }
 
@@ -863,7 +1208,10 @@ class ChatViewModel(
             bannerError.value = null
             viewModelScope.launch {
                 val now = System.currentTimeMillis()
-                val nextSort = (uiState.value.messages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+                val allMsgs = repo.getMessages(conv.id)
+                val treeActive = ConversationTree.usesTree(conv.activeLeafMessageID, allMsgs)
+                val parentId = if (treeActive) ConversationTree.currentAnchorID(conv.activeLeafMessageID, allMsgs) else null
+                val nextSort = (allMsgs.maxOfOrNull { it.sortIndex } ?: 0) + 1
                 val votePrompt = makeUserMessage(
                     conversationID = conv.id,
                     text = L10n.text(
@@ -872,10 +1220,14 @@ class ChatViewModel(
                     ),
                     attachments = emptyList(),
                     sortIndex = nextSort,
-                    createdAtEpochMs = now
+                    createdAtEpochMs = now,
+                    parentMessageID = parentId
                 )
-                repo.saveMessage(votePrompt)
-                launchGroupRelayJob(conv, GroupRunMode.GroupVote)
+                val updatedConv = if (treeActive) {
+                    conv.copy(activeLeafMessageID = votePrompt.id, updatedAtEpochMs = now)
+                } else conv
+                repo.saveConversationAndMessages(updatedConv, listOf(votePrompt))
+                launchGroupRelayJob(updatedConv, GroupRunMode.GroupVote)
             }
         }
     }
@@ -897,7 +1249,10 @@ class ChatViewModel(
             bannerError.value = null
             viewModelScope.launch {
                 val now = System.currentTimeMillis()
-                val nextSort = (uiState.value.messages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+                val allMsgs = repo.getMessages(conv.id)
+                val treeActive = ConversationTree.usesTree(conv.activeLeafMessageID, allMsgs)
+                val parentId = if (treeActive) ConversationTree.currentAnchorID(conv.activeLeafMessageID, allMsgs) else null
+                val nextSort = (allMsgs.maxOfOrNull { it.sortIndex } ?: 0) + 1
                 val sumPrompt = makeUserMessage(
                     conversationID = conv.id,
                     text = L10n.text(
@@ -906,10 +1261,14 @@ class ChatViewModel(
                     ),
                     attachments = emptyList(),
                     sortIndex = nextSort,
-                    createdAtEpochMs = now
+                    createdAtEpochMs = now,
+                    parentMessageID = parentId
                 )
-                repo.saveMessage(sumPrompt)
-                launchGroupRelayJob(conv, GroupRunMode.Summarize(chosen))
+                val updatedConv = if (treeActive) {
+                    conv.copy(activeLeafMessageID = sumPrompt.id, updatedAtEpochMs = now)
+                } else conv
+                repo.saveConversationAndMessages(updatedConv, listOf(sumPrompt))
+                launchGroupRelayJob(updatedConv, GroupRunMode.Summarize(chosen))
             }
         }
     }
@@ -1017,6 +1376,15 @@ class ChatViewModel(
             return
         }
 
+        if (!conv.isArenaMode && !conv.isGroupMode &&
+            !assistantMessage.isSynthesis && assistantMessage.comparisonGroupID == null
+        ) {
+            runWithConsent(consentSummaryFor(listOf(resolved to provider))) {
+                executeBranchRegenerate(assistantMessage, conv, resolved, provider)
+            }
+            return
+        }
+
         val history = buildSinglePromptHistoryWithPersona(priorMessages, conv)
         if (history.isEmpty()) return
 
@@ -1049,6 +1417,8 @@ class ChatViewModel(
 
         runWithConsent(consentSummaryFor(listOf(resolvedSecond to secondProvider))) {
             bannerError.value = null
+            val allMsgs = latestAllMessages.ifEmpty { state.messages }
+            val treeActive = ConversationTree.usesTree(conv.activeLeafMessageID, allMsgs)
             val groupID = UUID.randomUUID().toString().uppercase()
             val promotedOriginal = assistantMessage.copy(
                 comparisonGroupID = groupID,
@@ -1078,7 +1448,7 @@ class ChatViewModel(
                 thinkingDurationMs = null,
                 synthesisSourceDigest = null,
                 latestRequestID = null,
-                parentMessageID = assistantMessage.parentMessageID,
+                parentMessageID = if (treeActive) assistantMessage.parentMessageID else null,
                 sortIndex = assistantMessage.sortIndex,
                 createdAtEpochMs = assistantMessage.createdAtEpochMs + 1L
             )
@@ -1251,7 +1621,9 @@ class ChatViewModel(
                 thinkingDurationMs = null,
                 synthesisSourceDigest = digest,
                 latestRequestID = null,
-                parentMessageID = allOriginals.firstOrNull()?.parentMessageID,
+                parentMessageID = if (ConversationTree.usesTree(conv.activeLeafMessageID, latestAllMessages.ifEmpty { messages })) {
+                    allOriginals.firstOrNull()?.parentMessageID
+                } else null,
                 sortIndex = groupMaxSort + 1,
                 createdAtEpochMs = now
             )
@@ -1316,9 +1688,11 @@ class ChatViewModel(
         val baseHistory = ChatRepository.buildPromptHistory(priorMessages, conv.contextMessageLimit)
         val isUnrevealedBlind = conv.assistanceSettings.blindArenaMode &&
             eligible.none { it.assistanceMetadata.blindArenaRevealed }
+        val allMsgs = latestAllMessages.ifEmpty { messages }
+        val treeActive = ConversationTree.usesTree(conv.activeLeafMessageID, allMsgs)
         val groupMembers = messages.filter { it.comparisonGroupID.equals(groupID, ignoreCase = true) }
         val groupWinner = groupMembers.firstOrNull { it.isSelectedInGroup } ?: groupMembers.firstOrNull()
-        val nextSort = (messages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+        val nextSort = (allMsgs.maxOfOrNull { it.sortIndex } ?: 0) + 1
         val now = System.currentTimeMillis()
 
         val critiquePromptMsg = ChatMessageItem(
@@ -1348,7 +1722,7 @@ class ChatViewModel(
             thinkingDurationMs = null,
             synthesisSourceDigest = null,
             latestRequestID = null,
-            parentMessageID = groupWinner?.id,
+            parentMessageID = if (treeActive) groupWinner?.id else null,
             sortIndex = nextSort,
             createdAtEpochMs = now
         )
@@ -1379,7 +1753,7 @@ class ChatViewModel(
                 thinkingDurationMs = null,
                 synthesisSourceDigest = null,
                 latestRequestID = null,
-                parentMessageID = critiquePromptMsg.id,
+                parentMessageID = if (treeActive) critiquePromptMsg.id else null,
                 sortIndex = nextSort + 1 + idx,
                 createdAtEpochMs = now + 1L + idx
             )
@@ -1400,7 +1774,10 @@ class ChatViewModel(
         runWithConsent(consentSummaryFor(resolvedPairs)) {
             bannerError.value = null
             launchSlots(
-                conversation = conv.copy(updatedAtEpochMs = now),
+                conversation = conv.copy(
+                    activeLeafMessageID = if (treeActive) slots.first().message.id else conv.activeLeafMessageID,
+                    updatedAtEpochMs = now
+                ),
                 extraMessagesToInsert = listOf(critiquePromptMsg),
                 slots = slots
             )
@@ -1484,7 +1861,8 @@ class ChatViewModel(
     private fun executeSendGroupMessage(
         text: String,
         attachments: List<MessageAttachment>,
-        conv: ConversationItem
+        conv: ConversationItem,
+        quotedExcerptText: String? = null
     ) {
         val capturedSearch = if (useWebSearchOnce.value) {
             text.take(TavilySearchClient.MAXIMUM_QUERY_CHARACTERS).ifBlank { null }
@@ -1492,6 +1870,7 @@ class ChatViewModel(
         useWebSearchOnce.value = false
         draftText.value = ""
         draftAttachments.value = emptyList()
+        quotedExcerpt.value = null
         bannerError.value = null
 
         val previousJob = activeJob
@@ -1502,10 +1881,19 @@ class ChatViewModel(
                 cleanupInterruptedGroupTail(conv.id)
             }
             val currentMessages = repo.getMessages(conv.id)
+            val treeActive = ConversationTree.usesTree(conv.activeLeafMessageID, currentMessages)
+            val parentId = if (treeActive) ConversationTree.currentAnchorID(conv.activeLeafMessageID, currentMessages) else null
             val nextSort = (currentMessages.maxOfOrNull { it.sortIndex } ?: 0) + 1
             val now = System.currentTimeMillis()
-            val userMsg = makeUserMessage(conv.id, text, attachments, nextSort, now)
-            repo.saveMessage(userMsg)
+            val userMsg = makeUserMessage(
+                conversationID = conv.id,
+                text = text,
+                attachments = attachments,
+                sortIndex = nextSort,
+                createdAtEpochMs = now,
+                quotedExcerpt = quotedExcerptText,
+                parentMessageID = parentId
+            )
 
             val updatedTitle = if (currentMessages.none { it.role == MessageRole.USER } &&
                 ConversationItem.isDefaultTitle(conv.title)
@@ -1514,8 +1902,12 @@ class ChatViewModel(
             } else {
                 conv.title
             }
-            val updatedConv = conv.copy(title = updatedTitle, updatedAtEpochMs = now)
-            repo.saveConversation(updatedConv)
+            val updatedConv = conv.copy(
+                title = updatedTitle,
+                activeLeafMessageID = if (treeActive) userMsg.id else conv.activeLeafMessageID,
+                updatedAtEpochMs = now
+            )
+            repo.saveConversationAndMessages(updatedConv, listOf(userMsg))
 
             runGroupRelaySession(updatedConv, GroupRunMode.AfterUserMessage(userMsg, capturedSearch))
         }
@@ -1647,7 +2039,12 @@ class ChatViewModel(
             }
         }
 
-        val priorBeforeRound = repo.getMessages(initialConversation.id)
+        val allBeforeRound = repo.getMessages(initialConversation.id)
+        var currentLeafID: String? = initialConversation.activeLeafMessageID
+        val treeActive = ConversationTree.usesTree(currentLeafID, allBeforeRound)
+        val priorBeforeRound = if (treeActive) {
+            ConversationTree.activeMessages(currentLeafID, allBeforeRound)
+        } else allBeforeRound
         val knowledgeQuery = when (mode) {
             is GroupRunMode.AfterUserMessage -> mode.userMessage.content
             else -> priorBeforeRound.lastOrNull { it.role == MessageRole.USER }?.content.orEmpty()
@@ -1742,8 +2139,12 @@ class ChatViewModel(
                 val liveActiveMembers = livePairs.map { it.first }
                 activeGroupSpeaker.value = "${member.avatarEmoji} ${member.displayLabel}"
 
-                val priorMessages = repo.getMessages(liveConv.id)
-                val nextSort = (priorMessages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+                val allCurrentMessages = repo.getMessages(liveConv.id)
+                val priorMessages = if (treeActive) {
+                    ConversationTree.activeMessages(currentLeafID, allCurrentMessages)
+                } else allCurrentMessages
+                val nextSort = (allCurrentMessages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+                val parentIdForTurn = if (treeActive) ConversationTree.currentAnchorID(currentLeafID, allCurrentMessages) else null
                 val now = System.currentTimeMillis()
                 var replyMeta = MessageAssistanceMetadata(
                     groupMemberID = member.id,
@@ -1822,13 +2223,21 @@ class ChatViewModel(
                     synthesisSourceDigest = null,
                     latestRequestID = null,
                     assistanceMetadata = replyMeta,
-                    parentMessageID = priorMessages.lastOrNull()?.id,
+                    parentMessageID = parentIdForTurn,
                     sortIndex = nextSort,
                     createdAtEpochMs = now
                 )
 
                 streamingOverlays.update { it + (replyPlaceholder.id to replyPlaceholder) }
-                repo.saveMessage(replyPlaceholder)
+                if (treeActive) {
+                    currentLeafID = replyPlaceholder.id
+                    repo.saveConversationAndMessages(
+                        liveConv.copy(activeLeafMessageID = currentLeafID, updatedAtEpochMs = now),
+                        listOf(replyPlaceholder)
+                    )
+                } else {
+                    repo.saveMessage(replyPlaceholder)
+                }
 
                 val systemPrompt = GroupDiscussionCoordinator.buildSystemPrompt(
                     speaker = member,
@@ -1858,6 +2267,9 @@ class ChatViewModel(
                 val canHonorPass = (step.allowPass || turnsCompleted > 0 || explicitQueue.isNotEmpty()) && directive.isPass
                 if (canHonorPass && replyMsg.errorMessage == null) {
                     repo.deleteMessage(replyMsg.id)
+                    if (treeActive) {
+                        currentLeafID = parentIdForTurn
+                    }
                     if (explicitQueue.isNotEmpty()) {
                         nextStep = explicitQueue.removeFirst()
                     } else {
@@ -1938,7 +2350,7 @@ class ChatViewModel(
                         id = UUID.randomUUID().toString().uppercase(),
                         content = burstParts[1],
                         reasoningContent = "",
-                        parentMessageID = firstBubble.id,
+                        parentMessageID = if (treeActive) firstBubble.id else null,
                         sortIndex = burstSort,
                         createdAtEpochMs = System.currentTimeMillis(),
                         assistanceMetadata = MessageAssistanceMetadata(
@@ -1952,11 +2364,17 @@ class ChatViewModel(
                         )
                     )
                     repo.saveMessage(secondBubble)
+                    if (treeActive) {
+                        currentLeafID = secondBubble.id
+                    }
                     roundMessages.add(firstBubble)
                     roundMessages.add(secondBubble)
                 } else {
                     replyMsg = replyMsg.copy(assistanceMetadata = updatedMeta)
                     repo.saveMessage(replyMsg)
+                    if (treeActive) {
+                        currentLeafID = replyMsg.id
+                    }
                     roundMessages.add(replyMsg)
                 }
 
@@ -1989,7 +2407,13 @@ class ChatViewModel(
         } finally {
             activeGroupSpeaker.value = null
             streamingOverlays.value = emptyMap()
-            repo.saveConversation(initialConversation.copy(updatedAtEpochMs = System.currentTimeMillis()))
+            val fresh = repo.getConversation(initialConversation.id) ?: initialConversation
+            repo.saveConversation(
+                fresh.copy(
+                    activeLeafMessageID = if (treeActive) currentLeafID else fresh.activeLeafMessageID,
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+            )
         }
     }
 
@@ -1999,16 +2423,33 @@ class ChatViewModel(
         conv: ConversationItem,
         target: ResolvedModelTarget,
         provider: ProviderItem,
-        searchQuery: String? = null
+        searchQuery: String? = null,
+        quotedExcerptText: String? = null,
+        isTemporaryOverride: Boolean = false
     ) {
         draftText.value = ""
         draftAttachments.value = emptyList()
+        quotedExcerpt.value = null
+        if (isTemporaryOverride) {
+            temporaryTargetOverride.value = null
+        }
         bannerError.value = null
 
-        val currentMessages = uiState.value.messages
-        val nextSort = (currentMessages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+        val activeMessages = uiState.value.messages
+        val allMsgs = latestAllMessages.ifEmpty { activeMessages }
+        val treeActive = ConversationTree.usesTree(conv.activeLeafMessageID, allMsgs)
+        val parentId = if (treeActive) ConversationTree.currentAnchorID(conv.activeLeafMessageID, allMsgs) else null
+        val nextSort = (allMsgs.maxOfOrNull { it.sortIndex } ?: 0) + 1
         val now = System.currentTimeMillis()
-        val userMsg = makeUserMessage(conv.id, text, attachments, nextSort, now)
+        val userMsg = makeUserMessage(
+            conversationID = conv.id,
+            text = text,
+            attachments = attachments,
+            sortIndex = nextSort,
+            createdAtEpochMs = now,
+            quotedExcerpt = quotedExcerptText,
+            parentMessageID = parentId
+        )
         val assistantMsg = ChatMessageItem(
             id = UUID.randomUUID().toString().uppercase(),
             conversationID = conv.id,
@@ -2034,12 +2475,12 @@ class ChatViewModel(
             synthesisSourceDigest = null,
             latestRequestID = null,
             assistanceMetadata = MessageAssistanceMetadata(requestedSearchQuery = searchQuery),
-            parentMessageID = userMsg.id,
+            parentMessageID = if (treeActive) userMsg.id else null,
             sortIndex = nextSort + 1,
             createdAtEpochMs = now + 1L
         )
 
-        val updatedTitle = if (currentMessages.none { it.role == MessageRole.USER } &&
+        val updatedTitle = if (activeMessages.none { it.role == MessageRole.USER } &&
             ConversationItem.isDefaultTitle(conv.title)
         ) {
             ChatRepository.makeConversationTitle(text, attachments)
@@ -2048,10 +2489,11 @@ class ChatViewModel(
         }
         val updatedConv = conv.copy(
             title = updatedTitle,
-            primaryTarget = conv.primaryTarget ?: target,
+            primaryTarget = if (isTemporaryOverride) conv.primaryTarget else (conv.primaryTarget ?: target),
+            activeLeafMessageID = if (treeActive) assistantMsg.id else conv.activeLeafMessageID,
             updatedAtEpochMs = now
         )
-        val history = buildSinglePromptHistoryWithPersona(currentMessages + userMsg, conv)
+        val history = buildSinglePromptHistoryWithPersona(activeMessages + userMsg, conv)
 
         launchSlots(
             conversation = updatedConv,
@@ -2088,18 +2530,31 @@ class ChatViewModel(
         attachments: List<MessageAttachment>,
         conv: ConversationItem,
         resolvedPairs: List<Pair<ResolvedModelTarget, ProviderItem>>,
-        searchQuery: String? = null
+        searchQuery: String? = null,
+        quotedExcerptText: String? = null
     ) {
         draftText.value = ""
         draftAttachments.value = emptyList()
+        quotedExcerpt.value = null
         bannerError.value = null
 
-        val currentMessages = uiState.value.messages
-        val nextSort = (currentMessages.maxOfOrNull { it.sortIndex } ?: 0) + 1
+        val activeMessages = uiState.value.messages
+        val allMsgs = latestAllMessages.ifEmpty { activeMessages }
+        val treeActive = ConversationTree.usesTree(conv.activeLeafMessageID, allMsgs)
+        val parentId = if (treeActive) ConversationTree.currentAnchorID(conv.activeLeafMessageID, allMsgs) else null
+        val nextSort = (allMsgs.maxOfOrNull { it.sortIndex } ?: 0) + 1
         val now = System.currentTimeMillis()
-        val userMsg = makeUserMessage(conv.id, text, attachments, nextSort, now)
+        val userMsg = makeUserMessage(
+            conversationID = conv.id,
+            text = text,
+            attachments = attachments,
+            sortIndex = nextSort,
+            createdAtEpochMs = now,
+            quotedExcerpt = quotedExcerptText,
+            parentMessageID = parentId
+        )
         val groupID = UUID.randomUUID().toString().uppercase()
-        val history = ChatRepository.buildPromptHistory(currentMessages + userMsg, conv.contextMessageLimit)
+        val history = ChatRepository.buildPromptHistory(activeMessages + userMsg, conv.contextMessageLimit)
 
         val slots = resolvedPairs.mapIndexed { idx, (target, provider) ->
             val reply = ChatMessageItem(
@@ -2127,7 +2582,7 @@ class ChatViewModel(
                 synthesisSourceDigest = null,
                 latestRequestID = null,
                 assistanceMetadata = MessageAssistanceMetadata(requestedSearchQuery = searchQuery),
-                parentMessageID = userMsg.id,
+                parentMessageID = if (treeActive) userMsg.id else null,
                 sortIndex = nextSort + 1 + idx,
                 createdAtEpochMs = now + 1L + idx
             )
@@ -2140,7 +2595,7 @@ class ChatViewModel(
             )
         }
 
-        val updatedTitle = if (currentMessages.none { it.role == MessageRole.USER } &&
+        val updatedTitle = if (activeMessages.none { it.role == MessageRole.USER } &&
             ConversationItem.isDefaultTitle(conv.title)
         ) {
             ChatRepository.makeConversationTitle(text, attachments)
@@ -2150,6 +2605,7 @@ class ChatViewModel(
         val updatedConv = conv.copy(
             title = updatedTitle,
             arenaTargets = resolvedPairs.map { it.first },
+            activeLeafMessageID = if (treeActive) slots.firstOrNull()?.message?.id else conv.activeLeafMessageID,
             updatedAtEpochMs = now
         )
 
@@ -2160,6 +2616,269 @@ class ChatViewModel(
             preTurnSearchQuery = searchQuery,
             preTurnEvidenceQuery = text
         )
+    }
+
+    private data class BranchedTurn(
+        val changedLinks: List<ChatMessageItem>,
+        val branchedUser: ChatMessageItem,
+        val branchHistoryMessages: List<ChatMessageItem>
+    )
+
+    private fun prepareBranchedUserTurn(
+        allMsgs: List<ChatMessageItem>,
+        original: ChatMessageItem,
+        newContent: String,
+        convID: String,
+        now: Long
+    ): BranchedTurn {
+        val origParents = allMsgs.associate { it.id to it.parentMessageID }
+        val (linkedMsgs, _) = ConversationTree.linkHistory(allMsgs)
+        val changedLinks = linkedMsgs.filter { it.parentMessageID != origParents[it.id] }
+        val linkedOrig = linkedMsgs.firstOrNull { it.id.equals(original.id, ignoreCase = true) } ?: original
+        val parentID = linkedOrig.parentMessageID ?: ConversationTree.VIRTUAL_ROOT_ID
+        val nextSort = (linkedMsgs.maxOfOrNull { it.sortIndex } ?: 0) + 1
+        val branchedUser = makeUserMessage(
+            conversationID = convID,
+            text = newContent,
+            attachments = original.attachments,
+            sortIndex = nextSort,
+            createdAtEpochMs = now,
+            quotedExcerpt = original.assistanceMetadata.quotedExcerpt,
+            parentMessageID = parentID
+        )
+        val branchHistory = ConversationTree.activeMessages(branchedUser.id, linkedMsgs + branchedUser)
+        return BranchedTurn(changedLinks, branchedUser, branchHistory)
+    }
+
+    private fun executeEditBranchSingle(
+        original: ChatMessageItem,
+        newContent: String,
+        conv: ConversationItem,
+        target: ResolvedModelTarget,
+        provider: ProviderItem
+    ) {
+        bannerError.value = null
+        activeJob?.cancel()
+        activeJob = viewModelScope.launch {
+            val allMsgs = repo.getMessages(conv.id)
+            val now = System.currentTimeMillis()
+            val turn = prepareBranchedUserTurn(allMsgs, original, newContent, conv.id, now)
+            val assistantMsg = ChatMessageItem(
+                id = UUID.randomUUID().toString().uppercase(),
+                conversationID = conv.id,
+                role = MessageRole.ASSISTANT,
+                content = "",
+                reasoningContent = "",
+                attachments = emptyList(),
+                providerID = target.providerID,
+                providerName = target.providerName,
+                modelID = target.modelID,
+                modelDisplayName = target.modelDisplayName,
+                accentHex = target.accentHex,
+                comparisonGroupID = null,
+                isSelectedInGroup = true,
+                isStreaming = true,
+                errorMessage = null,
+                finishReason = null,
+                promptTokens = null,
+                completionTokens = null,
+                cachedTokens = null,
+                latencyMs = null,
+                thinkingDurationMs = null,
+                synthesisSourceDigest = null,
+                latestRequestID = null,
+                parentMessageID = turn.branchedUser.id,
+                sortIndex = turn.branchedUser.sortIndex + 1,
+                createdAtEpochMs = now + 1L
+            )
+            val updatedConv = conv.copy(
+                activeLeafMessageID = assistantMsg.id,
+                updatedAtEpochMs = now
+            )
+            val history = buildSinglePromptHistoryWithPersona(turn.branchHistoryMessages, updatedConv)
+            launchSlotsInCurrentScope(
+                conversation = updatedConv,
+                extraMessagesToInsert = turn.changedLinks + turn.branchedUser,
+                slots = listOf(
+                    StreamSlot(
+                        message = assistantMsg,
+                        target = target,
+                        provider = provider,
+                        history = history,
+                        kind = RequestKind.ANSWER
+                    )
+                ),
+                preTurnEvidenceQuery = newContent
+            )
+        }
+    }
+
+    private fun executeEditBranchArena(
+        original: ChatMessageItem,
+        newContent: String,
+        conv: ConversationItem,
+        resolvedPairs: List<Pair<ResolvedModelTarget, ProviderItem>>
+    ) {
+        bannerError.value = null
+        activeJob?.cancel()
+        activeJob = viewModelScope.launch {
+            val allMsgs = repo.getMessages(conv.id)
+            val now = System.currentTimeMillis()
+            val turn = prepareBranchedUserTurn(allMsgs, original, newContent, conv.id, now)
+            val groupID = UUID.randomUUID().toString().uppercase()
+            val history = ChatRepository.buildPromptHistory(turn.branchHistoryMessages, conv.contextMessageLimit)
+            val slots = resolvedPairs.mapIndexed { idx, (target, provider) ->
+                val reply = ChatMessageItem(
+                    id = UUID.randomUUID().toString().uppercase(),
+                    conversationID = conv.id,
+                    role = MessageRole.ASSISTANT,
+                    content = "",
+                    reasoningContent = "",
+                    attachments = emptyList(),
+                    providerID = target.providerID,
+                    providerName = target.providerName,
+                    modelID = target.modelID,
+                    modelDisplayName = target.modelDisplayName,
+                    accentHex = target.accentHex,
+                    comparisonGroupID = groupID,
+                    isSelectedInGroup = (idx == 0),
+                    isStreaming = true,
+                    errorMessage = null,
+                    finishReason = null,
+                    promptTokens = null,
+                    completionTokens = null,
+                    cachedTokens = null,
+                    latencyMs = null,
+                    thinkingDurationMs = null,
+                    synthesisSourceDigest = null,
+                    latestRequestID = null,
+                    parentMessageID = turn.branchedUser.id,
+                    sortIndex = turn.branchedUser.sortIndex + 1 + idx,
+                    createdAtEpochMs = now + 1L + idx
+                )
+                StreamSlot(
+                    message = reply,
+                    target = target,
+                    provider = provider,
+                    history = history,
+                    kind = RequestKind.ANSWER
+                )
+            }
+            val updatedConv = conv.copy(
+                activeLeafMessageID = slots.first().message.id,
+                updatedAtEpochMs = now
+            )
+            launchSlotsInCurrentScope(
+                conversation = updatedConv,
+                extraMessagesToInsert = turn.changedLinks + turn.branchedUser,
+                slots = slots,
+                preTurnEvidenceQuery = newContent
+            )
+        }
+    }
+
+    private fun executeEditBranchGroup(
+        original: ChatMessageItem,
+        newContent: String,
+        conv: ConversationItem
+    ) {
+        bannerError.value = null
+        val previousJob = activeJob
+        activeJob = viewModelScope.launch {
+            if (previousJob != null && previousJob.isActive) {
+                cancelPendingWebpageApproval()
+                previousJob.cancelAndJoin()
+                cleanupInterruptedGroupTail(conv.id)
+            }
+            val allMsgs = repo.getMessages(conv.id)
+            val now = System.currentTimeMillis()
+            val turn = prepareBranchedUserTurn(allMsgs, original, newContent, conv.id, now)
+            val updatedConv = conv.copy(
+                activeLeafMessageID = turn.branchedUser.id,
+                updatedAtEpochMs = now
+            )
+            repo.saveConversationAndMessages(updatedConv, turn.changedLinks + turn.branchedUser)
+            runGroupRelaySession(updatedConv, GroupRunMode.AfterUserMessage(turn.branchedUser))
+        }
+    }
+
+    private fun executeBranchRegenerate(
+        existingAssistant: ChatMessageItem,
+        conv: ConversationItem,
+        target: ResolvedModelTarget,
+        provider: ProviderItem
+    ) {
+        bannerError.value = null
+        activeJob?.cancel()
+        activeJob = viewModelScope.launch {
+            val allMsgs = repo.getMessages(conv.id)
+            val origParents = allMsgs.associate { it.id to it.parentMessageID }
+            val (linkedMsgs, _) = ConversationTree.linkHistory(allMsgs)
+            val changedLinks = linkedMsgs.filter { it.parentMessageID != origParents[it.id] }
+            val linkedOrig = linkedMsgs.firstOrNull { it.id.equals(existingAssistant.id, ignoreCase = true) }
+                ?: existingAssistant
+            val parentID = linkedOrig.parentMessageID ?: ConversationTree.VIRTUAL_ROOT_ID
+            val branchPrior = if (parentID == ConversationTree.VIRTUAL_ROOT_ID) {
+                emptyList()
+            } else {
+                ConversationTree.activeMessages(parentID, linkedMsgs)
+            }
+            val history = buildSinglePromptHistoryWithPersona(branchPrior, conv)
+            if (history.isEmpty()) return@launch
+            val nextSort = (linkedMsgs.maxOfOrNull { it.sortIndex } ?: 0) + 1
+            val now = System.currentTimeMillis()
+            val newReply = ChatMessageItem(
+                id = UUID.randomUUID().toString().uppercase(),
+                conversationID = conv.id,
+                role = MessageRole.ASSISTANT,
+                content = "",
+                reasoningContent = "",
+                attachments = emptyList(),
+                providerID = target.providerID,
+                providerName = target.providerName,
+                modelID = target.modelID,
+                modelDisplayName = target.modelDisplayName,
+                accentHex = target.accentHex,
+                comparisonGroupID = null,
+                isSelectedInGroup = true,
+                isStreaming = true,
+                errorMessage = null,
+                finishReason = null,
+                promptTokens = null,
+                completionTokens = null,
+                cachedTokens = null,
+                latencyMs = null,
+                thinkingDurationMs = null,
+                synthesisSourceDigest = null,
+                latestRequestID = null,
+                assistanceMetadata = MessageAssistanceMetadata(
+                    requestedSearchQuery = existingAssistant.assistanceMetadata.requestedSearchQuery
+                ),
+                parentMessageID = parentID,
+                sortIndex = nextSort,
+                createdAtEpochMs = now
+            )
+            val updatedConv = conv.copy(
+                activeLeafMessageID = newReply.id,
+                updatedAtEpochMs = now
+            )
+            val lastUserText = history.lastOrNull { it.role == MessageRole.USER }?.content
+            launchSlotsInCurrentScope(
+                conversation = updatedConv,
+                extraMessagesToInsert = changedLinks,
+                slots = listOf(
+                    StreamSlot(
+                        message = newReply,
+                        target = target,
+                        provider = provider,
+                        history = history,
+                        kind = RequestKind.REGENERATION
+                    )
+                ),
+                preTurnSearchQuery = existingAssistant.assistanceMetadata.requestedSearchQuery,
+                preTurnEvidenceQuery = lastUserText
+            )
+        }
     }
 
     private fun executeRegenerate(
@@ -2224,114 +2943,127 @@ class ChatViewModel(
     ) {
         activeJob?.cancel()
         activeJob = viewModelScope.launch {
-            repo.saveConversation(conversation)
-            for (msg in extraMessagesToInsert) {
-                repo.saveMessage(msg)
-            }
-            val initialOverlays = slots.associate { it.message.id to it.message }
-            streamingOverlays.update { it + initialOverlays }
-            for (slot in slots) {
-                repo.saveMessage(slot.message)
-            }
+            launchSlotsInCurrentScope(
+                conversation = conversation,
+                extraMessagesToInsert = extraMessagesToInsert,
+                slots = slots,
+                preTurnSearchQuery = preTurnSearchQuery,
+                preTurnEvidenceQuery = preTurnEvidenceQuery
+            )
+        }
+    }
 
-            try {
-                var effectiveSlots = slots
-                if (!preTurnSearchQuery.isNullOrBlank() && effectiveSlots.isNotEmpty()) {
-                    try {
-                        val evidence = performTavilySearchWithLedger(
-                            query = preTurnSearchQuery,
-                            conversationId = conversation.id,
-                            messageId = effectiveSlots.first().message.id
+    private suspend fun launchSlotsInCurrentScope(
+        conversation: ConversationItem,
+        extraMessagesToInsert: List<ChatMessageItem>,
+        slots: List<StreamSlot>,
+        preTurnSearchQuery: String? = null,
+        preTurnEvidenceQuery: String? = null
+    ) {
+        repo.saveConversationAndMessages(conversation, extraMessagesToInsert)
+        val initialOverlays = slots.associate { it.message.id to it.message }
+        streamingOverlays.update { it + initialOverlays }
+        for (slot in slots) {
+            repo.saveMessage(slot.message)
+        }
+
+        try {
+            var effectiveSlots = slots
+            if (!preTurnSearchQuery.isNullOrBlank() && effectiveSlots.isNotEmpty()) {
+                try {
+                    val evidence = performTavilySearchWithLedger(
+                        query = preTurnSearchQuery,
+                        conversationId = conversation.id,
+                        messageId = effectiveSlots.first().message.id
+                    )
+                    effectiveSlots = effectiveSlots.map { s ->
+                        val updatedMsg = s.message.copy(
+                            assistanceMetadata = s.message.assistanceMetadata.copy(search = evidence)
                         )
-                        effectiveSlots = effectiveSlots.map { s ->
-                            val updatedMsg = s.message.copy(
-                                assistanceMetadata = s.message.assistanceMetadata.copy(search = evidence)
-                            )
-                            streamingOverlays.update { it + (updatedMsg.id to updatedMsg) }
-                            repo.saveMessage(updatedMsg)
-                            val updatedHistory = appendPromptSuffix(s.history, evidence.prompt)
-                            s.copy(message = updatedMsg, history = updatedHistory)
-                        }
-                    } catch (t: Throwable) {
-                        val errText = if (t is CancellationException) {
-                            L10n.text("已停止生成", "Generation stopped")
-                        } else {
-                            t.message ?: L10n.text("联网搜索失败", "Web search failed")
-                        }
-                        for (s in effectiveSlots) {
-                            repo.saveMessage(s.message.copy(isStreaming = false, errorMessage = errText))
-                        }
-                        return@launch
+                        streamingOverlays.update { it + (updatedMsg.id to updatedMsg) }
+                        repo.saveMessage(updatedMsg)
+                        val updatedHistory = appendPromptSuffix(s.history, evidence.prompt)
+                        s.copy(message = updatedMsg, history = updatedHistory)
                     }
-                }
-
-                if (!preTurnEvidenceQuery.isNullOrBlank() &&
-                    conversation.assistanceSettings.knowledgeVolumeIDs.isNotEmpty() &&
-                    effectiveSlots.isNotEmpty()
-                ) {
-                    val knowledge = runCatching {
-                        retrieveKnowledgeForTurn(conversation.assistanceSettings.knowledgeVolumeIDs, preTurnEvidenceQuery)
-                    }.getOrNull()
-                    if (knowledge != null && knowledge.passages.isNotEmpty()) {
-                        val kPrompt = knowledge.promptText()
-                        effectiveSlots = effectiveSlots.map { s ->
-                            val updatedMsg = s.message.copy(
-                                assistanceMetadata = s.message.assistanceMetadata.copy(knowledgeEvidence = knowledge)
-                            )
-                            streamingOverlays.update { it + (updatedMsg.id to updatedMsg) }
-                            repo.saveMessage(updatedMsg)
-                            val updatedHistory = appendPromptSuffix(s.history, kPrompt)
-                            s.copy(message = updatedMsg, history = updatedHistory)
-                        }
+                } catch (t: Throwable) {
+                    val errText = if (t is CancellationException) {
+                        L10n.text("已停止生成", "Generation stopped")
+                    } else {
+                        t.message ?: L10n.text("联网搜索失败", "Web search failed")
                     }
-                }
-
-                val friend = conversation.activeBookFriend
-                if (friend != null && !conversation.isArenaMode && !conversation.isGroupMode && effectiveSlots.isNotEmpty()) {
-                    try {
-                        val query = preTurnEvidenceQuery.orEmpty()
-                        val bookReply = retrieveBookFriendForTurn(friend, query)
-                        if (bookReply != null) {
-                            val preferEng = GroupDiscussionCoordinator.prefersEnglishPrompts(repo.getMessages(conversation.id))
-                            val refPrompt = bookReply.referenceText(preferEng)
-                            val friendSystem = buildBookFriendSystemPrompt(friend, conversation.systemPrompt, preferEng)
-                            effectiveSlots = effectiveSlots.map { s ->
-                                val updatedMsg = s.message.copy(
-                                    assistanceMetadata = s.message.assistanceMetadata.copy(bookReply = bookReply)
-                                )
-                                streamingOverlays.update { it + (updatedMsg.id to updatedMsg) }
-                                repo.saveMessage(updatedMsg)
-                                val updatedHistory = appendPromptSuffix(s.history, refPrompt)
-                                s.copy(
-                                    message = updatedMsg,
-                                    history = updatedHistory,
-                                    systemPromptOverride = s.systemPromptOverride ?: friendSystem
-                                )
-                            }
-                        }
-                    } catch (t: Throwable) {
-                        val errText = if (t is CancellationException) {
-                            L10n.text("已停止生成", "Generation stopped")
-                        } else {
-                            t.message ?: L10n.text("查找书中人物失败", "Failed to load book character references")
-                        }
-                        for (s in effectiveSlots) {
-                            repo.saveMessage(s.message.copy(isStreaming = false, errorMessage = errText))
-                        }
-                        return@launch
+                    for (s in effectiveSlots) {
+                        repo.saveMessage(s.message.copy(isStreaming = false, errorMessage = errText))
                     }
+                    return
                 }
-
-                coroutineScope {
-                    effectiveSlots.map { slot ->
-                        async { runSingleSlot(slot, conversation) }
-                    }.awaitAll()
-                }
-            } finally {
-                val ids = slots.mapTo(HashSet()) { it.message.id }
-                streamingOverlays.update { current -> current - ids }
-                repo.saveConversation(conversation.copy(updatedAtEpochMs = System.currentTimeMillis()))
             }
+
+            if (!preTurnEvidenceQuery.isNullOrBlank() &&
+                conversation.assistanceSettings.knowledgeVolumeIDs.isNotEmpty() &&
+                effectiveSlots.isNotEmpty()
+            ) {
+                val knowledge = runCatching {
+                    retrieveKnowledgeForTurn(conversation.assistanceSettings.knowledgeVolumeIDs, preTurnEvidenceQuery)
+                }.getOrNull()
+                if (knowledge != null && knowledge.passages.isNotEmpty()) {
+                    val kPrompt = knowledge.promptText()
+                    effectiveSlots = effectiveSlots.map { s ->
+                        val updatedMsg = s.message.copy(
+                            assistanceMetadata = s.message.assistanceMetadata.copy(knowledgeEvidence = knowledge)
+                        )
+                        streamingOverlays.update { it + (updatedMsg.id to updatedMsg) }
+                        repo.saveMessage(updatedMsg)
+                        val updatedHistory = appendPromptSuffix(s.history, kPrompt)
+                        s.copy(message = updatedMsg, history = updatedHistory)
+                    }
+                }
+            }
+
+            val friend = conversation.activeBookFriend
+            if (friend != null && !conversation.isArenaMode && !conversation.isGroupMode && effectiveSlots.isNotEmpty()) {
+                try {
+                    val query = preTurnEvidenceQuery.orEmpty()
+                    val bookReply = retrieveBookFriendForTurn(friend, query)
+                    if (bookReply != null) {
+                        val preferEng = GroupDiscussionCoordinator.prefersEnglishPrompts(repo.getMessages(conversation.id))
+                        val refPrompt = bookReply.referenceText(preferEng)
+                        val friendSystem = buildBookFriendSystemPrompt(friend, conversation.systemPrompt, preferEng)
+                        effectiveSlots = effectiveSlots.map { s ->
+                            val updatedMsg = s.message.copy(
+                                assistanceMetadata = s.message.assistanceMetadata.copy(bookReply = bookReply)
+                            )
+                            streamingOverlays.update { it + (updatedMsg.id to updatedMsg) }
+                            repo.saveMessage(updatedMsg)
+                            val updatedHistory = appendPromptSuffix(s.history, refPrompt)
+                            s.copy(
+                                message = updatedMsg,
+                                history = updatedHistory,
+                                systemPromptOverride = s.systemPromptOverride ?: friendSystem
+                            )
+                        }
+                    }
+                } catch (t: Throwable) {
+                    val errText = if (t is CancellationException) {
+                        L10n.text("已停止生成", "Generation stopped")
+                    } else {
+                        t.message ?: L10n.text("查找书中人物失败", "Failed to load book character references")
+                    }
+                    for (s in effectiveSlots) {
+                        repo.saveMessage(s.message.copy(isStreaming = false, errorMessage = errText))
+                    }
+                    return
+                }
+            }
+
+            coroutineScope {
+                effectiveSlots.map { slot ->
+                    async { runSingleSlot(slot, conversation) }
+                }.awaitAll()
+            }
+        } finally {
+            val ids = slots.mapTo(HashSet()) { it.message.id }
+            streamingOverlays.update { current -> current - ids }
+            repo.saveConversation(conversation.copy(updatedAtEpochMs = System.currentTimeMillis()))
         }
     }
 
@@ -2818,7 +3550,9 @@ class ChatViewModel(
         text: String,
         attachments: List<MessageAttachment>,
         sortIndex: Int,
-        createdAtEpochMs: Long
+        createdAtEpochMs: Long,
+        quotedExcerpt: String? = null,
+        parentMessageID: String? = null
     ): ChatMessageItem = ChatMessageItem(
         id = UUID.randomUUID().toString().uppercase(),
         conversationID = conversationID,
@@ -2843,7 +3577,12 @@ class ChatViewModel(
         thinkingDurationMs = null,
         synthesisSourceDigest = null,
         latestRequestID = null,
-        parentMessageID = null,
+        assistanceMetadata = if (quotedExcerpt.isNullOrBlank()) {
+            MessageAssistanceMetadata()
+        } else {
+            MessageAssistanceMetadata(quotedExcerpt = quotedExcerpt)
+        },
+        parentMessageID = parentMessageID,
         sortIndex = sortIndex,
         createdAtEpochMs = createdAtEpochMs
     )

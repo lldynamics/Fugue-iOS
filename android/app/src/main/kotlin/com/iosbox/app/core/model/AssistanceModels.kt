@@ -151,7 +151,8 @@ data class MessageAssistanceMetadata(
     val groupReplyToSpeaker: String? = null,
     val groupReplyToExcerpt: String? = null,
     val groupReactions: List<GroupReaction> = emptyList(),
-    val groupAskedHost: Boolean = false
+    val groupAskedHost: Boolean = false,
+    val sourceNotice: GroupSourceNotice? = null
 ) {
     val isDefault: Boolean
         get() = this == MessageAssistanceMetadata()
@@ -190,6 +191,7 @@ data class MessageAssistanceMetadata(
         if (groupReplyToMessageID == null) merged.remove("groupReplyToMessageID")
         if (groupReplyToSpeaker == null) merged.remove("groupReplyToSpeaker")
         if (groupReplyToExcerpt == null) merged.remove("groupReplyToExcerpt")
+        if (sourceNotice == null) merged.remove("sourceNotice")
         return JsonObject(merged)
     }
 }

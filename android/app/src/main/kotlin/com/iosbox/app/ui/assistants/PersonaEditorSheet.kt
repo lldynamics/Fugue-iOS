@@ -19,12 +19,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.RssFeed
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -34,6 +37,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -47,12 +51,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.iosbox.app.core.model.GroupMember
 import com.iosbox.app.core.model.GroupPersona
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.model.PersonaFeed
+import com.iosbox.app.core.model.PersonaFeedKind
 import com.iosbox.app.core.model.PersonaMaterial
+import com.iosbox.app.core.network.PersonaFeedReader
+import com.iosbox.app.core.security.SecretStore
 import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.ProviderItem
 import com.iosbox.app.ui.chat.ModelPickerSheet
@@ -66,6 +75,7 @@ import kotlin.math.roundToInt
 fun PersonaEditorSheet(
     existing: GroupMember?,
     providers: List<ProviderItem>,
+    secretStore: SecretStore? = null,
     onSave: (GroupMember) -> Unit,
     onDelete: ((String) -> Unit)? = null,
     onDismiss: () -> Unit
@@ -87,9 +97,19 @@ fun PersonaEditorSheet(
             addAll(existing?.persona?.materials.orEmpty())
         }
     }
+    val feeds = remember(existing?.id) {
+        mutableStateListOf<PersonaFeed>().apply {
+            addAll(existing?.persona?.feeds.orEmpty())
+        }
+    }
 
     var showModelPicker by remember { mutableStateOf(false) }
     var showAddMaterial by remember { mutableStateOf(false) }
+    var showAddFeed by remember { mutableStateOf(false) }
+    var showXTokenDialog by remember { mutableStateOf(false) }
+    var hasXToken by remember(existing?.id) {
+        mutableStateOf(secretStore?.loadSecret(SecretStore.PERSONA_X_TOKEN_ACCOUNT)?.isNotBlank() == true)
+    }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -116,6 +136,8 @@ fun PersonaEditorSheet(
                     onClick = {
                         val target = selectedTarget ?: return@Button
                         val cleanMaterials = materials.toList()
+                        val cleanFeeds = feeds.toList()
+                        val nextPersona = GroupPersona(materials = cleanMaterials, feeds = cleanFeeds)
                         val profileId = (existing?.profileID ?: existing?.id ?: UUID.randomUUID().toString()).uppercase()
                         onSave(
                             GroupMember(
@@ -129,7 +151,7 @@ fun PersonaEditorSheet(
                                 target = target,
                                 temperature = temperature,
                                 isMuted = false,
-                                persona = if (cleanMaterials.isEmpty()) null else GroupPersona(cleanMaterials)
+                                persona = if (nextPersona.isEmpty) null else nextPersona
                             )
                         )
                         onDismiss()
@@ -296,6 +318,100 @@ fun PersonaEditorSheet(
                 }
             }
 
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.RssFeed,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = L10n.text(
+                            "订阅源 (${feeds.size})",
+                            "Feeds (${feeds.size})"
+                        ),
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (secretStore != null) {
+                        OutlinedButton(onClick = { showXTokenDialog = true }) {
+                            Icon(Icons.Filled.VpnKey, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.size(4.dp))
+                            Text(
+                                text = if (hasXToken) L10n.text("X Token 已配", "X Token Set")
+                                else L10n.text("X Token", "X Token"),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                    OutlinedButton(onClick = { showAddFeed = true }) {
+                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.size(4.dp))
+                        Text(L10n.text("添加订阅", "Add Feed"), style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+
+            for ((idx, feed) in feeds.withIndex()) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = DS.Spacing.md, vertical = DS.Spacing.sm),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = feed.displayName,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = listOfNotNull(
+                                    feed.kind.displayName,
+                                    feed.lastError
+                                ).joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (feed.lastError != null) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Switch(
+                            checked = feed.enabled,
+                            onCheckedChange = { checked ->
+                                feeds[idx] = feed.copy(enabled = checked)
+                            }
+                        )
+                        IconButton(onClick = { feeds.removeAt(idx) }) {
+                            Icon(
+                                imageVector = Icons.Filled.Delete,
+                                contentDescription = L10n.text("删除订阅", "Delete Feed"),
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
             if (existing != null && onDelete != null) {
                 TextButton(
                     onClick = {
@@ -332,6 +448,164 @@ fun PersonaEditorSheet(
             onDismiss = { showAddMaterial = false }
         )
     }
+
+    if (showAddFeed) {
+        AddPersonaFeedDialog(
+            onAdd = { parsed ->
+                val duplicate = feeds.any { it.kind == parsed.kind && it.address == parsed.address }
+                if (!duplicate) {
+                    feeds.add(parsed)
+                }
+                showAddFeed = false
+            },
+            onDismiss = { showAddFeed = false }
+        )
+    }
+
+    if (showXTokenDialog && secretStore != null) {
+        PersonaXTokenDialog(
+            initialHasToken = hasXToken,
+            onSaveToken = { token ->
+                if (token.isBlank()) {
+                    secretStore.deleteSecret(SecretStore.PERSONA_X_TOKEN_ACCOUNT)
+                    hasXToken = false
+                } else {
+                    secretStore.saveSecret(token.trim(), SecretStore.PERSONA_X_TOKEN_ACCOUNT)
+                    hasXToken = true
+                }
+                showXTokenDialog = false
+            },
+            onDismiss = { showXTokenDialog = false }
+        )
+    }
+}
+
+@Composable
+private fun AddPersonaFeedDialog(
+    onAdd: (PersonaFeed) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedKind by remember { mutableStateOf(PersonaFeedKind.BLOG) }
+    var rawAddress by remember { mutableStateOf("") }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(L10n.text("添加订阅源（博客 / X）", "Add Feed (Blog / X)")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(DS.Spacing.sm)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (kind in PersonaFeedKind.entries) {
+                        FilterChip(
+                            selected = selectedKind == kind,
+                            onClick = {
+                                selectedKind = kind
+                                errorMsg = null
+                            },
+                            label = { Text(kind.displayName, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = rawAddress,
+                    onValueChange = {
+                        rawAddress = it
+                        errorMsg = null
+                    },
+                    label = {
+                        Text(
+                            if (selectedKind == PersonaFeedKind.BLOG) L10n.text("公开 HTTPS 博客或 RSS/Atom 地址", "Public HTTPS blog or RSS/Atom URL")
+                            else L10n.text("@用户名 或 x.com 主页链接", "@handle or x.com profile URL")
+                        )
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                errorMsg?.let { err ->
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = rawAddress.trim().isNotEmpty(),
+                onClick = {
+                    val parsed = runCatching { PersonaFeedReader.parseSource(rawAddress, selectedKind) }
+                    parsed.onSuccess(onAdd)
+                        .onFailure { errorMsg = it.message ?: L10n.text("订阅地址无效", "Invalid feed address") }
+                }
+            ) {
+                Text(L10n.text("添加", "Add"))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(L10n.text("取消", "Cancel"))
+            }
+        }
+    )
+}
+
+@Composable
+private fun PersonaXTokenDialog(
+    initialHasToken: Boolean,
+    onSaveToken: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var tokenInput by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(L10n.text("X API Bearer Token", "X API Bearer Token")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(DS.Spacing.sm)) {
+                Text(
+                    text = if (initialHasToken) {
+                        L10n.text("当前已保存 X API Bearer Token，输入新值可覆盖或点击清除。", "An X API Bearer Token is saved. Enter a new value to replace or clear it.")
+                    } else {
+                        L10n.text("仅在读取 X 账号订阅时使用，加密保存在本机钥匙串。", "Stored encrypted locally and used only when checking X timeline feeds.")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = tokenInput,
+                    onValueChange = { tokenInput = it },
+                    label = { Text("Bearer Token") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = tokenInput.trim().isNotEmpty(),
+                onClick = { onSaveToken(tokenInput) }
+            ) {
+                Text(L10n.text("保存", "Save"))
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (initialHasToken) {
+                    TextButton(
+                        onClick = { onSaveToken("") },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text(L10n.text("清除", "Clear"))
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(L10n.text("取消", "Cancel"))
+                }
+            }
+        }
+    )
 }
 
 @Composable

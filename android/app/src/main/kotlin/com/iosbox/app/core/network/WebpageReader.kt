@@ -7,7 +7,6 @@ import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.ByteArrayOutputStream
-import java.io.IOException
 import java.net.InetAddress
 import java.net.URI
 import java.net.UnknownHostException
@@ -94,11 +93,77 @@ object WebpageReader {
         }
     }
 
+    private data class FetchedResponse(
+        val bytes: ByteArray,
+        val finalUrl: String,
+        val mime: String,
+        val charset: java.nio.charset.Charset
+    )
+
+    suspend fun fetchRaw(
+        url: String,
+        accept: String,
+        extraHeaders: Map<String, String> = emptyMap(),
+        client: OkHttpClient = defaultClient,
+        skipPublicHostCheckForTesting: Boolean = false
+    ): Pair<ByteArray, String> = withContext(Dispatchers.IO) {
+        val uri = runCatching { URI(url.trim()) }.getOrNull() ?: throw WebpageReadError.InvalidUrl()
+        val fetched = fetchVerifiedBytes(
+            uri = uri,
+            accept = accept,
+            extraHeaders = extraHeaders,
+            requireReadableMime = false,
+            client = client,
+            skipPublicHostCheckForTesting = skipPublicHostCheckForTesting
+        )
+        fetched.bytes to fetched.finalUrl
+    }
+
     suspend fun read(
         uri: URI,
         client: OkHttpClient = defaultClient,
         skipPublicHostCheckForTesting: Boolean = false
     ): ReadablePage = withContext(Dispatchers.IO) {
+        val fetched = fetchVerifiedBytes(
+            uri = uri,
+            accept = "text/html,application/xhtml+xml,text/plain,application/json,application/xml;q=0.9,*/*;q=0.1",
+            extraHeaders = emptyMap(),
+            requireReadableMime = true,
+            client = client,
+            skipPublicHostCheckForTesting = skipPublicHostCheckForTesting
+        )
+
+        val rawText = fetched.bytes.toString(fetched.charset)
+        val isHtml = fetched.mime.contains("html") ||
+            fetched.mime.isEmpty() && rawText.trimStart().startsWith("<")
+        val (rawTitle, bodyText) = if (isHtml) {
+            extractReadableHtml(rawText)
+        } else {
+            "" to collapseWhitespace(rawText)
+        }
+
+        if (bodyText.isBlank()) {
+            throw WebpageReadError.EmptyContent()
+        }
+
+        val truncated = bodyText.length > MAX_TEXT_CHARS
+        val finalText = if (truncated) bodyText.take(MAX_TEXT_CHARS) else bodyText
+        ReadablePage(
+            url = fetched.finalUrl,
+            title = rawTitle.take(300),
+            text = finalText,
+            isTruncated = truncated
+        )
+    }
+
+    private fun fetchVerifiedBytes(
+        uri: URI,
+        accept: String,
+        extraHeaders: Map<String, String>,
+        requireReadableMime: Boolean,
+        client: OkHttpClient,
+        skipPublicHostCheckForTesting: Boolean
+    ): FetchedResponse {
         var currentUri = uri
         var redirects = 0
 
@@ -107,14 +172,16 @@ object WebpageReader {
                 validate(currentUri)
             }
 
-            val req = Request.Builder()
+            val reqBuilder = Request.Builder()
                 .url(currentUri.toASCIIString())
                 .get()
-                .header("Accept", "text/html,application/xhtml+xml,text/plain,application/json,application/xml;q=0.9,*/*;q=0.1")
+                .header("Accept", accept)
                 .header("User-Agent", "Fugue/1.0 (+https://iosbox.app)")
-                .build()
+            for ((k, v) in extraHeaders) {
+                reqBuilder.header(k, v)
+            }
 
-            client.newCall(req).execute().use { resp ->
+            client.newCall(reqBuilder.build()).execute().use { resp ->
                 if (resp.code in listOf(301, 302, 303, 307, 308)) {
                     if (redirects >= MAX_REDIRECTS) {
                         throw WebpageReadError.HttpError(resp.code)
@@ -138,7 +205,7 @@ object WebpageReader {
                 } else {
                     (resp.header("Content-Type") ?: "").substringBefore(';').trim().lowercase()
                 }
-                if (mime.isNotEmpty() && !isReadableMime(mime)) {
+                if (requireReadableMime && mime.isNotEmpty() && !isReadableMime(mime)) {
                     throw WebpageReadError.UnsupportedContentType()
                 }
 
@@ -160,31 +227,14 @@ object WebpageReader {
                 }
 
                 val charset = mediaType?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
-                val rawText = out.toByteArray().toString(charset)
-                val isHtml = mime.contains("html") ||
-                    mime.isEmpty() && rawText.trimStart().startsWith("<")
-                val (rawTitle, bodyText) = if (isHtml) {
-                    extractReadableHtml(rawText)
-                } else {
-                    "" to collapseWhitespace(rawText)
-                }
-
-                if (bodyText.isBlank()) {
-                    throw WebpageReadError.EmptyContent()
-                }
-
-                val truncated = bodyText.length > MAX_TEXT_CHARS
-                val finalText = if (truncated) bodyText.take(MAX_TEXT_CHARS) else bodyText
-                return@withContext ReadablePage(
-                    url = currentUri.toASCIIString(),
-                    title = rawTitle.take(300),
-                    text = finalText,
-                    isTruncated = truncated
+                return FetchedResponse(
+                    bytes = out.toByteArray(),
+                    finalUrl = currentUri.toASCIIString(),
+                    mime = mime,
+                    charset = charset
                 )
             }
         }
-        @Suppress("UNREACHABLE_CODE")
-        throw IOException("Unexpected termination")
     }
 
     private fun isReadableMime(mime: String): Boolean =
@@ -195,6 +245,15 @@ object WebpageReader {
             mime.endsWith("+xml") ||
             mime.endsWith("+json")
 
+    fun plainText(html: String): String {
+        var working = html
+        working = SCRIPT_STYLE_REGEX.replace(working, " ")
+        working = BLOCK_TAG_REGEX.replace(working, "\n")
+        working = ANY_TAG_REGEX.replace(working, "")
+        working = decodeHtmlEntities(working)
+        return collapseWhitespace(working)
+    }
+
     fun extractReadableHtml(html: String): Pair<String, String> {
         val titleMatch = TITLE_REGEX.find(html)
         val title = titleMatch?.groupValues?.getOrNull(1)
@@ -203,12 +262,7 @@ object WebpageReader {
             ?.trim()
             .orEmpty()
 
-        var working = html
-        working = SCRIPT_STYLE_REGEX.replace(working, " ")
-        working = BLOCK_TAG_REGEX.replace(working, "\n")
-        working = ANY_TAG_REGEX.replace(working, "")
-        working = decodeHtmlEntities(working)
-        return title to collapseWhitespace(working)
+        return title to plainText(html)
     }
 
     private fun collapseWhitespace(text: String): String {
@@ -219,7 +273,7 @@ object WebpageReader {
         return lines.joinToString("\n")
     }
 
-    private fun decodeHtmlEntities(text: String): String {
+    internal fun decodeHtmlEntities(text: String): String {
         var result = text
             .replace("&nbsp;", " ")
             .replace("&amp;", "&")

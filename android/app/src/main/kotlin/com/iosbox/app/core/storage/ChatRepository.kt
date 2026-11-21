@@ -159,6 +159,7 @@ data class ConversationItem(
     val primaryTarget: ResolvedModelTarget?,
     val arenaTargets: List<ResolvedModelTarget>,
     val assistanceSettings: ConversationAssistanceSettings = ConversationAssistanceSettings(),
+    val activeLeafMessageID: String? = null,
     val folderTag: String?,
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long
@@ -878,6 +879,22 @@ class ChatRepository(
     }
 
     suspend fun saveConversation(item: ConversationItem) = withContext(Dispatchers.IO) {
+        saveConversationInternal(item)
+    }
+
+    suspend fun saveConversationAndMessages(
+        conversation: ConversationItem,
+        messages: List<ChatMessageItem>
+    ) = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            saveConversationInternal(conversation)
+            for (msg in messages) {
+                saveMessageInternal(msg)
+            }
+        }
+    }
+
+    private suspend fun saveConversationInternal(item: ConversationItem) {
         val cid = item.id.uppercase()
         val existing = db.conversationDao().getById(cid)
         val settingsKey = if (!item.assistanceSettings.isDefault || existing?.assistanceSettingsBlobKey != null) {
@@ -910,7 +927,7 @@ class ChatRepository(
                 primaryTargetJson = item.primaryTarget?.let { json.encodeToString(it) } ?: "null",
                 arenaTargetsJson = json.encodeToString(item.arenaTargets),
                 assistanceSettingsBlobKey = settingsKey,
-                activeLeafMessageID = existing?.activeLeafMessageID,
+                activeLeafMessageID = item.activeLeafMessageID?.uppercase(),
                 folderTag = item.folderTag,
                 organizationEditsJson = existing?.organizationEditsJson,
                 legacyImportID = existing?.legacyImportID,
@@ -954,6 +971,10 @@ class ChatRepository(
             .flowOn(Dispatchers.IO)
 
     suspend fun saveMessage(item: ChatMessageItem) = withContext(Dispatchers.IO) {
+        saveMessageInternal(item)
+    }
+
+    private suspend fun saveMessageInternal(item: ChatMessageItem) {
         val mid = item.id.uppercase()
         val existing = db.chatMessageDao().getById(mid)
         val attKey = if (item.attachments.isNotEmpty()) {
@@ -1153,6 +1174,7 @@ class ChatRepository(
             primaryTarget = primary,
             arenaTargets = arena,
             assistanceSettings = assistanceSettings,
+            activeLeafMessageID = e.activeLeafMessageID,
             folderTag = e.folderTag,
             createdAtEpochMs = e.createdAtEpochMs,
             updatedAtEpochMs = e.updatedAtEpochMs
@@ -1285,10 +1307,17 @@ class ChatRepository(
                         atts = atts.map(::textOnlyVersion)
                     }
                 }
+                val quote = msg.assistanceMetadata.quotedExcerpt?.trim().orEmpty()
+                val promptContent = if (msg.role == MessageRole.USER && quote.isNotEmpty()) {
+                    val quoteBlock = "> ${quote.replace("\n", "\n> ")}"
+                    if (msg.content.isEmpty()) quoteBlock else "$quoteBlock\n\n${msg.content}"
+                } else {
+                    msg.content
+                }
                 historyReversed.add(
                     LLMPromptMessage(
                         role = msg.role,
-                        content = msg.content,
+                        content = promptContent,
                         attachments = atts
                     )
                 )

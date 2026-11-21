@@ -17,11 +17,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Functions
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -51,6 +55,7 @@ import kotlinx.coroutines.delay
 private sealed interface MarkdownBlock {
     data class Heading(val level: Int, val text: String) : MarkdownBlock
     data class CodeBlock(val language: String, val code: String) : MarkdownBlock
+    data class MathBlock(val latex: String) : MarkdownBlock
     data class Blockquote(val lines: List<String>) : MarkdownBlock
     data class BulletList(val items: List<Pair<String, String>>) : MarkdownBlock
     data class Table(val headers: List<String>, val rows: List<List<String>>) : MarkdownBlock
@@ -85,6 +90,7 @@ fun MarkdownMessageContent(
                         )
                     }
                     is MarkdownBlock.CodeBlock -> CodeBlockCard(language = block.language, code = block.code)
+                    is MarkdownBlock.MathBlock -> MathBlockCard(latex = block.latex)
                     is MarkdownBlock.Blockquote -> {
                         Row(
                             modifier = Modifier
@@ -154,12 +160,22 @@ fun MarkdownMessageContent(
 private fun CodeBlockCard(language: String, code: String) {
     val context = LocalContext.current
     var copied by remember { mutableStateOf(false) }
+    var showPreview by remember { mutableStateOf(false) }
+    val previewable = remember(language) { ArtifactDocumentBuilder.isPreviewable(language) }
 
     LaunchedEffect(copied) {
         if (copied) {
             delay(1500)
             copied = false
         }
+    }
+
+    if (showPreview) {
+        ArtifactPreviewDialog(
+            language = language,
+            code = code,
+            onDismiss = { showPreview = false }
+        )
     }
 
     Column(
@@ -182,20 +198,50 @@ private fun CodeBlockCard(language: String, code: String) {
                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            IconButton(
-                onClick = {
-                    val cm = context.getSystemService(ClipboardManager::class.java)
-                    cm?.setPrimaryClip(ClipData.newPlainText("Fugue", code))
-                    copied = true
-                },
-                modifier = Modifier.size(28.dp)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Icon(
-                    imageVector = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
-                    contentDescription = L10n.text("复制代码", "Copy code"),
-                    tint = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp)
-                )
+                if (previewable) {
+                    Surface(
+                        onClick = { showPreview = true },
+                        shape = RoundedCornerShape(999.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = L10n.text("预览", "Preview"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                }
+                IconButton(
+                    onClick = {
+                        val cm = context.getSystemService(ClipboardManager::class.java)
+                        cm?.setPrimaryClip(ClipData.newPlainText("Fugue", code))
+                        copied = true
+                    },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                        contentDescription = L10n.text("复制代码", "Copy code"),
+                        tint = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
         }
         Box(
@@ -210,6 +256,104 @@ private fun CodeBlockCard(language: String, code: String) {
                     fontFamily = FontFamily.Monospace,
                     lineHeight = 19.sp
                 ),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+@Composable
+private fun MathBlockCard(latex: String) {
+    val context = LocalContext.current
+    var showRaw by remember { mutableStateOf(false) }
+    var copied by remember { mutableStateOf(false) }
+    val rendered = remember(latex) { MathDisplayFormatter.formatLatexToUnicode(latex) }
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1500)
+            copied = false
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(DS.Radius.sm))
+            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f))
+            .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f), RoundedCornerShape(DS.Radius.sm))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = DS.Spacing.md, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Functions,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = if (showRaw) "LaTeX" else L10n.text("公式", "Math"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                IconButton(
+                    onClick = { showRaw = !showRaw },
+                    modifier = Modifier.size(26.dp)
+                ) {
+                    Icon(
+                        imageVector = if (showRaw) Icons.Filled.Functions else Icons.Filled.Code,
+                        contentDescription = L10n.text("切换源码", "Toggle source"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        val cm = context.getSystemService(ClipboardManager::class.java)
+                        cm?.setPrimaryClip(ClipData.newPlainText("LaTeX", latex))
+                        copied = true
+                    },
+                    modifier = Modifier.size(26.dp)
+                ) {
+                    Icon(
+                        imageVector = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                        contentDescription = L10n.text("复制 LaTeX", "Copy LaTeX"),
+                        tint = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = DS.Spacing.md, vertical = DS.Spacing.sm)
+        ) {
+            Text(
+                text = if (showRaw) latex else rendered,
+                style = if (showRaw) {
+                    MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, lineHeight = 19.sp)
+                } else {
+                    MaterialTheme.typography.bodyLarge.copy(
+                        fontFamily = FontFamily.Serif,
+                        lineHeight = 24.sp
+                    )
+                },
                 color = MaterialTheme.colorScheme.onSurface
             )
         }
@@ -291,6 +435,57 @@ private fun parseMarkdownBlocks(raw: String): List<MarkdownBlock> {
             continue
         }
 
+        // Display math block: $$...$$ or \[...\]
+        if (trimmed.startsWith("$$")) {
+            if (trimmed.length >= 4 && trimmed.endsWith("$$")) {
+                val latex = trimmed.removePrefix("$$").removeSuffix("$$").trim()
+                if (latex.isNotEmpty()) blocks.add(MarkdownBlock.MathBlock(latex))
+                i++
+                continue
+            }
+            val mathLines = mutableListOf<String>()
+            val firstRest = trimmed.removePrefix("$$").trim()
+            if (firstRest.isNotEmpty()) mathLines.add(firstRest)
+            i++
+            while (i < lines.size && !lines[i].trim().endsWith("$$")) {
+                mathLines.add(lines[i])
+                i++
+            }
+            if (i < lines.size) {
+                val lastRest = lines[i].trim().removeSuffix("$$").trim()
+                if (lastRest.isNotEmpty()) mathLines.add(lastRest)
+                i++
+            }
+            val latex = mathLines.joinToString("\n").trim()
+            if (latex.isNotEmpty()) blocks.add(MarkdownBlock.MathBlock(latex))
+            continue
+        }
+
+        if (trimmed.startsWith("\\[")) {
+            if (trimmed.length >= 4 && trimmed.endsWith("\\]")) {
+                val latex = trimmed.removePrefix("\\[").removeSuffix("\\]").trim()
+                if (latex.isNotEmpty()) blocks.add(MarkdownBlock.MathBlock(latex))
+                i++
+                continue
+            }
+            val mathLines = mutableListOf<String>()
+            val firstRest = trimmed.removePrefix("\\[").trim()
+            if (firstRest.isNotEmpty()) mathLines.add(firstRest)
+            i++
+            while (i < lines.size && !lines[i].trim().endsWith("\\]")) {
+                mathLines.add(lines[i])
+                i++
+            }
+            if (i < lines.size) {
+                val lastRest = lines[i].trim().removeSuffix("\\]").trim()
+                if (lastRest.isNotEmpty()) mathLines.add(lastRest)
+                i++
+            }
+            val latex = mathLines.joinToString("\n").trim()
+            if (latex.isNotEmpty()) blocks.add(MarkdownBlock.MathBlock(latex))
+            continue
+        }
+
         // Horizontal rule
         if (trimmed == "---" || trimmed == "***" || trimmed == "___") {
             blocks.add(MarkdownBlock.Divider)
@@ -353,6 +548,8 @@ private fun parseMarkdownBlocks(raw: String): List<MarkdownBlock> {
             val curTrim = lines[i].trim()
             if (curTrim.isEmpty() ||
                 curTrim.startsWith("```") ||
+                curTrim.startsWith("$$") ||
+                curTrim.startsWith("\\[") ||
                 curTrim.startsWith(">") ||
                 curTrim == "---" || curTrim == "***" || curTrim == "___" ||
                 Regex("^#{1,6}\\s+.+$").matches(curTrim) ||
@@ -403,6 +600,44 @@ private fun parseInlineMarkdown(
                         )
                     ) {
                         append(" ${text.substring(i + 1, end)} ")
+                    }
+                    i = end + 1
+                } else {
+                    append(text[i])
+                    i++
+                }
+            }
+            text.startsWith("\\(", i) -> {
+                val end = text.indexOf("\\)", i + 2)
+                if (end > i + 2) {
+                    val formatted = MathDisplayFormatter.formatLatexToUnicode(text.substring(i + 2, end))
+                    withStyle(
+                        SpanStyle(
+                            fontFamily = FontFamily.Serif,
+                            fontStyle = FontStyle.Italic,
+                            background = linkColor.copy(alpha = 0.08f)
+                        )
+                    ) {
+                        append(formatted)
+                    }
+                    i = end + 2
+                } else {
+                    append("\\(")
+                    i += 2
+                }
+            }
+            text[i] == '$' -> {
+                val end = MathDisplayFormatter.findInlineMathEnd(text, i)
+                if (end != null && end > i + 1) {
+                    val formatted = MathDisplayFormatter.formatLatexToUnicode(text.substring(i + 1, end))
+                    withStyle(
+                        SpanStyle(
+                            fontFamily = FontFamily.Serif,
+                            fontStyle = FontStyle.Italic,
+                            background = linkColor.copy(alpha = 0.08f)
+                        )
+                    ) {
+                        append(formatted)
                     }
                     i = end + 1
                 } else {

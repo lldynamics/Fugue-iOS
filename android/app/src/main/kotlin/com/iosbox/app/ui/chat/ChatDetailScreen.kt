@@ -2,7 +2,9 @@ package com.iosbox.app.ui.chat
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -32,17 +34,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Image
@@ -52,6 +58,7 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Quiz
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
@@ -103,6 +110,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iosbox.app.AppContainer
 import com.iosbox.app.core.model.AttachmentKind
+import com.iosbox.app.core.model.GroupSourceNotice
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.MessageRole
@@ -113,6 +121,8 @@ import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.ConversationExporter
 import com.iosbox.app.core.storage.ConversationSearch
+import com.iosbox.app.core.storage.ModelMentionParser
+import com.iosbox.app.core.storage.SlashPromptCommand
 import com.iosbox.app.ui.books.BookReaderSheet
 import com.iosbox.app.ui.study.MessageStudyDeckCard
 import com.iosbox.app.ui.theme.DS
@@ -199,6 +209,8 @@ fun ChatDetailScreen(
     var activeBallotGroupID by remember { mutableStateOf<String?>(null) }
     var judgeGroupID by remember { mutableStateOf<String?>(null) }
     var compareSourceMessage by remember { mutableStateOf<ChatMessageItem?>(null) }
+    var editingBranchMessage by remember { mutableStateOf<ChatMessageItem?>(null) }
+    var editingBranchText by remember { mutableStateOf("") }
 
     val markdownExportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("text/markdown")
@@ -426,6 +438,17 @@ fun ChatDetailScreen(
                                     onOpenFlashcards()
                                 }
                             )
+                            if (conv?.isGroupMode == true) {
+                                DropdownMenuItem(
+                                    leadingIcon = { Icon(Icons.Filled.RssFeed, contentDescription = null) },
+                                    text = { Text(L10n.text("检查订阅动态", "Check Feeds")) },
+                                    enabled = !state.isGenerating && !state.isRefreshingFeeds,
+                                    onClick = {
+                                        showMoreMenu = false
+                                        vm.refreshPersonaFeeds()
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -531,6 +554,36 @@ fun ChatDetailScreen(
                 }
             }
 
+            state.feedStatusNotice?.let { notice ->
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = DS.Spacing.lg, vertical = DS.Spacing.xs),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.RssFeed,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier
+                                .padding(end = 6.dp)
+                                .size(15.dp)
+                        )
+                        Text(
+                            text = notice,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { vm.clearFeedStatusNotice() }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -589,16 +642,26 @@ fun ChatDetailScreen(
                                 MessageBubbleRow(
                                     message = msg,
                                     activeBookID = activeFriend?.bookID,
-                                    canRegenerate = !state.isGenerating && msg.role == MessageRole.ASSISTANT,
+                                    branchSiblings = state.branchSiblings[msg.id].orEmpty(),
+                                    canEditUser = !state.isGenerating && msg.role == MessageRole.USER,
+                                    canRegenerate = !state.isGenerating && msg.role == MessageRole.ASSISTANT && msg.assistanceMetadata.sourceNotice == null,
                                     canCompareWithAnother = !state.isGenerating &&
                                         conv?.isGroupMode != true &&
                                         msg.role == MessageRole.ASSISTANT &&
+                                        msg.assistanceMetadata.sourceNotice == null &&
                                         readyTargets.size >= 2,
                                     canStudyGenerate = !state.isGenerating &&
                                         state.studyGeneratingMessageID == null &&
                                         msg.role == MessageRole.ASSISTANT &&
+                                        msg.assistanceMetadata.sourceNotice == null &&
                                         msg.content.isNotBlank(),
                                     isStudyGenerating = state.studyGeneratingMessageID == msg.id,
+                                    onSwitchBranch = vm::switchBranch,
+                                    onEditUserMessage = {
+                                        editingBranchMessage = msg
+                                        editingBranchText = msg.content
+                                    },
+                                    onQuoteReply = { vm.quoteMessageForFollowUp(msg) },
                                     onRegenerate = { vm.regenerateMessage(msg) },
                                     onCompareWithAnother = { compareSourceMessage = msg },
                                     onApproveMemory = { fact -> vm.approveProposedMemory(msg, fact) },
@@ -686,6 +749,30 @@ fun ChatDetailScreen(
                         ) {
                             Icon(Icons.Filled.Summarize, contentDescription = null, modifier = Modifier.size(14.dp))
                             Text(L10n.text("生成纪要", "Summary"), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+
+                    val hasGroupFeeds = conv.groupMembers.any { !it.isMuted && it.persona?.feeds?.any { f -> f.enabled } == true }
+                    if (hasGroupFeeds) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (state.isGenerating || state.isRefreshingFeeds) 0.4f else 0.9f),
+                            modifier = Modifier.clickable(enabled = !state.isGenerating && !state.isRefreshingFeeds) {
+                                vm.refreshPersonaFeeds()
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                if (state.isRefreshingFeeds) {
+                                    CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.8.dp)
+                                } else {
+                                    Icon(Icons.Filled.RssFeed, contentDescription = null, modifier = Modifier.size(14.dp))
+                                }
+                                Text(L10n.text("检查动态", "Feeds"), style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                     }
 
@@ -841,6 +928,148 @@ fun ChatDetailScreen(
                 }
             }
 
+            state.quotedExcerpt?.let { quote ->
+                Surface(
+                    shape = RoundedCornerShape(DS.Radius.sm),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = DS.Spacing.md, vertical = 2.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = DS.Spacing.sm, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.FormatQuote,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = quote,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { vm.setQuotedExcerpt(null) }, modifier = Modifier.size(22.dp)) {
+                            Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                }
+            }
+
+            state.temporaryTargetOverride?.let { overrideTarget ->
+                if (conv != null && !conv.isGroupMode && !conv.isArenaMode) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = DS.Spacing.md, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = L10n.text(
+                                        "本条临时使用 @${overrideTarget.modelDisplayName}",
+                                        "One-turn model: @${overrideTarget.modelDisplayName}"
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Icon(
+                                    imageVector = Icons.Filled.Close,
+                                    contentDescription = L10n.text("取消临时指定", "Clear override"),
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clickable { vm.setTemporaryTargetOverride(null) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            val slashMatches = remember(state.draftText) { SlashPromptCommand.matching(state.draftText) }
+            if (slashMatches.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = DS.Spacing.md, vertical = 3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    for (cmd in slashMatches) {
+                        Surface(
+                            onClick = { vm.applySlashCommand(cmd) },
+                            shape = RoundedCornerShape(DS.Radius.sm),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            ) {
+                                Text(
+                                    text = "${cmd.command} · ${cmd.title}",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = cmd.subtitle,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 200.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            val mentionTargets = remember(state.draftText, readyTargets, conv?.isGroupMode, conv?.isArenaMode) {
+                val query = if (conv != null && !conv.isGroupMode && !conv.isArenaMode) {
+                    ModelMentionParser.activeMentionQuery(state.draftText)
+                } else null
+                if (query == null) emptyList() else ModelMentionParser.matchingTargets(query, readyTargets)
+            }
+            if (mentionTargets.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = DS.Spacing.md, vertical = 3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    for (mTarget in mentionTargets) {
+                        Surface(
+                            onClick = { vm.selectMentionOverride(mTarget) },
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f)
+                        ) {
+                            Text(
+                                text = "@${mTarget.modelDisplayName} (${mTarget.providerName})",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
             if (state.draftAttachments.isNotEmpty()) {
                 Row(
                     modifier = Modifier
@@ -901,7 +1130,9 @@ fun ChatDetailScreen(
                     shape = RoundedCornerShape(DS.Radius.lg)
                 )
 
-                val canSendDraft = state.draftText.isNotBlank() || state.draftAttachments.isNotEmpty()
+                val canSendDraft = state.draftText.isNotBlank() ||
+                    state.draftAttachments.isNotEmpty() ||
+                    !state.quotedExcerpt.isNullOrBlank()
                 val canBargeIn = conv?.isGroupMode == true && state.isGenerating && canSendDraft
                 if (state.isGenerating) {
                     IconButton(
@@ -1319,6 +1550,48 @@ fun ChatDetailScreen(
         )
     }
 
+    editingBranchMessage?.let { origMsg ->
+        AlertDialog(
+            onDismissRequest = { editingBranchMessage = null },
+            title = { Text(L10n.text("编辑并新建分支", "Edit & Create Branch")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = L10n.text(
+                            "将在原位置创建一条并行分支，原消息与后续回复会完整保留。",
+                            "Creates a parallel branch at this turn while keeping your previous history intact."
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = editingBranchText,
+                        onValueChange = { editingBranchText = it },
+                        minLines = 3,
+                        maxLines = 8,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = editingBranchText.trim().isNotEmpty(),
+                    onClick = {
+                        vm.editAndBranchUserMessage(origMsg, editingBranchText)
+                        editingBranchMessage = null
+                    }
+                ) {
+                    Text(L10n.text("发送新分支", "Send Branch"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingBranchMessage = null }) {
+                    Text(L10n.text("取消", "Cancel"))
+                }
+            }
+        )
+    }
+
     state.pendingConsent?.let { consent ->
         AIConsentDialog(
             targetSummary = consent.recipientSummary,
@@ -1382,10 +1655,15 @@ fun ChatDetailScreen(
 private fun MessageBubbleRow(
     message: ChatMessageItem,
     activeBookID: String?,
+    branchSiblings: List<ChatMessageItem>,
+    canEditUser: Boolean,
     canRegenerate: Boolean,
     canCompareWithAnother: Boolean,
     canStudyGenerate: Boolean,
     isStudyGenerating: Boolean,
+    onSwitchBranch: (ChatMessageItem) -> Unit,
+    onEditUserMessage: () -> Unit,
+    onQuoteReply: () -> Unit,
     onRegenerate: () -> Unit,
     onCompareWithAnother: () -> Unit,
     onApproveMemory: (String) -> Unit,
@@ -1451,6 +1729,33 @@ private fun MessageBubbleRow(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
+            if (!meta.quotedExcerpt.isNullOrBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(DS.Radius.sm),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.widthIn(max = 310.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = DS.Spacing.sm, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.FormatQuote,
+                            contentDescription = null,
+                            tint = accent.readableText,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = meta.quotedExcerpt,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
             if (message.attachments.isNotEmpty()) {
                 AttachmentStrip(message.attachments)
             }
@@ -1479,6 +1784,23 @@ private fun MessageBubbleRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(end = 4.dp)
                     )
+                }
+                if (branchSiblings.size > 1) {
+                    BranchSwitcherPill(
+                        currentMessage = message,
+                        siblings = branchSiblings,
+                        onSwitchBranch = onSwitchBranch
+                    )
+                }
+                if (canEditUser) {
+                    IconButton(onClick = onEditUserMessage, modifier = Modifier.size(24.dp)) {
+                        Icon(
+                            imageVector = Icons.Filled.Edit,
+                            contentDescription = L10n.text("编辑并分支", "Edit & Branch"),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
                 }
                 IconButton(onClick = onToggleBookmark, modifier = Modifier.size(24.dp)) {
                     Icon(
@@ -1623,7 +1945,10 @@ private fun MessageBubbleRow(
                 AttachmentStrip(message.attachments)
             }
 
-            if (message.content.isNotEmpty()) {
+            val sourceNotice = meta.sourceNotice
+            if (sourceNotice != null) {
+                SourceNoticeCard(notice = sourceNotice)
+            } else if (message.content.isNotEmpty()) {
                 MarkdownMessageContent(markdown = message.content)
             } else if (message.isStreaming && message.reasoningContent.isEmpty() && meta.toolCalls.isEmpty()) {
                 Text(
@@ -1697,6 +2022,13 @@ private fun MessageBubbleRow(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
+                    if (branchSiblings.size > 1) {
+                        BranchSwitcherPill(
+                            currentMessage = message,
+                            siblings = branchSiblings,
+                            onSwitchBranch = onSwitchBranch
+                        )
+                    }
                     if (message.content.isNotEmpty()) {
                         IconButton(
                             onClick = {
@@ -1711,6 +2043,19 @@ private fun MessageBubbleRow(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(15.dp)
                             )
+                        }
+                        if (meta.sourceNotice == null) {
+                            IconButton(
+                                onClick = onQuoteReply,
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.FormatQuote,
+                                    contentDescription = L10n.text("引用追问", "Quote Reply"),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            }
                         }
                     }
                     if (canRegenerate) {
@@ -1790,6 +2135,127 @@ private fun MessageBubbleRow(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BranchSwitcherPill(
+    currentMessage: ChatMessageItem,
+    siblings: List<ChatMessageItem>,
+    onSwitchBranch: (ChatMessageItem) -> Unit
+) {
+    val idx = siblings.indexOfFirst { it.id == currentMessage.id }.takeIf { it >= 0 } ?: 0
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+        ) {
+            IconButton(
+                onClick = { if (idx > 0) onSwitchBranch(siblings[idx - 1]) },
+                enabled = idx > 0,
+                modifier = Modifier.size(20.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.ChevronLeft,
+                    contentDescription = L10n.text("上一分支", "Previous branch"),
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+            Text(
+                text = "${idx + 1} / ${siblings.size}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            IconButton(
+                onClick = { if (idx + 1 < siblings.size) onSwitchBranch(siblings[idx + 1]) },
+                enabled = idx + 1 < siblings.size,
+                modifier = Modifier.size(20.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.ChevronRight,
+                    contentDescription = L10n.text("下一分支", "Next branch"),
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SourceNoticeCard(notice: GroupSourceNotice) {
+    val context = LocalContext.current
+    Surface(
+        shape = RoundedCornerShape(DS.Radius.md),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(DS.Spacing.md),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.RssFeed,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(15.dp)
+                )
+                Text(
+                    text = notice.byline,
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Text(
+                text = notice.title,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            if (!notice.excerpt.isNullOrBlank()) {
+                Text(
+                    text = notice.excerpt,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Surface(
+                onClick = {
+                    runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(notice.url)))
+                    }
+                },
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Text(
+                        text = L10n.text("打开原文", "Open Link"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 }
             }
         }

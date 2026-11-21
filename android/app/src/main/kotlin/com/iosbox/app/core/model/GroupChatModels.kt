@@ -1,5 +1,6 @@
 package com.iosbox.app.core.model
 
+import com.iosbox.app.core.backup.Iso8601EpochMillisSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import java.util.UUID
@@ -136,11 +137,85 @@ data class PersonaMaterial(
 }
 
 @Serializable
+enum class PersonaFeedKind(val rawValue: String) {
+    @SerialName("blog")
+    BLOG("blog"),
+
+    @SerialName("x")
+    X("x");
+
+    val displayName: String
+        get() = when (this) {
+            BLOG -> L10n.text("博客 RSS / Atom", "Blog RSS / Atom")
+            X -> L10n.text("X 账号动态", "X Timeline")
+        }
+}
+
+@Serializable
+data class PersonaFeedItem(
+    val id: String,
+    val title: String,
+    val url: String,
+    val excerpt: String? = null,
+    @Serializable(with = Iso8601EpochMillisSerializer::class)
+    val published: Long? = null
+)
+
+@Serializable
+data class PersonaFeedCheckpoint(
+    val recentIDs: List<String> = emptyList(),
+    val feedURL: String? = null,
+    val userID: String? = null,
+    val sinceID: String? = null,
+    val nextPage: String? = null,
+    val pendingNewestID: String? = null,
+    val pendingItems: List<PersonaFeedItem>? = null,
+    val truncatedBatch: Boolean? = null,
+    @Serializable(with = Iso8601EpochMillisSerializer::class)
+    val startedAt: Long? = null
+)
+
+@Serializable
+data class PersonaFeed(
+    val id: String = UUID.randomUUID().toString().uppercase(),
+    val kind: PersonaFeedKind,
+    val address: String,
+    val enabled: Boolean = true,
+    val checkpoint: PersonaFeedCheckpoint? = null,
+    @Serializable(with = Iso8601EpochMillisSerializer::class)
+    val lastChecked: Long? = null,
+    val lastError: String? = null
+) {
+    val displayName: String
+        get() = if (kind == PersonaFeedKind.X) "@$address" else address
+}
+
+@Serializable
+data class GroupSourceNotice(
+    val memberName: String,
+    val title: String,
+    val url: String,
+    @Serializable(with = Iso8601EpochMillisSerializer::class)
+    val published: Long? = null,
+    val excerpt: String? = null
+) {
+    val byline: String
+        get() = L10n.text("$memberName · 订阅动态", "$memberName · Feed Update")
+
+    val body: String
+        get() = listOfNotNull(title, excerpt, url)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n")
+}
+
+@Serializable
 data class GroupPersona(
-    val materials: List<PersonaMaterial> = emptyList()
+    val materials: List<PersonaMaterial> = emptyList(),
+    val feeds: List<PersonaFeed> = emptyList()
 ) {
     val isEmpty: Boolean
-        get() = materials.isEmpty()
+        get() = materials.isEmpty() && feeds.isEmpty()
 }
 
 @Serializable
@@ -204,6 +279,51 @@ data class GroupMember(
             id = replacing?.id?.uppercase() ?: UUID.randomUUID().toString().uppercase(),
             isMuted = replacing?.isMuted ?: false
         )
+    }
+
+    /**
+     * Preserves this device's latest polling checkpoint and timestamps for unchanged feeds
+     * when group settings are edited concurrently.
+     */
+    fun preservingFeedProgress(
+        from: GroupMember?,
+        keepEnabled: Boolean = false
+    ): GroupMember {
+        val currentPersona = persona ?: return this
+        val existingFeeds = from?.persona?.feeds.orEmpty()
+        if (currentPersona.feeds.isEmpty() || existingFeeds.isEmpty()) return this
+
+        val updatedFeeds = currentPersona.feeds.map { feed ->
+            val local = existingFeeds.firstOrNull {
+                it.id.equals(feed.id, ignoreCase = true) &&
+                    it.kind == feed.kind &&
+                    it.address == feed.address
+            }
+            if (local == null) {
+                feed
+            } else {
+                feed.copy(
+                    checkpoint = local.checkpoint,
+                    lastChecked = local.lastChecked,
+                    lastError = local.lastError,
+                    enabled = if (keepEnabled) local.enabled else feed.enabled
+                )
+            }
+        }
+        val nextPersona = currentPersona.copy(feeds = updatedFeeds)
+        return copy(persona = if (nextPersona.isEmpty) null else nextPersona)
+    }
+
+    /**
+     * Strips local device polling state & credentials, requiring local opt-in upon backup import.
+     */
+    fun forPersonaBackup(): GroupMember {
+        val currentPersona = persona ?: return this
+        val portableFeeds = currentPersona.feeds.map {
+            PersonaFeed(id = it.id, kind = it.kind, address = it.address, enabled = false)
+        }
+        val nextPersona = currentPersona.copy(feeds = portableFeeds)
+        return copy(persona = if (nextPersona.isEmpty) null else nextPersona)
     }
 
     companion object {
