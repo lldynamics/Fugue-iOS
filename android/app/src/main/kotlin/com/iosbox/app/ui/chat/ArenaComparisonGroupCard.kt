@@ -55,6 +55,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.model.ReadingCitation
 import com.iosbox.app.core.network.ArenaSynthesis
 import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.ui.theme.DS
@@ -71,7 +72,8 @@ fun ArenaComparisonGroupCard(
     onFollowUp: (ChatMessageItem) -> Unit,
     onRegenerateSingle: (ChatMessageItem) -> Unit,
     onSynthesize: () -> Unit,
-    onCrossCritique: () -> Unit
+    onCrossCritique: () -> Unit,
+    onOpenCitation: (ReadingCitation) -> Unit
 ) {
     val accent = LocalAccentColors.current
     val originals = remember(messages) { messages.filter { !it.isSynthesis } }
@@ -265,6 +267,7 @@ fun ArenaComparisonGroupCard(
                             isGenerating = isGenerating,
                             onFollowUp = { onFollowUp(msg) },
                             onRegenerate = { onRegenerateSingle(msg) },
+                            onOpenCitation = onOpenCitation,
                             modifier = Modifier.width(308.dp)
                         )
                     }
@@ -344,6 +347,7 @@ fun ArenaComparisonGroupCard(
                         isGenerating = isGenerating,
                         onFollowUp = { onFollowUp(currentActiveMessage) },
                         onRegenerate = { onRegenerateSingle(currentActiveMessage) },
+                        onOpenCitation = onOpenCitation,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -408,6 +412,7 @@ private fun SingleModelArenaCard(
     isGenerating: Boolean,
     onFollowUp: () -> Unit,
     onRegenerate: () -> Unit,
+    onOpenCitation: (ReadingCitation) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -534,6 +539,10 @@ private fun SingleModelArenaCard(
 
             message.assistanceMetadata.search?.let { search ->
                 SearchCitationsCard(search = search)
+            }
+
+            message.assistanceMetadata.knowledgeEvidence?.let { knowledge ->
+                KnowledgeCitationsCard(knowledge = knowledge, onOpenCitation = onOpenCitation)
             }
 
             if (message.content.isNotEmpty()) {

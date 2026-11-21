@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -80,9 +81,11 @@ import java.util.Locale
 @Composable
 fun ProviderListScreen(
     container: AppContainer,
-    onOpenProvider: (String) -> Unit
+    onOpenProvider: (String) -> Unit,
+    onOpenMemories: () -> Unit
 ) {
     val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
+    val memories by container.chatRepository.observePersonalMemories().collectAsStateWithLifecycle(initialValue = emptyList())
     val prefs by container.preferences.state.collectAsStateWithLifecycle()
     val secretVersion by container.secretStore.versionFlow.collectAsStateWithLifecycle()
     val savedTavilyKey = remember(secretVersion) {
@@ -190,6 +193,57 @@ fun ProviderListScreen(
                     onClick = { onOpenProvider(provider.id) },
                     onDelete = { providerToDelete = provider }
                 )
+            }
+
+            item {
+                Text(
+                    text = L10n.text("个人长期记忆", "Personal Memory"),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = DS.Spacing.sm)
+                )
+            }
+
+            item {
+                val enabledCount = memories.count { it.isEnabled && it.content.isNotBlank() }
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenMemories() }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(DS.Spacing.md),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Psychology,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = L10n.text("管理个人长期记忆", "Manage Personal Memories"),
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                            Text(
+                                text = L10n.text(
+                                    "已启用 $enabledCount 条 · 共 ${memories.size} / 20 条",
+                                    "$enabledCount active · ${memories.size} / 20 total"
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            text = L10n.text("编辑", "Edit"),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             }
 
             item {

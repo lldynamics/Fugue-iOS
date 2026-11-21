@@ -1,7 +1,10 @@
 package com.iosbox.app.ui.assistants
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,10 +16,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -37,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -44,14 +51,23 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iosbox.app.AppContainer
 import com.iosbox.app.core.model.GroupMember
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.storage.BookImporter
+import com.iosbox.app.core.storage.BookVolumeItem
+import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.PresetItem
+import com.iosbox.app.ui.books.BookFriendSetupSheet
+import com.iosbox.app.ui.books.BookReaderSheet
+import com.iosbox.app.ui.books.ReadingShelfSection
 import com.iosbox.app.ui.theme.DS
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 private enum class AssistantDirectoryTab {
     ASSISTANTS,
-    PERSONAS
+    PERSONAS,
+    SHELF
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -59,11 +75,15 @@ private enum class AssistantDirectoryTab {
 fun AssistantListScreen(
     container: AppContainer,
     onStartChatWithPreset: (PresetItem) -> Unit,
-    onStartPrivatePersonaChat: (GroupMember) -> Unit
+    onStartPrivatePersonaChat: (GroupMember) -> Unit,
+    onOpenConversation: (String) -> Unit
 ) {
+    val context = LocalContext.current
     val presets by container.chatRepository.observePresets().collectAsStateWithLifecycle(initialValue = emptyList())
     val personas by container.chatRepository.observePersonaProfiles().collectAsStateWithLifecycle(initialValue = emptyList())
     val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
+    val books by container.chatRepository.observeBooks().collectAsStateWithLifecycle(initialValue = emptyList())
+    val shelfStates by container.chatRepository.observeShelfStates().collectAsStateWithLifecycle(initialValue = emptyList())
     val scope = rememberCoroutineScope()
 
     var selectedTab by remember { mutableStateOf(AssistantDirectoryTab.ASSISTANTS) }
@@ -71,13 +91,33 @@ fun AssistantListScreen(
     var showCreatePreset by remember { mutableStateOf(false) }
     var editingPersona by remember { mutableStateOf<GroupMember?>(null) }
     var showCreatePersona by remember { mutableStateOf(false) }
+    var readingBook by remember { mutableStateOf<BookVolumeItem?>(null) }
+    var showBookFriendSetupFor by remember { mutableStateOf<BookVolumeItem?>(null) }
+    var showBookFriendSheet by remember { mutableStateOf(false) }
+    var bookAlertMessage by remember { mutableStateOf<String?>(null) }
+
+    val importBookLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching {
+                val prepared = withContext(Dispatchers.IO) {
+                    BookImporter.readUri(context.contentResolver, uri)
+                }
+                container.chatRepository.storePreparedBook(prepared)
+            }.onFailure { err ->
+                bookAlertMessage = err.message ?: L10n.text("书籍导入失败", "Book import failed")
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        text = L10n.text("助手与角色", "Assistants & Personas"),
+                        text = L10n.text("助手、角色与书架", "Assistants & Shelf"),
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 }
@@ -86,19 +126,21 @@ fun AssistantListScreen(
         floatingActionButton = {
             FloatingActionButton(
                 onClick = {
-                    if (selectedTab == AssistantDirectoryTab.ASSISTANTS) {
-                        showCreatePreset = true
-                    } else {
-                        showCreatePersona = true
+                    when (selectedTab) {
+                        AssistantDirectoryTab.ASSISTANTS -> showCreatePreset = true
+                        AssistantDirectoryTab.PERSONAS -> showCreatePersona = true
+                        AssistantDirectoryTab.SHELF -> importBookLauncher.launch(
+                            arrayOf("application/epub+zip", "text/*", "application/octet-stream", "*/*")
+                        )
                     }
                 }
             ) {
                 Icon(
                     Icons.Filled.Add,
-                    contentDescription = if (selectedTab == AssistantDirectoryTab.ASSISTANTS) {
-                        L10n.text("新建助手", "New Assistant")
-                    } else {
-                        L10n.text("新建人物", "New Persona")
+                    contentDescription = when (selectedTab) {
+                        AssistantDirectoryTab.ASSISTANTS -> L10n.text("新建助手", "New Assistant")
+                        AssistantDirectoryTab.PERSONAS -> L10n.text("新建人物", "New Persona")
+                        AssistantDirectoryTab.SHELF -> L10n.text("导入书籍", "Import Book")
                     }
                 )
             }
@@ -112,18 +154,24 @@ fun AssistantListScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
                     .padding(horizontal = DS.Spacing.lg, vertical = DS.Spacing.xs),
                 horizontalArrangement = Arrangement.spacedBy(DS.Spacing.sm)
             ) {
                 FilterChip(
                     selected = selectedTab == AssistantDirectoryTab.ASSISTANTS,
                     onClick = { selectedTab = AssistantDirectoryTab.ASSISTANTS },
-                    label = { Text(L10n.text("助手预设 (${presets.size})", "Assistants (${presets.size})")) }
+                    label = { Text(L10n.text("助手 (${presets.size})", "Assistants (${presets.size})")) }
                 )
                 FilterChip(
                     selected = selectedTab == AssistantDirectoryTab.PERSONAS,
                     onClick = { selectedTab = AssistantDirectoryTab.PERSONAS },
-                    label = { Text(L10n.text("角色目录 (${personas.size})", "Personas (${personas.size})")) }
+                    label = { Text(L10n.text("角色 (${personas.size})", "Personas (${personas.size})")) }
+                )
+                FilterChip(
+                    selected = selectedTab == AssistantDirectoryTab.SHELF,
+                    onClick = { selectedTab = AssistantDirectoryTab.SHELF },
+                    label = { Text(L10n.text("书架 (${books.size})", "Shelf (${books.size})")) }
                 )
             }
 
@@ -191,7 +239,7 @@ fun AssistantListScreen(
                         }
                     }
                 }
-            } else {
+            } else if (selectedTab == AssistantDirectoryTab.PERSONAS) {
                 if (personas.isEmpty()) {
                     Box(
                         modifier = Modifier
@@ -279,6 +327,28 @@ fun AssistantListScreen(
                         }
                     }
                 }
+            } else {
+                ReadingShelfSection(
+                    books = books,
+                    shelfStates = shelfStates,
+                    onReadBook = { book -> readingBook = book },
+                    onOpenCompanion = { book ->
+                        scope.launch {
+                            val ready = ChatRepository.readyTargets(providers)
+                            val defaultId = container.preferences.state.value.defaultTargetID
+                            val target = defaultId?.let { id -> ready.firstOrNull { it.id == id } } ?: ready.firstOrNull()
+                            val conv = container.chatRepository.openOrCreateBookCompanion(book, target = target)
+                            onOpenConversation(conv.id)
+                        }
+                    },
+                    onCreateBookFriend = { book ->
+                        showBookFriendSetupFor = book
+                        showBookFriendSheet = true
+                    },
+                    onDeleteBook = { book ->
+                        scope.launch { container.chatRepository.deleteBook(book.id) }
+                    }
+                )
             }
         }
     }
@@ -287,6 +357,8 @@ fun AssistantListScreen(
         AssistantEditorSheet(
             existing = editingPreset,
             sortOrderForNew = (presets.maxOfOrNull { it.sortOrder } ?: 0) + 1,
+            books = books,
+            chatRepository = container.chatRepository,
             onSave = { item ->
                 scope.launch { container.chatRepository.savePreset(item) }
             },
@@ -313,6 +385,48 @@ fun AssistantListScreen(
             onDismiss = {
                 showCreatePersona = false
                 editingPersona = null
+            }
+        )
+    }
+
+    readingBook?.let { book ->
+        BookReaderSheet(
+            container = container,
+            volumeID = book.id,
+            onDismiss = { readingBook = null }
+        )
+    }
+
+    if (showBookFriendSheet) {
+        BookFriendSetupSheet(
+            container = container,
+            books = books,
+            initialBook = showBookFriendSetupFor,
+            onStartChat = { friend ->
+                scope.launch {
+                    val ready = ChatRepository.readyTargets(providers)
+                    val defaultId = container.preferences.state.value.defaultTargetID
+                    val target = defaultId?.let { id -> ready.firstOrNull { it.id == id } } ?: ready.firstOrNull()
+                    val conv = container.chatRepository.openOrCreateBookFriendChat(friend, target)
+                    onOpenConversation(conv.id)
+                }
+            },
+            onDismiss = {
+                showBookFriendSheet = false
+                showBookFriendSetupFor = null
+            }
+        )
+    }
+
+    bookAlertMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { bookAlertMessage = null },
+            title = { Text(L10n.text("书籍提示", "Book Notice")) },
+            text = { Text(msg) },
+            confirmButton = {
+                Button(onClick = { bookAlertMessage = null }) {
+                    Text(L10n.text("好", "OK"))
+                }
             }
         )
     }

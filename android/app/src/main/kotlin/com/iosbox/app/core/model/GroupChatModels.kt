@@ -161,7 +161,8 @@ data class GroupMember(
     val temperature: Double = 0.75,
     val isMuted: Boolean = false,
     val profileID: String? = null,
-    val persona: GroupPersona? = null
+    val persona: GroupPersona? = null,
+    val bookFriend: BookFriend? = null
 ) {
     val isSimulatedPersona: Boolean
         get() = profileID != null || persona != null

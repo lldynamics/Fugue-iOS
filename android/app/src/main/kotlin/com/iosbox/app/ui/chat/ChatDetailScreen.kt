@@ -34,6 +34,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -43,12 +44,15 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ViewColumn
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -88,10 +92,19 @@ import com.iosbox.app.core.model.AttachmentKind
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.MessageRole
+import com.iosbox.app.core.model.ReadingCitation
 import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.core.storage.ChatRepository
+import com.iosbox.app.ui.books.BookReaderSheet
 import com.iosbox.app.ui.theme.DS
 import com.iosbox.app.ui.theme.LocalAccentColors
+
+private data class ReaderLaunchState(
+    val volumeID: String,
+    val throughChapter: Int?,
+    val citation: ReadingCitation? = null,
+    val companionConversationID: String? = null
+)
 
 private sealed interface ChatTimelineEntry {
     val key: String
@@ -129,7 +142,9 @@ fun ChatDetailScreen(
     conversationId: String,
     container: AppContainer,
     onBack: () -> Unit,
-    onGoToProviders: () -> Unit
+    onGoToProviders: () -> Unit,
+    onOpenMemories: () -> Unit,
+    onOpenConversation: (String) -> Unit
 ) {
     val vm: ChatViewModel = viewModel(
         key = "chat_$conversationId",
@@ -143,6 +158,9 @@ fun ChatDetailScreen(
     var showArenaConfig by remember { mutableStateOf(false) }
     var showGroupSetup by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showKnowledgeSheet by remember { mutableStateOf(false) }
+    var showBookProgressDialog by remember { mutableStateOf(false) }
+    var readingRequest by remember { mutableStateOf<ReaderLaunchState?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
     var showAttachMenu by remember { mutableStateOf(false) }
@@ -171,8 +189,23 @@ fun ChatDetailScreen(
     }
 
     val conv = state.conversation
+    val activeFriend = conv?.activeBookFriend
     val readyTargets = remember(state.providers) { ChatRepository.readyTargets(state.providers) }
     val activeTarget = conv?.primaryTarget ?: readyTargets.firstOrNull()
+    val openCitation: (ReadingCitation) -> Unit = { cite ->
+        val cap = if (activeFriend != null && cite.volumeID.equals(activeFriend.bookID, ignoreCase = true)) {
+            activeFriend.throughChapter
+        } else {
+            null
+        }
+        val companionId = if (conv?.companionBookID.equals(cite.volumeID, ignoreCase = true)) conv?.id else null
+        readingRequest = ReaderLaunchState(
+            volumeID = cite.volumeID,
+            throughChapter = cap,
+            citation = cite,
+            companionConversationID = companionId
+        )
+    }
 
     val topBarSubtitle: String
     val topBarSubtitleOk: Boolean
@@ -250,6 +283,29 @@ fun ChatDetailScreen(
                     }
                 },
                 actions = {
+                    val readableBookID = conv?.companionBookID
+                        ?: activeFriend?.bookID
+                        ?: conv?.assistanceSettings?.knowledgeVolumeIDs?.firstOrNull()
+                    if (readableBookID != null) {
+                        IconButton(onClick = {
+                            readingRequest = ReaderLaunchState(
+                                volumeID = readableBookID,
+                                throughChapter = activeFriend?.throughChapter,
+                                citation = null,
+                                companionConversationID = if (conv?.companionBookID.equals(readableBookID, ignoreCase = true)) {
+                                    conv?.id
+                                } else {
+                                    null
+                                }
+                            )
+                        }) {
+                            Icon(
+                                imageVector = Icons.Filled.AutoStories,
+                                contentDescription = L10n.text("阅读原文", "Open Reader"),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                     if (conv?.isGroupMode == true) {
                         IconButton(onClick = { showGroupSetup = true }, enabled = !state.isGenerating) {
                             Icon(
@@ -297,6 +353,38 @@ fun ChatDetailScreen(
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.padding(horizontal = DS.Spacing.lg, vertical = DS.Spacing.sm)
                     )
+                }
+            }
+
+            if (activeFriend != null) {
+                val friendBook = remember(state.books, activeFriend.bookID) {
+                    state.books.firstOrNull { it.id.equals(activeFriend.bookID, ignoreCase = true) }
+                }
+                val progressLabel = activeFriend.progressLabel(friendBook?.chapterTitles ?: emptyList())
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = DS.Spacing.lg, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "📖 ${activeFriend.byline} · $progressLabel",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(
+                            enabled = !state.isGenerating && friendBook != null,
+                            onClick = { showBookProgressDialog = true }
+                        ) {
+                            Text(L10n.text("调整进度", "Progress"), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
                 }
             }
 
@@ -399,6 +487,7 @@ fun ChatDetailScreen(
                                 val msg = entry.message
                                 MessageBubbleRow(
                                     message = msg,
+                                    activeBookID = activeFriend?.bookID,
                                     canRegenerate = !state.isGenerating && msg.role == MessageRole.ASSISTANT,
                                     canCompareWithAnother = !state.isGenerating &&
                                         conv?.isGroupMode != true &&
@@ -407,7 +496,8 @@ fun ChatDetailScreen(
                                     onRegenerate = { vm.regenerateMessage(msg) },
                                     onCompareWithAnother = { compareSourceMessage = msg },
                                     onApproveMemory = { fact -> vm.approveProposedMemory(msg, fact) },
-                                    onDismissMemory = { fact -> vm.dismissProposedMemory(msg, fact) }
+                                    onDismissMemory = { fact -> vm.dismissProposedMemory(msg, fact) },
+                                    onOpenCitation = openCitation
                                 )
                             }
                             is ChatTimelineEntry.ArenaGroup -> {
@@ -421,7 +511,8 @@ fun ChatDetailScreen(
                                     onFollowUp = vm::selectContextReply,
                                     onRegenerateSingle = vm::regenerateMessage,
                                     onSynthesize = { judgeGroupID = entry.groupID },
-                                    onCrossCritique = { vm.crossCritiqueGroup(entry.groupID) }
+                                    onCrossCritique = { vm.crossCritiqueGroup(entry.groupID) },
+                                    onOpenCitation = openCitation
                                 )
                             }
                         }
@@ -548,6 +639,39 @@ fun ChatDetailScreen(
                         label = {
                             Text(
                                 text = L10n.text("原生检索", "Grounding"),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    )
+                    if (!conv.isArenaMode) {
+                        val memSuffix = if (state.enabledMemoryCount > 0) " (${state.enabledMemoryCount})" else ""
+                        FilterChip(
+                            selected = conv.assistanceSettings.usePersonalMemory,
+                            onClick = vm::togglePersonalMemory,
+                            enabled = !state.isGenerating,
+                            leadingIcon = {
+                                Icon(Icons.Filled.Psychology, contentDescription = null, modifier = Modifier.size(15.dp))
+                            },
+                            label = {
+                                Text(
+                                    text = L10n.text("记忆$memSuffix", "Memory$memSuffix"),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        )
+                    }
+                    val kbCount = conv.assistanceSettings.knowledgeVolumeIDs.size
+                    val kbSuffix = if (kbCount > 0) " ($kbCount)" else ""
+                    FilterChip(
+                        selected = kbCount > 0,
+                        onClick = { showKnowledgeSheet = true },
+                        enabled = !state.isGenerating,
+                        leadingIcon = {
+                            Icon(Icons.Filled.AutoStories, contentDescription = null, modifier = Modifier.size(15.dp))
+                        },
+                        label = {
+                            Text(
+                                text = L10n.text("知识库$kbSuffix", "Knowledge$kbSuffix"),
                                 style = MaterialTheme.typography.labelSmall
                             )
                         }
@@ -728,9 +852,96 @@ fun ChatDetailScreen(
         ChatSettingsSheet(
             conversation = conv,
             presets = state.presets,
+            books = state.books,
+            enabledMemoryCount = state.enabledMemoryCount,
+            chatRepository = container.chatRepository,
+            onOpenMemories = onOpenMemories,
             onSave = vm::updateConversationSettings,
             onDismiss = { showSettings = false }
         )
+    }
+
+    if (showKnowledgeSheet && conv != null) {
+        KnowledgeBindingSheet(
+            books = state.books,
+            initialSelectedIDs = conv.assistanceSettings.knowledgeVolumeIDs,
+            chatRepository = container.chatRepository,
+            onApply = vm::updateBoundKnowledgeVolumes,
+            onDismiss = { showKnowledgeSheet = false }
+        )
+    }
+
+    readingRequest?.let { req ->
+        BookReaderSheet(
+            container = container,
+            volumeID = req.volumeID,
+            throughChapter = req.throughChapter,
+            initialCitation = req.citation,
+            companionConversationID = req.companionConversationID,
+            onQuotePassage = vm::quotePassageToDraft,
+            onDismiss = { readingRequest = null }
+        )
+    }
+
+    if (showBookProgressDialog && activeFriend != null) {
+        val friendBook = state.books.firstOrNull { it.id.equals(activeFriend.bookID, ignoreCase = true) }
+        if (friendBook != null) {
+            AlertDialog(
+                onDismissRequest = { showBookProgressDialog = false },
+                title = { Text(L10n.text("调整书中好友阅读进度", "Book Friend Reading Progress")) },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = L10n.text(
+                                "往回调整章节进度时，会自动开启一条新对话以防后续章节剧透。",
+                                "Rewinding to an earlier chapter opens a fresh chat to prevent spoilers."
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TextButton(
+                            onClick = {
+                                showBookProgressDialog = false
+                                vm.changeBookFriendProgress(null, onOpenConversation)
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = L10n.text("全书", "Full Book"),
+                                fontWeight = if (activeFriend.throughChapter == null) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                        friendBook.chapterTitles.forEachIndexed { idx, title ->
+                            TextButton(
+                                onClick = {
+                                    showBookProgressDialog = false
+                                    vm.changeBookFriendProgress(idx, onOpenConversation)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = title,
+                                    fontWeight = if (activeFriend.throughChapter == idx) FontWeight.Bold else FontWeight.Normal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showBookProgressDialog = false }) {
+                        Text(L10n.text("关闭", "Close"))
+                    }
+                }
+            )
+        }
     }
 
     if (showRenameDialog) {
@@ -823,12 +1034,14 @@ fun ChatDetailScreen(
 @Composable
 private fun MessageBubbleRow(
     message: ChatMessageItem,
+    activeBookID: String?,
     canRegenerate: Boolean,
     canCompareWithAnother: Boolean,
     onRegenerate: () -> Unit,
     onCompareWithAnother: () -> Unit,
     onApproveMemory: (String) -> Unit,
-    onDismissMemory: (String) -> Unit
+    onDismissMemory: (String) -> Unit,
+    onOpenCitation: (ReadingCitation) -> Unit
 ) {
     val context = LocalContext.current
     val accent = LocalAccentColors.current
@@ -962,6 +1175,21 @@ private fun MessageBubbleRow(
 
             meta.search?.let { search ->
                 SearchCitationsCard(search = search)
+            }
+
+            meta.knowledgeEvidence?.let { knowledge ->
+                KnowledgeCitationsCard(knowledge = knowledge, onOpenCitation = onOpenCitation)
+            }
+
+            meta.bookReply?.let { bookReply ->
+                val resolvedBookId = activeBookID ?: meta.knowledgeEvidence?.passages?.firstOrNull()?.volumeID
+                if (resolvedBookId != null) {
+                    BookReplyEvidenceCard(
+                        bookReply = bookReply,
+                        bookID = resolvedBookId,
+                        onOpenCitation = onOpenCitation
+                    )
+                }
             }
 
             if (message.attachments.isNotEmpty()) {

@@ -1,5 +1,7 @@
 package com.iosbox.app.ui.chat
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -31,7 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -150,7 +152,7 @@ fun MarkdownMessageContent(
 
 @Composable
 private fun CodeBlockCard(language: String, code: String) {
-    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     var copied by remember { mutableStateOf(false) }
 
     LaunchedEffect(copied) {
@@ -182,7 +184,8 @@ private fun CodeBlockCard(language: String, code: String) {
             )
             IconButton(
                 onClick = {
-                    clipboard.setText(AnnotatedString(code))
+                    val cm = context.getSystemService(ClipboardManager::class.java)
+                    cm?.setPrimaryClip(ClipData.newPlainText("Fugue", code))
                     copied = true
                 },
                 modifier = Modifier.size(28.dp)

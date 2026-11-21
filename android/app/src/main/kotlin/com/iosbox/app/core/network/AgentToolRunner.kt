@@ -1,5 +1,6 @@
 package com.iosbox.app.core.network
 
+import com.iosbox.app.core.model.KnowledgeEvidence
 import com.iosbox.app.core.model.L10n
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -102,6 +103,7 @@ object AgentToolRunner {
         val toolOutputJSON: String,
         val record: ToolCallRecord,
         val searchEvidence: SearchEvidence? = null,
+        val knowledgeEvidence: KnowledgeEvidence? = null,
         val proposedMemory: String? = null,
         val error: Throwable? = null
     )
@@ -111,7 +113,7 @@ object AgentToolRunner {
         searchHandler: suspend (String) -> SearchEvidence,
         webpageHandler: suspend (URI) -> ReadablePage = { WebpageReader.read(it) },
         webpageApproval: (suspend (URI) -> WebpageApprovalDecision)? = null,
-        knowledgeHandler: (suspend (String) -> String)? = null
+        knowledgeHandler: (suspend (String) -> KnowledgeEvidence)? = null
     ): ExecutionOutput {
         val args = call.argumentsObject(compactJson)
 
@@ -180,16 +182,20 @@ object AgentToolRunner {
                     )
                 }
                 try {
-                    val promptText = knowledgeHandler(query.take(400))
+                    val evidence = knowledgeHandler(query.take(400))
                     ExecutionOutput(
-                        toolOutputJSON = promptText.ifEmpty { """{"matches":[]}""" },
+                        toolOutputJSON = evidence.promptText().ifEmpty { """{"matches":[]}""" },
                         record = ToolCallRecord(
                             id = call.id,
                             name = call.name,
                             argumentsSummary = query,
-                            resultSummary = L10n.text("已完成检索", "Searched"),
+                            resultSummary = L10n.text(
+                                "${evidence.passages.size} 段原文",
+                                "${evidence.passages.size} passages"
+                            ),
                             succeeded = true
-                        )
+                        ),
+                        knowledgeEvidence = evidence.takeIf { it.passages.isNotEmpty() }
                     )
                 } catch (t: Throwable) {
                     val msg = t.message ?: L10n.text("检索失败", "Search failed")

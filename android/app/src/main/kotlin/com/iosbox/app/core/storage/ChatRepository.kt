@@ -1,7 +1,11 @@
 package com.iosbox.app.core.storage
 
+import androidx.room.withTransaction
 import com.iosbox.app.core.model.APIProtocolType
 import com.iosbox.app.core.model.AttachmentKind
+import com.iosbox.app.core.model.BookChapter
+import com.iosbox.app.core.model.BookFriend
+import com.iosbox.app.core.model.BookImportError
 import com.iosbox.app.core.model.ConversationAssistanceSettings
 import com.iosbox.app.core.model.CustomHeader
 import com.iosbox.app.core.model.GroupMember
@@ -12,6 +16,8 @@ import com.iosbox.app.core.model.MessageAssistanceMetadata
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.MessageRole
 import com.iosbox.app.core.model.ModelSpec
+import com.iosbox.app.core.model.PersonalMemoryPrompt
+import com.iosbox.app.core.model.PreparedBook
 import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestMetrics
 import com.iosbox.app.core.model.RequestStatus
@@ -86,6 +92,36 @@ data class ProviderItem(
         }
 }
 
+data class PersonalMemoryItem(
+    val id: String,
+    val content: String,
+    val isEnabled: Boolean,
+    val createdAtEpochMs: Long
+)
+
+data class BookVolumeItem(
+    val id: String,
+    val title: String,
+    val chapterTitles: List<String>,
+    val manuscriptBlobKey: String,
+    val byteCount: Long,
+    val importedAtEpochMs: Long
+) {
+    val formattedSize: String
+        get() = when {
+            byteCount >= 1024L * 1024L -> String.format(java.util.Locale.US, "%.1f MB", byteCount / (1024.0 * 1024.0))
+            byteCount >= 1024L -> String.format(java.util.Locale.US, "%.1f KB", byteCount / 1024.0)
+            else -> "$byteCount B"
+        }
+}
+
+data class ShelfReadingStateItem(
+    val bookID: String,
+    val conversationID: String?,
+    val chapter: Int,
+    val paragraph: Int
+)
+
 data class PresetItem(
     val id: String,
     val name: String,
@@ -101,6 +137,7 @@ data class PresetItem(
     val thinkingBudgetTokens: Int,
     val isBuiltIn: Boolean,
     val sortOrder: Int,
+    val knowledgeVolumeIDs: List<String> = emptyList(),
     val createdAtEpochMs: Long
 )
 
@@ -134,6 +171,24 @@ data class ConversationItem(
 
     val activeGroupMembers: List<GroupMember>
         get() = assistanceSettings.groupMembers.filter { !it.isMuted }
+
+    val activeBookFriend: BookFriend?
+        get() = assistanceSettings.bookFriend
+
+    val companionBookID: String?
+        get() = assistanceSettings.companionBookID
+
+    fun isCompanion(forBookID: String): Boolean {
+        if (isGroupMode || isArenaMode || activeBookFriend != null || assistanceSettings.privatePersona != null) {
+            return false
+        }
+        val cid = assistanceSettings.companionBookID
+        if (cid != null) return cid.equals(forBookID, ignoreCase = true)
+        return assistantID == null &&
+            assistantEmoji == "📚" &&
+            assistanceSettings.knowledgeVolumeIDs.size == 1 &&
+            assistanceSettings.knowledgeVolumeIDs[0].equals(forBookID, ignoreCase = true)
+    }
 
     companion object {
         val defaultTitle: String
@@ -290,7 +345,11 @@ class ChatRepository(
         db.assistantPresetDao().observeAll().map { list -> list.map { toPresetItem(it) } }.flowOn(Dispatchers.IO)
 
     suspend fun savePreset(item: PresetItem) = withContext(Dispatchers.IO) {
-        val existing = db.assistantPresetDao().getById(item.id.uppercase())
+        val cleanedVolumes = item.knowledgeVolumeIDs
+            .map { it.trim().uppercase() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .take(12)
         db.assistantPresetDao().upsert(
             AssistantPresetEntity(
                 id = item.id.uppercase(),
@@ -307,7 +366,7 @@ class ChatRepository(
                 thinkingBudgetTokens = item.thinkingBudgetTokens,
                 isBuiltIn = item.isBuiltIn,
                 sortOrder = item.sortOrder,
-                knowledgeVolumeIDsJson = existing?.knowledgeVolumeIDsJson,
+                knowledgeVolumeIDsJson = cleanedVolumes.takeIf { it.isNotEmpty() }?.let { json.encodeToString(it) },
                 createdAtEpochMs = item.createdAtEpochMs
             )
         )
@@ -353,7 +412,10 @@ class ChatRepository(
             isArenaMode = isArenaMode,
             primaryTarget = primaryTarget,
             arenaTargets = arenaTargets,
-            assistanceSettings = ConversationAssistanceSettings(blindArenaMode = blindArenaMode),
+            assistanceSettings = ConversationAssistanceSettings(
+                blindArenaMode = blindArenaMode,
+                knowledgeVolumeIDs = preset?.knowledgeVolumeIDs.orEmpty()
+            ),
             folderTag = null,
             createdAtEpochMs = now,
             updatedAtEpochMs = now
@@ -515,15 +577,33 @@ class ChatRepository(
         db.chatMessageDao().deleteById(mid)
     }
 
-    suspend fun addPersonalMemory(content: String): PersonalMemoryEntity = withContext(Dispatchers.IO) {
-        val bounded = content.trim().take(200)
-        val existing = db.personalMemoryDao().getAll().firstOrNull {
-            it.content.trim().equals(bounded, ignoreCase = true)
-        }
+    fun observePersonalMemories(): Flow<List<PersonalMemoryItem>> =
+        db.personalMemoryDao().observeAll().map { list ->
+            list.map(::toPersonalMemoryItem)
+        }.flowOn(Dispatchers.IO)
+
+    suspend fun getPersonalMemories(): List<PersonalMemoryItem> = withContext(Dispatchers.IO) {
+        db.personalMemoryDao().getAll().map(::toPersonalMemoryItem)
+    }
+
+    suspend fun getEnabledPersonalMemories(): List<PersonalMemoryItem> = withContext(Dispatchers.IO) {
+        db.personalMemoryDao().getAll()
+            .filter { it.isEnabled && it.content.isNotBlank() }
+            .take(PersonalMemoryPrompt.MAXIMUM_COUNT)
+            .map(::toPersonalMemoryItem)
+    }
+
+    suspend fun addPersonalMemory(content: String): PersonalMemoryItem = withContext(Dispatchers.IO) {
+        val bounded = content.trim().take(PersonalMemoryPrompt.MAXIMUM_CHARACTERS)
+        val all = db.personalMemoryDao().getAll()
+        val existing = all.firstOrNull { it.content.trim().equals(bounded, ignoreCase = true) }
         if (existing != null) {
             val enabled = if (existing.isEnabled) existing else existing.copy(isEnabled = true)
             db.personalMemoryDao().upsert(enabled)
-            return@withContext enabled
+            return@withContext toPersonalMemoryItem(enabled)
+        }
+        if (all.size >= PersonalMemoryPrompt.MAXIMUM_COUNT || bounded.isEmpty()) {
+            return@withContext toPersonalMemoryItem(all.firstOrNull() ?: PersonalMemoryEntity("", "", false, 0L))
         }
         val entity = PersonalMemoryEntity(
             id = UUID.randomUUID().toString().uppercase(),
@@ -532,7 +612,269 @@ class ChatRepository(
             createdAtEpochMs = System.currentTimeMillis()
         )
         db.personalMemoryDao().upsert(entity)
-        entity
+        toPersonalMemoryItem(entity)
+    }
+
+    suspend fun savePersonalMemory(item: PersonalMemoryItem): Boolean = withContext(Dispatchers.IO) {
+        val clean = item.content.trim().take(PersonalMemoryPrompt.MAXIMUM_CHARACTERS)
+        if (clean.isEmpty()) return@withContext false
+        val all = db.personalMemoryDao().getAll()
+        val existing = all.firstOrNull { it.id.equals(item.id, ignoreCase = true) }
+        if (existing == null && all.size >= PersonalMemoryPrompt.MAXIMUM_COUNT) {
+            return@withContext false
+        }
+        db.personalMemoryDao().upsert(
+            PersonalMemoryEntity(
+                id = item.id.uppercase(),
+                content = clean,
+                isEnabled = item.isEnabled,
+                createdAtEpochMs = existing?.createdAtEpochMs ?: item.createdAtEpochMs
+            )
+        )
+        true
+    }
+
+    suspend fun setPersonalMemoryEnabled(id: String, enabled: Boolean) = withContext(Dispatchers.IO) {
+        val target = db.personalMemoryDao().getAll().firstOrNull { it.id.equals(id, ignoreCase = true) }
+            ?: return@withContext
+        db.personalMemoryDao().upsert(target.copy(isEnabled = enabled))
+    }
+
+    suspend fun deletePersonalMemory(id: String) = withContext(Dispatchers.IO) {
+        db.personalMemoryDao().deleteById(id.uppercase())
+    }
+
+    fun observeBooks(): Flow<List<BookVolumeItem>> =
+        db.bookVolumeDao().observeAll().map { list ->
+            list.map(::toBookVolumeItem)
+        }.flowOn(Dispatchers.IO)
+
+    suspend fun getBooks(): List<BookVolumeItem> = withContext(Dispatchers.IO) {
+        db.bookVolumeDao().getAll().map(::toBookVolumeItem)
+    }
+
+    suspend fun getBook(id: String): BookVolumeItem? = withContext(Dispatchers.IO) {
+        db.bookVolumeDao().getById(id.uppercase())?.let(::toBookVolumeItem)
+    }
+
+    suspend fun loadBookChapters(bookID: String): List<BookChapter> = withContext(Dispatchers.IO) {
+        val bid = bookID.uppercase()
+        val key = db.bookVolumeDao().getById(bid)?.manuscriptBlobKey ?: "book_$bid.json"
+        val raw = blobStore.readText(key) ?: return@withContext emptyList()
+        runCatching { json.decodeFromString<List<BookChapter>>(raw) }.getOrDefault(emptyList())
+    }
+
+    suspend fun storePreparedBook(prepared: PreparedBook): BookVolumeItem = withContext(Dispatchers.IO) {
+        val id = prepared.id.uppercase()
+        db.bookVolumeDao().getById(id)?.let { return@withContext toBookVolumeItem(it) }
+        val key = "book_$id.json"
+        blobStore.writeText(key, prepared.encodedJson)
+        val entity = BookVolumeEntity(
+            id = id,
+            title = prepared.title,
+            chapterTitlesJson = json.encodeToString(prepared.chapterTitles),
+            manuscriptBlobKey = key,
+            byteCount = prepared.byteCount,
+            importedAtEpochMs = System.currentTimeMillis()
+        )
+        db.bookVolumeDao().upsert(entity)
+        toBookVolumeItem(entity)
+    }
+
+    suspend fun deleteBook(bookID: String) = withContext(Dispatchers.IO) {
+        val bid = bookID.uppercase()
+        val existing = db.bookVolumeDao().getById(bid)
+        existing?.manuscriptBlobKey?.let { blobStore.delete(it) }
+        db.withTransaction {
+            db.shelfReadingStateDao().deleteByBookId(bid)
+            db.bookVolumeDao().deleteById(bid)
+            val presets = db.assistantPresetDao().getAll()
+            for (preset in presets) {
+                val ids = preset.knowledgeVolumeIDsJson?.let {
+                    runCatching { json.decodeFromString<List<String>>(it) }.getOrNull()
+                } ?: continue
+                val remaining = ids.filterNot { it.equals(bid, ignoreCase = true) }
+                if (remaining.size != ids.size) {
+                    db.assistantPresetDao().upsert(
+                        preset.copy(
+                            knowledgeVolumeIDsJson = remaining.takeIf { it.isNotEmpty() }?.let { json.encodeToString(it) }
+                        )
+                    )
+                }
+            }
+        }
+        ProjectKnowledgeSearch.invalidate(bid)
+    }
+
+    fun observeShelfStates(): Flow<List<ShelfReadingStateItem>> =
+        db.shelfReadingStateDao().observeAll().map { list ->
+            list.map(::toShelfStateItem)
+        }.flowOn(Dispatchers.IO)
+
+    suspend fun getShelfState(bookID: String): ShelfReadingStateItem? = withContext(Dispatchers.IO) {
+        db.shelfReadingStateDao().getByBookId(bookID.uppercase())?.let(::toShelfStateItem)
+    }
+
+    suspend fun saveShelfState(state: ShelfReadingStateItem) = withContext(Dispatchers.IO) {
+        db.shelfReadingStateDao().upsert(
+            ShelfReadingStateEntity(
+                bookID = state.bookID.uppercase(),
+                conversationID = state.conversationID?.uppercase(),
+                chapter = state.chapter.coerceAtLeast(0),
+                paragraph = state.paragraph.coerceAtLeast(0)
+            )
+        )
+    }
+
+    suspend fun openOrCreateBookCompanion(
+        book: BookVolumeItem,
+        newDiscussion: Boolean = false,
+        target: ResolvedModelTarget?
+    ): ConversationItem = withContext(Dispatchers.IO) {
+        val bid = book.id.uppercase()
+        val state = db.shelfReadingStateDao().getByBookId(bid)
+            ?: ShelfReadingStateEntity(bid, null, 0, 0)
+        val chats = db.conversationDao().getAll().map(::toConversationItem)
+        val candidates = if (newDiscussion) emptyList() else chats.filter { it.isCompanion(bid) }
+        val chosen = state.conversationID?.let { cid -> candidates.firstOrNull { it.id.equals(cid, ignoreCase = true) } }
+            ?: candidates.firstOrNull()
+        val now = System.currentTimeMillis()
+        val chat = chosen?.copy(
+            assistanceSettings = chosen.assistanceSettings.copy(
+                companionBookID = bid,
+                knowledgeVolumeIDs = chosen.assistanceSettings.knowledgeVolumeIDs.ifEmpty { listOf(bid) }
+            ),
+            updatedAtEpochMs = now
+        ) ?: ConversationItem(
+            id = UUID.randomUUID().toString().uppercase(),
+            title = L10n.text("《${book.title}》伴读", "Reading Companion: ${book.title}"),
+            isPinned = false,
+            assistantID = null,
+            assistantEmoji = "📚",
+            systemPrompt = L10n.text(
+                "你是一位细腻博学的共读伴侣，陪用户一起阅读《${book.title}》。结合检索到的原著章节上下文回答问题，遇到无依据之处坦诚说明。",
+                "You are a thoughtful reading companion helping the user read \"${book.title}\". Base answers on cited passages from the book."
+            ),
+            temperature = 0.7,
+            useCustomTemperature = true,
+            topP = 1.0,
+            maxOutputTokens = 0,
+            contextMessageLimit = 20,
+            enableThinking = true,
+            thinkingBudgetTokens = 4096,
+            isArenaMode = false,
+            primaryTarget = target,
+            arenaTargets = emptyList(),
+            assistanceSettings = ConversationAssistanceSettings(
+                knowledgeVolumeIDs = listOf(bid),
+                companionBookID = bid
+            ),
+            folderTag = null,
+            createdAtEpochMs = now,
+            updatedAtEpochMs = now
+        )
+        saveConversation(chat)
+        db.shelfReadingStateDao().upsert(state.copy(conversationID = chat.id.uppercase()))
+        chat
+    }
+
+    suspend fun openOrCreateBookFriendChat(
+        friend: BookFriend,
+        target: ResolvedModelTarget?
+    ): ConversationItem = withContext(Dispatchers.IO) {
+        val book = getBook(friend.bookID) ?: throw BookImportError.Unavailable()
+        val last = (book.chapterTitles.size - 1).coerceAtLeast(0)
+        if (friend.throughChapter != null && !book.chapterTitles.indices.contains(friend.throughChapter)) {
+            throw BookImportError.InvalidBook()
+        }
+        val chats = db.conversationDao().getAll().map(::toConversationItem)
+        val matches = chats.filter { it.activeBookFriend?.isSameCharacter(friend) == true }
+        val exact = matches.firstOrNull { it.activeBookFriend?.throughChapter == friend.throughChapter }
+        val compatible = exact ?: matches.firstOrNull {
+            val prev = it.activeBookFriend?.throughChapter ?: last
+            val next = friend.throughChapter ?: last
+            prev <= next
+        }
+        if (compatible != null) {
+            val updated = compatible.copy(
+                assistanceSettings = compatible.assistanceSettings.copy(bookFriend = friend),
+                updatedAtEpochMs = System.currentTimeMillis()
+            )
+            saveConversation(updated)
+            return@withContext updated
+        }
+        val now = System.currentTimeMillis()
+        val created = ConversationItem(
+            id = UUID.randomUUID().toString().uppercase(),
+            title = friend.name,
+            isPinned = false,
+            assistantID = null,
+            assistantEmoji = "📖",
+            systemPrompt = "",
+            temperature = 0.7,
+            useCustomTemperature = true,
+            topP = 1.0,
+            maxOutputTokens = 0,
+            contextMessageLimit = 20,
+            enableThinking = true,
+            thinkingBudgetTokens = 4096,
+            isArenaMode = false,
+            primaryTarget = target,
+            arenaTargets = emptyList(),
+            assistanceSettings = ConversationAssistanceSettings(bookFriend = friend),
+            folderTag = null,
+            createdAtEpochMs = now,
+            updatedAtEpochMs = now
+        )
+        saveConversation(created)
+        created
+    }
+
+    suspend fun changeBookFriendProgress(
+        conv: ConversationItem,
+        throughChapter: Int?
+    ): ConversationItem = withContext(Dispatchers.IO) {
+        val oldFriend = conv.activeBookFriend ?: throw BookImportError.Unavailable()
+        val book = getBook(oldFriend.bookID) ?: throw BookImportError.Unavailable()
+        if (throughChapter != null && !book.chapterTitles.indices.contains(throughChapter)) {
+            throw BookImportError.InvalidBook()
+        }
+        val last = (book.chapterTitles.size - 1).coerceAtLeast(0)
+        val rewind = (throughChapter ?: last) < (oldFriend.throughChapter ?: last)
+        val updatedFriend = oldFriend.copy(throughChapter = throughChapter)
+        if (rewind) {
+            val now = System.currentTimeMillis()
+            val fresh = ConversationItem(
+                id = UUID.randomUUID().toString().uppercase(),
+                title = updatedFriend.name,
+                isPinned = false,
+                assistantID = null,
+                assistantEmoji = "📖",
+                systemPrompt = "",
+                temperature = conv.temperature,
+                useCustomTemperature = conv.useCustomTemperature,
+                topP = conv.topP,
+                maxOutputTokens = conv.maxOutputTokens,
+                contextMessageLimit = conv.contextMessageLimit,
+                enableThinking = conv.enableThinking,
+                thinkingBudgetTokens = conv.thinkingBudgetTokens,
+                isArenaMode = false,
+                primaryTarget = conv.primaryTarget,
+                arenaTargets = emptyList(),
+                assistanceSettings = ConversationAssistanceSettings(bookFriend = updatedFriend),
+                folderTag = conv.folderTag,
+                createdAtEpochMs = now,
+                updatedAtEpochMs = now
+            )
+            saveConversation(fresh)
+            return@withContext fresh
+        }
+        val updated = conv.copy(
+            assistanceSettings = conv.assistanceSettings.copy(bookFriend = updatedFriend),
+            updatedAtEpochMs = System.currentTimeMillis()
+        )
+        saveConversation(updated)
+        updated
     }
 
     suspend fun saveConversation(item: ConversationItem) = withContext(Dispatchers.IO) {
@@ -726,23 +1068,55 @@ class ChatRepository(
         )
     }
 
-    private fun toPresetItem(e: AssistantPresetEntity): PresetItem = PresetItem(
+    private fun toPersonalMemoryItem(e: PersonalMemoryEntity): PersonalMemoryItem = PersonalMemoryItem(
         id = e.id,
-        name = e.name,
-        iconEmoji = e.iconEmoji,
-        subtitle = e.subtitle,
-        systemPrompt = e.systemPrompt,
-        temperature = e.temperature,
-        useCustomTemperature = e.useCustomTemperature,
-        topP = e.topP,
-        maxOutputTokens = e.maxOutputTokens,
-        contextMessageLimit = e.contextMessageLimit,
-        enableThinking = e.enableThinking,
-        thinkingBudgetTokens = e.thinkingBudgetTokens,
-        isBuiltIn = e.isBuiltIn,
-        sortOrder = e.sortOrder,
+        content = e.content,
+        isEnabled = e.isEnabled,
         createdAtEpochMs = e.createdAtEpochMs
     )
+
+    private fun toBookVolumeItem(e: BookVolumeEntity): BookVolumeItem {
+        val titles = runCatching { json.decodeFromString<List<String>>(e.chapterTitlesJson) }.getOrDefault(emptyList())
+        return BookVolumeItem(
+            id = e.id,
+            title = e.title,
+            chapterTitles = titles,
+            manuscriptBlobKey = e.manuscriptBlobKey,
+            byteCount = e.byteCount,
+            importedAtEpochMs = e.importedAtEpochMs
+        )
+    }
+
+    private fun toShelfStateItem(e: ShelfReadingStateEntity): ShelfReadingStateItem = ShelfReadingStateItem(
+        bookID = e.bookID,
+        conversationID = e.conversationID,
+        chapter = e.chapter,
+        paragraph = e.paragraph
+    )
+
+    private fun toPresetItem(e: AssistantPresetEntity): PresetItem {
+        val volumeIDs = e.knowledgeVolumeIDsJson?.let {
+            runCatching { json.decodeFromString<List<String>>(it) }.getOrNull()
+        } ?: emptyList()
+        return PresetItem(
+            id = e.id,
+            name = e.name,
+            iconEmoji = e.iconEmoji,
+            subtitle = e.subtitle,
+            systemPrompt = e.systemPrompt,
+            temperature = e.temperature,
+            useCustomTemperature = e.useCustomTemperature,
+            topP = e.topP,
+            maxOutputTokens = e.maxOutputTokens,
+            contextMessageLimit = e.contextMessageLimit,
+            enableThinking = e.enableThinking,
+            thinkingBudgetTokens = e.thinkingBudgetTokens,
+            isBuiltIn = e.isBuiltIn,
+            sortOrder = e.sortOrder,
+            knowledgeVolumeIDs = volumeIDs,
+            createdAtEpochMs = e.createdAtEpochMs
+        )
+    }
 
     private fun toConversationItem(e: ConversationEntity): ConversationItem {
         val primary = e.primaryTargetJson.takeIf { it.isNotBlank() && it != "null" }?.let {

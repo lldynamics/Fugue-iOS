@@ -13,6 +13,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -31,7 +32,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.iosbox.app.core.model.ContextLimitOptions
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.storage.BookVolumeItem
+import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.PresetItem
+import com.iosbox.app.ui.chat.KnowledgeBindingSheet
 import com.iosbox.app.ui.theme.DS
 import java.util.Locale
 import java.util.UUID
@@ -42,6 +46,8 @@ import kotlin.math.roundToInt
 fun AssistantEditorSheet(
     existing: PresetItem?,
     sortOrderForNew: Int,
+    books: List<BookVolumeItem>,
+    chatRepository: ChatRepository,
     onSave: (PresetItem) -> Unit,
     onDelete: ((String) -> Unit)? = null,
     onDismiss: () -> Unit
@@ -56,6 +62,8 @@ fun AssistantEditorSheet(
     var contextLimit by remember { mutableIntStateOf(existing?.contextMessageLimit ?: 20) }
     var enableThinking by remember { mutableStateOf(existing?.enableThinking ?: true) }
     var thinkingBudget by remember { mutableIntStateOf(existing?.thinkingBudgetTokens ?: 4096) }
+    var knowledgeVolumeIDs by remember { mutableStateOf(existing?.knowledgeVolumeIDs ?: emptyList()) }
+    var showKnowledgeSheet by remember { mutableStateOf(false) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -95,6 +103,7 @@ fun AssistantEditorSheet(
                                 thinkingBudgetTokens = thinkingBudget,
                                 isBuiltIn = existing?.isBuiltIn ?: false,
                                 sortOrder = existing?.sortOrder ?: sortOrderForNew,
+                                knowledgeVolumeIDs = knowledgeVolumeIDs,
                                 createdAtEpochMs = existing?.createdAtEpochMs ?: System.currentTimeMillis()
                             )
                         )
@@ -198,6 +207,18 @@ fun AssistantEditorSheet(
                 }
             }
 
+            OutlinedButton(
+                onClick = { showKnowledgeSheet = true },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    L10n.text(
+                        "默认绑定参考知识库 (${knowledgeVolumeIDs.size}/12)",
+                        "Default Knowledge Volumes (${knowledgeVolumeIDs.size}/12)"
+                    )
+                )
+            }
+
             if (existing != null && onDelete != null) {
                 TextButton(
                     onClick = {
@@ -213,5 +234,15 @@ fun AssistantEditorSheet(
                 }
             }
         }
+    }
+
+    if (showKnowledgeSheet) {
+        KnowledgeBindingSheet(
+            books = books,
+            initialSelectedIDs = knowledgeVolumeIDs,
+            chatRepository = chatRepository,
+            onApply = { knowledgeVolumeIDs = it },
+            onDismiss = { showKnowledgeSheet = false }
+        )
     }
 }

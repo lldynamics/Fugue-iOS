@@ -8,15 +8,19 @@ import androidx.lifecycle.viewModelScope
 import com.iosbox.app.AppContainer
 import com.iosbox.app.core.model.APIProtocolType
 import com.iosbox.app.core.model.ArenaBallot
+import com.iosbox.app.core.model.BookFriend
+import com.iosbox.app.core.model.BookReplyEvidence
 import com.iosbox.app.core.model.GroupMember
 import com.iosbox.app.core.model.GroupSpeakingMode
 import com.iosbox.app.core.model.GroupSpeechIntent
 import com.iosbox.app.core.model.GroupSpeechStyle
+import com.iosbox.app.core.model.KnowledgeEvidence
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.MessageAssistanceMetadata
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.MessageRole
 import com.iosbox.app.core.model.PersonaExcerpt
+import com.iosbox.app.core.model.PersonalMemoryPrompt
 import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestMetrics
 import com.iosbox.app.core.model.RequestStatus
@@ -40,10 +44,15 @@ import com.iosbox.app.core.network.TavilySearchClient
 import com.iosbox.app.core.network.WebpageApprovalDecision
 import com.iosbox.app.core.security.SecretStore
 import com.iosbox.app.core.storage.AttachmentProcessor
+import com.iosbox.app.core.storage.BookImporter
+import com.iosbox.app.core.storage.BookReferenceSearch
+import com.iosbox.app.core.storage.BookVolumeItem
 import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.ConversationItem
+import com.iosbox.app.core.storage.KnowledgeDocumentInput
 import com.iosbox.app.core.storage.PresetItem
+import com.iosbox.app.core.storage.ProjectKnowledgeSearch
 import com.iosbox.app.core.storage.PromptTemplateEngine
 import com.iosbox.app.core.storage.ProviderItem
 import com.iosbox.app.core.storage.RequestRecordItem
@@ -88,6 +97,8 @@ data class ChatDetailUiState(
     val providers: List<ProviderItem> = emptyList(),
     val presets: List<PresetItem> = emptyList(),
     val personaProfiles: List<GroupMember> = emptyList(),
+    val books: List<BookVolumeItem> = emptyList(),
+    val enabledMemoryCount: Int = 0,
     val draftText: String = "",
     val draftAttachments: List<MessageAttachment> = emptyList(),
     val isGenerating: Boolean = false,
@@ -118,14 +129,22 @@ class ChatViewModel(
     private var pendingApprovalDeferred: CompletableDeferred<WebpageApprovalDecision>? = null
     private var activeJob: Job? = null
 
+    private val libraryFlow = combine(
+        repo.observeBooks(),
+        repo.observePersonalMemories()
+    ) { books, memories ->
+        books to memories.count { it.isEnabled && it.content.isNotBlank() }
+            .coerceAtMost(PersonalMemoryPrompt.MAXIMUM_COUNT)
+    }
+
     private val baseDataFlow = combine(
         repo.observeConversation(conversationId),
         repo.observeMessages(conversationId),
         repo.observeProviders(),
         repo.observePresets(),
-        repo.observePersonaProfiles()
-    ) { conv, msgs, providers, presets, profiles ->
-        BaseData(conv, msgs, providers, presets, profiles)
+        combine(repo.observePersonaProfiles(), libraryFlow) { profiles, lib -> profiles to lib }
+    ) { conv, msgs, providers, presets, (profiles, lib) ->
+        BaseData(conv, msgs, providers, presets, profiles, lib.first, lib.second)
     }
 
     private val extrasFlow = combine(
@@ -167,6 +186,8 @@ class ChatViewModel(
             providers = base.providers,
             presets = base.presets,
             personaProfiles = base.personaProfiles,
+            books = base.books,
+            enabledMemoryCount = base.enabledMemoryCount,
             draftText = draft,
             draftAttachments = atts,
             isGenerating = overlays.isNotEmpty() || extras.speaker != null || mergedMessages.any { it.isStreaming },
@@ -184,7 +205,9 @@ class ChatViewModel(
         val messages: List<ChatMessageItem>,
         val providers: List<ProviderItem>,
         val presets: List<PresetItem>,
-        val personaProfiles: List<GroupMember>
+        val personaProfiles: List<GroupMember>,
+        val books: List<BookVolumeItem>,
+        val enabledMemoryCount: Int
     )
 
     private data class ExtraUiState(
@@ -279,6 +302,66 @@ class ChatViewModel(
                 )
             )
         }
+    }
+
+    fun togglePersonalMemory() {
+        val conv = uiState.value.conversation ?: return
+        viewModelScope.launch {
+            val toggled = !conv.assistanceSettings.usePersonalMemory
+            repo.saveConversation(
+                conv.copy(
+                    assistanceSettings = conv.assistanceSettings.copy(usePersonalMemory = toggled),
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    fun updateBoundKnowledgeVolumes(volumeIDs: List<String>) {
+        val conv = uiState.value.conversation ?: return
+        val cleaned = volumeIDs.map { it.trim().uppercase() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .take(12)
+        viewModelScope.launch {
+            repo.saveConversation(
+                conv.copy(
+                    assistanceSettings = conv.assistanceSettings.copy(knowledgeVolumeIDs = cleaned),
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    fun quotePassageToDraft(excerpt: String) {
+        val clean = excerpt.trim().take(400)
+        if (clean.isEmpty()) return
+        val quoted = "> ${clean.replace("\n", "\n> ")}\n\n"
+        val current = draftText.value
+        draftText.value = if (current.isBlank()) quoted else "$quoted$current"
+    }
+
+    fun changeBookFriendProgress(throughChapter: Int?, onOpenConversation: (String) -> Unit) {
+        val conv = uiState.value.conversation ?: return
+        if (conv.activeBookFriend == null) return
+        viewModelScope.launch {
+            runCatching {
+                repo.changeBookFriendProgress(conv, throughChapter)
+            }.onSuccess { result ->
+                if (!result.id.equals(conv.id, ignoreCase = true)) {
+                    onOpenConversation(result.id)
+                }
+            }.onFailure { err ->
+                bannerError.value = err.message ?: L10n.text("调整阅读进度失败", "Failed to update reading progress")
+            }
+        }
+    }
+
+    suspend fun importBookSync(contentResolver: ContentResolver, uri: Uri): BookVolumeItem {
+        val prepared = withContext(Dispatchers.IO) {
+            BookImporter.readUri(contentResolver, uri)
+        }
+        return repo.storePreparedBook(prepared)
     }
 
     fun approveProposedMemory(message: ChatMessageItem, fact: String) {
@@ -1352,6 +1435,14 @@ class ChatViewModel(
         }
 
         val priorBeforeRound = repo.getMessages(initialConversation.id)
+        val knowledgeQuery = when (mode) {
+            is GroupRunMode.AfterUserMessage -> mode.userMessage.content
+            else -> priorBeforeRound.lastOrNull { it.role == MessageRole.USER }?.content.orEmpty()
+        }
+        val groupKnowledge = if (settings.knowledgeVolumeIDs.isNotEmpty() && knowledgeQuery.isNotBlank()) {
+            retrieveKnowledgeForTurn(settings.knowledgeVolumeIDs, knowledgeQuery)
+        } else null
+
         val explicitQueue = ArrayDeque<RelayStep>()
         var maxRelayTurns = 1
         var dynamicSmartRelay = false
@@ -1449,7 +1540,8 @@ class ChatViewModel(
                     isPersonaSimulation = member.isSimulatedPersona,
                     groupSpeechIntent = step.intent,
                     requestedSearchQuery = if (turnsCompleted == 0) preSearchQuery else null,
-                    search = if (turnsCompleted == 0) searchEvidence else null
+                    search = if (turnsCompleted == 0) searchEvidence else null,
+                    knowledgeEvidence = if (turnsCompleted == 0) groupKnowledge else null
                 )
 
                 val trailingCue = when (step.intent) {
@@ -1479,6 +1571,13 @@ class ChatViewModel(
                     val last = memberHistory.last()
                     memberHistory = memberHistory.dropLast(1) + last.copy(
                         content = if (last.content.isEmpty()) searchEvidence.prompt else "${last.content}\n\n${searchEvidence.prompt}"
+                    )
+                }
+                if (groupKnowledge != null && groupKnowledge.passages.isNotEmpty() && memberHistory.isNotEmpty()) {
+                    val last = memberHistory.last()
+                    val kPrompt = groupKnowledge.promptText()
+                    memberHistory = memberHistory.dropLast(1) + last.copy(
+                        content = if (last.content.isEmpty()) kPrompt else "${last.content}\n\n$kPrompt"
                     )
                 }
                 if (recordedExcerpts != null) {
@@ -1753,7 +1852,8 @@ class ChatViewModel(
                     kind = RequestKind.ANSWER
                 )
             ),
-            preTurnSearchQuery = searchQuery
+            preTurnSearchQuery = searchQuery,
+            preTurnEvidenceQuery = text
         )
     }
 
@@ -1844,7 +1944,8 @@ class ChatViewModel(
             conversation = updatedConv,
             extraMessagesToInsert = listOf(userMsg),
             slots = slots,
-            preTurnSearchQuery = searchQuery
+            preTurnSearchQuery = searchQuery,
+            preTurnEvidenceQuery = text
         )
     }
 
@@ -1877,10 +1978,13 @@ class ChatViewModel(
             assistanceMetadata = existingAssistant.assistanceMetadata.copy(
                 toolCalls = emptyList(),
                 search = null,
+                knowledgeEvidence = null,
+                bookReply = null,
                 proposedMemories = emptyList(),
                 handledMemories = emptyList()
             )
         )
+        val lastUserText = history.lastOrNull { it.role == MessageRole.USER }?.content
         launchSlots(
             conversation = conv.copy(updatedAtEpochMs = System.currentTimeMillis()),
             extraMessagesToInsert = emptyList(),
@@ -1893,7 +1997,8 @@ class ChatViewModel(
                     kind = RequestKind.REGENERATION
                 )
             ),
-            preTurnSearchQuery = existingAssistant.assistanceMetadata.requestedSearchQuery
+            preTurnSearchQuery = existingAssistant.assistanceMetadata.requestedSearchQuery,
+            preTurnEvidenceQuery = lastUserText
         )
     }
 
@@ -1901,7 +2006,8 @@ class ChatViewModel(
         conversation: ConversationItem,
         extraMessagesToInsert: List<ChatMessageItem>,
         slots: List<StreamSlot>,
-        preTurnSearchQuery: String? = null
+        preTurnSearchQuery: String? = null,
+        preTurnEvidenceQuery: String? = null
     ) {
         activeJob?.cancel()
         activeJob = viewModelScope.launch {
@@ -1917,25 +2023,20 @@ class ChatViewModel(
 
             try {
                 var effectiveSlots = slots
-                if (!preTurnSearchQuery.isNullOrBlank() && slots.isNotEmpty()) {
+                if (!preTurnSearchQuery.isNullOrBlank() && effectiveSlots.isNotEmpty()) {
                     try {
                         val evidence = performTavilySearchWithLedger(
                             query = preTurnSearchQuery,
                             conversationId = conversation.id,
-                            messageId = slots.first().message.id
+                            messageId = effectiveSlots.first().message.id
                         )
-                        effectiveSlots = slots.map { s ->
+                        effectiveSlots = effectiveSlots.map { s ->
                             val updatedMsg = s.message.copy(
                                 assistanceMetadata = s.message.assistanceMetadata.copy(search = evidence)
                             )
                             streamingOverlays.update { it + (updatedMsg.id to updatedMsg) }
                             repo.saveMessage(updatedMsg)
-                            val updatedHistory = if (s.history.isNotEmpty()) {
-                                val last = s.history.last()
-                                val augmented = if (last.content.isEmpty()) evidence.prompt
-                                else "${last.content}\n\n${evidence.prompt}"
-                                s.history.dropLast(1) + last.copy(content = augmented)
-                            } else s.history
+                            val updatedHistory = appendPromptSuffix(s.history, evidence.prompt)
                             s.copy(message = updatedMsg, history = updatedHistory)
                         }
                     } catch (t: Throwable) {
@@ -1944,7 +2045,64 @@ class ChatViewModel(
                         } else {
                             t.message ?: L10n.text("联网搜索失败", "Web search failed")
                         }
-                        for (s in slots) {
+                        for (s in effectiveSlots) {
+                            repo.saveMessage(s.message.copy(isStreaming = false, errorMessage = errText))
+                        }
+                        return@launch
+                    }
+                }
+
+                if (!preTurnEvidenceQuery.isNullOrBlank() &&
+                    conversation.assistanceSettings.knowledgeVolumeIDs.isNotEmpty() &&
+                    effectiveSlots.isNotEmpty()
+                ) {
+                    val knowledge = runCatching {
+                        retrieveKnowledgeForTurn(conversation.assistanceSettings.knowledgeVolumeIDs, preTurnEvidenceQuery)
+                    }.getOrNull()
+                    if (knowledge != null && knowledge.passages.isNotEmpty()) {
+                        val kPrompt = knowledge.promptText()
+                        effectiveSlots = effectiveSlots.map { s ->
+                            val updatedMsg = s.message.copy(
+                                assistanceMetadata = s.message.assistanceMetadata.copy(knowledgeEvidence = knowledge)
+                            )
+                            streamingOverlays.update { it + (updatedMsg.id to updatedMsg) }
+                            repo.saveMessage(updatedMsg)
+                            val updatedHistory = appendPromptSuffix(s.history, kPrompt)
+                            s.copy(message = updatedMsg, history = updatedHistory)
+                        }
+                    }
+                }
+
+                val friend = conversation.activeBookFriend
+                if (friend != null && !conversation.isArenaMode && !conversation.isGroupMode && effectiveSlots.isNotEmpty()) {
+                    try {
+                        val query = preTurnEvidenceQuery.orEmpty()
+                        val bookReply = retrieveBookFriendForTurn(friend, query)
+                        if (bookReply != null) {
+                            val preferEng = GroupDiscussionCoordinator.prefersEnglishPrompts(repo.getMessages(conversation.id))
+                            val refPrompt = bookReply.referenceText(preferEng)
+                            val friendSystem = buildBookFriendSystemPrompt(friend, conversation.systemPrompt, preferEng)
+                            effectiveSlots = effectiveSlots.map { s ->
+                                val updatedMsg = s.message.copy(
+                                    assistanceMetadata = s.message.assistanceMetadata.copy(bookReply = bookReply)
+                                )
+                                streamingOverlays.update { it + (updatedMsg.id to updatedMsg) }
+                                repo.saveMessage(updatedMsg)
+                                val updatedHistory = appendPromptSuffix(s.history, refPrompt)
+                                s.copy(
+                                    message = updatedMsg,
+                                    history = updatedHistory,
+                                    systemPromptOverride = s.systemPromptOverride ?: friendSystem
+                                )
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        val errText = if (t is CancellationException) {
+                            L10n.text("已停止生成", "Generation stopped")
+                        } else {
+                            t.message ?: L10n.text("查找书中人物失败", "Failed to load book character references")
+                        }
+                        for (s in effectiveSlots) {
                             repo.saveMessage(s.message.copy(isStreaming = false, errorMessage = errText))
                         }
                         return@launch
@@ -1975,7 +2133,18 @@ class ChatViewModel(
         val operationID = UUID.randomUUID().toString().uppercase()
 
         val systemSource = slot.systemPromptOverride ?: conversation.systemPrompt
-        val renderedSystem = PromptTemplateEngine.render(systemSource, target)
+        var renderedSystem = PromptTemplateEngine.render(systemSource, target)
+        if (conversation.assistanceSettings.usePersonalMemory && slot.kind != RequestKind.SYNTHESIS) {
+            val memories = repo.getEnabledPersonalMemories()
+            val (memPrompt, memCount) = PersonalMemoryPrompt.buildPrompt(memories.map { it.content })
+            if (memCount > 0) {
+                renderedSystem = if (renderedSystem.isBlank()) memPrompt else "$renderedSystem\n\n$memPrompt"
+                liveReply = liveReply.copy(
+                    assistanceMetadata = liveReply.assistanceMetadata.copy(memoryCount = memCount)
+                )
+                streamingOverlays.update { it + (liveReply.id to liveReply) }
+            }
+        }
         val allKeys = container.secretStore.loadAllAPIKeys(provider.id)
         val userProvidedURLs = AgentToolRunner.extractUserProvidedURLs(
             slot.history.filter { it.role == MessageRole.USER }.map { it.content } + conversation.systemPrompt
@@ -2221,13 +2390,23 @@ class ChatViewModel(
                             },
                             webpageApproval = { uri ->
                                 requestWebpageApproval(uri, userProvidedURLs)
-                            }
+                            },
+                            knowledgeHandler = if (conversation.assistanceSettings.knowledgeVolumeIDs.isNotEmpty()) {
+                                { q ->
+                                    retrieveKnowledgeForTurn(conversation.assistanceSettings.knowledgeVolumeIDs, q)
+                                        ?: KnowledgeEvidence(query = q, passages = emptyList())
+                                }
+                            } else null
                         )
                         val updatedCalls = liveReply.assistanceMetadata.toolCalls + exec.record
                         val updatedSearch = exec.searchEvidence?.let { newEv ->
                             val existing = liveReply.assistanceMetadata.search
                             if (existing == null) newEv else mergeSearchEvidence(existing, newEv.query, newEv.sources)
                         } ?: liveReply.assistanceMetadata.search
+                        val updatedKnowledge = exec.knowledgeEvidence?.let { newKEv ->
+                            val existing = liveReply.assistanceMetadata.knowledgeEvidence
+                            existing?.merged(newKEv) ?: newKEv
+                        } ?: liveReply.assistanceMetadata.knowledgeEvidence
                         val updatedMemories = exec.proposedMemory?.let { fact ->
                             val cur = liveReply.assistanceMetadata.proposedMemories
                             if (cur.contains(fact)) cur else cur + fact
@@ -2237,6 +2416,7 @@ class ChatViewModel(
                             assistanceMetadata = liveReply.assistanceMetadata.copy(
                                 toolCalls = updatedCalls,
                                 search = updatedSearch,
+                                knowledgeEvidence = updatedKnowledge,
                                 proposedMemories = updatedMemories
                             )
                         )
@@ -2327,6 +2507,57 @@ class ChatViewModel(
             }
         }
         return SlotOutcome(liveReply, finalizedDirective)
+    }
+
+    private fun appendPromptSuffix(
+        history: List<LLMPromptMessage>,
+        suffix: String
+    ): List<LLMPromptMessage> {
+        if (suffix.isBlank() || history.isEmpty()) return history
+        val last = history.last()
+        val augmented = if (last.content.isEmpty()) suffix else "${last.content}\n\n$suffix"
+        return history.dropLast(1) + last.copy(content = augmented)
+    }
+
+    private suspend fun retrieveKnowledgeForTurn(
+        volumeIDs: List<String>,
+        query: String,
+        maxPassages: Int = 5
+    ): KnowledgeEvidence? = withContext(Dispatchers.IO) {
+        val cleanIDs = volumeIDs.map { it.trim().uppercase() }.filter { it.isNotEmpty() }.distinct().take(12)
+        if (cleanIDs.isEmpty() || query.isBlank()) return@withContext null
+        val inputs = cleanIDs.mapNotNull { id ->
+            val book = repo.getBook(id) ?: return@mapNotNull null
+            val chapters = repo.loadBookChapters(id)
+            if (chapters.isEmpty()) return@mapNotNull null
+            KnowledgeDocumentInput(
+                id = book.id,
+                title = book.title,
+                chaptersProvider = { chapters }
+            )
+        }
+        if (inputs.isEmpty()) return@withContext null
+        ProjectKnowledgeSearch.retrieve(inputs, query = query, maxPassages = maxPassages)
+            .takeIf { it.passages.isNotEmpty() }
+    }
+
+    private suspend fun retrieveBookFriendForTurn(
+        friend: BookFriend,
+        query: String
+    ): BookReplyEvidence? = withContext(Dispatchers.IO) {
+        val chapters = repo.loadBookChapters(friend.bookID)
+        if (chapters.isEmpty()) return@withContext null
+        BookReferenceSearch.reference(friend, chapters, query)
+    }
+
+    private fun buildBookFriendSystemPrompt(
+        friend: BookFriend,
+        customSystemPrompt: String,
+        preferEnglish: Boolean
+    ): String {
+        val base = friend.systemInstruction(preferEnglish)
+        val extra = customSystemPrompt.trim()
+        return if (extra.isEmpty()) base else "$base\n\n$extra"
     }
 
     private fun mergeSearchEvidence(

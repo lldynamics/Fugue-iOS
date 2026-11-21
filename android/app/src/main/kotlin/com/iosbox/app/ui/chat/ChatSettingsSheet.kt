@@ -14,13 +14,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
@@ -36,6 +37,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.iosbox.app.core.model.ContextLimitOptions
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.storage.BookVolumeItem
+import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.ConversationItem
 import com.iosbox.app.core.storage.PresetItem
 import com.iosbox.app.core.storage.PromptTemplateEngine
@@ -48,6 +51,10 @@ import kotlin.math.roundToInt
 fun ChatSettingsSheet(
     conversation: ConversationItem,
     presets: List<PresetItem>,
+    books: List<BookVolumeItem>,
+    enabledMemoryCount: Int,
+    chatRepository: ChatRepository,
+    onOpenMemories: () -> Unit,
     onSave: (ConversationItem) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -63,6 +70,9 @@ fun ChatSettingsSheet(
     var maxOutputText by remember { mutableStateOf(conversation.maxOutputTokens.toString()) }
     var enableAgentTools by remember { mutableStateOf(conversation.assistanceSettings.enableAgentTools) }
     var enableNativeGrounding by remember { mutableStateOf(conversation.assistanceSettings.enableNativeGrounding) }
+    var usePersonalMemory by remember { mutableStateOf(conversation.assistanceSettings.usePersonalMemory) }
+    var knowledgeVolumeIDs by remember { mutableStateOf(conversation.assistanceSettings.knowledgeVolumeIDs) }
+    var showKnowledgeSheet by remember { mutableStateOf(false) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -98,7 +108,9 @@ fun ChatSettingsSheet(
                             maxOutputTokens = maxOut,
                             assistanceSettings = conversation.assistanceSettings.copy(
                                 enableAgentTools = enableAgentTools,
-                                enableNativeGrounding = enableNativeGrounding
+                                enableNativeGrounding = enableNativeGrounding,
+                                usePersonalMemory = usePersonalMemory,
+                                knowledgeVolumeIDs = knowledgeVolumeIDs
                             ),
                             updatedAtEpochMs = System.currentTimeMillis()
                         )
@@ -132,6 +144,9 @@ fun ChatSettingsSheet(
                                 contextLimit = preset.contextMessageLimit
                                 enableThinking = preset.enableThinking
                                 thinkingBudget = preset.thinkingBudgetTokens
+                                if (preset.knowledgeVolumeIDs.isNotEmpty()) {
+                                    knowledgeVolumeIDs = preset.knowledgeVolumeIDs
+                                }
                             },
                             label = { Text("${preset.iconEmoji} ${preset.name}") }
                         )
@@ -206,6 +221,42 @@ fun ChatSettingsSheet(
                     }
                     Switch(checked = enableNativeGrounding, onCheckedChange = { enableNativeGrounding = it })
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(L10n.text("使用个人长期记忆", "Use Personal Memory"))
+                        Text(
+                            text = L10n.text(
+                                "已启用 $enabledMemoryCount 条个人偏好随请求发送。",
+                                "$enabledMemoryCount active memories included when on."
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = {
+                        onDismiss()
+                        onOpenMemories()
+                    }) {
+                        Text(L10n.text("管理", "Edit"))
+                    }
+                    Switch(checked = usePersonalMemory, onCheckedChange = { usePersonalMemory = it })
+                }
+            }
+
+            OutlinedButton(
+                onClick = { showKnowledgeSheet = true },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    L10n.text(
+                        "本地参考知识库 (已选 ${knowledgeVolumeIDs.size}/12 卷)",
+                        "Local Knowledge Volumes (${knowledgeVolumeIDs.size}/12)"
+                    )
+                )
             }
 
             if (enableThinking) {
@@ -279,5 +330,15 @@ fun ChatSettingsSheet(
 
             Spacer(modifier = Modifier.height(8.dp))
         }
+    }
+
+    if (showKnowledgeSheet) {
+        KnowledgeBindingSheet(
+            books = books,
+            initialSelectedIDs = knowledgeVolumeIDs,
+            chatRepository = chatRepository,
+            onApply = { knowledgeVolumeIDs = it },
+            onDismiss = { showKnowledgeSheet = false }
+        )
     }
 }

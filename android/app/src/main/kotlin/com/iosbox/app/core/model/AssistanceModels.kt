@@ -88,6 +88,8 @@ data class ConversationAssistanceSettings(
     val enableNativeGrounding: Boolean = false,
     val knowledgeVolumeIDs: List<String> = emptyList(),
     val isGroupMode: Boolean = false,
+    val bookFriend: BookFriend? = null,
+    val companionBookID: String? = null,
     val groupMembers: List<GroupMember> = emptyList(),
     val groupSpeakingMode: GroupSpeakingMode = GroupSpeakingMode.SMART_RELAY,
     val groupSpeechStyle: GroupSpeechStyle = GroupSpeechStyle.NATURAL_SHORT,
@@ -104,6 +106,8 @@ data class ConversationAssistanceSettings(
         for ((k, v) in encoded) {
             merged[k] = v
         }
+        if (bookFriend == null) merged.remove("bookFriend")
+        if (companionBookID == null) merged.remove("companionBookID")
         if (privatePersona == null) {
             merged.remove("privatePersona")
         }
@@ -117,14 +121,18 @@ data class ConversationAssistanceSettings(
  */
 @Serializable
 data class MessageAssistanceMetadata(
+    val memoryCount: Int = 0,
     val isBookmarked: Boolean = false,
     val omittedMemory: Boolean = false,
     val omittedKnowledge: Boolean = false,
+    val quotedExcerpt: String? = null,
     val requestedSearchQuery: String? = null,
     val search: SearchEvidence? = null,
     val toolCalls: List<ToolCallRecord> = emptyList(),
     val proposedMemories: List<String> = emptyList(),
     val handledMemories: List<String> = emptyList(),
+    val knowledgeEvidence: KnowledgeEvidence? = null,
+    val bookReply: BookReplyEvidence? = null,
     val blindArenaRevealed: Boolean = false,
     val blindArenaBallot: ArenaBallot? = null,
     val groupMemberID: String? = null,
@@ -161,8 +169,11 @@ data class MessageAssistanceMetadata(
         for ((k, v) in encoded) {
             merged[k] = v
         }
+        if (quotedExcerpt == null) merged.remove("quotedExcerpt")
         if (requestedSearchQuery == null) merged.remove("requestedSearchQuery")
         if (search == null) merged.remove("search")
+        if (knowledgeEvidence == null) merged.remove("knowledgeEvidence")
+        if (bookReply == null) merged.remove("bookReply")
         if (blindArenaBallot == null) merged.remove("blindArenaBallot")
         if (groupMemberID == null) merged.remove("groupMemberID")
         if (groupMemberName == null) merged.remove("groupMemberName")

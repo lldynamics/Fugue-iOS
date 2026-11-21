@@ -287,7 +287,7 @@ class AgentToolsTest {
     fun toolAndSearchMetadataRoundTripPreservesUnknownFields() {
         val codec = BackupJson.codec
         val existingJson = codec.parseToJsonElement(
-            """{"isBookmarked":true,"requestedSearchQuery":"old query","bookReply":{"bookTitle":"Dune"}}"""
+            """{"isBookmarked":true,"requestedSearchQuery":"old query","generatedQuiz":{"topic":"Dune"}}"""
         ).jsonObject
 
         val meta = MessageAssistanceMetadata(
@@ -306,12 +306,12 @@ class AgentToolsTest {
         assertTrue(merged.containsKey("search"))
         assertTrue(merged.containsKey("toolCalls"))
         assertTrue(merged.containsKey("proposedMemories"))
-        assertTrue(merged.containsKey("bookReply"))
+        assertTrue(merged.containsKey("generatedQuiz"))
 
         val cleared = MessageAssistanceMetadata(requestedSearchQuery = null, search = null)
         val afterClear = cleared.mergeInto(merged, codec)
         assertNull(afterClear["requestedSearchQuery"])
         assertNull(afterClear["search"])
-        assertTrue(afterClear.containsKey("bookReply"))
+        assertTrue(afterClear.containsKey("generatedQuiz"))
     }
 }

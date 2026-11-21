@@ -136,6 +136,9 @@ interface RequestRecordDao {
 @Dao
 interface PersonalMemoryDao {
     @Query("SELECT * FROM personal_memories ORDER BY createdAtEpochMs ASC")
+    fun observeAll(): Flow<List<PersonalMemoryEntity>>
+
+    @Query("SELECT * FROM personal_memories ORDER BY createdAtEpochMs ASC")
     suspend fun getAll(): List<PersonalMemoryEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -143,10 +146,16 @@ interface PersonalMemoryDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(entities: List<PersonalMemoryEntity>)
+
+    @Query("DELETE FROM personal_memories WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
 
 @Dao
 interface BookVolumeDao {
+    @Query("SELECT * FROM book_volumes ORDER BY importedAtEpochMs DESC")
+    fun observeAll(): Flow<List<BookVolumeEntity>>
+
     @Query("SELECT * FROM book_volumes ORDER BY importedAtEpochMs DESC")
     suspend fun getAll(): List<BookVolumeEntity>
 
@@ -155,6 +164,9 @@ interface BookVolumeDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: BookVolumeEntity)
+
+    @Query("DELETE FROM book_volumes WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
 
 @Dao
@@ -181,8 +193,20 @@ interface PersonaProfileDao {
 @Dao
 interface ShelfReadingStateDao {
     @Query("SELECT * FROM shelf_reading_states")
+    fun observeAll(): Flow<List<ShelfReadingStateEntity>>
+
+    @Query("SELECT * FROM shelf_reading_states")
     suspend fun getAll(): List<ShelfReadingStateEntity>
+
+    @Query("SELECT * FROM shelf_reading_states WHERE bookID = :bookID LIMIT 1")
+    suspend fun getByBookId(bookID: String): ShelfReadingStateEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: ShelfReadingStateEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(entities: List<ShelfReadingStateEntity>)
+
+    @Query("DELETE FROM shelf_reading_states WHERE bookID = :bookID")
+    suspend fun deleteByBookId(bookID: String)
 }
