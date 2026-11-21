@@ -139,6 +139,9 @@ interface PersonalMemoryDao {
     suspend fun getAll(): List<PersonalMemoryEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: PersonalMemoryEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(entities: List<PersonalMemoryEntity>)
 }
 

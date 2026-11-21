@@ -515,6 +515,26 @@ class ChatRepository(
         db.chatMessageDao().deleteById(mid)
     }
 
+    suspend fun addPersonalMemory(content: String): PersonalMemoryEntity = withContext(Dispatchers.IO) {
+        val bounded = content.trim().take(200)
+        val existing = db.personalMemoryDao().getAll().firstOrNull {
+            it.content.trim().equals(bounded, ignoreCase = true)
+        }
+        if (existing != null) {
+            val enabled = if (existing.isEnabled) existing else existing.copy(isEnabled = true)
+            db.personalMemoryDao().upsert(enabled)
+            return@withContext enabled
+        }
+        val entity = PersonalMemoryEntity(
+            id = UUID.randomUUID().toString().uppercase(),
+            content = bounded,
+            isEnabled = true,
+            createdAtEpochMs = System.currentTimeMillis()
+        )
+        db.personalMemoryDao().upsert(entity)
+        entity
+    }
+
     suspend fun saveConversation(item: ConversationItem) = withContext(Dispatchers.IO) {
         val cid = item.id.uppercase()
         val existing = db.conversationDao().getById(cid)

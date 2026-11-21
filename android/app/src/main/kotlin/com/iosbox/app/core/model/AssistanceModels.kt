@@ -1,5 +1,7 @@
 package com.iosbox.app.core.model
 
+import com.iosbox.app.core.network.SearchEvidence
+import com.iosbox.app.core.network.ToolCallRecord
 import com.iosbox.app.core.storage.ChatMessageItem
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -118,6 +120,11 @@ data class MessageAssistanceMetadata(
     val isBookmarked: Boolean = false,
     val omittedMemory: Boolean = false,
     val omittedKnowledge: Boolean = false,
+    val requestedSearchQuery: String? = null,
+    val search: SearchEvidence? = null,
+    val toolCalls: List<ToolCallRecord> = emptyList(),
+    val proposedMemories: List<String> = emptyList(),
+    val handledMemories: List<String> = emptyList(),
     val blindArenaRevealed: Boolean = false,
     val blindArenaBallot: ArenaBallot? = null,
     val groupMemberID: String? = null,
@@ -154,6 +161,8 @@ data class MessageAssistanceMetadata(
         for ((k, v) in encoded) {
             merged[k] = v
         }
+        if (requestedSearchQuery == null) merged.remove("requestedSearchQuery")
+        if (search == null) merged.remove("search")
         if (blindArenaBallot == null) merged.remove("blindArenaBallot")
         if (groupMemberID == null) merged.remove("groupMemberID")
         if (groupMemberName == null) merged.remove("groupMemberName")

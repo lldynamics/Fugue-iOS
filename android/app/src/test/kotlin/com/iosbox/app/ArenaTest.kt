@@ -223,17 +223,17 @@ class ArenaTest {
 
         val ballot = ArenaBallot(winnerID = "M1")
         val existingMsgJson = codec.parseToJsonElement(
-            """{"toolCalls":[{"id":"t1","name":"calc"}],"blindArenaBallot":{"winnerID":"OLD"}}"""
+            """{"studyFlashcards":[{"id":"t1","name":"calc"}],"blindArenaBallot":{"winnerID":"OLD"}}"""
         ).jsonObject
         val msgMetaWithBallot = MessageAssistanceMetadata(blindArenaRevealed = true, blindArenaBallot = ballot)
         val mergedWithBallot = msgMetaWithBallot.mergeInto(existingMsgJson, codec)
-        assertEquals("calc", mergedWithBallot["toolCalls"].toString().let { if (it.contains("calc")) "calc" else "" })
+        assertEquals("calc", mergedWithBallot["studyFlashcards"].toString().let { if (it.contains("calc")) "calc" else "" })
         assertEquals("M1", mergedWithBallot["blindArenaBallot"]?.jsonObject?.get("winnerID")?.jsonPrimitive?.content)
 
         val clearedBallotMeta = MessageAssistanceMetadata(blindArenaRevealed = true, blindArenaBallot = null)
         val mergedCleared = clearedBallotMeta.mergeInto(mergedWithBallot, codec)
         assertNull(mergedCleared["blindArenaBallot"])
-        assertTrue(mergedCleared.containsKey("toolCalls"))
+        assertTrue(mergedCleared.containsKey("studyFlashcards"))
     }
 
     @Test

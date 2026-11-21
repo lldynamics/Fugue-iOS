@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.iosbox.app.AppContainer
+import com.iosbox.app.core.model.APIProtocolType
 import com.iosbox.app.core.model.ArenaBallot
 import com.iosbox.app.core.model.GroupMember
 import com.iosbox.app.core.model.GroupSpeakingMode
@@ -20,6 +21,7 @@ import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestMetrics
 import com.iosbox.app.core.model.RequestStatus
 import com.iosbox.app.core.model.ResolvedModelTarget
+import com.iosbox.app.core.network.AgentToolRunner
 import com.iosbox.app.core.network.ArenaSynthesis
 import com.iosbox.app.core.network.GroupDiscussionCoordinator
 import com.iosbox.app.core.network.GroupStreamSanitizer
@@ -28,7 +30,15 @@ import com.iosbox.app.core.network.LLMChatRequest
 import com.iosbox.app.core.network.LLMError
 import com.iosbox.app.core.network.LLMPromptMessage
 import com.iosbox.app.core.network.LLMStreamEvent
+import com.iosbox.app.core.network.LLMThinkingBlock
+import com.iosbox.app.core.network.LLMToolCall
 import com.iosbox.app.core.network.PersonaMaterials
+import com.iosbox.app.core.network.SearchError
+import com.iosbox.app.core.network.SearchEvidence
+import com.iosbox.app.core.network.SearchSource
+import com.iosbox.app.core.network.TavilySearchClient
+import com.iosbox.app.core.network.WebpageApprovalDecision
+import com.iosbox.app.core.security.SecretStore
 import com.iosbox.app.core.storage.AttachmentProcessor
 import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.core.storage.ChatRepository
@@ -38,6 +48,7 @@ import com.iosbox.app.core.storage.PromptTemplateEngine
 import com.iosbox.app.core.storage.ProviderItem
 import com.iosbox.app.core.storage.RequestRecordItem
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -50,6 +61,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -62,6 +74,14 @@ data class PendingConsentAction(
     val onConfirm: () -> Unit
 )
 
+data class PendingWebpageApproval(
+    val id: String,
+    val url: String,
+    val host: String,
+    val hasQuery: Boolean,
+    val onResolve: (allow: Boolean, rememberHost: Boolean) -> Unit
+)
+
 data class ChatDetailUiState(
     val conversation: ConversationItem? = null,
     val messages: List<ChatMessageItem> = emptyList(),
@@ -72,8 +92,11 @@ data class ChatDetailUiState(
     val draftAttachments: List<MessageAttachment> = emptyList(),
     val isGenerating: Boolean = false,
     val activeGroupSpeaker: String? = null,
+    val useWebSearchOnce: Boolean = false,
+    val hasTavilyKey: Boolean = false,
     val bannerError: String? = null,
-    val pendingConsent: PendingConsentAction? = null
+    val pendingConsent: PendingConsentAction? = null,
+    val pendingWebpageApproval: PendingWebpageApproval? = null
 )
 
 class ChatViewModel(
@@ -86,9 +109,13 @@ class ChatViewModel(
     private val draftAttachments = MutableStateFlow<List<MessageAttachment>>(emptyList())
     private val streamingOverlays = MutableStateFlow<Map<String, ChatMessageItem>>(emptyMap())
     private val activeGroupSpeaker = MutableStateFlow<String?>(null)
+    private val useWebSearchOnce = MutableStateFlow(false)
     private val bannerError = MutableStateFlow<String?>(null)
     private val pendingConsent = MutableStateFlow<PendingConsentAction?>(null)
+    private val pendingWebpageApproval = MutableStateFlow<PendingWebpageApproval?>(null)
 
+    private val approvedWebpageHosts = HashSet<String>()
+    private var pendingApprovalDeferred: CompletableDeferred<WebpageApprovalDecision>? = null
     private var activeJob: Job? = null
 
     private val baseDataFlow = combine(
@@ -101,15 +128,28 @@ class ChatViewModel(
         BaseData(conv, msgs, providers, presets, profiles)
     }
 
+    private val extrasFlow = combine(
+        bannerError,
+        pendingConsent,
+        activeGroupSpeaker,
+        useWebSearchOnce,
+        combine(
+            pendingWebpageApproval,
+            container.secretStore.versionFlow.map {
+                container.secretStore.loadSecret(SecretStore.TAVILY_KEY_ACCOUNT).isNotEmpty()
+            }
+        ) { approval, hasKey -> approval to hasKey }
+    ) { err, consent, speaker, webSearchOnce, (approval, hasKey) ->
+        ExtraUiState(err, consent, speaker, webSearchOnce, approval, hasKey)
+    }
+
     val uiState: StateFlow<ChatDetailUiState> = combine(
         baseDataFlow,
         draftText,
         draftAttachments,
         streamingOverlays,
-        combine(bannerError, pendingConsent, activeGroupSpeaker) { err, consent, speaker ->
-            Triple(err, consent, speaker)
-        }
-    ) { base, draft, atts, overlays, (err, consent, speaker) ->
+        extrasFlow
+    ) { base, draft, atts, overlays, extras ->
         val mergedMessages = if (overlays.isEmpty()) {
             base.messages
         } else {
@@ -129,10 +169,13 @@ class ChatViewModel(
             personaProfiles = base.personaProfiles,
             draftText = draft,
             draftAttachments = atts,
-            isGenerating = overlays.isNotEmpty() || speaker != null || mergedMessages.any { it.isStreaming },
-            activeGroupSpeaker = speaker,
-            bannerError = err,
-            pendingConsent = consent
+            isGenerating = overlays.isNotEmpty() || extras.speaker != null || mergedMessages.any { it.isStreaming },
+            activeGroupSpeaker = extras.speaker,
+            useWebSearchOnce = extras.useWebSearchOnce,
+            hasTavilyKey = extras.hasTavilyKey,
+            bannerError = extras.bannerError,
+            pendingConsent = extras.pendingConsent,
+            pendingWebpageApproval = extras.pendingWebpageApproval
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ChatDetailUiState())
 
@@ -142,6 +185,15 @@ class ChatViewModel(
         val providers: List<ProviderItem>,
         val presets: List<PresetItem>,
         val personaProfiles: List<GroupMember>
+    )
+
+    private data class ExtraUiState(
+        val bannerError: String?,
+        val pendingConsent: PendingConsentAction?,
+        val speaker: String?,
+        val useWebSearchOnce: Boolean,
+        val pendingWebpageApproval: PendingWebpageApproval?,
+        val hasTavilyKey: Boolean
     )
 
     private data class StreamSlot(
@@ -161,10 +213,19 @@ class ChatViewModel(
     )
 
     private sealed interface GroupRunMode {
-        data class AfterUserMessage(val userMessage: ChatMessageItem) : GroupRunMode
+        data class AfterUserMessage(
+            val userMessage: ChatMessageItem,
+            val searchQuery: String? = null
+        ) : GroupRunMode
+
         data object ContinueDiscussion : GroupRunMode
         data object GroupVote : GroupRunMode
         data class Summarize(val preferred: GroupMember?) : GroupRunMode
+    }
+
+    override fun onCleared() {
+        cancelPendingWebpageApproval()
+        super.onCleared()
     }
 
     fun updateDraftText(text: String) {
@@ -178,6 +239,76 @@ class ChatViewModel(
             current + token
         } else {
             "$current $token"
+        }
+    }
+
+    fun toggleUseWebSearchOnce() {
+        val tavilyKey = container.secretStore.loadSecret(SecretStore.TAVILY_KEY_ACCOUNT)
+        if (tavilyKey.isEmpty()) {
+            useWebSearchOnce.value = false
+            bannerError.value = L10n.text(
+                "请先在「服务商 → 联网搜索」配置 Tavily API Key。",
+                "Configure a Tavily API key in Providers -> Web Search first."
+            )
+            return
+        }
+        useWebSearchOnce.value = !useWebSearchOnce.value
+    }
+
+    fun toggleAgentTools() {
+        val conv = uiState.value.conversation ?: return
+        viewModelScope.launch {
+            val toggled = !conv.assistanceSettings.enableAgentTools
+            repo.saveConversation(
+                conv.copy(
+                    assistanceSettings = conv.assistanceSettings.copy(enableAgentTools = toggled),
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    fun toggleNativeGrounding() {
+        val conv = uiState.value.conversation ?: return
+        viewModelScope.launch {
+            val toggled = !conv.assistanceSettings.enableNativeGrounding
+            repo.saveConversation(
+                conv.copy(
+                    assistanceSettings = conv.assistanceSettings.copy(enableNativeGrounding = toggled),
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    fun approveProposedMemory(message: ChatMessageItem, fact: String) {
+        viewModelScope.launch {
+            repo.addPersonalMemory(fact)
+            val currentHandled = message.assistanceMetadata.handledMemories
+            if (!currentHandled.contains(fact)) {
+                repo.saveMessage(
+                    message.copy(
+                        assistanceMetadata = message.assistanceMetadata.copy(
+                            handledMemories = currentHandled + fact
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    fun dismissProposedMemory(message: ChatMessageItem, fact: String) {
+        viewModelScope.launch {
+            val currentHandled = message.assistanceMetadata.handledMemories
+            if (!currentHandled.contains(fact)) {
+                repo.saveMessage(
+                    message.copy(
+                        assistanceMetadata = message.assistanceMetadata.copy(
+                            handledMemories = currentHandled + fact
+                        )
+                    )
+                )
+            }
         }
     }
 
@@ -353,6 +484,10 @@ class ChatViewModel(
 
         if (state.isGenerating) return
 
+        val capturedSearch = if (useWebSearchOnce.value) {
+            text.take(TavilySearchClient.MAXIMUM_QUERY_CHARACTERS).ifBlank { null }
+        } else null
+
         if (conv.isArenaMode) {
             val resolvedTargets = conv.arenaTargets.mapNotNull { chosen ->
                 ready.firstOrNull { it.id == chosen.id }
@@ -374,7 +509,8 @@ class ChatViewModel(
             }
             val summary = consentSummaryFor(resolvedPairs)
             runWithConsent(summary) {
-                executeSendArenaMessage(text, attachments, conv, resolvedPairs)
+                useWebSearchOnce.value = false
+                executeSendArenaMessage(text, attachments, conv, resolvedPairs, capturedSearch)
             }
             return
         }
@@ -394,7 +530,8 @@ class ChatViewModel(
         }
 
         runWithConsent(consentSummaryFor(listOf(target to provider))) {
-            executeSendSingleMessage(text, attachments, conv, target, provider)
+            useWebSearchOnce.value = false
+            executeSendSingleMessage(text, attachments, conv, target, provider, capturedSearch)
         }
     }
 
@@ -556,7 +693,11 @@ class ChatViewModel(
                 cachedTokens = null,
                 latencyMs = null,
                 thinkingDurationMs = null,
-                assistanceMetadata = assistantMessage.assistanceMetadata.copy(personaExcerpts = excerpts)
+                assistanceMetadata = assistantMessage.assistanceMetadata.copy(
+                    personaExcerpts = excerpts,
+                    toolCalls = emptyList(),
+                    search = null
+                )
             )
             runWithConsent(consentSummaryFor(listOf(resolved to provider))) {
                 bannerError.value = null
@@ -971,7 +1112,56 @@ class ChatViewModel(
     }
 
     fun stopGeneration() {
+        cancelPendingWebpageApproval()
         activeJob?.cancel()
+    }
+
+    private fun cancelPendingWebpageApproval() {
+        val deferred = pendingApprovalDeferred
+        pendingApprovalDeferred = null
+        pendingWebpageApproval.value = null
+        deferred?.complete(WebpageApprovalDecision.DENY)
+    }
+
+    private suspend fun requestWebpageApproval(
+        uri: URI,
+        userProvidedURLs: Set<String>
+    ): WebpageApprovalDecision {
+        val canonicalKey = AgentToolRunner.canonicalURLKey(uri)
+        if (userProvidedURLs.contains(canonicalKey)) {
+            return WebpageApprovalDecision.ALLOW
+        }
+        val host = uri.host?.lowercase().orEmpty()
+        if (uri.rawQuery == null && host.isNotEmpty() && approvedWebpageHosts.contains(host)) {
+            return WebpageApprovalDecision.ALLOW
+        }
+
+        val deferred = CompletableDeferred<WebpageApprovalDecision>()
+        cancelPendingWebpageApproval()
+        pendingApprovalDeferred = deferred
+        val requestId = UUID.randomUUID().toString()
+        pendingWebpageApproval.value = PendingWebpageApproval(
+            id = requestId,
+            url = uri.toASCIIString(),
+            host = host,
+            hasQuery = uri.rawQuery != null,
+            onResolve = { allow, rememberHost ->
+                if (allow && rememberHost && uri.rawQuery == null && host.isNotEmpty()) {
+                    approvedWebpageHosts.add(host)
+                }
+                pendingWebpageApproval.value = null
+                deferred.complete(if (allow) WebpageApprovalDecision.ALLOW else WebpageApprovalDecision.DENY)
+            }
+        )
+
+        return try {
+            deferred.await()
+        } finally {
+            if (pendingApprovalDeferred === deferred) {
+                pendingApprovalDeferred = null
+                pendingWebpageApproval.value = null
+            }
+        }
     }
 
     private fun runWithConsent(summary: String, block: () -> Unit) {
@@ -1000,6 +1190,10 @@ class ChatViewModel(
         attachments: List<MessageAttachment>,
         conv: ConversationItem
     ) {
+        val capturedSearch = if (useWebSearchOnce.value) {
+            text.take(TavilySearchClient.MAXIMUM_QUERY_CHARACTERS).ifBlank { null }
+        } else null
+        useWebSearchOnce.value = false
         draftText.value = ""
         draftAttachments.value = emptyList()
         bannerError.value = null
@@ -1007,6 +1201,7 @@ class ChatViewModel(
         val previousJob = activeJob
         activeJob = viewModelScope.launch {
             if (previousJob != null && previousJob.isActive) {
+                cancelPendingWebpageApproval()
                 previousJob.cancelAndJoin()
                 cleanupInterruptedGroupTail(conv.id)
             }
@@ -1026,7 +1221,7 @@ class ChatViewModel(
             val updatedConv = conv.copy(title = updatedTitle, updatedAtEpochMs = now)
             repo.saveConversation(updatedConv)
 
-            runGroupRelaySession(updatedConv, GroupRunMode.AfterUserMessage(userMsg))
+            runGroupRelaySession(updatedConv, GroupRunMode.AfterUserMessage(userMsg, capturedSearch))
         }
     }
 
@@ -1053,6 +1248,73 @@ class ChatViewModel(
         }
     }
 
+    private suspend fun performTavilySearchWithLedger(
+        query: String,
+        conversationId: String,
+        messageId: String
+    ): SearchEvidence {
+        val searchStartEpoch = System.currentTimeMillis()
+        val searchStartNanos = System.nanoTime()
+        var record = RequestRecordItem(
+            id = UUID.randomUUID().toString().uppercase(),
+            operationID = UUID.randomUUID().toString().uppercase(),
+            attempt = 1,
+            conversationID = conversationId,
+            messageID = messageId,
+            providerID = TavilySearchClient.PROVIDER_ID,
+            providerName = "Tavily",
+            modelID = "web-search",
+            modelDisplayName = "Tavily Search",
+            protocolType = APIProtocolType.OPEN_AI_COMPATIBLE,
+            kind = RequestKind.WEB_SEARCH,
+            status = RequestStatus.RUNNING,
+            startedAtEpochMs = searchStartEpoch,
+            endedAtEpochMs = null,
+            firstReasoningMs = null,
+            firstContentMs = null,
+            lastOutputMs = null,
+            durationMs = null,
+            outputChunkCount = 0,
+            isStreamed = false,
+            promptTokens = null,
+            completionTokens = null,
+            cachedTokens = null,
+            cacheWriteTokens = null,
+            httpStatus = null,
+            inputPricePerMillion = null,
+            outputPricePerMillion = null,
+            cacheReadPricePerMillion = null,
+            cacheWritePricePerMillion = null,
+            currency = null
+        )
+        repo.saveRequestRecord(record)
+
+        try {
+            val apiKey = container.secretStore.loadSecret(SecretStore.TAVILY_KEY_ACCOUNT)
+            val evidence = TavilySearchClient.search(query, apiKey)
+            val elapsed = ((System.nanoTime() - searchStartNanos) / 1_000_000L).toInt().coerceAtLeast(0)
+            record = record.copy(
+                status = RequestStatus.SUCCEEDED,
+                durationMs = elapsed,
+                endedAtEpochMs = System.currentTimeMillis()
+            )
+            repo.saveRequestRecord(record)
+            return evidence
+        } catch (t: Throwable) {
+            val elapsed = ((System.nanoTime() - searchStartNanos) / 1_000_000L).toInt().coerceAtLeast(0)
+            val httpCode = (t as? SearchError.Http)?.statusCode
+            val status = if (t is CancellationException) RequestStatus.CANCELLED else RequestStatus.FAILED
+            record = record.copy(
+                status = status,
+                httpStatus = httpCode,
+                durationMs = elapsed,
+                endedAtEpochMs = System.currentTimeMillis()
+            )
+            repo.saveRequestRecord(record)
+            throw t
+        }
+    }
+
     private suspend fun runGroupRelaySession(
         initialConversation: ConversationItem,
         mode: GroupRunMode
@@ -1070,6 +1332,24 @@ class ChatViewModel(
             val intent: GroupSpeechIntent,
             val allowPass: Boolean
         )
+
+        var preSearchQuery: String? = null
+        var searchEvidence: SearchEvidence? = null
+        if (mode is GroupRunMode.AfterUserMessage && !mode.searchQuery.isNullOrBlank()) {
+            preSearchQuery = mode.searchQuery
+            try {
+                searchEvidence = performTavilySearchWithLedger(
+                    query = mode.searchQuery,
+                    conversationId = initialConversation.id,
+                    messageId = mode.userMessage.id
+                )
+            } catch (t: Throwable) {
+                if (t !is CancellationException) {
+                    bannerError.value = t.message ?: L10n.text("联网搜索失败", "Web search failed")
+                }
+                return
+            }
+        }
 
         val priorBeforeRound = repo.getMessages(initialConversation.id)
         val explicitQueue = ArrayDeque<RelayStep>()
@@ -1167,7 +1447,9 @@ class ChatViewModel(
                     groupMemberTitle = member.title,
                     groupMemberEmoji = member.avatarEmoji,
                     isPersonaSimulation = member.isSimulatedPersona,
-                    groupSpeechIntent = step.intent
+                    groupSpeechIntent = step.intent,
+                    requestedSearchQuery = if (turnsCompleted == 0) preSearchQuery else null,
+                    search = if (turnsCompleted == 0) searchEvidence else null
                 )
 
                 val trailingCue = when (step.intent) {
@@ -1185,7 +1467,7 @@ class ChatViewModel(
                 }
 
                 var recordedExcerpts: List<PersonaExcerpt>? = null
-                val memberHistory = GroupDiscussionCoordinator.buildPromptHistory(
+                var memberHistory = GroupDiscussionCoordinator.buildPromptHistory(
                     messages = priorMessages,
                     speaker = member,
                     limit = liveConv.contextMessageLimit,
@@ -1193,6 +1475,12 @@ class ChatViewModel(
                     preferEnglish = englishPreferred,
                     recordReferences = { recordedExcerpts = it }
                 )
+                if (searchEvidence != null && memberHistory.isNotEmpty()) {
+                    val last = memberHistory.last()
+                    memberHistory = memberHistory.dropLast(1) + last.copy(
+                        content = if (last.content.isEmpty()) searchEvidence.prompt else "${last.content}\n\n${searchEvidence.prompt}"
+                    )
+                }
                 if (recordedExcerpts != null) {
                     replyMeta = replyMeta.copy(personaExcerpts = recordedExcerpts)
                 }
@@ -1398,7 +1686,8 @@ class ChatViewModel(
         attachments: List<MessageAttachment>,
         conv: ConversationItem,
         target: ResolvedModelTarget,
-        provider: ProviderItem
+        provider: ProviderItem,
+        searchQuery: String? = null
     ) {
         draftText.value = ""
         draftAttachments.value = emptyList()
@@ -1432,6 +1721,7 @@ class ChatViewModel(
             thinkingDurationMs = null,
             synthesisSourceDigest = null,
             latestRequestID = null,
+            assistanceMetadata = MessageAssistanceMetadata(requestedSearchQuery = searchQuery),
             parentMessageID = userMsg.id,
             sortIndex = nextSort + 1,
             createdAtEpochMs = now + 1L
@@ -1462,7 +1752,8 @@ class ChatViewModel(
                     history = history,
                     kind = RequestKind.ANSWER
                 )
-            )
+            ),
+            preTurnSearchQuery = searchQuery
         )
     }
 
@@ -1483,7 +1774,8 @@ class ChatViewModel(
         text: String,
         attachments: List<MessageAttachment>,
         conv: ConversationItem,
-        resolvedPairs: List<Pair<ResolvedModelTarget, ProviderItem>>
+        resolvedPairs: List<Pair<ResolvedModelTarget, ProviderItem>>,
+        searchQuery: String? = null
     ) {
         draftText.value = ""
         draftAttachments.value = emptyList()
@@ -1521,6 +1813,7 @@ class ChatViewModel(
                 thinkingDurationMs = null,
                 synthesisSourceDigest = null,
                 latestRequestID = null,
+                assistanceMetadata = MessageAssistanceMetadata(requestedSearchQuery = searchQuery),
                 parentMessageID = userMsg.id,
                 sortIndex = nextSort + 1 + idx,
                 createdAtEpochMs = now + 1L + idx
@@ -1550,7 +1843,8 @@ class ChatViewModel(
         launchSlots(
             conversation = updatedConv,
             extraMessagesToInsert = listOf(userMsg),
-            slots = slots
+            slots = slots,
+            preTurnSearchQuery = searchQuery
         )
     }
 
@@ -1579,7 +1873,13 @@ class ChatViewModel(
             cachedTokens = null,
             latencyMs = null,
             thinkingDurationMs = null,
-            synthesisSourceDigest = if (existingAssistant.isSynthesis) existingAssistant.synthesisSourceDigest else null
+            synthesisSourceDigest = if (existingAssistant.isSynthesis) existingAssistant.synthesisSourceDigest else null,
+            assistanceMetadata = existingAssistant.assistanceMetadata.copy(
+                toolCalls = emptyList(),
+                search = null,
+                proposedMemories = emptyList(),
+                handledMemories = emptyList()
+            )
         )
         launchSlots(
             conversation = conv.copy(updatedAtEpochMs = System.currentTimeMillis()),
@@ -1592,14 +1892,16 @@ class ChatViewModel(
                     history = history,
                     kind = RequestKind.REGENERATION
                 )
-            )
+            ),
+            preTurnSearchQuery = existingAssistant.assistanceMetadata.requestedSearchQuery
         )
     }
 
     private fun launchSlots(
         conversation: ConversationItem,
         extraMessagesToInsert: List<ChatMessageItem>,
-        slots: List<StreamSlot>
+        slots: List<StreamSlot>,
+        preTurnSearchQuery: String? = null
     ) {
         activeJob?.cancel()
         activeJob = viewModelScope.launch {
@@ -1614,8 +1916,43 @@ class ChatViewModel(
             }
 
             try {
+                var effectiveSlots = slots
+                if (!preTurnSearchQuery.isNullOrBlank() && slots.isNotEmpty()) {
+                    try {
+                        val evidence = performTavilySearchWithLedger(
+                            query = preTurnSearchQuery,
+                            conversationId = conversation.id,
+                            messageId = slots.first().message.id
+                        )
+                        effectiveSlots = slots.map { s ->
+                            val updatedMsg = s.message.copy(
+                                assistanceMetadata = s.message.assistanceMetadata.copy(search = evidence)
+                            )
+                            streamingOverlays.update { it + (updatedMsg.id to updatedMsg) }
+                            repo.saveMessage(updatedMsg)
+                            val updatedHistory = if (s.history.isNotEmpty()) {
+                                val last = s.history.last()
+                                val augmented = if (last.content.isEmpty()) evidence.prompt
+                                else "${last.content}\n\n${evidence.prompt}"
+                                s.history.dropLast(1) + last.copy(content = augmented)
+                            } else s.history
+                            s.copy(message = updatedMsg, history = updatedHistory)
+                        }
+                    } catch (t: Throwable) {
+                        val errText = if (t is CancellationException) {
+                            L10n.text("已停止生成", "Generation stopped")
+                        } else {
+                            t.message ?: L10n.text("联网搜索失败", "Web search failed")
+                        }
+                        for (s in slots) {
+                            repo.saveMessage(s.message.copy(isStreaming = false, errorMessage = errText))
+                        }
+                        return@launch
+                    }
+                }
+
                 coroutineScope {
-                    slots.map { slot ->
+                    effectiveSlots.map { slot ->
                         async { runSingleSlot(slot, conversation) }
                     }.awaitAll()
                 }
@@ -1635,216 +1972,381 @@ class ChatViewModel(
         val target = slot.target
         val provider = slot.provider
         val modelSpec = provider.models.firstOrNull { it.id == target.modelID }
-        val startEpochMs = System.currentTimeMillis()
-        val startNanos = System.nanoTime()
-        var record = RequestRecordItem(
-            id = UUID.randomUUID().toString().uppercase(),
-            operationID = UUID.randomUUID().toString().uppercase(),
-            attempt = 1,
-            conversationID = conversation.id,
-            messageID = liveReply.id,
-            providerID = provider.id,
-            providerName = provider.name,
-            modelID = target.modelID,
-            modelDisplayName = target.modelDisplayName,
-            protocolType = target.protocolType,
-            kind = slot.kind,
-            status = RequestStatus.RUNNING,
-            startedAtEpochMs = startEpochMs,
-            endedAtEpochMs = null,
-            firstReasoningMs = null,
-            firstContentMs = null,
-            lastOutputMs = null,
-            durationMs = null,
-            outputChunkCount = 0,
-            isStreamed = true,
-            promptTokens = null,
-            completionTokens = null,
-            cachedTokens = null,
-            cacheWriteTokens = null,
-            httpStatus = null,
-            inputPricePerMillion = modelSpec?.inputPricePerMillion,
-            outputPricePerMillion = modelSpec?.outputPricePerMillion,
-            cacheReadPricePerMillion = modelSpec?.cacheReadPricePerMillion,
-            cacheWritePricePerMillion = modelSpec?.cacheWritePricePerMillion,
-            currency = modelSpec?.priceCurrency
-        )
-        repo.saveRequestRecord(record)
+        val operationID = UUID.randomUUID().toString().uppercase()
 
         val systemSource = slot.systemPromptOverride ?: conversation.systemPrompt
         val renderedSystem = PromptTemplateEngine.render(systemSource, target)
         val allKeys = container.secretStore.loadAllAPIKeys(provider.id)
-        val llmRequest = LLMChatRequest(
-            providerName = provider.name,
-            protocolType = provider.protocolType,
-            baseURL = provider.baseURL,
-            apiKey = allKeys.firstOrNull() ?: "",
-            apiKeys = allKeys.drop(1),
-            customHeaders = provider.resolvedCustomHeaders(container.secretStore),
-            modelID = target.modelID,
-            supportsReasoning = target.supportsReasoning,
-            systemPrompt = renderedSystem,
-            messages = slot.history,
-            temperature = slot.temperatureOverride ?: if (conversation.useCustomTemperature) conversation.temperature else null,
-            topP = conversation.topP,
-            maxOutputTokens = conversation.maxOutputTokens.takeIf { it > 0 },
-            enableThinking = conversation.enableThinking,
-            thinkingBudgetTokens = conversation.thinkingBudgetTokens,
-            enablePromptCaching = conversation.assistanceSettings.enablePromptCaching,
-            idleTimeoutSeconds = provider.idleTimeoutSeconds.takeIf { it > 0 }?.toDouble()
+        val userProvidedURLs = AgentToolRunner.extractUserProvidedURLs(
+            slot.history.filter { it.role == MessageRole.USER }.map { it.content } + conversation.systemPrompt
         )
 
+        var workingHistory = slot.history
+        var toolRound = 0
         var reasoningStartMs: Int? = null
         var thinkingEndMs: Int? = null
         var lastDbFlushMs = 0L
         var abnormalFinish = false
         var finalizedDirective: GroupTurnDirective? = null
+        val groundedSources = mutableListOf<SearchSource>()
 
-        try {
-            container.llmClient.streamChat(llmRequest).collect { event ->
-                val elapsedMs = ((System.nanoTime() - startNanos) / 1_000_000L).toInt().coerceAtLeast(0)
-                when (event) {
-                    is LLMStreamEvent.NonStreamingResponse -> {
-                        record = record.copy(isStreamed = false)
-                    }
-                    is LLMStreamEvent.ReasoningDelta -> if (event.text.isNotEmpty()) {
-                        if (reasoningStartMs == null) reasoningStartMs = elapsedMs
-                        if (record.firstReasoningMs == null) {
-                            record = record.copy(firstReasoningMs = elapsedMs)
+        val startNanos = System.nanoTime()
+
+        while (true) {
+            val roundStartEpochMs = System.currentTimeMillis()
+            val roundStartNanos = System.nanoTime()
+            val roundKind = if (toolRound == 0) slot.kind else RequestKind.AGENT_TOOL
+            var record = RequestRecordItem(
+                id = UUID.randomUUID().toString().uppercase(),
+                operationID = operationID,
+                attempt = toolRound + 1,
+                conversationID = conversation.id,
+                messageID = liveReply.id,
+                providerID = provider.id,
+                providerName = provider.name,
+                modelID = target.modelID,
+                modelDisplayName = target.modelDisplayName,
+                protocolType = target.protocolType,
+                kind = roundKind,
+                status = RequestStatus.RUNNING,
+                startedAtEpochMs = roundStartEpochMs,
+                endedAtEpochMs = null,
+                firstReasoningMs = null,
+                firstContentMs = null,
+                lastOutputMs = null,
+                durationMs = null,
+                outputChunkCount = 0,
+                isStreamed = true,
+                promptTokens = null,
+                completionTokens = null,
+                cachedTokens = null,
+                cacheWriteTokens = null,
+                httpStatus = null,
+                inputPricePerMillion = modelSpec?.inputPricePerMillion,
+                outputPricePerMillion = modelSpec?.outputPricePerMillion,
+                cacheReadPricePerMillion = modelSpec?.cacheReadPricePerMillion,
+                cacheWritePricePerMillion = modelSpec?.cacheWritePricePerMillion,
+                currency = modelSpec?.priceCurrency
+            )
+            repo.saveRequestRecord(record)
+
+            val allowToolsNow = !conversation.isGroupMode &&
+                !conversation.isArenaMode &&
+                slot.kind != RequestKind.SYNTHESIS &&
+                conversation.assistanceSettings.enableAgentTools &&
+                toolRound < AgentToolRunner.MAX_TOOL_ROUNDS
+            val tavilyKey = container.secretStore.loadSecret(SecretStore.TAVILY_KEY_ACCOUNT)
+            val toolDefinitions = if (allowToolsNow) {
+                AgentToolRunner.definitions(
+                    hasTavilyKey = tavilyKey.isNotEmpty(),
+                    hasKnowledgeBase = conversation.assistanceSettings.knowledgeVolumeIDs.isNotEmpty()
+                )
+            } else {
+                emptyList()
+            }
+            val enableNativeSearch = slot.kind != RequestKind.SYNTHESIS &&
+                !conversation.isGroupMode &&
+                conversation.assistanceSettings.enableNativeGrounding
+
+            val llmRequest = LLMChatRequest(
+                providerName = provider.name,
+                protocolType = provider.protocolType,
+                baseURL = provider.baseURL,
+                apiKey = allKeys.firstOrNull() ?: "",
+                apiKeys = allKeys.drop(1),
+                customHeaders = provider.resolvedCustomHeaders(container.secretStore),
+                modelID = target.modelID,
+                supportsReasoning = target.supportsReasoning,
+                systemPrompt = renderedSystem,
+                messages = workingHistory,
+                temperature = slot.temperatureOverride ?: if (conversation.useCustomTemperature) conversation.temperature else null,
+                topP = conversation.topP,
+                maxOutputTokens = conversation.maxOutputTokens.takeIf { it > 0 },
+                enableThinking = conversation.enableThinking,
+                thinkingBudgetTokens = conversation.thinkingBudgetTokens,
+                enablePromptCaching = conversation.assistanceSettings.enablePromptCaching,
+                enableNativeSearch = enableNativeSearch,
+                idleTimeoutSeconds = provider.idleTimeoutSeconds.takeIf { it > 0 }?.toDouble(),
+                tools = toolDefinitions
+            )
+
+            val roundText = StringBuilder()
+            val roundReasoning = StringBuilder()
+            val roundThinkingBlocks = mutableListOf<LLMThinkingBlock>()
+            val roundToolCalls = mutableListOf<LLMToolCall>()
+
+            try {
+                container.llmClient.streamChat(llmRequest).collect { event ->
+                    val elapsedMs = ((System.nanoTime() - roundStartNanos) / 1_000_000L).toInt().coerceAtLeast(0)
+                    when (event) {
+                        is LLMStreamEvent.NonStreamingResponse -> {
+                            record = record.copy(isStreamed = false)
                         }
-                        record = record.copy(
-                            lastOutputMs = elapsedMs,
-                            outputChunkCount = record.outputChunkCount + 1
-                        )
-                        liveReply = liveReply.copy(reasoningContent = liveReply.reasoningContent + event.text)
-                        streamingOverlays.update { it + (liveReply.id to liveReply) }
-                    }
-                    is LLMStreamEvent.ContentDelta -> {
-                        val visibleDelta = slot.groupSanitizer?.ingest(event.text) ?: event.text
-                        if (visibleDelta.isNotEmpty()) {
-                            if (reasoningStartMs != null && thinkingEndMs == null) {
-                                thinkingEndMs = elapsedMs
+                        is LLMStreamEvent.ReasoningDelta -> if (event.text.isNotEmpty()) {
+                            roundReasoning.append(event.text)
+                            if (reasoningStartMs == null) {
+                                reasoningStartMs = ((System.nanoTime() - startNanos) / 1_000_000L).toInt().coerceAtLeast(0)
                             }
-                            if (record.firstContentMs == null) {
-                                record = record.copy(firstContentMs = elapsedMs)
+                            if (record.firstReasoningMs == null) {
+                                record = record.copy(firstReasoningMs = elapsedMs)
                             }
                             record = record.copy(
                                 lastOutputMs = elapsedMs,
                                 outputChunkCount = record.outputChunkCount + 1
                             )
-                            liveReply = liveReply.copy(
-                                content = liveReply.content + visibleDelta,
-                                thinkingDurationMs = thinkingEndMs?.let { end ->
-                                    reasoningStartMs?.let { start -> maxOf(0, end - start) }
-                                } ?: liveReply.thinkingDurationMs
-                            )
+                            liveReply = liveReply.copy(reasoningContent = liveReply.reasoningContent + event.text)
                             streamingOverlays.update { it + (liveReply.id to liveReply) }
                         }
+                        is LLMStreamEvent.ThinkingBlock -> {
+                            roundThinkingBlocks.add(event.block)
+                        }
+                        is LLMStreamEvent.ContentDelta -> {
+                            val visibleDelta = slot.groupSanitizer?.ingest(event.text) ?: event.text
+                            if (visibleDelta.isNotEmpty()) {
+                                roundText.append(visibleDelta)
+                                if (reasoningStartMs != null && thinkingEndMs == null) {
+                                    thinkingEndMs = ((System.nanoTime() - startNanos) / 1_000_000L).toInt().coerceAtLeast(0)
+                                }
+                                if (record.firstContentMs == null) {
+                                    record = record.copy(firstContentMs = elapsedMs)
+                                }
+                                record = record.copy(
+                                    lastOutputMs = elapsedMs,
+                                    outputChunkCount = record.outputChunkCount + 1
+                                )
+                                liveReply = liveReply.copy(
+                                    content = liveReply.content + visibleDelta,
+                                    thinkingDurationMs = thinkingEndMs?.let { end ->
+                                        reasoningStartMs?.let { start -> maxOf(0, end - start) }
+                                    } ?: liveReply.thinkingDurationMs
+                                )
+                                streamingOverlays.update { it + (liveReply.id to liveReply) }
+                            }
+                        }
+                        is LLMStreamEvent.AttachmentDelta -> {
+                            record = record.copy(
+                                firstContentMs = record.firstContentMs ?: elapsedMs,
+                                lastOutputMs = elapsedMs,
+                                outputChunkCount = record.outputChunkCount + 1
+                            )
+                            liveReply = liveReply.copy(attachments = liveReply.attachments + event.attachment)
+                            streamingOverlays.update { it + (liveReply.id to liveReply) }
+                        }
+                        is LLMStreamEvent.ToolCall -> {
+                            roundToolCalls.add(event.call)
+                        }
+                        is LLMStreamEvent.GroundingSource -> {
+                            if (event.url.isNotBlank() && groundedSources.none { it.url == event.url }) {
+                                groundedSources.add(
+                                    SearchSource(
+                                        id = groundedSources.size + 1,
+                                        title = event.title.ifBlank { event.url },
+                                        url = event.url,
+                                        snippet = L10n.text("来自模型原生联网检索", "From model native web grounding")
+                                    )
+                                )
+                                val mergedSearch = mergeSearchEvidence(
+                                    existing = liveReply.assistanceMetadata.search,
+                                    query = L10n.text("原生联网检索", "Native Grounding"),
+                                    addedSources = groundedSources
+                                )
+                                liveReply = liveReply.copy(
+                                    assistanceMetadata = liveReply.assistanceMetadata.copy(search = mergedSearch)
+                                )
+                                streamingOverlays.update { it + (liveReply.id to liveReply) }
+                            }
+                        }
+                        is LLMStreamEvent.Usage -> {
+                            record = record.copy(
+                                promptTokens = event.promptTokens ?: record.promptTokens,
+                                completionTokens = event.completionTokens ?: record.completionTokens
+                            )
+                            liveReply = liveReply.copy(
+                                promptTokens = event.promptTokens ?: liveReply.promptTokens,
+                                completionTokens = event.completionTokens ?: liveReply.completionTokens
+                            )
+                        }
+                        is LLMStreamEvent.CacheUsage -> {
+                            record = record.copy(
+                                cachedTokens = event.cachedTokens ?: record.cachedTokens,
+                                cacheWriteTokens = event.cacheWriteTokens ?: record.cacheWriteTokens
+                            )
+                            liveReply = liveReply.copy(
+                                cachedTokens = event.cachedTokens ?: liveReply.cachedTokens
+                            )
+                        }
+                        is LLMStreamEvent.Finished -> {
+                            abnormalFinish = true
+                            liveReply = liveReply.copy(finishReason = event.reason.rawValue)
+                            streamingOverlays.update { it + (liveReply.id to liveReply) }
+                        }
+                        is LLMStreamEvent.Retrying,
+                        is LLMStreamEvent.Done -> Unit
                     }
-                    is LLMStreamEvent.AttachmentDelta -> {
-                        record = record.copy(
-                            firstContentMs = record.firstContentMs ?: elapsedMs,
-                            lastOutputMs = elapsedMs,
-                            outputChunkCount = record.outputChunkCount + 1
-                        )
-                        liveReply = liveReply.copy(attachments = liveReply.attachments + event.attachment)
-                        streamingOverlays.update { it + (liveReply.id to liveReply) }
+
+                    val nowClock = System.currentTimeMillis()
+                    if (nowClock - lastDbFlushMs >= 150L) {
+                        lastDbFlushMs = nowClock
+                        repo.saveMessage(liveReply)
                     }
-                    is LLMStreamEvent.Usage -> {
-                        record = record.copy(
-                            promptTokens = event.promptTokens ?: record.promptTokens,
-                            completionTokens = event.completionTokens ?: record.completionTokens
-                        )
-                        liveReply = liveReply.copy(
-                            promptTokens = event.promptTokens ?: liveReply.promptTokens,
-                            completionTokens = event.completionTokens ?: liveReply.completionTokens
-                        )
-                    }
-                    is LLMStreamEvent.CacheUsage -> {
-                        record = record.copy(
-                            cachedTokens = event.cachedTokens ?: record.cachedTokens,
-                            cacheWriteTokens = event.cacheWriteTokens ?: record.cacheWriteTokens
-                        )
-                        liveReply = liveReply.copy(
-                            cachedTokens = event.cachedTokens ?: liveReply.cachedTokens
-                        )
-                    }
-                    is LLMStreamEvent.Finished -> {
-                        abnormalFinish = true
-                        liveReply = liveReply.copy(finishReason = event.reason.rawValue)
-                        streamingOverlays.update { it + (liveReply.id to liveReply) }
-                    }
-                    is LLMStreamEvent.Retrying,
-                    is LLMStreamEvent.ThinkingBlock,
-                    is LLMStreamEvent.ToolCall,
-                    is LLMStreamEvent.GroundingSource,
-                    is LLMStreamEvent.Done -> Unit
                 }
 
-                val nowClock = System.currentTimeMillis()
-                if (nowClock - lastDbFlushMs >= 150L) {
-                    lastDbFlushMs = nowClock
-                    repo.saveMessage(liveReply)
+                val roundDurationMs = ((System.nanoTime() - roundStartNanos) / 1_000_000L).toInt().coerceAtLeast(0)
+                if (roundToolCalls.isNotEmpty() && allowToolsNow) {
+                    record = record.copy(
+                        status = RequestStatus.SUCCEEDED,
+                        durationMs = roundDurationMs,
+                        endedAtEpochMs = System.currentTimeMillis()
+                    )
+                    repo.saveRequestRecord(record)
+
+                    workingHistory = workingHistory + LLMPromptMessage(
+                        role = MessageRole.ASSISTANT,
+                        content = roundText.toString(),
+                        reasoningContent = roundReasoning.toString(),
+                        thinkingBlocks = roundThinkingBlocks,
+                        toolCalls = roundToolCalls
+                    )
+
+                    for (call in roundToolCalls) {
+                        coroutineScope { ensureActive() }
+                        val exec = AgentToolRunner.execute(
+                            call = call,
+                            searchHandler = { q ->
+                                performTavilySearchWithLedger(
+                                    query = q,
+                                    conversationId = conversation.id,
+                                    messageId = liveReply.id
+                                )
+                            },
+                            webpageApproval = { uri ->
+                                requestWebpageApproval(uri, userProvidedURLs)
+                            }
+                        )
+                        val updatedCalls = liveReply.assistanceMetadata.toolCalls + exec.record
+                        val updatedSearch = exec.searchEvidence?.let { newEv ->
+                            val existing = liveReply.assistanceMetadata.search
+                            if (existing == null) newEv else mergeSearchEvidence(existing, newEv.query, newEv.sources)
+                        } ?: liveReply.assistanceMetadata.search
+                        val updatedMemories = exec.proposedMemory?.let { fact ->
+                            val cur = liveReply.assistanceMetadata.proposedMemories
+                            if (cur.contains(fact)) cur else cur + fact
+                        } ?: liveReply.assistanceMetadata.proposedMemories
+
+                        liveReply = liveReply.copy(
+                            assistanceMetadata = liveReply.assistanceMetadata.copy(
+                                toolCalls = updatedCalls,
+                                search = updatedSearch,
+                                proposedMemories = updatedMemories
+                            )
+                        )
+                        streamingOverlays.update { it + (liveReply.id to liveReply) }
+                        repo.saveMessage(liveReply)
+
+                        workingHistory = workingHistory + LLMPromptMessage(
+                            role = MessageRole.TOOL,
+                            content = exec.toolOutputJSON,
+                            toolCallID = call.id,
+                            toolName = call.name
+                        )
+                    }
+
+                    if (liveReply.content.isNotEmpty() && !liveReply.content.endsWith("\n")) {
+                        liveReply = liveReply.copy(content = liveReply.content + "\n\n")
+                        streamingOverlays.update { it + (liveReply.id to liveReply) }
+                    }
+                    toolRound++
+                    continue
                 }
+
+                if (slot.groupSanitizer != null) {
+                    val finalized = slot.groupSanitizer.finalize()
+                    liveReply = liveReply.copy(content = finalized.visibleText)
+                    finalizedDirective = finalized.directive
+                }
+
+                val firstMs = RequestMetrics.firstOutputMs(record.firstReasoningMs, record.firstContentMs)
+                val finalThinkingMs = liveReply.thinkingDurationMs
+                    ?: reasoningStartMs?.let { rs ->
+                        val totalSoFar = ((System.nanoTime() - startNanos) / 1_000_000L).toInt().coerceAtLeast(0)
+                        maxOf(0, (thinkingEndMs ?: totalSoFar) - rs)
+                    }
+                val finalStatus = if (abnormalFinish) RequestStatus.INCOMPLETE else RequestStatus.SUCCEEDED
+
+                liveReply = liveReply.copy(
+                    isStreaming = false,
+                    latencyMs = firstMs ?: roundDurationMs,
+                    thinkingDurationMs = finalThinkingMs,
+                    latestRequestID = record.id
+                )
+                record = record.copy(
+                    status = finalStatus,
+                    durationMs = roundDurationMs,
+                    endedAtEpochMs = System.currentTimeMillis()
+                )
+                repo.saveMessage(liveReply)
+                repo.saveRequestRecord(record)
+                streamingOverlays.update { it - liveReply.id }
+                break
+            } catch (_: CancellationException) {
+                val totalMs = ((System.nanoTime() - roundStartNanos) / 1_000_000L).toInt().coerceAtLeast(0)
+                liveReply = liveReply.copy(
+                    isStreaming = false,
+                    errorMessage = if (liveReply.content.isEmpty() && liveReply.reasoningContent.isEmpty()) {
+                        L10n.text("已停止生成", "Generation stopped")
+                    } else null,
+                    latestRequestID = record.id
+                )
+                record = record.copy(
+                    status = RequestStatus.CANCELLED,
+                    durationMs = totalMs,
+                    endedAtEpochMs = System.currentTimeMillis()
+                )
+                repo.saveMessage(liveReply)
+                repo.saveRequestRecord(record)
+                streamingOverlays.update { it - liveReply.id }
+                break
+            } catch (t: Throwable) {
+                val totalMs = ((System.nanoTime() - roundStartNanos) / 1_000_000L).toInt().coerceAtLeast(0)
+                val httpCode = (t as? LLMError.HttpError)?.statusCode
+                liveReply = liveReply.copy(
+                    isStreaming = false,
+                    errorMessage = t.message ?: L10n.text("请求失败", "Request failed"),
+                    latestRequestID = record.id
+                )
+                record = record.copy(
+                    status = RequestStatus.FAILED,
+                    httpStatus = httpCode,
+                    durationMs = totalMs,
+                    endedAtEpochMs = System.currentTimeMillis()
+                )
+                repo.saveMessage(liveReply)
+                repo.saveRequestRecord(record)
+                streamingOverlays.update { it - liveReply.id }
+                break
             }
-
-            if (slot.groupSanitizer != null) {
-                val finalized = slot.groupSanitizer.finalize()
-                liveReply = liveReply.copy(content = finalized.visibleText)
-                finalizedDirective = finalized.directive
-            }
-
-            val totalMs = ((System.nanoTime() - startNanos) / 1_000_000L).toInt().coerceAtLeast(0)
-            val firstMs = RequestMetrics.firstOutputMs(record.firstReasoningMs, record.firstContentMs)
-            val finalThinkingMs = liveReply.thinkingDurationMs
-                ?: reasoningStartMs?.let { rs -> maxOf(0, (thinkingEndMs ?: totalMs) - rs) }
-            val finalStatus = if (abnormalFinish) RequestStatus.INCOMPLETE else RequestStatus.SUCCEEDED
-
-            liveReply = liveReply.copy(
-                isStreaming = false,
-                latencyMs = firstMs ?: totalMs,
-                thinkingDurationMs = finalThinkingMs,
-                latestRequestID = record.id
-            )
-            record = record.copy(
-                status = finalStatus,
-                durationMs = totalMs,
-                endedAtEpochMs = System.currentTimeMillis()
-            )
-        } catch (_: CancellationException) {
-            val totalMs = ((System.nanoTime() - startNanos) / 1_000_000L).toInt().coerceAtLeast(0)
-            liveReply = liveReply.copy(
-                isStreaming = false,
-                errorMessage = if (liveReply.content.isEmpty() && liveReply.reasoningContent.isEmpty()) {
-                    L10n.text("已停止生成", "Generation stopped")
-                } else null,
-                latestRequestID = record.id
-            )
-            record = record.copy(
-                status = RequestStatus.CANCELLED,
-                durationMs = totalMs,
-                endedAtEpochMs = System.currentTimeMillis()
-            )
-        } catch (t: Throwable) {
-            val totalMs = ((System.nanoTime() - startNanos) / 1_000_000L).toInt().coerceAtLeast(0)
-            val httpCode = (t as? LLMError.HttpError)?.statusCode
-            liveReply = liveReply.copy(
-                isStreaming = false,
-                errorMessage = t.message ?: L10n.text("请求失败", "Request failed"),
-                latestRequestID = record.id
-            )
-            record = record.copy(
-                status = RequestStatus.FAILED,
-                httpStatus = httpCode,
-                durationMs = totalMs,
-                endedAtEpochMs = System.currentTimeMillis()
-            )
-        } finally {
-            repo.saveMessage(liveReply)
-            repo.saveRequestRecord(record)
-            streamingOverlays.update { it - liveReply.id }
         }
         return SlotOutcome(liveReply, finalizedDirective)
+    }
+
+    private fun mergeSearchEvidence(
+        existing: SearchEvidence?,
+        query: String,
+        addedSources: List<SearchSource>
+    ): SearchEvidence {
+        val merged = existing?.sources.orEmpty().toMutableList()
+        val seenUrls = merged.mapTo(HashSet()) { it.url }
+        for (src in addedSources) {
+            if (seenUrls.add(src.url)) {
+                merged.add(src.copy(id = merged.size + 1))
+            }
+        }
+        return SearchEvidence(
+            query = existing?.query?.takeIf { it.isNotBlank() } ?: query,
+            searchedAt = existing?.searchedAt ?: System.currentTimeMillis(),
+            sources = merged,
+            credits = existing?.credits
+        )
     }
 
     private fun resolveGroupPairs(

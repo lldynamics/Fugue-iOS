@@ -64,6 +64,7 @@ import com.iosbox.app.AppContainer
 import com.iosbox.app.core.backup.EncryptedBackupCrypto
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.network.NetworkLocation
+import com.iosbox.app.core.security.SecretStore
 import com.iosbox.app.core.storage.AccentTheme
 import com.iosbox.app.core.storage.ProviderItem
 import com.iosbox.app.core.storage.ThemeAppearanceMode
@@ -83,6 +84,11 @@ fun ProviderListScreen(
 ) {
     val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
     val prefs by container.preferences.state.collectAsStateWithLifecycle()
+    val secretVersion by container.secretStore.versionFlow.collectAsStateWithLifecycle()
+    val savedTavilyKey = remember(secretVersion) {
+        container.secretStore.loadSecret(SecretStore.TAVILY_KEY_ACCOUNT)
+    }
+    var tavilyKeyDraft by remember { mutableStateOf("") }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -184,6 +190,76 @@ fun ProviderListScreen(
                     onClick = { onOpenProvider(provider.id) },
                     onDelete = { providerToDelete = provider }
                 )
+            }
+
+            item {
+                Text(
+                    text = L10n.text("联网搜索 (Tavily)", "Web Search (Tavily)"),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = DS.Spacing.sm)
+                )
+            }
+
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(DS.Spacing.md),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = L10n.text(
+                                "用于发送前显式联网搜索或 Agent 工具调用 `web_search`（导出密码加密备份时会一并妥善打包）。",
+                                "Used for one-tap Web Search and the Agent `web_search` tool (included in encrypted backups)."
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (savedTavilyKey.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = L10n.text(
+                                        "已保存：${SecretStore.maskedKeyPreview(savedTavilyKey)}",
+                                        "Saved: ${SecretStore.maskedKeyPreview(savedTavilyKey)}"
+                                    ),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                TextButton(onClick = {
+                                    container.secretStore.deleteSecret(SecretStore.TAVILY_KEY_ACCOUNT)
+                                }) {
+                                    Text(L10n.text("清除", "Clear"), color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                        OutlinedTextField(
+                            value = tavilyKeyDraft,
+                            onValueChange = { tavilyKeyDraft = it },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            label = { Text(L10n.text("Tavily API Key (tvly-...)", "Tavily API Key")) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Button(
+                            enabled = tavilyKeyDraft.trim().isNotEmpty(),
+                            onClick = {
+                                val cleaned = tavilyKeyDraft.trim()
+                                container.secretStore.saveSecret(cleaned, SecretStore.TAVILY_KEY_ACCOUNT)
+                                tavilyKeyDraft = ""
+                            },
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Text(L10n.text("保存 Tavily Key", "Save Tavily Key"))
+                        }
+                    }
+                }
             }
 
             item {

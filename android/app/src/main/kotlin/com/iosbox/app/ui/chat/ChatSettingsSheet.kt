@@ -61,6 +61,8 @@ fun ChatSettingsSheet(
     var topP by remember { mutableDoubleStateOf(conversation.topP) }
     var contextLimit by remember { mutableIntStateOf(conversation.contextMessageLimit) }
     var maxOutputText by remember { mutableStateOf(conversation.maxOutputTokens.toString()) }
+    var enableAgentTools by remember { mutableStateOf(conversation.assistanceSettings.enableAgentTools) }
+    var enableNativeGrounding by remember { mutableStateOf(conversation.assistanceSettings.enableNativeGrounding) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -94,6 +96,10 @@ fun ChatSettingsSheet(
                             topP = topP,
                             contextMessageLimit = contextLimit,
                             maxOutputTokens = maxOut,
+                            assistanceSettings = conversation.assistanceSettings.copy(
+                                enableAgentTools = enableAgentTools,
+                                enableNativeGrounding = enableNativeGrounding
+                            ),
                             updatedAtEpochMs = System.currentTimeMillis()
                         )
                     )
@@ -165,6 +171,41 @@ fun ChatSettingsSheet(
             ) {
                 Text(L10n.text("启用深度思考 (Thinking / R1)", "Enable Deep Thinking"))
                 Switch(checked = enableThinking, onCheckedChange = { enableThinking = it })
+            }
+
+            if (!conversation.isGroupMode) {
+                if (!conversation.isArenaMode) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(L10n.text("启用 Agent 工具调用", "Enable Agent Tools"))
+                            Text(
+                                text = L10n.text("允许模型自主联网搜索、读取网页或建议记忆。", "Allows autonomous web search, webpage reads, and memory suggestions."),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = enableAgentTools, onCheckedChange = { enableAgentTools = it })
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(L10n.text("原生联网检索 (Grounding)", "Native Web Grounding"))
+                        Text(
+                            text = L10n.text("由支持联网的模型原生附带引用来源。", "Uses built-in model grounding on supported providers."),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = enableNativeGrounding, onCheckedChange = { enableNativeGrounding = it })
+                }
             }
 
             if (enableThinking) {

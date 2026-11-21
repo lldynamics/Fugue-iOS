@@ -34,6 +34,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Summarize
@@ -53,6 +55,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -402,7 +405,9 @@ fun ChatDetailScreen(
                                         msg.role == MessageRole.ASSISTANT &&
                                         readyTargets.size >= 2,
                                     onRegenerate = { vm.regenerateMessage(msg) },
-                                    onCompareWithAnother = { compareSourceMessage = msg }
+                                    onCompareWithAnother = { compareSourceMessage = msg },
+                                    onApproveMemory = { fact -> vm.approveProposedMemory(msg, fact) },
+                                    onDismissMemory = { fact -> vm.dismissProposedMemory(msg, fact) }
                                 )
                             }
                             is ChatTimelineEntry.ArenaGroup -> {
@@ -493,6 +498,60 @@ fun ChatDetailScreen(
                             )
                         }
                     }
+                }
+            } else if (conv != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = DS.Spacing.md, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = state.useWebSearchOnce,
+                        onClick = vm::toggleUseWebSearchOnce,
+                        enabled = !state.isGenerating,
+                        leadingIcon = {
+                            Icon(Icons.Filled.Public, contentDescription = null, modifier = Modifier.size(15.dp))
+                        },
+                        label = {
+                            Text(
+                                text = L10n.text("联网搜索", "Web Search"),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    )
+                    if (!conv.isArenaMode) {
+                        FilterChip(
+                            selected = conv.assistanceSettings.enableAgentTools,
+                            onClick = vm::toggleAgentTools,
+                            enabled = !state.isGenerating,
+                            leadingIcon = {
+                                Icon(Icons.Filled.Build, contentDescription = null, modifier = Modifier.size(15.dp))
+                            },
+                            label = {
+                                Text(
+                                    text = L10n.text("Agent 工具", "Agent Tools"),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        )
+                    }
+                    FilterChip(
+                        selected = conv.assistanceSettings.enableNativeGrounding,
+                        onClick = vm::toggleNativeGrounding,
+                        enabled = !state.isGenerating,
+                        leadingIcon = {
+                            Icon(Icons.Filled.Public, contentDescription = null, modifier = Modifier.size(15.dp))
+                        },
+                        label = {
+                            Text(
+                                text = L10n.text("原生检索", "Grounding"),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    )
                 }
             }
 
@@ -709,6 +768,56 @@ fun ChatDetailScreen(
             onDismiss = vm::dismissConsent
         )
     }
+
+    state.pendingWebpageApproval?.let { req ->
+        AlertDialog(
+            onDismissRequest = { req.onResolve(false, false) },
+            title = { Text(L10n.text("允许读取外部网页？", "Allow Reading Webpage?")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = L10n.text(
+                            "模型请求读取以下 HTTPS 页面正文：",
+                            "The model requested to read this HTTPS webpage:"
+                        ),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = req.url,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    if (req.hasQuery) {
+                        Text(
+                            text = L10n.text(
+                                "注意：该链接带有查询参数，请确认未拼接隐私对话内容。",
+                                "Note: This URL includes query parameters. Verify no private data is embedded."
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (!req.hasQuery && req.host.isNotEmpty()) {
+                        TextButton(onClick = { req.onResolve(true, true) }) {
+                            Text(L10n.text("本对话信任域名", "Trust Host"))
+                        }
+                    }
+                    Button(onClick = { req.onResolve(true, false) }) {
+                        Text(L10n.text("允许本次", "Allow Once"))
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { req.onResolve(false, false) }) {
+                    Text(L10n.text("拒绝", "Deny"))
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -717,7 +826,9 @@ private fun MessageBubbleRow(
     canRegenerate: Boolean,
     canCompareWithAnother: Boolean,
     onRegenerate: () -> Unit,
-    onCompareWithAnother: () -> Unit
+    onCompareWithAnother: () -> Unit,
+    onApproveMemory: (String) -> Unit,
+    onDismissMemory: (String) -> Unit
 ) {
     val context = LocalContext.current
     val accent = LocalAccentColors.current
@@ -847,19 +958,32 @@ private fun MessageBubbleRow(
                 thinkingDurationMs = message.thinkingDurationMs
             )
 
+            ToolCallsStrip(toolCalls = meta.toolCalls)
+
+            meta.search?.let { search ->
+                SearchCitationsCard(search = search)
+            }
+
             if (message.attachments.isNotEmpty()) {
                 AttachmentStrip(message.attachments)
             }
 
             if (message.content.isNotEmpty()) {
                 MarkdownMessageContent(markdown = message.content)
-            } else if (message.isStreaming && message.reasoningContent.isEmpty()) {
+            } else if (message.isStreaming && message.reasoningContent.isEmpty() && meta.toolCalls.isEmpty()) {
                 Text(
                     text = L10n.text("正在连接模型…", "Waiting for response…"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+
+            ProposedMemoriesCard(
+                proposed = meta.proposedMemories,
+                handled = meta.handledMemories,
+                onSave = onApproveMemory,
+                onDismiss = onDismissMemory
+            )
 
             message.finishReasonValue?.let { reason ->
                 Text(

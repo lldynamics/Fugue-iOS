@@ -532,6 +532,10 @@ private fun SingleModelArenaCard(
                 AttachmentStrip(message.attachments)
             }
 
+            message.assistanceMetadata.search?.let { search ->
+                SearchCitationsCard(search = search)
+            }
+
             if (message.content.isNotEmpty()) {
                 MarkdownMessageContent(markdown = message.content)
             } else if (message.isStreaming && message.reasoningContent.isEmpty()) {
