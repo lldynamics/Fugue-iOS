@@ -69,6 +69,18 @@ fun MainScreen(container: AppContainer) {
         }
     }
 
+    val openNewArena: () -> Unit = {
+        scope.launch {
+            val providers = container.chatRepository.getProviders()
+            val ready = ChatRepository.readyTargets(providers)
+            val created = container.chatRepository.createConversation(
+                isArenaMode = true,
+                arenaTargets = ready.take(2)
+            )
+            navController.navigate(Routes.chatDetail(created.id))
+        }
+    }
+
     Scaffold(
         bottomBar = {
             if (showBottomBar) {
@@ -135,6 +147,7 @@ fun MainScreen(container: AppContainer) {
                     container = container,
                     onOpenConversation = { id -> navController.navigate(Routes.chatDetail(id)) },
                     onCreateConversation = { openNewChat(null) },
+                    onCreateArenaConversation = openNewArena,
                     onGoToProviders = {
                         navController.navigate(Routes.PROVIDERS) {
                             popUpTo(navController.graph.findStartDestination().id) { saveState = true }

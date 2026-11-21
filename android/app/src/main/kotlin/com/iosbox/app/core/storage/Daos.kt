@@ -90,6 +90,9 @@ interface ChatMessageDao {
     @Query("SELECT * FROM chat_messages")
     suspend fun getAll(): List<ChatMessageEntity>
 
+    @Query("SELECT * FROM chat_messages WHERE comparisonGroupID IS NOT NULL ORDER BY createdAtEpochMs ASC")
+    fun observeArenaMessages(): Flow<List<ChatMessageEntity>>
+
     @Query("SELECT * FROM chat_messages WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): ChatMessageEntity?
 

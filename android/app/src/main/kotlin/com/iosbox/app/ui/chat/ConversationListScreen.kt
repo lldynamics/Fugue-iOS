@@ -20,6 +20,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.ViewColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -63,6 +65,7 @@ fun ConversationListScreen(
     container: AppContainer,
     onOpenConversation: (String) -> Unit,
     onCreateConversation: () -> Unit,
+    onCreateArenaConversation: () -> Unit,
     onGoToProviders: () -> Unit
 ) {
     val conversations by container.chatRepository.observeConversations().collectAsStateWithLifecycle(initialValue = emptyList())
@@ -89,6 +92,14 @@ fun ConversationListScreen(
                         text = L10n.text("夜奔", "Fugue"),
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                     )
+                },
+                actions = {
+                    IconButton(onClick = onCreateArenaConversation) {
+                        Icon(
+                            imageVector = Icons.Filled.ViewColumn,
+                            contentDescription = L10n.text("新建竞技场", "New Model Arena")
+                        )
+                    }
                 }
             )
         },
@@ -239,13 +250,32 @@ private fun ConversationRow(
                         text = conversation.title,
                         style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
+                    if (conversation.isArenaMode) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = L10n.text("竞技场", "Arena"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
                 }
                 Spacer(modifier = Modifier.height(2.dp))
+                val modelOrArenaLabel = if (conversation.isArenaMode) {
+                    L10n.text("竞技场 · ${conversation.arenaTargets.size} 模型", "Arena · ${conversation.arenaTargets.size} models")
+                } else {
+                    conversation.primaryTarget?.let { "${it.providerName} · ${it.modelDisplayName}" }
+                }
                 Text(
                     text = listOfNotNull(
-                        conversation.primaryTarget?.let { "${it.providerName} · ${it.modelDisplayName}" },
+                        modelOrArenaLabel,
                         dateText
                     ).joinToString(" · "),
                     style = MaterialTheme.typography.labelSmall,

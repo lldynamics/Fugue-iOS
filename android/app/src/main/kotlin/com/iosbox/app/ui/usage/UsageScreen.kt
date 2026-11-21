@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iosbox.app.AppContainer
+import com.iosbox.app.core.model.ArenaBallot
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestStatus
@@ -39,6 +40,7 @@ import java.text.DateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private enum class UsagePeriod {
     TODAY, MONTH, ALL;
@@ -66,6 +68,8 @@ private enum class UsagePeriod {
 @Composable
 fun UsageScreen(container: AppContainer) {
     val allRecords by container.chatRepository.observeRequestRecords().collectAsStateWithLifecycle(initialValue = emptyList())
+    val arenaMessages by container.chatRepository.observeArenaMessages().collectAsStateWithLifecycle(initialValue = emptyList())
+    val blindStandings = remember(arenaMessages) { ArenaBallot.standings(arenaMessages) }
     var period by remember { mutableStateOf(UsagePeriod.MONTH) }
     var selectedProviderId by remember { mutableStateOf<String?>(null) }
 
@@ -190,6 +194,64 @@ fun UsageScreen(container: AppContainer) {
                             detail = if (totalCached > 0) L10n.text("缓存 ${compactTokens(totalCached)}", "Cached ${compactTokens(totalCached)}") else null,
                             modifier = Modifier.weight(1f)
                         )
+                    }
+                }
+            }
+
+            if (blindStandings.isNotEmpty()) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(DS.Spacing.md),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = L10n.text("双盲胜率榜", "Blind Arena Standings"),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                            blindStandings.take(10).forEachIndexed { idx, standing ->
+                                if (idx > 0) {
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "#${idx + 1} ${standing.modelName.ifBlank { standing.modelID }}",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                                        )
+                                        if (standing.providerName.isNotBlank()) {
+                                            Text(
+                                                text = standing.providerName,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    Column(horizontalAlignment = androidx.compose.ui.Alignment.End) {
+                                        Text(
+                                            text = "${(standing.winRate * 100.0).roundToInt()}%",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text(
+                                            text = L10n.text(
+                                                "${standing.wins}/${standing.rounds} 胜",
+                                                "${standing.wins}/${standing.rounds} wins"
+                                            ),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

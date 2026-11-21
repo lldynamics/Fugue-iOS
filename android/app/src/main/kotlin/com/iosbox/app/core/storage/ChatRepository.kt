@@ -2,8 +2,10 @@ package com.iosbox.app.core.storage
 
 import com.iosbox.app.core.model.APIProtocolType
 import com.iosbox.app.core.model.AttachmentKind
+import com.iosbox.app.core.model.ConversationAssistanceSettings
 import com.iosbox.app.core.model.CustomHeader
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.model.MessageAssistanceMetadata
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.MessageRole
 import com.iosbox.app.core.model.ModelSpec
@@ -11,6 +13,7 @@ import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestMetrics
 import com.iosbox.app.core.model.RequestStatus
 import com.iosbox.app.core.model.ResolvedModelTarget
+import com.iosbox.app.core.network.ArenaSynthesis
 import com.iosbox.app.core.network.EndpointResolver
 import com.iosbox.app.core.network.LLMFinishReason
 import com.iosbox.app.core.network.LLMPromptMessage
@@ -24,6 +27,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import java.util.UUID
 
 data class ProviderItem(
@@ -113,6 +118,7 @@ data class ConversationItem(
     val isArenaMode: Boolean,
     val primaryTarget: ResolvedModelTarget?,
     val arenaTargets: List<ResolvedModelTarget>,
+    val assistanceSettings: ConversationAssistanceSettings = ConversationAssistanceSettings(),
     val folderTag: String?,
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long
@@ -148,11 +154,16 @@ data class ChatMessageItem(
     val cachedTokens: Int?,
     val latencyMs: Int?,
     val thinkingDurationMs: Int?,
+    val synthesisSourceDigest: String? = null,
     val latestRequestID: String?,
+    val assistanceMetadata: MessageAssistanceMetadata = MessageAssistanceMetadata(),
     val parentMessageID: String?,
     val sortIndex: Int,
     val createdAtEpochMs: Long
 ) {
+    val isSynthesis: Boolean
+        get() = synthesisSourceDigest != null
+
     val finishReasonValue: LLMFinishReason?
         get() = finishReason?.let { raw -> LLMFinishReason.entries.firstOrNull { it.rawValue == raw } }
 }
@@ -306,7 +317,10 @@ class ChatRepository(
 
     suspend fun createConversation(
         preset: PresetItem? = null,
-        primaryTarget: ResolvedModelTarget? = null
+        primaryTarget: ResolvedModelTarget? = null,
+        isArenaMode: Boolean = false,
+        arenaTargets: List<ResolvedModelTarget> = emptyList(),
+        blindArenaMode: Boolean = false
     ): ConversationItem = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString().uppercase()
@@ -324,9 +338,10 @@ class ChatRepository(
             contextMessageLimit = preset?.contextMessageLimit ?: 20,
             enableThinking = preset?.enableThinking ?: true,
             thinkingBudgetTokens = preset?.thinkingBudgetTokens ?: 4096,
-            isArenaMode = false,
+            isArenaMode = isArenaMode,
             primaryTarget = primaryTarget,
-            arenaTargets = emptyList(),
+            arenaTargets = arenaTargets,
+            assistanceSettings = ConversationAssistanceSettings(blindArenaMode = blindArenaMode),
             folderTag = null,
             createdAtEpochMs = now,
             updatedAtEpochMs = now
@@ -336,10 +351,22 @@ class ChatRepository(
     }
 
     suspend fun saveConversation(item: ConversationItem) = withContext(Dispatchers.IO) {
-        val existing = db.conversationDao().getById(item.id.uppercase())
+        val cid = item.id.uppercase()
+        val existing = db.conversationDao().getById(cid)
+        val settingsKey = if (!item.assistanceSettings.isDefault || existing?.assistanceSettingsBlobKey != null) {
+            val key = existing?.assistanceSettingsBlobKey ?: "conv_settings_$cid.json"
+            val existingObj = blobStore.readText(existing?.assistanceSettingsBlobKey)?.let { raw ->
+                runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull()
+            }
+            val merged = item.assistanceSettings.mergeInto(existingObj, json)
+            blobStore.writeText(key, json.encodeToString(JsonObject.serializer(), merged))
+            key
+        } else {
+            null
+        }
         db.conversationDao().upsert(
             ConversationEntity(
-                id = item.id.uppercase(),
+                id = cid,
                 title = item.title,
                 isPinned = item.isPinned,
                 assistantID = item.assistantID?.uppercase(),
@@ -355,7 +382,7 @@ class ChatRepository(
                 isArenaMode = item.isArenaMode,
                 primaryTargetJson = item.primaryTarget?.let { json.encodeToString(it) } ?: "null",
                 arenaTargetsJson = json.encodeToString(item.arenaTargets),
-                assistanceSettingsBlobKey = existing?.assistanceSettingsBlobKey,
+                assistanceSettingsBlobKey = settingsKey,
                 activeLeafMessageID = existing?.activeLeafMessageID,
                 folderTag = item.folderTag,
                 organizationEditsJson = existing?.organizationEditsJson,
@@ -387,6 +414,11 @@ class ChatRepository(
         db.chatMessageDao().getByConversation(conversationID.uppercase()).map { toChatMessageItem(it) }
     }
 
+    fun observeArenaMessages(): Flow<List<ChatMessageItem>> =
+        db.chatMessageDao().observeArenaMessages()
+            .map { list -> list.map(::toChatMessageItem) }
+            .flowOn(Dispatchers.IO)
+
     suspend fun saveMessage(item: ChatMessageItem) = withContext(Dispatchers.IO) {
         val mid = item.id.uppercase()
         val existing = db.chatMessageDao().getById(mid)
@@ -396,6 +428,17 @@ class ChatRepository(
             key
         } else {
             existing?.attachmentsBlobKey?.let { blobStore.delete(it) }
+            null
+        }
+        val metaKey = if (!item.assistanceMetadata.isDefault || existing?.assistanceMetadataBlobKey != null) {
+            val key = existing?.assistanceMetadataBlobKey ?: "msg_meta_$mid.json"
+            val existingObj = blobStore.readText(existing?.assistanceMetadataBlobKey)?.let { raw ->
+                runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull()
+            }
+            val merged = item.assistanceMetadata.mergeInto(existingObj, json)
+            blobStore.writeText(key, json.encodeToString(JsonObject.serializer(), merged))
+            key
+        } else {
             null
         }
         db.chatMessageDao().upsert(
@@ -421,9 +464,9 @@ class ChatRepository(
                 cachedTokens = item.cachedTokens,
                 latencyMs = item.latencyMs,
                 thinkingDurationMs = item.thinkingDurationMs,
-                synthesisSourceDigest = existing?.synthesisSourceDigest,
+                synthesisSourceDigest = item.synthesisSourceDigest,
                 latestRequestID = item.latestRequestID?.uppercase(),
-                assistanceMetadataBlobKey = existing?.assistanceMetadataBlobKey,
+                assistanceMetadataBlobKey = metaKey,
                 parentMessageID = item.parentMessageID?.uppercase(),
                 sortIndex = item.sortIndex,
                 createdAtEpochMs = item.createdAtEpochMs
@@ -523,6 +566,9 @@ class ChatRepository(
         val arena = e.arenaTargetsJson.takeIf { it.isNotBlank() }?.let {
             runCatching { json.decodeFromString<List<ResolvedModelTarget>>(it) }.getOrNull()
         } ?: emptyList()
+        val assistanceSettings = blobStore.readText(e.assistanceSettingsBlobKey)?.let {
+            runCatching { json.decodeFromString<ConversationAssistanceSettings>(it) }.getOrNull()
+        } ?: ConversationAssistanceSettings()
         return ConversationItem(
             id = e.id,
             title = e.title,
@@ -540,6 +586,7 @@ class ChatRepository(
             isArenaMode = e.isArenaMode,
             primaryTarget = primary,
             arenaTargets = arena,
+            assistanceSettings = assistanceSettings,
             folderTag = e.folderTag,
             createdAtEpochMs = e.createdAtEpochMs,
             updatedAtEpochMs = e.updatedAtEpochMs
@@ -550,6 +597,9 @@ class ChatRepository(
         val attachments = blobStore.readText(e.attachmentsBlobKey)?.let {
             runCatching { json.decodeFromString<List<MessageAttachment>>(it) }.getOrNull()
         } ?: emptyList()
+        val assistanceMetadata = blobStore.readText(e.assistanceMetadataBlobKey)?.let {
+            runCatching { json.decodeFromString<MessageAssistanceMetadata>(it) }.getOrNull()
+        } ?: MessageAssistanceMetadata()
         return ChatMessageItem(
             id = e.id,
             conversationID = e.conversationID,
@@ -572,7 +622,9 @@ class ChatRepository(
             cachedTokens = e.cachedTokens,
             latencyMs = e.latencyMs,
             thinkingDurationMs = e.thinkingDurationMs,
+            synthesisSourceDigest = e.synthesisSourceDigest,
             latestRequestID = e.latestRequestID,
+            assistanceMetadata = assistanceMetadata,
             parentMessageID = e.parentMessageID,
             sortIndex = e.sortIndex,
             createdAtEpochMs = e.createdAtEpochMs
@@ -630,9 +682,13 @@ class ChatRepository(
                 if (gid != null) {
                     if (!processedGroups.add(gid)) continue
                     val candidates = messages.filter { c ->
-                        c.comparisonGroupID == gid && (c.content.isNotEmpty() || c.attachments.isNotEmpty())
+                        c.comparisonGroupID == gid &&
+                            (c.content.isNotEmpty() || c.attachments.isNotEmpty()) &&
+                            (!c.isSynthesis || (ArenaSynthesis.isComplete(c) && ArenaSynthesis.isCurrent(c, messages)))
                     }
-                    val winner = candidates.firstOrNull { it.isSelectedInGroup } ?: candidates.firstOrNull()
+                    val winner = candidates.firstOrNull { it.isSelectedInGroup }
+                        ?: candidates.firstOrNull { !it.isSynthesis }
+                        ?: candidates.firstOrNull()
                     if (winner != null) collapsed.add(winner)
                 } else {
                     if (msg.role == MessageRole.ASSISTANT && msg.content.isEmpty() && msg.attachments.isEmpty()) {

@@ -1,5 +1,7 @@
 package com.iosbox.app.ui.chat
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -14,10 +16,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.CompareArrows
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.ViewColumn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -67,9 +69,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -84,6 +84,36 @@ import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.ui.theme.DS
 import com.iosbox.app.ui.theme.LocalAccentColors
+
+private sealed interface ChatTimelineEntry {
+    val key: String
+
+    data class SingleMessage(val message: ChatMessageItem) : ChatTimelineEntry {
+        override val key: String = "msg_${message.id}"
+    }
+
+    data class ArenaGroup(val groupID: String, val messages: List<ChatMessageItem>) : ChatTimelineEntry {
+        override val key: String = "grp_$groupID"
+    }
+}
+
+private fun groupTimelineEntries(messages: List<ChatMessageItem>): List<ChatTimelineEntry> {
+    val entries = mutableListOf<ChatTimelineEntry>()
+    val seenGroups = HashSet<String>()
+    for (msg in messages) {
+        val gid = msg.comparisonGroupID
+        if (gid == null) {
+            entries.add(ChatTimelineEntry.SingleMessage(msg))
+        } else {
+            val normalized = gid.uppercase()
+            if (seenGroups.add(normalized)) {
+                val groupMembers = messages.filter { it.comparisonGroupID.equals(gid, ignoreCase = true) }
+                entries.add(ChatTimelineEntry.ArenaGroup(gid, groupMembers))
+            }
+        }
+    }
+    return entries
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -102,10 +132,14 @@ fun ChatDetailScreen(
     val listState = rememberLazyListState()
 
     var showModelPicker by remember { mutableStateOf(false) }
+    var showArenaConfig by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
     var showAttachMenu by remember { mutableStateOf(false) }
+    var activeBallotGroupID by remember { mutableStateOf<String?>(null) }
+    var judgeGroupID by remember { mutableStateOf<String?>(null) }
+    var compareSourceMessage by remember { mutableStateOf<ChatMessageItem?>(null) }
 
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 4)
@@ -119,15 +153,34 @@ fun ChatDetailScreen(
         vm.attachUris(context.contentResolver, uris, imageOnly = false)
     }
 
-    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.content?.length) {
-        if (state.messages.isNotEmpty()) {
-            listState.scrollToItem(state.messages.lastIndex)
+    val timelineEntries = remember(state.messages) { groupTimelineEntries(state.messages) }
+
+    LaunchedEffect(timelineEntries.size, state.messages.lastOrNull()?.content?.length) {
+        if (timelineEntries.isNotEmpty()) {
+            listState.scrollToItem(timelineEntries.lastIndex)
         }
     }
 
     val conv = state.conversation
     val readyTargets = remember(state.providers) { ChatRepository.readyTargets(state.providers) }
     val activeTarget = conv?.primaryTarget ?: readyTargets.firstOrNull()
+
+    val topBarSubtitle: String
+    val topBarSubtitleOk: Boolean
+    if (conv?.isArenaMode == true) {
+        val count = conv.arenaTargets.size
+        val blindSuffix = if (conv.assistanceSettings.blindArenaMode) L10n.text(" · 双盲", " · Blind") else ""
+        topBarSubtitle = if (count >= 2) {
+            L10n.text("竞技场 · $count 模型$blindSuffix", "Arena · $count Models$blindSuffix")
+        } else {
+            L10n.text("竞技场 · 请选 ≥2 模型", "Arena · Pick ≥2 models")
+        }
+        topBarSubtitleOk = count >= 2
+    } else {
+        topBarSubtitle = activeTarget?.let { "${it.providerName} · ${it.modelDisplayName}" }
+            ?: L10n.text("未配置可用模型（点击选择）", "No ready model (tap to choose)")
+        topBarSubtitleOk = activeTarget != null
+    }
 
     Scaffold(
         topBar = {
@@ -162,18 +215,27 @@ fun ChatDetailScreen(
                             )
                         }
                         Text(
-                            text = activeTarget?.let { "${it.providerName} · ${it.modelDisplayName}" }
-                                ?: L10n.text("未配置可用模型（点击选择）", "No ready model (tap to choose)"),
+                            text = topBarSubtitle,
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (activeTarget != null) MaterialTheme.colorScheme.primary
+                            color = if (topBarSubtitleOk) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.error,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.clickable { showModelPicker = true }
+                            modifier = Modifier.clickable(enabled = conv != null) {
+                                if (conv?.isArenaMode == true) showArenaConfig = true else showModelPicker = true
+                            }
                         )
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showArenaConfig = true }, enabled = conv != null && !state.isGenerating) {
+                        Icon(
+                            imageVector = Icons.Filled.ViewColumn,
+                            contentDescription = L10n.text("模型竞技场", "Model Arena"),
+                            tint = if (conv?.isArenaMode == true) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                     IconButton(onClick = { showSettings = true }, enabled = conv != null) {
                         Icon(Icons.Filled.Tune, contentDescription = L10n.text("会话参数", "Chat Settings"))
                     }
@@ -236,7 +298,7 @@ fun ChatDetailScreen(
                 contentPadding = PaddingValues(DS.Spacing.lg),
                 verticalArrangement = Arrangement.spacedBy(DS.Spacing.md)
             ) {
-                if (state.messages.isEmpty()) {
+                if (timelineEntries.isEmpty()) {
                     item {
                         Box(
                             modifier = Modifier
@@ -253,7 +315,11 @@ fun ChatDetailScreen(
                                     style = MaterialTheme.typography.displaySmall
                                 )
                                 Text(
-                                    text = L10n.text("纯本地直连 · 开始提问", "Local Direct · Ask anything"),
+                                    text = if (conv?.isArenaMode == true) {
+                                        L10n.text("多模型竞技场 · 同台竞技", "Model Arena · Side-by-Side")
+                                    } else {
+                                        L10n.text("纯本地直连 · 开始提问", "Local Direct · Ask anything")
+                                    },
                                     style = MaterialTheme.typography.titleSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -272,12 +338,35 @@ fun ChatDetailScreen(
                         }
                     }
                 } else {
-                    items(state.messages, key = { it.id }) { msg ->
-                        MessageBubbleRow(
-                            message = msg,
-                            canRegenerate = !state.isGenerating && msg.role == MessageRole.ASSISTANT,
-                            onRegenerate = { vm.regenerateMessage(msg) }
-                        )
+                    items(timelineEntries, key = { it.key }) { entry ->
+                        when (entry) {
+                            is ChatTimelineEntry.SingleMessage -> {
+                                val msg = entry.message
+                                MessageBubbleRow(
+                                    message = msg,
+                                    canRegenerate = !state.isGenerating && msg.role == MessageRole.ASSISTANT,
+                                    canCompareWithAnother = !state.isGenerating &&
+                                        msg.role == MessageRole.ASSISTANT &&
+                                        readyTargets.size >= 2,
+                                    onRegenerate = { vm.regenerateMessage(msg) },
+                                    onCompareWithAnother = { compareSourceMessage = msg }
+                                )
+                            }
+                            is ChatTimelineEntry.ArenaGroup -> {
+                                ArenaComparisonGroupCard(
+                                    groupID = entry.groupID,
+                                    messages = entry.messages,
+                                    isBlindMode = conv?.assistanceSettings?.blindArenaMode == true,
+                                    isGenerating = state.isGenerating,
+                                    onOpenBallot = { activeBallotGroupID = entry.groupID },
+                                    onToggleBlindMode = vm::toggleBlindArenaMode,
+                                    onFollowUp = vm::selectContextReply,
+                                    onRegenerateSingle = vm::regenerateMessage,
+                                    onSynthesize = { judgeGroupID = entry.groupID },
+                                    onCrossCritique = { vm.crossCritiqueGroup(entry.groupID) }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -392,6 +481,55 @@ fun ChatDetailScreen(
         )
     }
 
+    if (showArenaConfig && conv != null) {
+        ArenaConfigSheet(
+            providers = state.providers,
+            isArenaMode = conv.isArenaMode,
+            selectedTargets = conv.arenaTargets,
+            blindArenaMode = conv.assistanceSettings.blindArenaMode,
+            onApply = vm::setArenaConfiguration,
+            onDismiss = { showArenaConfig = false }
+        )
+    }
+
+    compareSourceMessage?.let { src ->
+        ModelPickerSheet(
+            providers = state.providers,
+            selectedTargetId = null,
+            title = L10n.text("选择对比模型", "Compare with Model"),
+            onSelect = { secondTarget -> vm.compareWithAnotherModel(src, secondTarget) },
+            onDismiss = { compareSourceMessage = null }
+        )
+    }
+
+    judgeGroupID?.let { gid ->
+        ModelPickerSheet(
+            providers = state.providers,
+            selectedTargetId = activeTarget?.id,
+            title = L10n.text("选择裁判模型", "Select Judge Model"),
+            onSelect = { judgeTarget -> vm.synthesizeGroup(gid, judgeTarget) },
+            onDismiss = { judgeGroupID = null }
+        )
+    }
+
+    activeBallotGroupID?.let { gid ->
+        val firstIdx = state.messages.indexOfFirst { it.comparisonGroupID.equals(gid, ignoreCase = true) }
+        val question = if (firstIdx > 0) {
+            val parentId = state.messages[firstIdx].parentMessageID
+            val prior = state.messages.subList(0, firstIdx)
+            prior.lastOrNull { it.role == MessageRole.USER && it.id == parentId }
+                ?: prior.lastOrNull { it.role == MessageRole.USER }
+        } else null
+        BlindBallotDialog(
+            groupID = gid,
+            question = question,
+            messages = state.messages,
+            isGenerating = state.isGenerating,
+            onVote = vm::castBlindVote,
+            onDismiss = { activeBallotGroupID = null }
+        )
+    }
+
     if (showSettings && conv != null) {
         ChatSettingsSheet(
             conversation = conv,
@@ -442,9 +580,11 @@ fun ChatDetailScreen(
 private fun MessageBubbleRow(
     message: ChatMessageItem,
     canRegenerate: Boolean,
-    onRegenerate: () -> Unit
+    canCompareWithAnother: Boolean,
+    onRegenerate: () -> Unit,
+    onCompareWithAnother: () -> Unit
 ) {
-    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     val accent = LocalAccentColors.current
 
     if (message.role == MessageRole.USER) {
@@ -549,7 +689,10 @@ private fun MessageBubbleRow(
                 ) {
                     if (message.content.isNotEmpty()) {
                         IconButton(
-                            onClick = { clipboard.setText(AnnotatedString(message.content)) },
+                            onClick = {
+                                val cm = context.getSystemService(ClipboardManager::class.java)
+                                cm?.setPrimaryClip(ClipData.newPlainText("Fugue", message.content))
+                            },
                             modifier = Modifier.size(28.dp)
                         ) {
                             Icon(
@@ -568,6 +711,19 @@ private fun MessageBubbleRow(
                             Icon(
                                 imageVector = Icons.Filled.Refresh,
                                 contentDescription = L10n.text("重答", "Regenerate"),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                    if (canCompareWithAnother) {
+                        IconButton(
+                            onClick = onCompareWithAnother,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.CompareArrows,
+                                contentDescription = L10n.text("找另一个模型对比", "Compare with Another Model"),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(16.dp)
                             )
@@ -594,7 +750,7 @@ private fun MessageBubbleRow(
 }
 
 @Composable
-private fun AttachmentStrip(attachments: List<MessageAttachment>) {
+internal fun AttachmentStrip(attachments: List<MessageAttachment>) {
     Row(
         modifier = Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
