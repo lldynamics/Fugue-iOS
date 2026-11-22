@@ -61,12 +61,18 @@ struct AssistantListView: View {
         let cards: [StudyFlashcard]
     }
 
+    private var visibleSections: [WorkshopSection] {
+        preferences.simpleDailyMode
+            ? WorkshopSection.allCases.filter { $0 != .roundtables }
+            : WorkshopSection.allCases
+    }
+
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     Picker("分类", selection: $activeSection) {
-                        ForEach(WorkshopSection.allCases) { sec in
+                        ForEach(visibleSections) { sec in
                             Text(sec.title).tag(sec)
                         }
                     }
@@ -77,7 +83,9 @@ struct AssistantListView: View {
 
                 switch activeSection {
                 case .presets:
-                    PersonaDirectorySection { invitedProfile = $0 }
+                    if !preferences.simpleDailyMode {
+                        PersonaDirectorySection { invitedProfile = $0 }
+                    }
                     presetsSection
                 case .roundtables:
                     roundtablesSection
@@ -85,6 +93,16 @@ struct AssistantListView: View {
                     booksAndFriendsSection
                 case .study:
                     studySection
+                }
+            }
+            .onAppear {
+                if preferences.simpleDailyMode && activeSection == .roundtables {
+                    activeSection = .presets
+                }
+            }
+            .onChange(of: preferences.simpleDailyMode) { _, isSimple in
+                if isSimple && activeSection == .roundtables {
+                    activeSection = .presets
                 }
             }
             .navigationTitle("角色与书架")

@@ -136,6 +136,66 @@ data class SlashPromptCommand(
                     title = L10n.text("随堂理解小测", "Quick Quiz"),
                     subtitle = L10n.text("针对当前话题出 3 道递进实战题检验掌握程度", "Generate 3 progressive comprehension questions from context"),
                     templatePrefix = L10n.text("请围绕上文的核心知识点出 3 道由浅入深的理解与实战自测题（先出题等我作答，暂不公布答案）。", "Create 3 progressive practice questions on the key topics above and wait for my answers before grading.")
+                ),
+                SlashPromptCommand(
+                    id = "meeting-minutes",
+                    command = "/meeting",
+                    title = L10n.text("会议纪要与待办", "Meeting Minutes"),
+                    subtitle = L10n.text("提炼讨论结论与带明确日期的行动项", "Summarize decisions and dated calendar action items"),
+                    templatePrefix = L10n.text(
+                        "请将以下内容整理为结构化会议纪要（一句话结论、关键讨论、待办行动项与明确 `YYYY-MM-DD HH:mm` 日期）：\n\n",
+                        "Please summarize this into structured meeting minutes (TL;DR, key points, owners, and explicit `YYYY-MM-DD HH:mm` action dates):\n\n"
+                    )
+                ),
+                SlashPromptCommand(
+                    id = "tactful-reply",
+                    command = "/reply",
+                    title = L10n.text("高情商沟通回复", "Diplomatic Reply"),
+                    subtitle = L10n.text("生成 3 种得体语气可直接复制发送微信/邮件", "Provide 3 copy-ready reply variants in different tones"),
+                    templatePrefix = L10n.text(
+                        "请针对以下消息帮我起草高情商回复，给出「正式稳重 / 温和得体 / 简短直给」3 个版本（纯文本可直接复制）：\n\n",
+                        "Draft 3 diplomatic reply options (Formal / Warm / Brief) ready to copy for this message:\n\n"
+                    )
+                ),
+                SlashPromptCommand(
+                    id = "weekly-report",
+                    command = "/weekly",
+                    title = L10n.text("周报 / 工作汇报", "Weekly Report"),
+                    subtitle = L10n.text("从零散笔记提炼核心成果、进展与下周计划", "Turn rough notes into an outcome-driven weekly report"),
+                    templatePrefix = L10n.text(
+                        "请把下面零散记录整理成结构清晰、突出成果与量化亮点的周报，并列出下周重点计划：\n\n",
+                        "Organize these rough notes into an outcome-driven weekly report with concrete results and next week's plan:\n\n"
+                    )
+                ),
+                SlashPromptCommand(
+                    id = "photo-tutor",
+                    command = "/solve",
+                    title = L10n.text("拍题分步精讲", "Step-by-Step Tutor"),
+                    subtitle = L10n.text("拆解核心考点、逐步推导并附避坑提示", "Break down concept, step-by-step derivation & pitfalls"),
+                    templatePrefix = L10n.text(
+                        "请充当我的私教分步讲解这道题/这部分内容：先指出核心考点与思路，再逐步推导，最后点明易错点：\n\n",
+                        "Act as a tutor and explain this step-by-step: start with core concepts, show each reasoning step, and highlight common mistakes:\n\n"
+                    )
+                ),
+                SlashPromptCommand(
+                    id = "contract-check",
+                    command = "/contract",
+                    title = L10n.text("合同账单避坑", "Contract / Bill Review"),
+                    subtitle = L10n.text("大白话拆解关键数字、期限与潜在风险条款", "Flag key numbers, deadlines, and hidden catches in plain language"),
+                    templatePrefix = L10n.text(
+                        "请用大白话审阅以下合同/账单/说明，标出关键费用、违约/免责陷阱、重要截止时间与核对建议：\n\n",
+                        "Review this contract, bill, or notice in plain language and flag key fees, tricky clauses, deadlines, and checks:\n\n"
+                    )
+                ),
+                SlashPromptCommand(
+                    id = "life-plan",
+                    command = "/plan",
+                    title = L10n.text("出行 / 事务规划", "Trip & Life Planner"),
+                    subtitle = L10n.text("按时间线、预算与清单给出可执行方案", "Create a practical timeline, budget, and checklist"),
+                    templatePrefix = L10n.text(
+                        "请帮我制定一份清晰可落地的计划（含分天/分阶段时间线、预算估测、物品清单与避坑贴士）：\n\n",
+                        "Build an actionable plan with timeline, budget estimate, checklist, and practical tips for:\n\n"
+                    )
                 )
             )
 
@@ -143,8 +203,11 @@ data class SlashPromptCommand(
             if (!draft.startsWith("/") || draft.contains('\n')) return emptyList()
             val token = draft.trim().lowercase()
             if (token.contains(' ')) return emptyList()
+            val bare = token.removePrefix("/")
             return builtIns.filter { cmd ->
-                cmd.command.startsWith(token) || cmd.title.lowercase().contains(token.removePrefix("/"))
+                cmd.command.startsWith(token) ||
+                    cmd.title.lowercase().contains(bare) ||
+                    cmd.subtitle.lowercase().contains(bare)
             }
         }
     }

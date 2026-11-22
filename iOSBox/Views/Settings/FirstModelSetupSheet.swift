@@ -6,6 +6,7 @@ struct FirstModelSetupSheet: View {
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     @State private var path: [ProviderConfig] = []
     @State private var adding = false
+    @State private var showQuickSetup = false
     var continuesToGroup = false
     let onConnected: (ResolvedModelTarget) -> Void
 
@@ -13,6 +14,14 @@ struct FirstModelSetupSheet: View {
         NavigationStack(path: $path) {
             List {
                 if continuesToGroup { Text("连接后将继续选择群成员。").foregroundStyle(.secondary) }
+                Section("极速配置") {
+                    Button {
+                        showQuickSetup = true
+                    } label: {
+                        Label("从剪贴板一键配 Key 并测通", systemImage: "bolt.fill")
+                            .fontWeight(.medium)
+                    }
+                }
                 Section("选择服务商") {
                     ForEach(providers) { provider in
                         NavigationLink(value: provider) {
@@ -34,6 +43,12 @@ struct FirstModelSetupSheet: View {
             }
             .sheet(isPresented: $adding) {
                 AddProviderSheet { provider in path.append(provider) }
+            }
+            .sheet(isPresented: $showQuickSetup) {
+                QuickKeySetupSheet { _, target in
+                    if !continuesToGroup { dismiss() }
+                    onConnected(target)
+                }
             }
         }
     }

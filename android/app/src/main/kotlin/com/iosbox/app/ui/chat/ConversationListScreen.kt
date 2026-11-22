@@ -72,6 +72,7 @@ import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.ConversationItem
 import com.iosbox.app.core.storage.ConversationSearch
 import com.iosbox.app.core.storage.ConversationSearchHit
+import com.iosbox.app.ui.providers.QuickKeySetupSheet
 import com.iosbox.app.ui.theme.DS
 import com.iosbox.app.ui.theme.LocalAccentColors
 import kotlinx.coroutines.delay
@@ -93,6 +94,7 @@ fun ConversationListScreen(
     val conversations by container.chatRepository.observeConversations().collectAsStateWithLifecycle(initialValue = emptyList())
     val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
     val flashcards by container.flashcardRepository.cards.collectAsStateWithLifecycle()
+    val prefs by container.preferences.state.collectAsStateWithLifecycle()
     val readyCount = remember(providers) { ChatRepository.readyTargets(providers).size }
     val dueCardsCount = remember(flashcards) {
         val now = System.currentTimeMillis()
@@ -104,6 +106,7 @@ fun ConversationListScreen(
     var bookmarkedOnly by remember { mutableStateOf(false) }
     var messagesByConversation by remember { mutableStateOf<Map<String, List<ChatMessageItem>>>(emptyMap()) }
     var editingTagFor by remember { mutableStateOf<ConversationItem?>(null) }
+    var showQuickKeySetup by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     val availableTags = remember(conversations) {
@@ -155,17 +158,19 @@ fun ConversationListScreen(
                             )
                         }
                     }
-                    IconButton(onClick = onCreateGroupConversation) {
-                        Icon(
-                            imageVector = Icons.Filled.Groups,
-                            contentDescription = L10n.text("新建圆桌群聊", "New Group Chat")
-                        )
-                    }
-                    IconButton(onClick = onCreateArenaConversation) {
-                        Icon(
-                            imageVector = Icons.Filled.ViewColumn,
-                            contentDescription = L10n.text("新建竞技场", "New Model Arena")
-                        )
+                    if (!prefs.simpleDailyMode) {
+                        IconButton(onClick = onCreateGroupConversation) {
+                            Icon(
+                                imageVector = Icons.Filled.Groups,
+                                contentDescription = L10n.text("新建圆桌群聊", "New Group Chat")
+                            )
+                        }
+                        IconButton(onClick = onCreateArenaConversation) {
+                            Icon(
+                                imageVector = Icons.Filled.ViewColumn,
+                                contentDescription = L10n.text("新建竞技场", "New Model Arena")
+                            )
+                        }
                     }
                 }
             )
@@ -203,8 +208,13 @@ fun ConversationListScreen(
                             ),
                             style = MaterialTheme.typography.bodySmall
                         )
-                        Button(onClick = onGoToProviders) {
-                            Text(L10n.text("前往配置服务商", "Configure Providers"))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { showQuickKeySetup = true }) {
+                                Text(L10n.text("剪贴板一键配 Key", "Quick Key Setup"))
+                            }
+                            TextButton(onClick = onGoToProviders) {
+                                Text(L10n.text("手动配置服务商", "All Providers"))
+                            }
                         }
                     }
                 }
@@ -307,6 +317,18 @@ fun ConversationListScreen(
                 }
             }
         }
+    }
+
+    if (showQuickKeySetup) {
+        QuickKeySetupSheet(
+            container = container,
+            existingProviders = providers,
+            onConnected = {
+                showQuickKeySetup = false
+                onCreateConversation()
+            },
+            onDismiss = { showQuickKeySetup = false }
+        )
     }
 
     editingTagFor?.let { target ->

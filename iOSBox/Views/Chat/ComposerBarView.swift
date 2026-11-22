@@ -634,64 +634,66 @@ struct ComposerBarView: View {
                     }
                     .disabled(isGenerating)
 
-                    if !conversation.isGroupMode {
-                        Menu {
-                            thinkingMenuItems
-                        } label: {
-                            drawerPillLabel(
-                                title: conversation.enableThinking ? String(localized: "思考 · \(max(1, conversation.thinkingBudgetTokens / 1024))K") : String(localized: "思考"),
-                                systemImage: "brain",
-                                isActive: conversation.enableThinking
-                            )
+                    if !preferences.simpleDailyMode {
+                        if !conversation.isGroupMode {
+                            Menu {
+                                thinkingMenuItems
+                            } label: {
+                                drawerPillLabel(
+                                    title: conversation.enableThinking ? String(localized: "思考 · \(max(1, conversation.thinkingBudgetTokens / 1024))K") : String(localized: "思考"),
+                                    systemImage: "brain",
+                                    isActive: conversation.enableThinking
+                                )
+                            }
+                            .disabled(isGenerating)
                         }
-                        .disabled(isGenerating)
-                    }
 
-                    if !conversation.isArenaMode && !conversation.isGroupMode {
+                        if !conversation.isArenaMode && !conversation.isGroupMode {
+                            drawerTogglePill(
+                                title: String(localized: "工具"),
+                                systemImage: "wrench.and.screwdriver",
+                                isActive: toolsOn
+                            ) {
+                                preferences.triggerSelectionHaptic()
+                                conversation.assistanceSettings.enableAgentTools.toggle()
+                            }
+                            .disabled(isGenerating)
+
+                            Menu {
+                                studyCoachMenuItems
+                            } label: {
+                                drawerPillLabel(
+                                    title: coachMode.shortBadge,
+                                    systemImage: coachMode == .off ? "graduationcap" : coachMode.symbol,
+                                    isActive: coachMode != .off
+                                )
+                            }
+                            .disabled(isGenerating)
+                        }
+
+                        if conversation.activeBookFriend == nil {
+                            drawerTogglePill(
+                                title: kbCount > 0 ? String(localized: "知识库 · \(kbCount)") : String(localized: "知识库"),
+                                systemImage: kbCount > 0 ? "books.vertical.fill" : "books.vertical",
+                                isActive: kbCount > 0
+                            ) {
+                                preferences.triggerSelectionHaptic()
+                                isCapabilityDrawerOpen = false
+                                onManageKnowledge()
+                            }
+                            .disabled(isGenerating)
+                        }
+
                         drawerTogglePill(
-                            title: String(localized: "工具"),
-                            systemImage: "wrench.and.screwdriver",
-                            isActive: toolsOn
+                            title: String(localized: "发送选项"),
+                            systemImage: "slider.horizontal.3",
+                            isActive: false
                         ) {
-                            preferences.triggerSelectionHaptic()
-                            conversation.assistanceSettings.enableAgentTools.toggle()
-                        }
-                        .disabled(isGenerating)
-
-                        Menu {
-                            studyCoachMenuItems
-                        } label: {
-                            drawerPillLabel(
-                                title: coachMode.shortBadge,
-                                systemImage: coachMode == .off ? "graduationcap" : coachMode.symbol,
-                                isActive: coachMode != .off
-                            )
-                        }
-                        .disabled(isGenerating)
-                    }
-
-                    if conversation.activeBookFriend == nil {
-                        drawerTogglePill(
-                            title: kbCount > 0 ? String(localized: "知识库 · \(kbCount)") : String(localized: "知识库"),
-                            systemImage: kbCount > 0 ? "books.vertical.fill" : "books.vertical",
-                            isActive: kbCount > 0
-                        ) {
-                            preferences.triggerSelectionHaptic()
                             isCapabilityDrawerOpen = false
-                            onManageKnowledge()
+                            onOpenOptions()
                         }
                         .disabled(isGenerating)
                     }
-
-                    drawerTogglePill(
-                        title: String(localized: "发送选项"),
-                        systemImage: "slider.horizontal.3",
-                        isActive: false
-                    ) {
-                        isCapabilityDrawerOpen = false
-                        onOpenOptions()
-                    }
-                    .disabled(isGenerating)
                 }
             }
         }
@@ -709,23 +711,25 @@ struct ComposerBarView: View {
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
                 HStack {
-                    Menu {
-                        Button(action: onOpenBlindPicker) { Label("双盲对比", systemImage: "eye.slash") }
-                        Button(action: onOpenArenaPicker) { Label("多模型对比", systemImage: "square.split.2x1") }
-                        if let onOpenGroupSetup {
-                            Button(action: onOpenGroupSetup) { Label("圆桌群聊", systemImage: "person.3") }
+                    if !preferences.simpleDailyMode {
+                        Menu {
+                            Button(action: onOpenBlindPicker) { Label("双盲对比", systemImage: "eye.slash") }
+                            Button(action: onOpenArenaPicker) { Label("多模型对比", systemImage: "square.split.2x1") }
+                            if let onOpenGroupSetup {
+                                Button(action: onOpenGroupSetup) { Label("圆桌群聊", systemImage: "person.3") }
+                            }
+                            Button(action: onOpenOptions) { Label("请求选项", systemImage: "slider.horizontal.3") }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text("单聊")
+                                Image(systemName: "chevron.down").font(.caption2)
+                            }
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 12).frame(minHeight: 44)
+                                .background(DS.Surface.subtle, in: Capsule())
                         }
-                        Button(action: onOpenOptions) { Label("请求选项", systemImage: "slider.horizontal.3") }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text("单聊")
-                            Image(systemName: "chevron.down").font(.caption2)
-                        }
-                            .font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 12).frame(minHeight: 44)
-                            .background(DS.Surface.subtle, in: Capsule())
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                     Spacer()
                     if !needsModel {
                         ChatModelPickerButton(modelName: effectiveTarget?.modelDisplayName ?? modelActionTitle, action: onOpenModelPicker)

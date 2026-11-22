@@ -13,6 +13,8 @@ struct ProviderListView: View {
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
 
     @State private var showAddSheet = false
+    @State private var showQuickSetupSheet = false
+    @State private var preferences = AppPreferences.shared
     @State private var navigationPath: [ProviderConfig] = []
     @State private var exportedJSONURL: URL?
     @State private var isExporting = false
@@ -29,6 +31,13 @@ struct ProviderListView: View {
         NavigationStack(path: $navigationPath) {
             List {
                 Section {
+                    Button {
+                        showQuickSetupSheet = true
+                    } label: {
+                        Label("从剪贴板一键配 Key 并测通", systemImage: "bolt.fill")
+                            .fontWeight(.medium)
+                    }
+
                     ForEach(providers) { provider in
                         NavigationLink(value: provider) {
                             providerRow(provider)
@@ -49,6 +58,7 @@ struct ProviderListView: View {
                 }
 
                 Section("个性化与联网") {
+                    Toggle("极简日常模式（界面减法）", isOn: $preferences.simpleDailyMode)
                     NavigationLink { NewChatDefaultsView() } label: {
                         Label("新对话默认设置", systemImage: "bubble.left.and.text.bubble.right")
                     }
@@ -172,6 +182,9 @@ struct ProviderListView: View {
                 AddProviderSheet { created in
                     navigationPath.append(created)
                 }
+            }
+            .sheet(isPresented: $showQuickSetupSheet) {
+                QuickKeySetupSheet()
             }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
                 switch result {

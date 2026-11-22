@@ -5,10 +5,12 @@ import SwiftData
 enum DataSeeder {
     nonisolated private static let seededKey = "com.iosbox.hasSeededInitialData.v1"
     nonisolated private static let presetsSeededKey = "com.iosbox.hasSeededPresets.v1"
+    nonisolated private static let dailyPresetsSeededKey = "com.iosbox.hasSeededDailyPresets.v2"
 
     nonisolated static func resetSeedFlagsForRebuiltStore(in defaults: UserDefaults = .standard) {
         defaults.removeObject(forKey: seededKey)
         defaults.removeObject(forKey: presetsSeededKey)
+        defaults.removeObject(forKey: dailyPresetsSeededKey)
     }
 
     static func seedIfNeeded(context: ModelContext) {
@@ -24,6 +26,20 @@ enum DataSeeder {
             }
             if canPersistFlags {
                 UserDefaults.standard.set(true, forKey: presetsSeededKey)
+                UserDefaults.standard.set(true, forKey: dailyPresetsSeededKey)
+            }
+        } else if !UserDefaults.standard.bool(forKey: dailyPresetsSeededKey) {
+            // Additive migration for existing installs upgrading to Stage C everyday presets.
+            let existing = (try? context.fetch(FetchDescriptor<AssistantPreset>())) ?? []
+            let existingIDs = Set(existing.map(\.id))
+            let existingNames = Set(existing.map(\.name))
+            for preset in AssistantPreset.dailyLifePresets {
+                if !existingIDs.contains(preset.id) && !existingNames.contains(preset.name) {
+                    context.insert(preset)
+                }
+            }
+            if canPersistFlags {
+                UserDefaults.standard.set(true, forKey: dailyPresetsSeededKey)
             }
         }
 

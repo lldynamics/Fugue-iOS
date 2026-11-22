@@ -110,7 +110,7 @@ class Phase3PowerToolsTest {
 
     @Test
     fun slashCommandsAndModelMentionParserMatchAndResolveCorrectly() {
-        assertEquals(10, SlashPromptCommand.builtIns.size)
+        assertEquals(16, SlashPromptCommand.builtIns.size)
         val socMatches = SlashPromptCommand.matching("/soc")
         assertEquals(listOf("/socratic"), socMatches.map { it.command })
         assertTrue(SlashPromptCommand.matching("/socratic extra").isEmpty())

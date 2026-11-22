@@ -45,6 +45,38 @@ class DataSeeder(
                 db.assistantPresetDao().upsertAll(entities)
             }
             preferences.markPresetsSeeded()
+            preferences.markDailyPresetsSeededV2()
+        } else if (!prefs.dailyPresetsSeededV2) {
+            val existing = db.assistantPresetDao().getAll()
+            val existingIDs = existing.mapTo(HashSet()) { it.id.uppercase() }
+            val existingNames = existing.mapTo(HashSet()) { it.name.trim().lowercase() }
+            val missing = DefaultPresets.dailyLifeItems.filter { spec ->
+                !existingIDs.contains(spec.id.uppercase()) &&
+                    !existingNames.contains(spec.name.trim().lowercase())
+            }.map { p ->
+                AssistantPresetEntity(
+                    id = p.id,
+                    name = p.name,
+                    iconEmoji = p.iconEmoji,
+                    subtitle = p.subtitle,
+                    systemPrompt = p.systemPrompt,
+                    temperature = p.temperature,
+                    useCustomTemperature = p.useCustomTemperature,
+                    topP = p.topP,
+                    maxOutputTokens = p.maxOutputTokens,
+                    contextMessageLimit = p.contextMessageLimit,
+                    enableThinking = p.enableThinking,
+                    thinkingBudgetTokens = p.thinkingBudgetTokens,
+                    isBuiltIn = p.isBuiltIn,
+                    sortOrder = p.sortOrder,
+                    knowledgeVolumeIDsJson = null,
+                    createdAtEpochMs = now
+                )
+            }
+            if (missing.isNotEmpty()) {
+                db.assistantPresetDao().upsertAll(missing)
+            }
+            preferences.markDailyPresetsSeededV2()
         }
 
         if (!prefs.providersSeeded) {

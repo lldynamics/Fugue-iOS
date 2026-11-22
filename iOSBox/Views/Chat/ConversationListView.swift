@@ -5,10 +5,16 @@ struct ConversationListView: View {
     @Binding var pendingConversationToOpen: Conversation?
     @Binding var pendingMessageRoute: ConversationMessageRoute?
 
+    var selectSection: ((Int) -> Void)?
+    @State private var showsCompactLanding = false
+    @State private var landingDraft: Conversation?
+
     init(
         pendingConversationToOpen: Binding<Conversation?>,
-        pendingMessageRoute: Binding<ConversationMessageRoute?> = .constant(nil)
+        pendingMessageRoute: Binding<ConversationMessageRoute?> = .constant(nil),
+        selectSection: ((Int) -> Void)? = nil
     ) {
+        self.selectSection = selectSection
         self._pendingConversationToOpen = pendingConversationToOpen
         self._pendingMessageRoute = pendingMessageRoute
     }
@@ -40,14 +46,15 @@ struct ConversationListView: View {
     @State private var showOnlyBookmarked = false
     @State private var tagEditingConversation: Conversation?
     @State private var tagDraft: String = ""
+    @State private var pendingDeletion: Conversation?
     @State private var deletionError: String?
     @State private var showReader = false
-    @State private var showModelSetup = false
     @State private var showGroupSetup = false
     @State private var showBookFriends = false
     @State private var readyModelCount = 0
     @State private var bookmarkedConversationIDs: Set<UUID> = []
-    private var hasReadyModel: Bool { readyModelCount > 0 }
+    @State private var preferences = AppPreferences.shared
+    private var theme: DS.AccentTheme { preferences.accentTheme }
 
     private var availableTags: [String] {
         let tags = Set(conversations.compactMap { conv -> String? in
@@ -88,6 +95,8 @@ struct ConversationListView: View {
             if horizontalSizeClass == .regular {
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     conversationSidebarContent(useSplitSelection: true)
+                        .safeAreaInset(edge: .bottom) { sidebarDestinations }
+                        .navigationSplitViewColumnWidth(min: 235, ideal: 320, max: 360)
                         .navigationTitle("夜奔")
                         .toolbar { listToolbarItems }
                 } detail: {
@@ -108,21 +117,29 @@ struct ConversationListView: View {
                             )
                             .id(conv.id)
                         } else {
-                            emptyConversationsPlaceholder
+                            landingEditor
                         }
                     }
                 }
             } else {
                 NavigationStack(path: $navigationPath) {
                     Group {
-                        if conversations.isEmpty {
-                            emptyConversationsPlaceholder
+                        if showsCompactLanding {
+                            landingEditor
+                                .toolbar {
+                                    ToolbarItem(placement: .topBarLeading) {
+                                        Button { showsCompactLanding = false } label: {
+                                            Label("对话列表", systemImage: "list.bullet")
+                                        }
+                                        .accessibilityIdentifier("chat.history")
+                                    }
+                                }
                         } else {
                             conversationSidebarContent(useSplitSelection: false)
+                                .navigationTitle("夜奔")
+                                .toolbar { listToolbarItems }
                         }
                     }
-                    .navigationTitle("夜奔")
-                    .toolbar { listToolbarItems }
                     .navigationDestination(for: Conversation.self) { conv in
                         ChatDetailView(
                             conversation: conv,
@@ -137,21 +154,26 @@ struct ConversationListView: View {
                 }
             }
         }
+        .onChange(of: splitSearchRoute?.conversation.readingVolumeID ?? splitSelection?.readingVolumeID) { _, bookID in
+            if bookID != nil { columnVisibility = .detailOnly }
+        }
         .onAppear {
             updateReadiness()
             refreshBookmarkedIndex()
-            if horizontalSizeClass == .regular && splitSelection == nil {
-                splitSelection = conversations.first
+            if landingDraft == nil {
+                landingDraft = conversations.first {
+                    Conversation.isDefaultTitle($0.title) && $0.messages.isEmpty && !$0.isArenaMode &&
+                    !$0.isGroupMode && $0.activeBookFriend == nil && $0.assistanceSettings.knowledgeVolumeIDs.isEmpty
+                } ?? newDraft(arenaMode: false)
+                if horizontalSizeClass != .regular && conversations.isEmpty && navigationPath.isEmpty {
+                    showsCompactLanding = true
+                }
             }
         }
-        .onChange(of: SystemIntegration.fingerprint(providers)) { updateReadiness() }
+        .onChange(of: preferences.defaultTargetID) { refreshUntouchedLanding() }
+        .onChange(of: preferences.defaultAssistantID) { refreshUntouchedLanding() }
+        .onChange(of: SystemIntegration.fingerprint(providers)) { updateReadiness(); refreshUntouchedLanding() }
         .onReceive(NotificationCenter.default.publisher(for: .init("IOSBoxCredentialsChanged"))) { _ in updateReadiness() }
-        .sheet(isPresented: $showModelSetup) {
-            FirstModelSetupSheet { target in
-                updateReadiness()
-                createNewConversation(arenaMode: false, verified: target)
-            }
-        }
         .sheet(isPresented: $showReader) {
             ReaderSheet { id in SystemEntryRouter.shared.conversationID = id }
         }
@@ -168,7 +190,14 @@ struct ConversationListView: View {
                 Text(error).font(.caption).foregroundStyle(.orange).padding(8)
             }
         }
-        .alert("删除失败", isPresented: Binding(get: { deletionError != nil }, set: { if !$0 { deletionError = nil } })) {
+        .alert("删除这段对话？", isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
+               presenting: pendingDeletion) { chat in
+            Button("取消", role: .cancel) { }
+            Button("删除", role: .destructive) { deleteConversation(chat) }
+        } message: { chat in
+            Text("将删除「\(chat.title)」及其所有消息和草稿。")
+        }
+        .alert("无法更新对话记录", isPresented: Binding(get: { deletionError != nil }, set: { if !$0 { deletionError = nil } })) {
             Button("确定", role: .cancel) { }
         } message: { Text(deletionError ?? "") }
         .alert("设置分组标签", isPresented: Binding(
@@ -180,7 +209,7 @@ struct ConversationListView: View {
             Button("保存") {
                 if let conv = tagEditingConversation {
                     let cleaned = tagDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                    conv.folderTag = cleaned.isEmpty ? nil : cleaned
+                    conv.setFolderTag(cleaned.isEmpty ? nil : cleaned)
                     try? modelContext.save()
                 }
                 tagEditingConversation = nil
@@ -214,11 +243,6 @@ struct ConversationListView: View {
         let regular = filtered.filter { !$0.isPinned }
 
         List {
-            if !hasReadyModel {
-                Button { showModelSetup = true } label: {
-                    Label("连接第一个模型", systemImage: "key")
-                }
-            }
             if !searchQuery.text.isEmpty || !tags.isEmpty || showOnlyBookmarked || !bookmarkedConversationIDs.isEmpty {
                 Section {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -275,30 +299,57 @@ struct ConversationListView: View {
             refreshBookmarkedIndex()
             if !searchQuery.text.isEmpty { searchRevision += 1 }
         }
-        .searchable(text: $searchText, prompt: "搜索标题、标签或聊天内容")
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索对话")
     }
 
     @ToolbarContentBuilder
     private var listToolbarItems: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            Button { showReader = true } label: { Image(systemName: "doc.text.magnifyingglass") }
-                .accessibilityLabel("网页精读")
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-            Menu {
-                Button { createNewConversation(arenaMode: false) } label: { Label("普通对话", systemImage: "bubble.left") }
-                    .keyboardShortcut("n", modifiers: .command)
-                Button { showGroupSetup = true } label: { Label("圆桌群聊", systemImage: "person.3.fill") }
-                Button { showBookFriends = true } label: { Label("书中好友", systemImage: "book.pages") }
-                Button { createNewConversation(arenaMode: true) } label: { Label("多模型对比", systemImage: "square.split.2x1") }
-                    .disabled(readyModelCount < 2)
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "plus")
-                    Text("新建")
+        if horizontalSizeClass == .regular {
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 8) {
+                    Image(systemName: "bubble.left.and.text.bubble.right.fill").foregroundStyle(theme.readableText)
+                    Text("夜奔").font(.title3.bold())
                 }
             }
-            .accessibilityLabel("新建")
+        } else {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { showReader = true } label: { Image(systemName: "doc.text.magnifyingglass") }
+                    .accessibilityLabel("网页精读")
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            if preferences.simpleDailyMode {
+                Button {
+                    createNewConversation(arenaMode: false)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "square.and.pencil")
+                        if horizontalSizeClass != .regular { Text("新建") }
+                    }
+                }
+                .keyboardShortcut("n", modifiers: .command)
+                .accessibilityLabel("新建")
+            } else {
+                Menu {
+                    Button { createNewConversation(arenaMode: false) } label: { Label("普通对话", systemImage: "bubble.left") }
+                        .keyboardShortcut("n", modifiers: .command)
+                    Button { createNewConversation(arenaMode: true, blind: true) } label: { Label("双盲对比", systemImage: "eye.slash") }
+                        .disabled(readyModelCount < 2)
+                    Button { showGroupSetup = true } label: { Label("圆桌群聊", systemImage: "person.3.fill") }
+                    if horizontalSizeClass == .regular {
+                        Button { showReader = true } label: { Label("网页精读", systemImage: "doc.text.magnifyingglass") }
+                    }
+                    Button { showBookFriends = true } label: { Label("书中好友", systemImage: "book.pages") }
+                    Button { createNewConversation(arenaMode: true) } label: { Label("多模型对比", systemImage: "square.split.2x1") }
+                        .disabled(readyModelCount < 2)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "square.and.pencil")
+                        if horizontalSizeClass != .regular { Text("新建") }
+                    }
+                }
+                .accessibilityLabel("新建")
+            }
         }
     }
 
@@ -315,65 +366,56 @@ struct ConversationListView: View {
         Button(action: action) {
             Text(title)
                 .font(.caption.weight(selected ? .semibold : .medium))
-                .foregroundStyle(selected ? .white : .primary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .foregroundStyle(selected ? theme.solidForeground : .primary)
+                .padding(.horizontal, DS.Spacing.md)
+                .padding(.vertical, 7)
                 .background(
-                    selected ? Color.accentColor : Color(.secondarySystemBackground),
+                    selected ? theme.solidFill : DS.Surface.subtle,
                     in: Capsule()
                 )
+                .overlay(
+                    Capsule().strokeBorder(selected ? Color.clear : DS.Surface.hairline, lineWidth: 1)
+                )
+                .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
     @ViewBuilder
     private func conversationRow(_ conv: Conversation, useSplitSelection: Bool = false) -> some View {
-        let isSelected = useSplitSelection && splitSelection?.id == conv.id && splitSearchRoute == nil
-        let rowContent = HStack(spacing: 12) {
+        let isSelected = useSplitSelection && (splitSelection ?? landingDraft)?.id == conv.id && splitSearchRoute == nil
+        let rowContent = HStack(spacing: DS.Spacing.md) {
             ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.12))
+                RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                    .fill(theme.softFill)
                     .frame(width: 42, height: 42)
-                Text(conv.assistantEmoji)
-                    .font(.title3)
+                AssistantEmojiIcon(emoji: conv.assistantEmoji, font: .title3)
+                    .frame(width: 42, height: 42)
             }
+            .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
+            VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                HStack(spacing: DS.Spacing.xs) {
                     Text(conv.title)
                         .font(.body.weight(.medium))
                         .lineLimit(1)
 
                     if conv.isGroupMode {
-                        Text("群聊")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(Color.indigo)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1.5)
-                            .background(Color.indigo.opacity(0.14), in: Capsule())
+                        DSBadge(text: String(localized: "群聊"), style: .tinted(.indigo))
                     } else if conv.isArenaMode {
-                        Text("对比")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(Color.accentColor)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1.5)
-                            .background(Color.accentColor.opacity(0.14), in: Capsule())
+                        DSBadge(text: String(localized: "对比"), style: .accent(theme))
                     }
 
                     if let tag = conv.folderTag, !tag.isEmpty {
-                        Text(tag)
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1.5)
-                            .background(Color.secondary.opacity(0.12), in: Capsule())
+                        DSBadge(text: tag, style: .neutral)
                     }
 
                     Spacer()
 
                     Text(conv.updatedAt, style: .relative)
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
 
                 HStack(spacing: 6) {
@@ -427,8 +469,14 @@ struct ConversationListView: View {
                     splitSearchRoute = nil
                     splitSelection = conv
                 } label: {
-                    rowContent
-                        .contentShape(Rectangle())
+                    HStack(spacing: 12) {
+                        Image(systemName: conv.readingVolumeID != nil ? "book" : (conv.isArenaMode ? "rectangle.split.2x1" : "bubble.left"))
+                            .foregroundStyle(isSelected ? theme.readableText : .secondary)
+                        Text(verbatim: conv.title).lineLimit(1)
+                        Spacer()
+                        if conv.isPinned { Image(systemName: "pin.fill").font(.caption) }
+                    }
+                    .frame(minHeight: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .listRowBackground(isSelected ? Color.accentColor.opacity(0.12) : nil)
@@ -440,7 +488,7 @@ struct ConversationListView: View {
         }
         .contextMenu {
             Button {
-                conv.isPinned.toggle()
+                conv.setPinned(!conv.isPinned)
                 try? modelContext.save()
             } label: {
                 Label(conv.isPinned ? String(localized: "取消置顶") : String(localized: "置顶"), systemImage: conv.isPinned ? "pin.slash" : "pin.fill")
@@ -456,14 +504,14 @@ struct ConversationListView: View {
             Divider()
 
             Button(role: .destructive) {
-                deleteConversation(conv)
+                pendingDeletion = conv
             } label: {
                 Label("删除", systemImage: "trash")
             }
         }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
-                conv.isPinned.toggle()
+                conv.setPinned(!conv.isPinned)
                 try? modelContext.save()
             } label: {
                 Label(conv.isPinned ? String(localized: "取消置顶") : String(localized: "置顶"), systemImage: conv.isPinned ? "pin.slash" : "pin.fill")
@@ -472,7 +520,7 @@ struct ConversationListView: View {
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button(role: .destructive) {
-                deleteConversation(conv)
+                pendingDeletion = conv
             } label: {
                 Label("删除", systemImage: "trash")
             }
@@ -487,56 +535,32 @@ struct ConversationListView: View {
         }
     }
 
-    private var emptyConversationsPlaceholder: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "bubble.left.and.text.bubble.right.fill")
-                .font(.system(size: 52))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Color.accentColor)
+    @ViewBuilder
+    private var landingEditor: some View {
+        if let chat = landingDraft {
+            ChatDetailView(conversation: chat, isLandingDraft: true, onOpenConversation: openConversation)
+                .id(chat.id)
+        }
+    }
 
-            Text("聚合你的所有 AI 模型")
-                .font(.title3.weight(.bold))
-
-            Text("自由接入 OpenAI 兼容中转、DeepSeek、OpenRouter、Claude 与 Gemini。\n既可单聊随时切换模型，也可一键开启多模型同屏对比。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 28)
-
-            HStack(spacing: 12) {
-                Button {
-                    if hasReadyModel { createNewConversation(arenaMode: false) } else { showModelSetup = true }
-                } label: {
-                    Label(hasReadyModel ? String(localized: "新建对话") : String(localized: "连接第一个模型"),
-                          systemImage: hasReadyModel ? "plus.bubble.fill" : "key")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button {
-                    createNewConversation(arenaMode: hasReadyModel)
-                } label: {
-                    Label(hasReadyModel ? String(localized: "多模型对比") : String(localized: "先写草稿"),
-                          systemImage: hasReadyModel ? "square.split.2x1" : "square.and.pencil")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                }
-                .buttonStyle(.bordered)
-                .disabled(readyModelCount == 1)
+    @ViewBuilder
+    private var sidebarDestinations: some View {
+        if let selectSection {
+            VStack(alignment: .leading, spacing: 0) {
+                Divider()
+                Button { selectSection(1) } label: { Label("助手与书架", systemImage: "books.vertical").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading) }
+                Menu {
+                    Button { selectSection(2) } label: { Label("服务商与设置", systemImage: "server.rack") }
+                    Button { selectSection(3) } label: { Label("用量与测速", systemImage: "chart.bar") }
+                } label: { Label("设置", systemImage: "gearshape").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading) }
             }
-
-            if hasReadyModel {
-                Button {
-                    showGroupSetup = true
-                } label: {
-                    Label("发起多角色圆桌群聊", systemImage: "person.3.fill")
-                        .font(.footnote.weight(.semibold))
-                }
-                .buttonStyle(.borderless)
-            }
+            .labelStyle(.titleAndIcon)
+            .buttonStyle(.plain)
+            .controlSize(.large)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.bar)
         }
     }
 
@@ -552,6 +576,7 @@ struct ConversationListView: View {
             if splitSearchRoute?.conversation.id == id {
                 splitSearchRoute = nil
             }
+            if landingDraft?.id == id { landingDraft = newDraft(arenaMode: false) }
             modelContext.delete(conv)
             do {
                 try modelContext.save()
@@ -574,25 +599,27 @@ struct ConversationListView: View {
         }
     }
 
+    private func refreshUntouchedLanding() {
+        if let draft = landingDraft, draft.modelContext == nil, draft.messages.isEmpty {
+            landingDraft = newDraft(arenaMode: false)
+        }
+    }
+
     private func updateReadiness() {
         readyModelCount = ProviderConfig.readyTargets(in: providers).count
     }
 
-    private func createNewConversation(arenaMode: Bool, verified: ResolvedModelTarget? = nil) {
-        let ready = ProviderConfig.readyTargets(in: providers)
-        let preferredPrimary = verified.flatMap { target in ready.first { $0.id == target.id } } ?? ready.first
-        let arenaInitial = Array(ready.prefix(2))
-        let conv = Conversation(
-            title: Conversation.defaultTitle,
-            isArenaMode: arenaMode && arenaInitial.count >= 2,
-            primaryTarget: preferredPrimary,
-            arenaTargets: arenaInitial
-        )
-        if let defaultPreset = presets.first {
-            conv.applyPreset(defaultPreset)
-        }
+    private func newDraft(arenaMode: Bool) -> Conversation {
+        preferences.newChat(providers: providers, presets: presets, arena: arenaMode)
+    }
+
+    private func createNewConversation(arenaMode: Bool, blind: Bool = false) {
+        let conv = newDraft(arenaMode: arenaMode)
+        if blind { conv.assistanceSettings.blindArenaMode = true }
         modelContext.insert(conv)
-        try? modelContext.save()
-        openConversation(conv)
+        do {
+            try modelContext.save()
+            openConversation(conv)
+        } catch { deletionError = error.localizedDescription }
     }
 }

@@ -162,14 +162,14 @@ struct ChatDetailView: View {
             onToggleBookmark: msg.role == .system ? nil : {
                 engine.toggleBookmark(for: msg, context: modelContext)
             },
-            onToggleExcludeFromContext: msg.role == .system ? nil : {
+            onToggleExcludeFromContext: (!preferences.simpleDailyMode && msg.role != .system) ? {
                 engine.toggleContextExclusion(for: msg, context: modelContext)
-            },
-            onForkConversation: msg.role == .system ? nil : {
+            } : nil,
+            onForkConversation: (!preferences.simpleDailyMode && msg.role != .system) ? {
                 let forked = engine.forkConversation(upTo: msg, in: conversation, context: modelContext)
                 onOpenConversation?(forked)
-            },
-            onCompareWithModel: (!conversation.isGroupMode && msg.role == .assistant && msg.comparisonGroupID == nil) ? { second in
+            } : nil,
+            onCompareWithModel: (!preferences.simpleDailyMode && !conversation.isGroupMode && msg.role == .assistant && msg.comparisonGroupID == nil) ? { second in
                 authorize([second]) {
                     engine.compareWithAnotherModel(assistantMessage: msg, secondTarget: second,
                                                    in: conversation, providers: providers, context: modelContext)
@@ -1540,6 +1540,11 @@ struct ChatDetailView: View {
                 } else if conversation.assistanceSettings.studyCoachMode == .drill {
                     quickSuggestionButton(String(localized: "给我开启 SQL 窗口函数实战闯关特训（从 Lv.1 开始出题）。"))
                     quickSuggestionButton(String(localized: "考考我正则表达式进阶语法，每次出一道实战题等我作答。"))
+                } else if preferences.simpleDailyMode {
+                    quickSuggestionButton(String(localized: "帮我把这段零散会议记录整理成结论与待办行动项（含明确日期）"))
+                    quickSuggestionButton(String(localized: "帮我针对这条工作消息起草正式、温和、简短 3 版纯文本回复"))
+                    quickSuggestionButton(String(localized: "把本周工作碎片记录提炼成重点突出、带量化结果的周报"))
+                    quickSuggestionButton(String(localized: "用大白话帮我审一下这份合同/账单里的费用、违约和避坑条款"))
                 } else {
                     quickSuggestionButton(String(localized: "帮我对比一下 Swift Actor 和传统锁的性能与适用场景"))
                     quickSuggestionButton(String(localized: "用通俗生动的语言解释 Transformer 的自注意力机制"))

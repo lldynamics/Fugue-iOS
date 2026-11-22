@@ -209,6 +209,7 @@ fun ChatDetailScreen(
         factory = ChatViewModel.factory(conversationId, container)
     )
     val state by vm.uiState.collectAsStateWithLifecycle()
+    val prefs by container.preferences.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -705,6 +706,61 @@ fun ChatDetailScreen(
                                         overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.padding(horizontal = 24.dp)
                                     )
+                                } else if (conv != null && !conv.isGroupMode && !conv.isArenaMode && activeFriend == null) {
+                                    val everydaySuggestions = listOf(
+                                        L10n.text(
+                                            "高情商回复微信/邮件（附 3 种语气）",
+                                            "Diplomatic WeChat / email reply (3 tones)"
+                                        ) to L10n.text(
+                                            "请帮我针对以下来信/消息起草 3 个不同语气的高情商回复（正式稳重、温和得体、简短直给），直接输出可复制的纯文本：\n\n",
+                                            "Draft 3 diplomatic reply options (formal, warm, brief) in copy-friendly plain text:\n\n"
+                                        ),
+                                        L10n.text(
+                                            "把零散记录提炼成周报/工作汇报",
+                                            "Turn rough notes into a weekly report"
+                                        ) to L10n.text(
+                                            "请把我下面这段本周流水账整理成结构清晰、结果导向的周报，并列出下周重点计划：\n\n",
+                                            "Turn these rough notes into a structured, outcome-driven weekly report with next week's plan:\n\n"
+                                        ),
+                                        L10n.text(
+                                            "拍照/文档划重点并分步讲解",
+                                            "Explain photo/doc problem step-by-step"
+                                        ) to L10n.text(
+                                            "请先点明核心考点或文档关键结论，再分步骤讲透要点，最后指出常见误区：\n\n",
+                                            "Highlight core takeaways first, then explain step by step and call out common pitfalls:\n\n"
+                                        ),
+                                        L10n.text(
+                                            "合同/账单/说明书大白话避坑解读",
+                                            "Flag traps & dates in contract or bill"
+                                        ) to L10n.text(
+                                            "请用大白话帮我解读以下合同、账单或说明书，标出关键金额、期限与需要注意的风险条款：\n\n",
+                                            "Review this contract, bill, or manual in plain language and highlight key numbers, dates & risks:\n\n"
+                                        )
+                                    )
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 24.dp, vertical = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        for ((label, template) in everydaySuggestions) {
+                                            Surface(
+                                                shape = RoundedCornerShape(DS.Radius.md),
+                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { vm.updateDraftText(template) }
+                                            ) {
+                                                Text(
+                                                    text = label,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -720,7 +776,8 @@ fun ChatDetailScreen(
                                     branchSiblings = state.branchSiblings[msg.id].orEmpty(),
                                     canEditUser = !state.isGenerating && msg.role == MessageRole.USER,
                                     canRegenerate = !state.isGenerating && msg.role == MessageRole.ASSISTANT && msg.assistanceMetadata.sourceNotice == null,
-                                    canCompareWithAnother = !state.isGenerating &&
+                                    canCompareWithAnother = !prefs.simpleDailyMode &&
+                                        !state.isGenerating &&
                                         conv?.isGroupMode != true &&
                                         msg.role == MessageRole.ASSISTANT &&
                                         msg.assistanceMetadata.sourceNotice == null &&
@@ -899,6 +956,21 @@ fun ChatDetailScreen(
                             )
                         }
                     )
+                    FilterChip(
+                        selected = false,
+                        onClick = { showAudioSheet = true },
+                        enabled = !state.isGenerating,
+                        leadingIcon = {
+                            Icon(Icons.Filled.GraphicEq, contentDescription = null, modifier = Modifier.size(15.dp))
+                        },
+                        label = {
+                            Text(
+                                text = L10n.text("音频纪要", "Audio Notes"),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    )
+                    if (!prefs.simpleDailyMode) {
                     if (!conv.isArenaMode) {
                         FilterChip(
                             selected = conv.assistanceSettings.enableAgentTools,
@@ -978,6 +1050,7 @@ fun ChatDetailScreen(
                                 )
                             }
                         )
+                    }
                     }
                 }
 

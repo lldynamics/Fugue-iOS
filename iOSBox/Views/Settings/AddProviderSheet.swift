@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct AddProviderSheet: View {
     var onCreated: (ProviderConfig) -> Void
@@ -18,6 +19,7 @@ struct AddProviderSheet: View {
     @State private var catalog = ProviderModelCatalog()
     @State private var chosenID: String?
     @State private var manualFirstModelID: String = ""
+    @State private var clipboardHint: String?
 
     private var request: ModelCatalogRequest {
         ModelCatalogRequest(protocolType: protocolType, baseURL: baseURL, apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -106,6 +108,16 @@ struct AddProviderSheet: View {
                 }
 
                 Section {
+                    Button {
+                        fillFromClipboard()
+                    } label: {
+                        Label("从剪贴板识别 Key 与地址", systemImage: "doc.on.clipboard")
+                    }
+                    if let clipboardHint {
+                        Text(clipboardHint)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     SecureField("粘贴 API Key（加密保存在系统钥匙串）", text: $apiKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -168,6 +180,24 @@ struct AddProviderSheet: View {
         iconSymbol = tpl.iconSymbol
     }
 
+    private func fillFromClipboard() {
+        let raw = UIPasteboard.general.string ?? ""
+        guard let candidate = ClipboardProviderParser.parse(raw) else {
+            clipboardHint = String(localized: "剪贴板中未检测到可识别的 Key 或接口地址。")
+            return
+        }
+        selectedTemplateID = candidate.templateID
+        name = candidate.providerName
+        protocolType = candidate.protocolType
+        baseURL = candidate.baseURL
+        if !candidate.apiKey.isEmpty {
+            apiKey = candidate.apiKey
+        }
+        accentHex = candidate.accentHex
+        iconSymbol = candidate.iconSymbol
+        clipboardHint = candidate.confidenceNote
+    }
+
     private func refreshModels() {
         catalog.refresh(request: request)
     }
@@ -190,7 +220,7 @@ struct AddProviderSheet: View {
         )
 
         if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            guard KeychainService.shared.saveAPIKey(request.apiKey, for: provider.id) else {
+            guard KeychainService.shared.saveAPIKey(request.apiKey, for: provider.credentialID) else {
                 saveError = String(localized: "保存失败，请保留输入并重试。")
                 return
             }

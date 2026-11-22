@@ -35,6 +35,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -84,9 +85,15 @@ fun AssistantListScreen(
     val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
     val books by container.chatRepository.observeBooks().collectAsStateWithLifecycle(initialValue = emptyList())
     val shelfStates by container.chatRepository.observeShelfStates().collectAsStateWithLifecycle(initialValue = emptyList())
+    val prefs by container.preferences.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     var selectedTab by remember { mutableStateOf(AssistantDirectoryTab.ASSISTANTS) }
+    LaunchedEffect(prefs.simpleDailyMode) {
+        if (prefs.simpleDailyMode && selectedTab == AssistantDirectoryTab.PERSONAS) {
+            selectedTab = AssistantDirectoryTab.ASSISTANTS
+        }
+    }
     var editingPreset by remember { mutableStateOf<PresetItem?>(null) }
     var showCreatePreset by remember { mutableStateOf(false) }
     var editingPersona by remember { mutableStateOf<GroupMember?>(null) }
@@ -172,11 +179,13 @@ fun AssistantListScreen(
                     onClick = { selectedTab = AssistantDirectoryTab.ASSISTANTS },
                     label = { Text(L10n.text("助手 (${presets.size})", "Assistants (${presets.size})")) }
                 )
-                FilterChip(
-                    selected = selectedTab == AssistantDirectoryTab.PERSONAS,
-                    onClick = { selectedTab = AssistantDirectoryTab.PERSONAS },
-                    label = { Text(L10n.text("角色 (${personas.size})", "Personas (${personas.size})")) }
-                )
+                if (!prefs.simpleDailyMode) {
+                    FilterChip(
+                        selected = selectedTab == AssistantDirectoryTab.PERSONAS,
+                        onClick = { selectedTab = AssistantDirectoryTab.PERSONAS },
+                        label = { Text(L10n.text("角色 (${personas.size})", "Personas (${personas.size})")) }
+                    )
+                }
                 FilterChip(
                     selected = selectedTab == AssistantDirectoryTab.SHELF,
                     onClick = { selectedTab = AssistantDirectoryTab.SHELF },

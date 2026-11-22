@@ -11,7 +11,9 @@ struct SlashCommandPopover: View {
         let bare = q.hasPrefix("/") ? String(q.dropFirst()) : q
         guard !bare.isEmpty else { return SlashPromptCommand.builtIns }
         return SlashPromptCommand.builtIns.filter {
-            $0.command.lowercased().contains(q) || $0.title.lowercased().contains(bare)
+            $0.command.lowercased().contains(q) ||
+                $0.title.lowercased().contains(bare) ||
+                $0.subtitle.lowercased().contains(bare)
         }
     }
 

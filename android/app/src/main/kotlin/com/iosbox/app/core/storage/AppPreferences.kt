@@ -70,7 +70,9 @@ data class UserPreferencesSnapshot(
     val useCloudTTS: Boolean = false,
     val cloudTTSProviderID: String? = null,
     val cloudTTSModel: String = "tts-1",
-    val cloudTTSVoice: String = "alloy"
+    val cloudTTSVoice: String = "alloy",
+    val simpleDailyMode: Boolean = false,
+    val dailyPresetsSeededV2: Boolean = false
 )
 
 private val Context.prefsDataStore: DataStore<Preferences> by preferencesDataStore(name = "fugue_preferences")
@@ -94,6 +96,8 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
         val CLOUD_TTS_PROVIDER = stringPreferencesKey("cloud_tts_provider_id")
         val CLOUD_TTS_MODEL = stringPreferencesKey("cloud_tts_model")
         val CLOUD_TTS_VOICE = stringPreferencesKey("cloud_tts_voice")
+        val SIMPLE_DAILY_MODE = booleanPreferencesKey("simple_daily_mode")
+        val DAILY_PRESETS_SEEDED_V2 = booleanPreferencesKey("has_seeded_daily_presets_v2")
     }
 
     private val _state = MutableStateFlow(UserPreferencesSnapshot())
@@ -121,7 +125,9 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
             useCloudTTS = prefs[Keys.USE_CLOUD_TTS] ?: false,
             cloudTTSProviderID = prefs[Keys.CLOUD_TTS_PROVIDER],
             cloudTTSModel = prefs[Keys.CLOUD_TTS_MODEL]?.takeIf { it.isNotBlank() } ?: "tts-1",
-            cloudTTSVoice = prefs[Keys.CLOUD_TTS_VOICE]?.takeIf { it.isNotBlank() } ?: "alloy"
+            cloudTTSVoice = prefs[Keys.CLOUD_TTS_VOICE]?.takeIf { it.isNotBlank() } ?: "alloy",
+            simpleDailyMode = prefs[Keys.SIMPLE_DAILY_MODE] ?: false,
+            dailyPresetsSeededV2 = prefs[Keys.DAILY_PRESETS_SEEDED_V2] ?: false
         )
     }
 
@@ -212,6 +218,16 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
         val clean = voice.trim().ifEmpty { "alloy" }
         _state.value = _state.value.copy(cloudTTSVoice = clean)
         appContext.prefsDataStore.edit { it[Keys.CLOUD_TTS_VOICE] = clean }
+    }
+
+    suspend fun setSimpleDailyMode(enabled: Boolean) {
+        _state.value = _state.value.copy(simpleDailyMode = enabled)
+        appContext.prefsDataStore.edit { it[Keys.SIMPLE_DAILY_MODE] = enabled }
+    }
+
+    suspend fun markDailyPresetsSeededV2() {
+        _state.value = _state.value.copy(dailyPresetsSeededV2 = true)
+        appContext.prefsDataStore.edit { it[Keys.DAILY_PRESETS_SEEDED_V2] = true }
     }
 
     override fun loadRaw(): String? = capabilityRaw

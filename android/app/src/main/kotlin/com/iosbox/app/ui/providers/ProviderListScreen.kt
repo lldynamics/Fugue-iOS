@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.GraphicEq
@@ -113,6 +114,7 @@ fun ProviderListScreen(
     val scope = rememberCoroutineScope()
 
     var showAddSheet by remember { mutableStateOf(false) }
+    var showQuickSetupSheet by remember { mutableStateOf(false) }
     var providerToDelete by remember { mutableStateOf<ProviderItem?>(null) }
     var alertInfo by remember { mutableStateOf<Pair<String, String>?>(null) }
 
@@ -227,6 +229,17 @@ fun ProviderListScreen(
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+
+            item {
+                OutlinedButton(
+                    onClick = { showQuickSetupSheet = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.size(6.dp))
+                    Text(L10n.text("从剪贴板一键配 Key 并测通", "Quick Setup Key from Clipboard"))
+                }
             }
 
             items(providers, key = { it.id }) { provider ->
@@ -648,6 +661,51 @@ fun ProviderListScreen(
 
             item {
                 Text(
+                    text = L10n.text("界面简化与日常体验", "Interface Mode"),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = DS.Spacing.sm)
+                )
+            }
+
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(DS.Spacing.md),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = L10n.text("极简日常模式（界面减法）", "Simple Daily Mode"),
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                            Text(
+                                text = L10n.text(
+                                    "隐藏多模型竞技场、圆桌群聊与 Agent 工具等进阶按钮，保留日常对话、文档拍照、录音纪要、联网与日历提炼。",
+                                    "Hides Arena, Roundtable, and Agent Tool controls to keep everyday workflows clean."
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = prefs.simpleDailyMode,
+                            onCheckedChange = { enabled ->
+                                scope.launch { container.preferences.setSimpleDailyMode(enabled) }
+                            }
+                        )
+                    }
+                }
+            }
+
+            item {
+                Text(
                     text = L10n.text("外观主题", "Appearance"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -818,6 +876,14 @@ fun ProviderListScreen(
                 }
             },
             onDismiss = { showAddSheet = false }
+        )
+    }
+
+    if (showQuickSetupSheet) {
+        QuickKeySetupSheet(
+            container = container,
+            existingProviders = providers,
+            onDismiss = { showQuickSetupSheet = false }
         )
     }
 

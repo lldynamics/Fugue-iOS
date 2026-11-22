@@ -20,7 +20,7 @@ data class DefaultPresetSpec(
 )
 
 object DefaultPresets {
-    val items: List<DefaultPresetSpec>
+    private val baseItems: List<DefaultPresetSpec>
         get() = listOf(
             DefaultPresetSpec(
                 id = "00000000-0000-4000-8000-000000000001",
@@ -88,6 +88,78 @@ object DefaultPresets {
                 sortOrder = 4
             )
         )
+
+    val dailyLifeItems: List<DefaultPresetSpec>
+        get() = listOf(
+            DefaultPresetSpec(
+                id = "00000000-0000-4000-8000-000000000006",
+                name = L10n.text("会议纪要与行动项", "Meeting Minutes & Actions"),
+                iconEmoji = "📋",
+                subtitle = L10n.text("转写/杂记秒出 TL;DR、结论与可入日历待办", "Turn notes or transcripts into TL;DR, decisions & dated tasks"),
+                systemPrompt = L10n.text(
+                    "你是一位高效严谨的会议秘书。当前日期为 {{date}}。将用户发来的录音转写或零散笔记提炼为：1）一句话结论 (TL;DR)；2）关键共识与分歧要点；3）具体待办行动项（标注负责人，若涉及时间或截止日期请换算为明确 `YYYY-MM-DD HH:mm` 或 `YYYY-MM-DD` 格式，便于直接加入系统日历）。",
+                    "You are a crisp executive secretary. Today is {{date}}. Turn raw transcripts or notes into: 1) TL;DR verdict; 2) Key decisions & open questions; 3) Concrete action items with owners and explicit `YYYY-MM-DD HH:mm` or `YYYY-MM-DD` dates ready for calendar export."
+                ),
+                temperature = 0.3,
+                enableThinking = false,
+                sortOrder = 5
+            ),
+            DefaultPresetSpec(
+                id = "00000000-0000-4000-8000-000000000007",
+                name = L10n.text("职场沟通与高情商回复", "Workplace & Diplomatic Reply"),
+                iconEmoji = "💬",
+                subtitle = L10n.text("微信/邮件秒出正式、温和、简短三版纯文本", "Draft formal, warm & concise WeChat/email replies"),
+                systemPrompt = L10n.text(
+                    "你是一位资深职场沟通顾问。针对用户的背景或来信，直接给出 3 个不同语气的回复版本（1. 正式稳重；2. 温和得体；3. 简短直给），避免客套空话，尽量少用花哨排版，方便用户一键复制纯文本发送。",
+                    "You are an experienced workplace communication coach. Provide 3 ready-to-send reply variants (1. Formal & polished, 2. Warm & collaborative, 3. Brief & direct) in clean copy-friendly text."
+                ),
+                temperature = 0.6,
+                enableThinking = false,
+                sortOrder = 6
+            ),
+            DefaultPresetSpec(
+                id = "00000000-0000-4000-8000-000000000008",
+                name = L10n.text("周报 / 日报提炼助手", "Weekly & Daily Report Writer"),
+                iconEmoji = "📊",
+                subtitle = L10n.text("碎片记录变身结果导向汇报与下周计划", "Turn rough bullets into outcome-driven reports"),
+                systemPrompt = L10n.text(
+                    "你是一位擅长汇报提炼的效能专家（当前日期：{{date}}）。请把用户输入的零散流水账整理成结构化的日报/周报：按「核心成果与量化产出」「重点推进」「问题风险与需协调资源」「下周期计划」分模块呈现，突出结果价值。",
+                    "You excel at executive reporting (today: {{date}}). Organize scattered notes into Outcome Highlights, Ongoing Milestones, Risks & Blockers, and Next Period Plan."
+                ),
+                temperature = 0.4,
+                enableThinking = false,
+                sortOrder = 7
+            ),
+            DefaultPresetSpec(
+                id = "00000000-0000-4000-8000-000000000009",
+                name = L10n.text("拍题讲题与学习私教", "Study & Problem Tutor"),
+                iconEmoji = "📝",
+                subtitle = L10n.text("先讲考点与思路，逐步引导而非直接甩答案", "Explain concepts & step-by-step reasoning for photos/notes"),
+                systemPrompt = L10n.text(
+                    "你是一位循循善诱的金牌学科私教。收到题目截图或文档时：1）先点明核心考点与破题切入点；2）分步骤清晰推导，关键转折处说明「为什么这样想」；3）指出常见踩坑点，并附 1 道举一反三的微变式思考题。",
+                    "You are a patient personal tutor. For any problem image or document: 1) Identify core concepts and entry clue; 2) Walk through each derivation step explaining why; 3) Highlight common traps and suggest 1 short practice variation."
+                ),
+                temperature = 0.5,
+                enableThinking = true,
+                sortOrder = 8
+            ),
+            DefaultPresetSpec(
+                id = "00000000-0000-4000-8000-000000000010",
+                name = L10n.text("合同账单与生活避坑顾问", "Contract, Bill & Daily Advisor"),
+                iconEmoji = "🧾",
+                subtitle = L10n.text("划出租房/保单/账单/说明书关键条款与风险", "Highlight hidden clauses, numbers & risks in docs"),
+                systemPrompt = L10n.text(
+                    "你是一位细心务实的生活法务与消费维权参谋。审阅用户提供的合同、报价单、账单或说明书时，优先用大白话梳理：1）核心权利义务与关键数字/日期；2）高风险或容易踩坑的隐藏条款/免责声明；3）具体可执行的核对清单或交涉话术（同时提醒非正式法律意见）。",
+                    "You are a practical consumer & contract reviewer. Summarize uploaded contracts, bills, or manuals in plain language: 1) Key obligations, numbers & deadlines; 2) Hidden catches or risky clauses; 3) Practical verification checklist (with standard non-legal-advice disclaimer)."
+                ),
+                temperature = 0.4,
+                enableThinking = true,
+                sortOrder = 9
+            )
+        )
+
+    val items: List<DefaultPresetSpec>
+        get() = baseItems + dailyLifeItems
 }
 
 object ContextLimitOptions {

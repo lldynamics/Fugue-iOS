@@ -42,9 +42,14 @@ final class AppPreferences {
         static let cloudTTSProviderID = "iosbox.pref.cloudTTSProviderID"
         static let cloudTTSModel = "iosbox.pref.cloudTTSModel"
         static let cloudTTSVoice = "iosbox.pref.cloudTTSVoice"
+        static let simpleDailyMode = "iosbox.pref.simpleDailyMode"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
+
+    var simpleDailyMode: Bool {
+        didSet { defaults.set(simpleDailyMode, forKey: Keys.simpleDailyMode) }
+    }
 
     var fontScale: Double {
         didSet { defaults.set(fontScale, forKey: Keys.fontScale) }
@@ -176,6 +181,7 @@ final class AppPreferences {
         } else {
             self.customGroupTemplates = []
         }
+        self.simpleDailyMode = defaults.bool(forKey: Keys.simpleDailyMode)
     }
 
     func recordRecentModel(_ target: ResolvedModelTarget, maxCount: Int = 8) {

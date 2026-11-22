@@ -156,6 +156,54 @@ struct SlashPromptCommand: Identifiable {
                 subtitle: String(localized: "针对当前话题出 3 道递进实战题检验掌握程度"),
                 symbol: "checklist",
                 templatePrefix: String(localized: "请围绕上文的核心知识点出 3 道由浅入深的理解与实战自测题（先出题等我作答，暂不公布答案）。")
+            ),
+            SlashPromptCommand(
+                id: "meeting-minutes",
+                command: "/meeting",
+                title: String(localized: "会议纪要与待办"),
+                subtitle: String(localized: "提炼讨论结论与带明确日期的行动项"),
+                symbol: "list.clipboard",
+                templatePrefix: String(localized: "请将以下内容整理为结构化会议纪要（一句话结论、关键讨论、待办行动项与明确 `YYYY-MM-DD HH:mm` 日期）：\n\n")
+            ),
+            SlashPromptCommand(
+                id: "tactful-reply",
+                command: "/reply",
+                title: String(localized: "高情商沟通回复"),
+                subtitle: String(localized: "生成 3 种得体语气可直接复制发送微信/邮件"),
+                symbol: "bubble.left.and.bubble.right",
+                templatePrefix: String(localized: "请针对以下消息帮我起草高情商回复，给出「正式稳重 / 温和得体 / 简短直给」3 个版本（纯文本可直接复制）：\n\n")
+            ),
+            SlashPromptCommand(
+                id: "weekly-report",
+                command: "/weekly",
+                title: String(localized: "周报 / 工作汇报"),
+                subtitle: String(localized: "从零散笔记提炼核心成果、进展与下周计划"),
+                symbol: "chart.bar.doc.horizontal",
+                templatePrefix: String(localized: "请把下面零散记录整理成结构清晰、突出成果与量化亮点的周报，并列出下周重点计划：\n\n")
+            ),
+            SlashPromptCommand(
+                id: "photo-tutor",
+                command: "/solve",
+                title: String(localized: "拍题分步精讲"),
+                subtitle: String(localized: "拆解核心考点、逐步推导并附避坑提示"),
+                symbol: "graduationcap",
+                templatePrefix: String(localized: "请充当我的私教分步讲解这道题/这部分内容：先指出核心考点与思路，再逐步推导，最后点明易错点：\n\n")
+            ),
+            SlashPromptCommand(
+                id: "contract-check",
+                command: "/contract",
+                title: String(localized: "合同账单避坑"),
+                subtitle: String(localized: "大白话拆解关键数字、期限与潜在风险条款"),
+                symbol: "doc.text.magnifyingglass",
+                templatePrefix: String(localized: "请用大白话审阅以下合同/账单/说明，标出关键费用、违约/免责陷阱、重要截止时间与核对建议：\n\n")
+            ),
+            SlashPromptCommand(
+                id: "life-plan",
+                command: "/plan",
+                title: String(localized: "出行 / 事务规划"),
+                subtitle: String(localized: "按时间线、预算与清单给出可执行方案"),
+                symbol: "map",
+                templatePrefix: String(localized: "请帮我制定一份清晰可落地的计划（含分天/分阶段时间线、预算估测、物品清单与避坑贴士）：\n\n")
             )
         ]
     }
