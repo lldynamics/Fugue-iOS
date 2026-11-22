@@ -8,6 +8,8 @@ import com.iosbox.app.core.model.BookImportError
 import com.iosbox.app.core.model.BookManuscript
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.PreparedBook
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.charset.Charset
@@ -21,13 +23,14 @@ object BookImporter {
         RegexOption.IGNORE_CASE
     )
 
-    fun readUri(contentResolver: ContentResolver, uri: Uri): PreparedBook {
+    suspend fun readUri(contentResolver: ContentResolver, uri: Uri): PreparedBook {
+        val context = currentCoroutineContext()
         val fileName = resolveFileName(contentResolver, uri) ?: "book.txt"
-        val bytes = readBytesLimited(contentResolver, uri)
-        return PreparedBook.from(parse(bytes, fileName))
+        val bytes = readBytesLimited(contentResolver, uri) { context.ensureActive() }
+        return PreparedBook.from(parse(bytes, fileName) { context.ensureActive() })
     }
 
-    fun parse(data: ByteArray, filename: String): BookManuscript {
+    fun parse(data: ByteArray, filename: String, checkCancellation: () -> Unit = {}): BookManuscript {
         if (data.size > MAXIMUM_FILE_BYTES) {
             throw BookImportError.FileLimit()
         }
@@ -39,7 +42,10 @@ object BookImporter {
             .take(300)
 
         return when (ext) {
-            "epub" -> EPUBBookReader.read(data, fallbackTitle = baseTitle)
+            "epub" -> EPUBBookReader.read(data, fallbackTitle = baseTitle, checkCancellation = checkCancellation)
+            "pdf" -> PdfTextExtractor.extractForBook(data, title = baseTitle, checkCancellation = checkCancellation)
+            in OfficeDocumentReader.SUPPORTED_EXTENSIONS ->
+                OfficeDocumentReader.extractChapters(data, ext = ext, fallbackTitle = baseTitle, checkCancellation = checkCancellation)
             "txt", "md", "markdown", "text" -> {
                 val raw = decodeText(data) ?: throw BookImportError.NoText()
                 if (raw.contains('\u0000')) throw BookImportError.NoText()
@@ -48,7 +54,7 @@ object BookImporter {
                 if (cleaned.toByteArray(Charsets.UTF_8).size > BookManuscript.MAXIMUM_TEXT_BYTES) {
                     throw BookImportError.TextLimit()
                 }
-                BookManuscript(title = baseTitle, chapters = splitChapters(cleaned))
+                BookManuscript(title = baseTitle, chapters = splitChapters(cleaned, checkCancellation))
             }
             else -> throw BookImportError.FileType()
         }
@@ -80,22 +86,23 @@ object BookImporter {
         }.getOrNull()
     }
 
-    internal fun splitChapters(text: String): List<BookChapter> {
+    internal fun splitChapters(text: String, checkCancellation: () -> Unit = {}): List<BookChapter> {
         val result = mutableListOf<BookChapter>()
         var currentTitle = L10n.text("正文", "Content")
-        val currentLines = mutableListOf<String>()
+        val currentBody = StringBuilder()
 
         fun flush() {
-            val body = currentLines.joinToString("\n").trim()
+            val body = currentBody.trim().toString()
             if (body.isNotEmpty()) {
                 result.add(BookChapter(title = currentTitle, text = body))
             }
-            currentLines.clear()
+            currentBody.setLength(0)
         }
 
         for (rawLine in text.lineSequence()) {
+            checkCancellation()
             val trimmed = rawLine.trim()
-            if (trimmed.toByteArray(Charsets.UTF_8).size <= 300 && chapterHeadingRegex.containsMatchIn(trimmed)) {
+            if (trimmed.length <= 300 && trimmed.toByteArray(Charsets.UTF_8).size <= 300 && chapterHeadingRegex.containsMatchIn(trimmed)) {
                 flush()
                 currentTitle = trimmed.trim('#', ' ', '\t').ifEmpty { L10n.text("正文", "Content") }
                 if (result.size >= BookManuscript.MAXIMUM_CHAPTERS) {
@@ -103,7 +110,7 @@ object BookImporter {
                 }
                 continue
             }
-            currentLines.add(rawLine)
+            currentBody.append(rawLine).append('\n')
         }
         flush()
 
@@ -111,12 +118,13 @@ object BookImporter {
         return result
     }
 
-    private fun readBytesLimited(contentResolver: ContentResolver, uri: Uri): ByteArray {
+    private fun readBytesLimited(contentResolver: ContentResolver, uri: Uri, checkCancellation: () -> Unit): ByteArray {
         val stream = contentResolver.openInputStream(uri) ?: throw BookImportError.InvalidBook()
         return stream.use { input ->
             val out = ByteArrayOutputStream()
             val buf = ByteArray(32_768)
             while (true) {
+                checkCancellation()
                 val read = input.read(buf)
                 if (read <= 0) break
                 if (out.size() + read > MAXIMUM_FILE_BYTES) {

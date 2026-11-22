@@ -37,3 +37,10 @@
 -dontwarn javax.annotation.**
 -dontwarn org.codehaus.mojo.animal_sniffer.**
 -dontwarn sun.misc.Unsafe
+
+# PDFBox Android font/CMap resources & optional desktop/crypto refs
+-keep class com.tom_roush.pdfbox.pdmodel.font.** { *; }
+-dontwarn com.tom_roush.pdfbox.**
+-dontwarn com.tom_roush.fontbox.**
+-dontwarn java.awt.**
+-dontwarn javax.imageio.**

@@ -64,6 +64,9 @@ class BooksAndMemoryTest {
         assertEquals(prep1.id, prep2.id)
 
         assertThrows(BookImportError.FileType::class.java) {
+            BookImporter.parse("dummy".toByteArray(), "video.mp4")
+        }
+        assertThrows(BookImportError.InvalidBook::class.java) {
             BookImporter.parse("dummy".toByteArray(), "manual.pdf")
         }
         assertThrows(BookImportError.NoText::class.java) {

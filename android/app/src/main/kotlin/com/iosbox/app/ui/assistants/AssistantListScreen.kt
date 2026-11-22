@@ -130,7 +130,16 @@ fun AssistantListScreen(
                         AssistantDirectoryTab.ASSISTANTS -> showCreatePreset = true
                         AssistantDirectoryTab.PERSONAS -> showCreatePersona = true
                         AssistantDirectoryTab.SHELF -> importBookLauncher.launch(
-                            arrayOf("application/epub+zip", "text/*", "application/octet-stream", "*/*")
+                            arrayOf(
+                                "application/epub+zip",
+                                "application/pdf",
+                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                "text/*",
+                                "application/octet-stream",
+                                "*/*"
+                            )
                         )
                     }
                 }

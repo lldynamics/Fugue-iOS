@@ -117,7 +117,18 @@ fun KnowledgeBindingSheet(
             OutlinedButton(
                 enabled = !isImporting,
                 onClick = {
-                    picker.launch(arrayOf("application/epub+zip", "text/*", "application/octet-stream", "*/*"))
+                    picker.launch(
+                        arrayOf(
+                            "application/epub+zip",
+                            "application/pdf",
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            "text/*",
+                            "application/octet-stream",
+                            "*/*"
+                        )
+                    )
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -128,7 +139,7 @@ fun KnowledgeBindingSheet(
                 } else {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.size(6.dp))
-                    Text(L10n.text("从文件导入书籍 / 资料 (EPUB / TXT / MD)", "Import Book / Doc (EPUB / TXT / MD)"))
+                    Text(L10n.text("从文件导入书籍 / 资料 (EPUB / PDF / Office / TXT / MD)", "Import Book / Doc (EPUB / PDF / Office / TXT / MD)"))
                 }
             }
 

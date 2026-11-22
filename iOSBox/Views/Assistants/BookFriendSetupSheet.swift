@@ -106,7 +106,7 @@ struct BookFriendSetupSheet: View {
                 Text("已有聊天记录和引用会保留。继续与这本书的好友聊天时，需要重新导入同一版本。")
             }
             .fileImporter(isPresented: $pickingFile, allowedContentTypes: [.plainText, .pdf] +
-                          ["epub", "md", "markdown"].compactMap { UTType(filenameExtension: $0) }) { result in
+                          ["epub", "docx", "xlsx", "pptx", "md", "markdown"].compactMap { UTType(filenameExtension: $0) }) { result in
                 switch result {
                 case .success(let url): importBook(url)
                 case .failure(let failure): if (failure as NSError).code != NSUserCancelledError { error = failure.localizedDescription }
@@ -163,7 +163,7 @@ struct BookFriendSetupSheet: View {
     private func openChat() {
         guard let friend, evidence != nil else { return }
         do {
-            let target = ProviderConfig.readyTargets(in: providers).first
+            let target = AppPreferences.shared.initialTarget(from: ProviderConfig.readyTargets(in: providers))
             let chat = try BookLibrary.open(friend, target: target, in: context)
             dismiss()
             onOpen(chat)

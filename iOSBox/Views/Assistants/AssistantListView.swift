@@ -21,16 +21,20 @@ struct AssistantListView: View {
         }
     }
 
+    @Binding var activeSection: WorkshopSection
     var onStartChatWithPreset: (AssistantPreset) -> Void
 
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \AssistantPreset.sortOrder) private var presets: [AssistantPreset]
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     @Query(sort: \Conversation.updatedAt, order: .reverse) private var conversations: [Conversation]
+    @Query private var profiles: [PersonaProfile]
     @Query(sort: \BookVolume.importedAt, order: .reverse) private var books: [BookVolume]
+    @Query private var readingStates: [ShelfReadingState]
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    @State private var activeSection: WorkshopSection = .presets
     @State private var inviting: Conversation?
+    @State private var invitedProfile: GroupMember?
     @State private var showBookFriends = false
     @State private var preselectedBookID: UUID?
     @State private var editingPreset: AssistantPreset?
@@ -73,6 +77,7 @@ struct AssistantListView: View {
 
                 switch activeSection {
                 case .presets:
+                    PersonaDirectorySection { invitedProfile = $0 }
                     presetsSection
                 case .roundtables:
                     roundtablesSection
@@ -126,6 +131,7 @@ struct AssistantListView: View {
                     SystemEntryRouter.shared.conversationID = created.id
                 }
             }
+            .sheet(item: $invitedProfile) { PersonaInvitationView(member: $0) }
             .sheet(item: $inviting) { chat in
                 if let friend = chat.activeBookFriend {
                     BookInvitationSheet(friend: friend) { SystemEntryRouter.shared.conversationID = $0.id }
@@ -172,7 +178,7 @@ struct AssistantListView: View {
             }
             .fileImporter(
                 isPresented: $pickingBookFile,
-                allowedContentTypes: [.plainText, .pdf] + ["epub", "md", "markdown"].compactMap { UTType(filenameExtension: $0) }
+                allowedContentTypes: [.plainText, .pdf] + ["epub", "docx", "xlsx", "pptx", "md", "markdown"].compactMap { UTType(filenameExtension: $0) }
             ) { result in
                 switch result {
                 case .success(let url):
@@ -193,63 +199,70 @@ struct AssistantListView: View {
 
     // MARK: - Section 1: Presets
 
+    private var theme: DS.AccentTheme { preferences.accentTheme }
+
     private var presetsSection: some View {
         Section {
             ForEach(presets) { preset in
-                HStack(spacing: 12) {
-                    Text(preset.iconEmoji)
-                        .font(.system(size: 28))
-                        .frame(width: 44, height: 44)
-                        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                HStack(spacing: DS.Spacing.md) {
+                    Button {
+                        editingPreset = preset
+                    } label: {
+                        HStack(spacing: DS.Spacing.md) {
+                            AssistantEmojiIcon(emoji: preset.iconEmoji, font: .system(size: 26))
+                                .frame(width: 44, height: 44)
+                                .background(theme.softFill, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text(preset.name)
-                                .font(.body.weight(.semibold))
-                            if preset.enableThinking {
-                                Text("思考")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.purple)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1.5)
-                                    .background(Color.purple.opacity(0.12), in: Capsule())
+                            VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                                HStack(spacing: DS.Spacing.xs) {
+                                    Text(preset.name)
+                                        .font(.body.weight(.semibold))
+                                    if preset.enableThinking {
+                                        DSBadge(text: String(localized: "思考"), style: .accent(theme))
+                                    }
+                                }
+                                Text(preset.subtitle.isEmpty ? preset.systemPrompt : preset.subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
                             }
                         }
-
-                        Text(preset.subtitle.isEmpty ? preset.systemPrompt : preset.subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                        .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
-
-                    Spacer()
+                    .buttonStyle(.plain)
+                    .accessibilityHint(Text("编辑角色"))
 
                     Button {
                         onStartChatWithPreset(preset)
                     } label: {
                         Text("对话")
                             .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(Color.accentColor, in: Capsule())
-                            .foregroundStyle(.white)
+                            .padding(.horizontal, DS.Spacing.md)
+                            .padding(.vertical, 7)
+                            .foregroundStyle(.primary)
+                            .background(theme.softFill, in: Capsule())
+                            .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text("与\(preset.name)对话"))
                 }
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    editingPreset = preset
+                .padding(.vertical, 3)
+                .contextMenu {
+                    Button("设为默认助手") { preferences.defaultAssistantID = preset.id }
                 }
                 .swipeActions(edge: .trailing) {
                     Button(role: .destructive) {
                         let deletedPresetID = preset.id
-                        modelContext.delete(preset)
                         do {
                             try modelContext.save()
-                            PresetKnowledgeStore.shared.removePreset(deletedPresetID)
+                            try PresetKnowledgeStore.shared.setVolumeIDs([], for: deletedPresetID) {
+                                try modelContext.transaction { modelContext.delete(preset); try modelContext.save() }
+                            }
                         } catch {
                             modelContext.rollback()
+                            bookError = error.localizedDescription
                         }
                     } label: {
                         Label("删除", systemImage: "trash")
@@ -300,22 +313,16 @@ struct AssistantListView: View {
     }
 
     private func roundtableRow(_ template: GroupRoomTemplate) -> some View {
-        HStack(spacing: 12) {
-            Text(template.roomEmoji)
-                .font(.system(size: 26))
+        HStack(spacing: DS.Spacing.md) {
+            AssistantEmojiIcon(emoji: template.roomEmoji, font: .system(size: 26))
                 .frame(width: 44, height: 44)
-                .background(Color.indigo.opacity(0.11), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(theme.softFill, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                HStack(spacing: DS.Spacing.xs) {
                     Text(template.roomTitle)
                         .font(.body.weight(.semibold))
-                    Text("\(template.seats.count) 人 · \(template.speakingMode.shortBadge)")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.indigo)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1.5)
-                        .background(Color.indigo.opacity(0.12), in: Capsule())
+                    DSBadge(text: String(localized: "\(template.seats.count) 人 · \(template.speakingMode.shortBadge)"), style: .neutral)
                 }
                 Text(template.subtitle)
                     .font(.caption)
@@ -330,14 +337,16 @@ struct AssistantListView: View {
             } label: {
                 Text("开聊")
                     .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.accentColor, in: Capsule())
-                    .foregroundStyle(.white)
+                    .padding(.horizontal, DS.Spacing.md)
+                    .padding(.vertical, 7)
+                    .foregroundStyle(.primary)
+                    .background(theme.softFill, in: Capsule())
+                    .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 3)
     }
 
     private func startGroupChat(from template: GroupRoomTemplate) {
@@ -346,7 +355,7 @@ struct AssistantListView: View {
             showGroupSetup = true
             return
         }
-        let members = template.instantiate(using: ready)
+        let members = template.instantiate(using: ready, profiles: profiles.compactMap { try? $0.member() })
         let conv = Conversation(
             title: template.roomTitle,
             assistantEmoji: template.roomEmoji,
@@ -377,26 +386,33 @@ struct AssistantListView: View {
                 Label("从书中创建好友", systemImage: "book.pages")
             }
 
-            let bookChats = conversations.filter { $0.activeBookFriend != nil }
-            ForEach(bookChats) { chat in
-                if let friend = chat.activeBookFriend {
-                    HStack {
-                        Button { SystemEntryRouter.shared.conversationID = chat.id } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "person.crop.square").font(.title2).foregroundStyle(.tint)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(verbatim: friend.name).font(.body.weight(.medium)).foregroundStyle(.primary)
-                                    Text(verbatim: "\(friend.bookTitle) · \(friend.progressLabel(in: books.first { $0.id == friend.bookID }))")
-                                        .font(.caption).foregroundStyle(.secondary)
+            ForEach(BookFriendHistory.grouped(conversations)) { history in
+                let chat = history.chats[0]
+                let friend = history.friend
+                HStack {
+                    Button { SystemEntryRouter.shared.conversationID = chat.id } label: {
+                        VStack(alignment: .leading) {
+                            Label(friend.name, systemImage: "person.crop.square")
+                            Text(verbatim: "\(friend.bookTitle) · \(friend.progressLabel(in: books.first { $0.id == friend.bookID }))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.buttonStyle(.plain)
+                    Spacer()
+                    Menu {
+                        if history.chats.count > 1 {
+                            Section("不同进度的对话") {
+                                ForEach(history.chats) { thread in
+                                    if let scope = thread.activeBookFriend {
+                                        Button { SystemEntryRouter.shared.conversationID = thread.id } label: {
+                                            Text(verbatim: "\(scope.progressLabel(in: books.first { $0.id == scope.bookID })) · \(thread.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                                        }
+                                    }
                                 }
-                                Spacer()
-                            }.contentShape(Rectangle())
-                        }.buttonStyle(.plain)
-                        Menu {
-                            Button { inviting = chat } label: { Label("邀请进群", systemImage: "person.2.badge.plus") }
-                        } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
-                        .accessibilityLabel("好友操作")
-                    }
+                            }
+                        }
+                        Button { inviting = chat } label: { Label("邀请进群", systemImage: "person.2.badge.plus") }
+                    } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
+                    .accessibilityLabel("好友操作")
                 }
             }
         }
@@ -416,52 +432,18 @@ struct AssistantListView: View {
             }
             .disabled(importingBook)
 
+            let positions = Dictionary(readingStates.map { ($0.bookID, $0.chapter) }, uniquingKeysWith: { first, _ in first })
             ForEach(books) { book in
-                HStack(spacing: 12) {
-                    Image(systemName: "text.book.closed.fill")
-                        .font(.title3)
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 38, height: 38)
-                        .background(Color.accentColor.opacity(0.11), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(verbatim: book.title)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                        Text("共 \(book.chapterTitles.count) 节 · \(ByteCountFormatter.string(fromByteCount: Int64(book.displayByteCount), countStyle: .file))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    HStack(spacing: 6) {
-                        Button {
-                            startKnowledgeChat(with: book)
-                        } label: {
-                            Text("知识问答")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.teal)
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 5)
-                                .background(Color.teal.opacity(0.13), in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            preselectedBookID = book.id
-                            showBookFriends = true
-                        } label: {
-                            Text("创建角色")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 5)
-                                .background(Color(.secondarySystemBackground), in: Capsule())
-                        }
-                        .buttonStyle(.plain)
+                shelfRow(book, savedChapter: positions[book.id])
+                .padding(.vertical, 2)
+                .contextMenu {
+                    Button { startKnowledgeChat(with: book, newDiscussion: true) } label: {
+                        Label("新开讨论", systemImage: "square.and.pencil")
                     }
                 }
-                .padding(.vertical, 2)
+                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    Button { startKnowledgeChat(with: book, newDiscussion: true) } label: { Label("新开讨论", systemImage: "square.and.pencil") }
+                }
                 .swipeActions(edge: .trailing) {
                     Button(role: .destructive) {
                         bookToRemove = book
@@ -475,6 +457,56 @@ struct AssistantListView: View {
         } footer: {
             Text("支持 EPUB、TXT、Markdown 和 PDF（含扫描版离线文字识别）。正文保存在本机，并随完整备份导出。")
         }
+    }
+
+    private func shelfRow(_ book: BookVolume, savedChapter: Int?) -> some View {
+        let large = dynamicTypeSize.isAccessibilitySize
+        let layout = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 8))
+        return layout {
+            HStack(spacing: DS.Spacing.md) {
+                DSIconTile(systemImage: "text.book.closed.fill", tint: theme.readableText, size: 38, cornerRadius: DS.Radius.sm)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(verbatim: book.title).font(.headline).foregroundStyle(.primary)
+                    if let chapter = savedChapter, !book.chapterTitles.isEmpty {
+                        let index = min(max(0, chapter), book.chapterTitles.count - 1)
+                        let title = book.chapterTitles[index]
+                        Text("上次读到 \(title.isEmpty ? String(localized: "第 \(index + 1) 节") : title)")
+                            .accessibilityIdentifier("shelf.progress")
+                    } else { Text("共 \(book.chapterTitles.count) 节") }
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if large { shelfMenu(book) }
+            }
+            Button { startKnowledgeChat(with: book) } label: {
+                Text(savedChapter == nil ? String(localized: "开始阅读") : String(localized: "继续阅读"))
+                    .font(.subheadline.weight(.semibold))
+                    .fixedSize(horizontal: true, vertical: true)
+                    .frame(maxWidth: large ? .infinity : nil)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(theme.softFill, in: Capsule())
+                    .frame(minHeight: DS.TouchTarget.minimum)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if !large { shelfMenu(book) }
+        }
+    }
+
+    private func shelfMenu(_ book: BookVolume) -> some View {
+        Menu {
+            Button { startKnowledgeChat(with: book, newDiscussion: true) } label: {
+                Label("新开讨论", systemImage: "square.and.pencil")
+            }
+            Button {
+                preselectedBookID = book.id
+                showBookFriends = true
+            } label: { Label("创建角色", systemImage: "person.badge.plus") }
+        } label: {
+            Image(systemName: "ellipsis.circle").frame(width: DS.TouchTarget.minimum, height: DS.TouchTarget.minimum)
+        }
+        .accessibilityLabel("书籍操作")
     }
 
     // MARK: - Section 4: Study Coach & Spaced-Repetition Flashcards
@@ -505,17 +537,14 @@ struct AssistantListView: View {
         if let cardError { Text(verbatim: cardError).foregroundStyle(.red) }
 
         Section {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 16) {
-                    studyMetricItem(title: String(localized: "待复习"), value: "\(dueList.count)", tint: .indigo)
-                    Divider().frame(height: 28)
-                    studyMetricItem(title: String(localized: "总卡片"), value: "\(flashcardStore.cards.count)", tint: .primary)
-                    Divider().frame(height: 28)
-                    studyMetricItem(title: String(localized: "已熟记"), value: "\(flashcardStore.masteredCount)", tint: .green)
-                    Spacer()
+            VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                HStack(spacing: DS.Spacing.sm) {
+                    DSMetricTile(title: String(localized: "待复习"), value: "\(dueList.count)", valueTint: theme.readableText)
+                    DSMetricTile(title: String(localized: "总卡片"), value: "\(flashcardStore.cards.count)")
+                    DSMetricTile(title: String(localized: "已熟记"), value: "\(flashcardStore.masteredCount)", valueTint: .green)
                 }
 
-                HStack(spacing: 10) {
+                HStack(spacing: DS.Spacing.sm) {
                     Button {
                         let targetCards = dueList.isEmpty ? Array(visibleCards.shuffled().prefix(15)) : dueList
                         guard !targetCards.isEmpty else { return }
@@ -529,10 +558,9 @@ struct AssistantListView: View {
                             systemImage: "play.fill"
                         )
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(flashcardStore.cards.isEmpty ? Color.secondary.opacity(0.35) : Color.indigo, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .foregroundStyle(theme.solidForeground)
+                        .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum)
+                        .background(flashcardStore.cards.isEmpty ? Color.secondary.opacity(0.35) : theme.solidFill, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
                     }
                     .buttonStyle(.plain)
                     .disabled(flashcardStore.cards.isEmpty)
@@ -546,9 +574,10 @@ struct AssistantListView: View {
                         } label: {
                             Label("导出 Anki", systemImage: "square.and.arrow.up")
                                 .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 10)
-                                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, DS.Spacing.md)
+                                .frame(minHeight: DS.TouchTarget.minimum)
+                                .background(DS.Surface.neutralChipFill, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
                         }
                         .buttonStyle(.plain)
                     }
@@ -558,11 +587,11 @@ struct AssistantListView: View {
                     ShareLink(item: ankiExportURL) {
                         Label("点击分享或保存导出的 Anki 卡包 (.tsv)", systemImage: "doc.badge.arrow.up")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.indigo)
+                            .foregroundStyle(theme.readableText)
                     }
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, DS.Spacing.xxs)
         } header: {
             Text("间隔重复记忆舱")
         } footer: {
@@ -720,17 +749,6 @@ struct AssistantListView: View {
         }
     }
 
-    private func studyMetricItem(title: String, value: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value)
-                .font(.title3.monospacedDigit().weight(.bold))
-                .foregroundStyle(tint)
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private func deckChip(title: String, tag: String) -> some View {
         let selected = selectedStudyDeck == tag
         return Button {
@@ -739,19 +757,21 @@ struct AssistantListView: View {
         } label: {
             Text(title)
                 .font(.caption.weight(selected ? .semibold : .regular))
-                .foregroundStyle(selected ? .indigo : .primary)
+                .foregroundStyle(selected ? theme.readableText : .primary)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 5)
+                .padding(.vertical, 6)
                 .background(
-                    selected ? Color.indigo.opacity(0.15) : Color(.secondarySystemBackground),
+                    selected ? theme.softFill : DS.Surface.subtle,
                     in: Capsule()
                 )
+                .frame(minHeight: DS.TouchTarget.minimum)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
     private func startStudyCoachChat(mode: StudyCoachMode) {
-        let ready = ProviderConfig.readyTargets(in: providers).first
+        let ready = preferences.initialTarget(from: ProviderConfig.readyTargets(in: providers))
         let emoji: String
         switch mode {
         case .socratic: emoji = "💡"
@@ -770,17 +790,13 @@ struct AssistantListView: View {
         SystemEntryRouter.shared.conversationID = chat.id
     }
 
-    private func startKnowledgeChat(with book: BookVolume) {
-        let ready = ProviderConfig.readyTargets(in: providers).first
-        let chat = Conversation(
-            title: String(localized: "《\(book.title)》知识问答"),
-            assistantEmoji: "📚",
-            primaryTarget: ready
-        )
-        chat.assistanceSettings.knowledgeVolumeIDs = [book.id]
-        modelContext.insert(chat)
-        try? modelContext.save()
-        SystemEntryRouter.shared.conversationID = chat.id
+    private func startKnowledgeChat(with book: BookVolume, newDiscussion: Bool = false) {
+        do {
+            let target = preferences.initialTarget(from: ProviderConfig.readyTargets(in: providers))
+            let chat = try BookLibrary.companion(for: book, newDiscussion: newDiscussion, target: target, in: modelContext)
+            SystemEntryRouter.shared.openOriginalForChatID = newDiscussion ? nil : chat.id
+            SystemEntryRouter.shared.conversationID = chat.id
+        } catch { bookError = error.localizedDescription }
     }
 
     private func importBookToShelf(_ url: URL) {

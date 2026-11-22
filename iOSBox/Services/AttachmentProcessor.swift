@@ -103,6 +103,38 @@ enum AttachmentProcessor {
             )
         }
 
+        if OfficeDocumentReader.legacyBinaryExtensions.contains(ext) {
+            throw AttachmentError.legacyOfficeUnsupported
+        }
+
+        if OfficeDocumentReader.supportedExtensions.contains(ext) {
+            let baseTitle = url.deletingPathExtension().lastPathComponent
+            let officeText: String
+            do {
+                officeText = try OfficeDocumentReader.extractText(
+                    from: data,
+                    ext: ext,
+                    fallbackTitle: baseTitle,
+                    maxCharacters: maxTextCharacters
+                )
+            } catch BookImportError.noText {
+                officeText = String(localized: "[文档中未提取到可读文字内容]")
+            } catch BookImportError.locked {
+                officeText = String(localized: "[此文档已加密，无法读取内容，请先解除密码保护后重试]")
+            } catch is BookImportError {
+                throw AttachmentError.unsupportedBinary
+            }
+            let mimeType = UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream"
+            return MessageAttachment(
+                kind: .document,
+                fileName: fileName,
+                mimeType: mimeType,
+                dataBase64: nil,
+                extractedText: truncateIfNeeded(officeText),
+                byteSize: data.count
+            )
+        }
+
         // Plain text / code / structured text files: reject binary files containing NUL bytes
         // instead of forwarding decoded binary garbage to the model.
         let decoded: String
@@ -186,11 +218,13 @@ enum AttachmentError: LocalizedError {
     case limit
     case unreadableImage
     case unsupportedBinary
+    case legacyOfficeUnsupported
     var errorDescription: String? {
         switch self {
         case .limit: return String(localized: "附件超出限制：单文件最多 20 MB，每次最多 8 个附件，总内容最多 32 MB。")
         case .unreadableImage: return String(localized: "无法读取图片，或图片超过 20 MB 限制。")
-        case .unsupportedBinary: return String(localized: "不支持的二进制文件格式，请选择图片、PDF 或纯文本/代码文件。")
+        case .unsupportedBinary: return String(localized: "不支持的二进制文件格式，请选择图片、PDF、Office 文档（DOCX/XLSX/PPTX）或纯文本/代码文件。")
+        case .legacyOfficeUnsupported: return String(localized: "暂不支持旧版二进制 .doc / .xls / .ppt，请先另存为 .docx / .xlsx / .pptx 或 PDF 后再试。")
         }
     }
 }

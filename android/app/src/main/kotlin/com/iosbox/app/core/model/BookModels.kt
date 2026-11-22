@@ -37,6 +37,17 @@ data class BookManuscript(
         return json.encodeToString(chapters)
     }
 
+    // Swift backs up the same chapter records with sorted JSON keys.
+    internal fun iosBackupIdentifier(): String {
+        val sorted = buildJsonArray {
+            for (chapter in chapters) add(buildJsonObject {
+                put("text", chapter.text)
+                put("title", chapter.title)
+            })
+        }
+        return identifier(sorted.toString().toByteArray(Charsets.UTF_8))
+    }
+
     companion object {
         const val MAXIMUM_TEXT_BYTES = 12 * 1024 * 1024
         const val MAXIMUM_CHAPTERS = 5_000
@@ -65,6 +76,13 @@ data class PreparedBook(
     val byteCount: Long
 ) {
     companion object {
+        internal fun forIdentifier(manuscript: BookManuscript, id: String): PreparedBook? {
+            val prepared = from(manuscript)
+            return prepared.takeIf {
+                id.equals(it.id, ignoreCase = true) || id.equals(manuscript.iosBackupIdentifier(), ignoreCase = true)
+            }
+        }
+
         fun from(manuscript: BookManuscript): PreparedBook {
             val encoded = manuscript.encodedJson()
             val bytes = encoded.toByteArray(Charsets.UTF_8)
@@ -82,8 +100,8 @@ data class PreparedBook(
 sealed class BookImportError(override val message: String) : Exception(message) {
     class FileType : BookImportError(
         L10n.text(
-            "请选择 EPUB、TXT 或 Markdown 文件（PDF 文档可直接作为对话附件发送）。",
-            "Please select an EPUB, TXT, or Markdown file (PDFs can be attached directly in chat)."
+            "请选择 EPUB、PDF、DOCX、XLSX、PPTX、TXT 或 Markdown 文件。",
+            "Please select an EPUB, PDF, DOCX, XLSX, PPTX, TXT, or Markdown file."
         )
     )
 
@@ -97,6 +115,10 @@ sealed class BookImportError(override val message: String) : Exception(message) 
 
     class InvalidBook : BookImportError(
         L10n.text("无法读取这本书的目录或正文。", "Unable to read the chapters or content of this book.")
+    )
+
+    class IdentityMismatch : BookImportError(
+        L10n.text("书架中已有同一标识但正文无法校验的书籍。", "The shelf already contains a book with this identifier and unverifiable content.")
     )
 
     class NoText : BookImportError(

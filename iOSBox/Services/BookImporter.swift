@@ -27,6 +27,8 @@ enum BookImporter {
         let title = String(file.deletingPathExtension().lastPathComponent.prefix(300))
         switch file.pathExtension.lowercased() {
         case "epub": return try EPUBBookReader.read(data, fallbackTitle: title)
+        case "docx", "xlsx", "pptx":
+            return try OfficeDocumentReader.extractChapters(from: data, ext: file.pathExtension, fallbackTitle: title)
         case "pdf":
             guard let pdf = PDFDocument(data: data) else { throw BookImportError.invalidBook }
             guard !pdf.isLocked, pdf.allowsCopying else { throw BookImportError.locked }
@@ -67,16 +69,20 @@ enum BookImporter {
         return String(data: data, encoding: String.Encoding(rawValue: gb))
     }
 
-    private static func splitChapters(_ text: String) throws -> [BookChapter] {
+    static func splitChapters(_ text: String) throws -> [BookChapter] {
         let heading = try NSRegularExpression(pattern: #"^(?:#{1,4}\s+\S|第[〇零一二三四五六七八九十百千万两\d壹贰叁肆伍陆柒捌玖拾佰仟]+[章节回卷部篇]|(?:chapter|part|book)\s+(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)\b|序章$|楔子$|尾声$|后记$)"#, options: .caseInsensitive)
-        var result: [BookChapter] = [], title = String(localized: "正文"), lines: [Substring] = []
+        var result: [BookChapter] = [], title = String(localized: "正文"), body = ""
         func flush() {
-            let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !body.isEmpty { result.append(BookChapter(title: title, text: body)) }
-            lines.removeAll(keepingCapacity: true)
+            let cleaned = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty { result.append(BookChapter(title: title, text: cleaned)) }
+            body.removeAll(keepingCapacity: true)
         }
-        for raw in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+        var start = text.startIndex
+        while start < text.endIndex {
             try Task.checkCancellation()
+            let end = text[start...].firstIndex(where: \.isNewline) ?? text.endIndex
+            let raw = text[start..<end]
+            start = end == text.endIndex ? end : text.index(after: end)
             if raw.utf8.count <= 300 {
                 let line = raw.trimmingCharacters(in: .whitespaces)
                 if heading.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil {
@@ -86,7 +92,8 @@ enum BookImporter {
                     continue
                 }
             }
-            lines.append(raw)
+            body.append(contentsOf: raw)
+            body.append("\n")
         }
         flush()
         guard !result.isEmpty else { throw BookImportError.noText }

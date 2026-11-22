@@ -6,12 +6,11 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.speech.RecognizerIntent
-import android.util.Base64
 import androidx.core.content.ContextCompat
-import androidx.core.net.toUri
+import androidx.core.content.FileProvider
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ClearAll
@@ -62,6 +63,7 @@ import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Public
@@ -104,6 +106,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -136,12 +139,16 @@ import com.iosbox.app.core.storage.ConversationSearch
 import com.iosbox.app.core.storage.ModelMentionParser
 import com.iosbox.app.core.storage.SlashPromptCommand
 import com.iosbox.app.core.system.CalendarIntentLauncher
+import com.iosbox.app.core.system.PlainTextFormatter
+import com.iosbox.app.core.system.WebLinkHandoff
+import java.io.File
 import java.util.Locale
 import com.iosbox.app.ui.books.BookReaderSheet
 import com.iosbox.app.ui.study.MessageStudyDeckCard
 import com.iosbox.app.ui.theme.DS
 import com.iosbox.app.ui.theme.LocalAccentColors
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.text.SpanStyle
@@ -253,6 +260,22 @@ fun ChatDetailScreen(
         vm.attachUris(context.contentResolver, uris, imageOnly = true)
     }
 
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingCameraFile by remember { mutableStateOf<File?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { captured ->
+        val uri = pendingCameraUri
+        val file = pendingCameraFile
+        pendingCameraUri = null
+        pendingCameraFile = null
+        if (captured && uri != null) {
+            vm.attachUris(context.contentResolver, listOf(uri), imageOnly = true)
+        } else {
+            runCatching { file?.delete() }
+        }
+    }
+
     val documentPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
@@ -302,7 +325,7 @@ fun ChatDetailScreen(
     val conv = state.conversation
     val activeFriend = conv?.activeBookFriend
     val readyTargets = remember(state.providers) { ChatRepository.readyTargets(state.providers) }
-    val activeTarget = conv?.primaryTarget ?: readyTargets.firstOrNull()
+    val activeTarget = ChatRepository.resolveChatTarget(conv?.primaryTarget, readyTargets)
     val openCitation: (ReadingCitation) -> Unit = { cite ->
         val cap = if (activeFriend != null && cite.volumeID.equals(activeFriend.bookID, ignoreCase = true)) {
             activeFriend.throughChapter
@@ -340,7 +363,11 @@ fun ChatDetailScreen(
         topBarSubtitleOk = count >= 2
     } else {
         topBarSubtitle = activeTarget?.let { "${it.providerName} · ${it.modelDisplayName}" }
-            ?: L10n.text("未配置可用模型（点击选择）", "No ready model (tap to choose)")
+            ?: if (conv?.primaryTarget != null) {
+                L10n.text("已选模型不可用（点击更换）", "Selected model unavailable (tap to change)")
+            } else {
+                L10n.text("未配置可用模型（点击选择）", "No ready model (tap to choose)")
+            }
         topBarSubtitleOk = activeTarget != null
     }
 
@@ -1158,6 +1185,41 @@ fun ChatDetailScreen(
                         onDismissRequest = { showAttachMenu = false }
                     ) {
                         DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Filled.PhotoCamera, contentDescription = null) },
+                            text = { Text(L10n.text("拍照提问", "Take Photo")) },
+                            onClick = {
+                                showAttachMenu = false
+                                runCatching {
+                                    val cameraDir = File(context.cacheDir, "camera").apply { mkdirs() }
+                                    val now = System.currentTimeMillis()
+                                    cameraDir.listFiles()?.forEach { stale ->
+                                        if (now - stale.lastModified() > 10 * 60 * 1000L) {
+                                            stale.delete()
+                                        }
+                                    }
+                                    val captureFile = File.createTempFile("capture_", ".jpg", cameraDir)
+                                    val captureUri = FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.fileprovider",
+                                        captureFile
+                                    )
+                                    pendingCameraFile = captureFile
+                                    pendingCameraUri = captureUri
+                                    cameraLauncher.launch(captureUri)
+                                }.onFailure {
+                                    runCatching { pendingCameraFile?.delete() }
+                                    pendingCameraFile = null
+                                    pendingCameraUri = null
+                                    vm.reportBannerError(
+                                        L10n.text(
+                                            "无法启动系统相机应用。",
+                                            "Unable to open a camera app on this device."
+                                        )
+                                    )
+                                }
+                            }
+                        )
+                        DropdownMenuItem(
                             leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
                             text = { Text(L10n.text("选择图片", "Choose Images")) },
                             onClick = {
@@ -1167,10 +1229,20 @@ fun ChatDetailScreen(
                         )
                         DropdownMenuItem(
                             leadingIcon = { Icon(Icons.Filled.Description, contentDescription = null) },
-                            text = { Text(L10n.text("选择 PDF / 文本 / 代码", "Choose PDF / Text / Code")) },
+                            text = { Text(L10n.text("选择文档（PDF / Word / Excel / PPT / 文本）", "Choose Documents (PDF / Office / Text)")) },
                             onClick = {
                                 showAttachMenu = false
-                                documentPicker.launch(arrayOf("application/pdf", "text/*", "application/json", "*/*"))
+                                documentPicker.launch(
+                                    arrayOf(
+                                        "application/pdf",
+                                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                        "text/*",
+                                        "application/json",
+                                        "*/*"
+                                    )
+                                )
                             }
                         )
                     }
@@ -1765,8 +1837,11 @@ private fun MessageBubbleRow(
     onOpenFlashcardLibrary: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val accent = LocalAccentColors.current
     val meta = message.assistanceMetadata
+    var showCopyMenu by remember { mutableStateOf(false) }
+    var copiedFeedback by remember { mutableStateOf(false) }
 
     if (meta.isContextDivider) {
         Row(
@@ -2119,19 +2194,54 @@ private fun MessageBubbleRow(
                         )
                     }
                     if (message.content.isNotEmpty()) {
-                        IconButton(
-                            onClick = {
-                                val cm = context.getSystemService(ClipboardManager::class.java)
-                                cm?.setPrimaryClip(ClipData.newPlainText("Fugue", message.content))
-                            },
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.ContentCopy,
-                                contentDescription = L10n.text("复制", "Copy"),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(15.dp)
-                            )
+                        Box {
+                            IconButton(
+                                onClick = { showCopyMenu = true },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (copiedFeedback) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                                    contentDescription = L10n.text("复制", "Copy"),
+                                    tint = if (copiedFeedback) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showCopyMenu,
+                                onDismissRequest = { showCopyMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(L10n.text("复制纯文本（微信/办公）", "Copy Plain Text")) },
+                                    onClick = {
+                                        showCopyMenu = false
+                                        val cm = context.getSystemService(ClipboardManager::class.java)
+                                        cm?.setPrimaryClip(
+                                            ClipData.newPlainText(
+                                                "Fugue",
+                                                PlainTextFormatter.toPlainText(message.content)
+                                            )
+                                        )
+                                        copiedFeedback = true
+                                        scope.launch {
+                                            delay(1500)
+                                            copiedFeedback = false
+                                        }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(L10n.text("复制 Markdown 原文", "Copy Markdown")) },
+                                    onClick = {
+                                        showCopyMenu = false
+                                        val cm = context.getSystemService(ClipboardManager::class.java)
+                                        cm?.setPrimaryClip(ClipData.newPlainText("Fugue", message.content))
+                                        copiedFeedback = true
+                                        scope.launch {
+                                            delay(1500)
+                                            copiedFeedback = false
+                                        }
+                                    }
+                                )
+                            }
                         }
                         if (meta.sourceNotice == null) {
                             IconButton(
@@ -2343,12 +2453,9 @@ private fun SourceNoticeCard(notice: GroupSourceNotice) {
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Surface(
-                onClick = {
-                    runCatching {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, notice.url.toUri()))
-                    }
-                },
+            val canOpen = remember(notice.url) { WebLinkHandoff.destination(notice.url, publicHttps = true) != null }
+            if (canOpen) Surface(
+                onClick = { WebLinkHandoff.open(context, notice.url, publicHttps = true) },
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.primaryContainer
             ) {
@@ -2377,6 +2484,34 @@ private fun SourceNoticeCard(notice: GroupSourceNotice) {
 @Composable
 private fun ProposedSchedulesCard(items: List<ProposedScheduleItem>) {
     val context = LocalContext.current
+    var pendingCalendar by remember { mutableStateOf<Pair<ProposedScheduleItem, List<CalendarIntentLauncher.Destination>>?>(null) }
+    var calendarFailed by remember { mutableStateOf(false) }
+    pendingCalendar?.let { (item, destinations) ->
+        AlertDialog(
+            onDismissRequest = { pendingCalendar = null },
+            title = { Text(L10n.text("选择接收日程的应用", "Choose an app to receive this event")) },
+            text = {
+                Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                    for (destination in destinations) {
+                        TextButton(onClick = {
+                            pendingCalendar = null
+                            calendarFailed = !CalendarIntentLauncher.launchCalendarInsert(context, item, destination)
+                        }) {
+                            Text("${destination.name}\n${destination.component.packageName}")
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { pendingCalendar = null }) { Text(L10n.text("取消", "Cancel")) } }
+        )
+    }
+    if (calendarFailed) {
+        AlertDialog(
+            onDismissRequest = { calendarFailed = false },
+            title = { Text(L10n.text("日历应用不可用", "Calendar app unavailable")) },
+            confirmButton = { TextButton(onClick = { calendarFailed = false }) { Text(L10n.text("好", "OK")) } }
+        )
+    }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -2428,7 +2563,10 @@ private fun ProposedSchedulesCard(items: List<ProposedScheduleItem>) {
                         )
                     }
                     Surface(
-                        onClick = { CalendarIntentLauncher.launchCalendarInsert(context, item) },
+                        onClick = {
+                            val editors = CalendarIntentLauncher.availableEditors(context)
+                            if (editors.isEmpty()) calendarFailed = true else pendingCalendar = item to editors
+                        },
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.primary
                     ) {
@@ -2458,28 +2596,26 @@ private fun ProposedSchedulesCard(items: List<ProposedScheduleItem>) {
 
 @Composable
 internal fun AttachmentStrip(attachments: List<MessageAttachment>) {
-    Row(
-        modifier = Modifier.horizontalScroll(rememberScrollState()),
+    LazyRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        for (att in attachments) {
+        items(attachments) { att ->
             if (att.kind == AttachmentKind.IMAGE && !att.dataBase64.isNullOrEmpty()) {
-                val bitmap = remember(att.id, att.dataBase64) {
-                    runCatching {
-                        val bytes = Base64.decode(att.dataBase64, Base64.DEFAULT)
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-                    }.getOrNull()
+                val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, att.id, att.dataBase64) {
+                    value = null
+                    value = com.iosbox.app.core.storage.AttachmentProcessor.previewBitmap(att.dataBase64)?.asImageBitmap()
                 }
-                if (bitmap != null) {
+                val preview = bitmap
+                if (preview != null) {
                     Image(
-                        bitmap = bitmap,
+                        bitmap = preview,
                         contentDescription = att.fileName,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .size(96.dp)
                             .clip(RoundedCornerShape(DS.Radius.sm))
                     )
-                    continue
+                    return@items
                 }
             }
             AttachmentChip(attachment = att, onRemove = null)

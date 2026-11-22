@@ -68,6 +68,13 @@ ksp {
     arg("room.generateKotlin", "true")
 }
 
+val packagePdfBoxTestAssetsJar by tasks.registering(org.gradle.api.tasks.bundling.Jar::class) {
+    dependsOn("mergeDebugAssets")
+    from(layout.buildDirectory.dir("intermediates/assets/debug/mergeDebugAssets"))
+    archiveFileName.set("pdfbox-test-assets.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("intermediates/pdfbox_test_assets"))
+}
+
 dependencies {
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
@@ -104,10 +111,14 @@ dependencies {
     implementation(libs.tink.android)
     implementation(libs.androidx.datastore.preferences)
 
+    // Documents
+    implementation(libs.pdfbox.android)
+
     // Unit tests
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    testRuntimeOnly(files(packagePdfBoxTestAssetsJar))
 
     // Instrumented tests
     androidTestImplementation(libs.androidx.test.core)

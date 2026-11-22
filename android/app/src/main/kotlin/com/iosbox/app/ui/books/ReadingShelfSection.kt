@@ -79,8 +79,8 @@ fun ReadingShelfSection(
                 )
                 Text(
                     text = L10n.text(
-                        "点击右下角 + 导入 EPUB / TXT / Markdown 书籍。",
-                        "Tap + to import an EPUB, TXT, or Markdown book."
+                        "点击右下角 + 导入 EPUB / PDF / Office / TXT / Markdown 书籍或资料。",
+                        "Tap + to import an EPUB, PDF, Office, TXT, or Markdown file."
                     ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant

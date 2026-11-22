@@ -91,7 +91,7 @@ struct KnowledgeBindingSheet: View {
             }
             .fileImporter(
                 isPresented: $pickingFile,
-                allowedContentTypes: [.plainText, .pdf] + ["epub", "md", "markdown"].compactMap { UTType(filenameExtension: $0) }
+                allowedContentTypes: [.plainText, .pdf] + ["epub", "docx", "xlsx", "pptx", "md", "markdown"].compactMap { UTType(filenameExtension: $0) }
             ) { result in
                 switch result {
                 case .success(let url):
