@@ -63,7 +63,14 @@ data class UserPreferencesSnapshot(
     val presetsSeeded: Boolean = false,
     val providersSeeded: Boolean = false,
     val defaultTargetID: String? = null,
-    val defaultAssistantID: String? = null
+    val defaultAssistantID: String? = null,
+    val audioTranscriptionProviderID: String? = null,
+    val audioTranscriptionModel: String = "whisper-1",
+    val audioTranscriptionLanguage: String = "",
+    val useCloudTTS: Boolean = false,
+    val cloudTTSProviderID: String? = null,
+    val cloudTTSModel: String = "tts-1",
+    val cloudTTSVoice: String = "alloy"
 )
 
 private val Context.prefsDataStore: DataStore<Preferences> by preferencesDataStore(name = "fugue_preferences")
@@ -80,6 +87,13 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
         val DEFAULT_TARGET = stringPreferencesKey("default_target_id")
         val DEFAULT_ASSISTANT = stringPreferencesKey("default_assistant_id")
         val CAPABILITY_CACHE = stringPreferencesKey("gateway_capability_negations_v1")
+        val AUDIO_TRANSCRIPTION_PROVIDER = stringPreferencesKey("audio_transcription_provider_id")
+        val AUDIO_TRANSCRIPTION_MODEL = stringPreferencesKey("audio_transcription_model")
+        val AUDIO_TRANSCRIPTION_LANGUAGE = stringPreferencesKey("audio_transcription_language")
+        val USE_CLOUD_TTS = booleanPreferencesKey("use_cloud_tts")
+        val CLOUD_TTS_PROVIDER = stringPreferencesKey("cloud_tts_provider_id")
+        val CLOUD_TTS_MODEL = stringPreferencesKey("cloud_tts_model")
+        val CLOUD_TTS_VOICE = stringPreferencesKey("cloud_tts_voice")
     }
 
     private val _state = MutableStateFlow(UserPreferencesSnapshot())
@@ -100,7 +114,14 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
             presetsSeeded = prefs[Keys.PRESETS_SEEDED] ?: false,
             providersSeeded = prefs[Keys.PROVIDERS_SEEDED] ?: false,
             defaultTargetID = prefs[Keys.DEFAULT_TARGET],
-            defaultAssistantID = prefs[Keys.DEFAULT_ASSISTANT]
+            defaultAssistantID = prefs[Keys.DEFAULT_ASSISTANT],
+            audioTranscriptionProviderID = prefs[Keys.AUDIO_TRANSCRIPTION_PROVIDER],
+            audioTranscriptionModel = prefs[Keys.AUDIO_TRANSCRIPTION_MODEL]?.takeIf { it.isNotBlank() } ?: "whisper-1",
+            audioTranscriptionLanguage = prefs[Keys.AUDIO_TRANSCRIPTION_LANGUAGE].orEmpty(),
+            useCloudTTS = prefs[Keys.USE_CLOUD_TTS] ?: false,
+            cloudTTSProviderID = prefs[Keys.CLOUD_TTS_PROVIDER],
+            cloudTTSModel = prefs[Keys.CLOUD_TTS_MODEL]?.takeIf { it.isNotBlank() } ?: "tts-1",
+            cloudTTSVoice = prefs[Keys.CLOUD_TTS_VOICE]?.takeIf { it.isNotBlank() } ?: "alloy"
         )
     }
 
@@ -144,6 +165,53 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
         appContext.prefsDataStore.edit {
             if (id.isNullOrBlank()) it.remove(Keys.DEFAULT_ASSISTANT) else it[Keys.DEFAULT_ASSISTANT] = id
         }
+    }
+
+    suspend fun setAudioTranscriptionProviderID(id: String?) {
+        val clean = id?.trim()?.takeIf { it.isNotEmpty() }
+        _state.value = _state.value.copy(audioTranscriptionProviderID = clean)
+        appContext.prefsDataStore.edit {
+            if (clean == null) it.remove(Keys.AUDIO_TRANSCRIPTION_PROVIDER) else it[Keys.AUDIO_TRANSCRIPTION_PROVIDER] = clean
+        }
+    }
+
+    suspend fun setAudioTranscriptionModel(model: String) {
+        val clean = model.trim().ifEmpty { "whisper-1" }
+        _state.value = _state.value.copy(audioTranscriptionModel = clean)
+        appContext.prefsDataStore.edit { it[Keys.AUDIO_TRANSCRIPTION_MODEL] = clean }
+    }
+
+    suspend fun setAudioTranscriptionLanguage(language: String) {
+        val clean = language.trim()
+        _state.value = _state.value.copy(audioTranscriptionLanguage = clean)
+        appContext.prefsDataStore.edit {
+            if (clean.isEmpty()) it.remove(Keys.AUDIO_TRANSCRIPTION_LANGUAGE) else it[Keys.AUDIO_TRANSCRIPTION_LANGUAGE] = clean
+        }
+    }
+
+    suspend fun setUseCloudTTS(enabled: Boolean) {
+        _state.value = _state.value.copy(useCloudTTS = enabled)
+        appContext.prefsDataStore.edit { it[Keys.USE_CLOUD_TTS] = enabled }
+    }
+
+    suspend fun setCloudTTSProviderID(id: String?) {
+        val clean = id?.trim()?.takeIf { it.isNotEmpty() }
+        _state.value = _state.value.copy(cloudTTSProviderID = clean)
+        appContext.prefsDataStore.edit {
+            if (clean == null) it.remove(Keys.CLOUD_TTS_PROVIDER) else it[Keys.CLOUD_TTS_PROVIDER] = clean
+        }
+    }
+
+    suspend fun setCloudTTSModel(model: String) {
+        val clean = model.trim().ifEmpty { "tts-1" }
+        _state.value = _state.value.copy(cloudTTSModel = clean)
+        appContext.prefsDataStore.edit { it[Keys.CLOUD_TTS_MODEL] = clean }
+    }
+
+    suspend fun setCloudTTSVoice(voice: String) {
+        val clean = voice.trim().ifEmpty { "alloy" }
+        _state.value = _state.value.copy(cloudTTSVoice = clean)
+        appContext.prefsDataStore.edit { it[Keys.CLOUD_TTS_VOICE] = clean }
     }
 
     override fun loadRaw(): String? = capabilityRaw

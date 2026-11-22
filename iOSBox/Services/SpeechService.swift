@@ -6,21 +6,27 @@ import Observation
 
 @MainActor
 @Observable
-final class SpeechService: NSObject, AVSpeechSynthesizerDelegate {
+final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
     static let shared = SpeechService()
 
     private(set) var speakingMessageID: UUID?
     private(set) var isRecording = false
+    private(set) var isSynthesizingCloudSpeech = false
     var speechError: String?
 
     @ObservationIgnored private let synthesizer = AVSpeechSynthesizer()
     @ObservationIgnored private var activeUtteranceID: ObjectIdentifier?
+    @ObservationIgnored private var audioPlayer: AVAudioPlayer?
+    @ObservationIgnored private var activePlayerID: ObjectIdentifier?
+    @ObservationIgnored private var cloudSpeechTask: Task<Void, Never>?
     @ObservationIgnored private var dictationToken: UUID?
     @ObservationIgnored private var audioEngine: AVAudioEngine?
     @ObservationIgnored private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     @ObservationIgnored private var recognitionTask: SFSpeechRecognitionTask?
     @ObservationIgnored private var activeRecordingHandler: ((String) -> Void)?
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
+    @ObservationIgnored private let sessionQueue = DispatchQueue(label: "com.iosbox.speech.audio-session", qos: .userInitiated)
+    @ObservationIgnored private var audioSessionRequested = false
 
     private override init() {
         super.init()
@@ -36,29 +42,132 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate {
                   type == .began else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if self.isRecording { self.stopDictation() }
+                if self.dictationToken != nil { self.stopDictation() }
                 if self.speakingMessageID != nil { self.stopSpeaking() }
             }
         }
     }
 
+    // MARK: - Text Cleaning for Speech
+
+    nonisolated static func cleanForSpeech(_ markdown: String) -> String {
+        var cleaned = markdown
+        if let codeRe = try? NSRegularExpression(pattern: #"```[\s\S]*?```"#) {
+            cleaned = codeRe.stringByReplacingMatches(
+                in: cleaned,
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: " 代码片段。"
+            )
+        }
+        if let linkRe = try? NSRegularExpression(pattern: #"\[([^\]]+)\]\(([^)]+)\)"#) {
+            cleaned = linkRe.stringByReplacingMatches(
+                in: cleaned,
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: "$1"
+            )
+        }
+        if let headingRe = try? NSRegularExpression(pattern: #"(?m)^#{1,6}\s+"#) {
+            cleaned = headingRe.stringByReplacingMatches(
+                in: cleaned,
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: ""
+            )
+        }
+        if let quoteRe = try? NSRegularExpression(pattern: #"(?m)^>\s*"#) {
+            cleaned = quoteRe.stringByReplacingMatches(
+                in: cleaned,
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: ""
+            )
+        }
+        if let urlRe = try? NSRegularExpression(pattern: #"https?://\S+"#) {
+            cleaned = urlRe.stringByReplacingMatches(
+                in: cleaned,
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: ""
+            )
+        }
+        cleaned = cleaned
+            .replacingOccurrences(of: "$$", with: " ")
+            .replacingOccurrences(of: "\\(", with: " ")
+            .replacingOccurrences(of: "\\)", with: " ")
+            .replacingOccurrences(of: "\\[", with: " ")
+            .replacingOccurrences(of: "\\]", with: " ")
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "__", with: "")
+            .replacingOccurrences(of: "~~", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "$", with: "")
+        return cleaned
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     // MARK: - Text-to-Speech
 
-    func toggleSpeaking(messageID: UUID, text: String, personaID: UUID? = nil) {
-        if speakingMessageID == messageID && synthesizer.isSpeaking {
+    func toggleSpeaking(
+        messageID: UUID,
+        text: String,
+        personaID: UUID? = nil,
+        cloudSynthesizer: (@Sendable (String) async throws -> Data)? = nil
+    ) {
+        if speakingMessageID == messageID {
             stopSpeaking()
             return
         }
-        if isRecording {
+        if dictationToken != nil {
             stopDictation()
         }
         stopSpeaking()
-        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = Self.cleanForSpeech(text)
         guard !cleaned.isEmpty else { return }
 
-        configurePlaybackAudioSession()
-        let utterance = AVSpeechUtterance(string: cleaned)
-        utterance.voice = preferredVoice(for: cleaned, personaID: personaID)
+        guard let cloudSynthesizer else {
+            speakLocally(messageID: messageID, text: cleaned, personaID: personaID)
+            return
+        }
+
+        speakingMessageID = messageID
+        isSynthesizingCloudSpeech = true
+        cloudSpeechTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let mp3Data = try await cloudSynthesizer(cleaned)
+                guard !Task.isCancelled, self.speakingMessageID == messageID else { return }
+                let player = try AVAudioPlayer(data: mp3Data)
+                player.delegate = self
+                let playerID = ObjectIdentifier(player)
+                self.audioPlayer = player
+                self.activePlayerID = playerID
+                self.isSynthesizingCloudSpeech = false
+                self.activateAudioSession(forRecording: false) { [weak self] err in
+                    guard let self,
+                          self.activePlayerID == playerID,
+                          self.speakingMessageID == messageID else { return }
+                    if err != nil || !player.play() {
+                        self.audioPlayer?.stop()
+                        self.audioPlayer = nil
+                        self.activePlayerID = nil
+                        self.speakLocally(messageID: messageID, text: cleaned, personaID: personaID)
+                    }
+                }
+            } catch is CancellationError {
+                self.isSynthesizingCloudSpeech = false
+            } catch {
+                self.isSynthesizingCloudSpeech = false
+                guard !Task.isCancelled, self.speakingMessageID == messageID else { return }
+                self.audioPlayer = nil
+                self.activePlayerID = nil
+                self.speakLocally(messageID: messageID, text: cleaned, personaID: personaID)
+            }
+        }
+    }
+
+    private func speakLocally(messageID: UUID, text: String, personaID: UUID?) {
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = preferredVoice(for: text, personaID: personaID)
         if let personaID {
             let bucket = Self.personaVoiceBucket(for: personaID)
             let pitchOffsets: [Float] = [0.92, 1.0, 1.08, 0.96, 1.12, 1.04]
@@ -70,11 +179,27 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate {
         }
         activeUtteranceID = ObjectIdentifier(utterance)
         speakingMessageID = messageID
-        synthesizer.speak(utterance)
+        activateAudioSession(forRecording: false) { [weak self] _ in
+            guard let self, self.activeUtteranceID == ObjectIdentifier(utterance) else { return }
+            self.synthesizer.speak(utterance)
+        }
     }
 
     func stopSpeaking() {
-        let hadActiveSpeech = activeUtteranceID != nil || speakingMessageID != nil || synthesizer.isSpeaking
+        let hadActiveSpeech = activeUtteranceID != nil
+            || activePlayerID != nil
+            || cloudSpeechTask != nil
+            || speakingMessageID != nil
+            || synthesizer.isSpeaking
+            || (audioPlayer?.isPlaying == true)
+        cloudSpeechTask?.cancel()
+        cloudSpeechTask = nil
+        isSynthesizingCloudSpeech = false
+        activePlayerID = nil
+        if let player = audioPlayer {
+            player.stop()
+            audioPlayer = nil
+        }
         activeUtteranceID = nil
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
@@ -89,6 +214,28 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate {
                 try? await Task.sleep(for: .milliseconds(150))
                 self?.deactivateAudioSessionIfIdle()
             }
+        }
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        let finishedID = ObjectIdentifier(player)
+        Task { @MainActor [weak self] in
+            guard let self, self.activePlayerID == finishedID else { return }
+            self.activePlayerID = nil
+            self.audioPlayer = nil
+            self.speakingMessageID = nil
+            self.deactivateAudioSessionIfIdle()
+        }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        let erroredID = ObjectIdentifier(player)
+        Task { @MainActor [weak self] in
+            guard let self, self.activePlayerID == erroredID else { return }
+            self.activePlayerID = nil
+            self.audioPlayer = nil
+            self.speakingMessageID = nil
+            self.deactivateAudioSessionIfIdle()
         }
     }
 
@@ -152,15 +299,37 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate {
         return Int(hash % 6)
     }
 
-    private func configurePlaybackAudioSession() {
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try? session.setActive(true, options: [])
+    // Keep activate/deactivate in request order, including when a user rapidly switches
+    // between speech and dictation. Audio hardware negotiation can block for hundreds of ms.
+    private func activateAudioSession(forRecording: Bool, completion: @escaping @MainActor (Error?) -> Void) {
+        audioSessionRequested = true
+        sessionQueue.async {
+            let session = AVAudioSession.sharedInstance()
+            do {
+                if forRecording {
+                    try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
+                } else {
+                    try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+                }
+                try session.setActive(true)
+                DispatchQueue.main.async { completion(nil) }
+            } catch {
+                DispatchQueue.main.async { completion(error) }
+            }
+        }
     }
 
     private func deactivateAudioSessionIfIdle() {
-        guard !isRecording && !synthesizer.isSpeaking && activeUtteranceID == nil else { return }
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        guard audioSessionRequested,
+              dictationToken == nil,
+              !synthesizer.isSpeaking,
+              activeUtteranceID == nil,
+              activePlayerID == nil,
+              cloudSpeechTask == nil else { return }
+        audioSessionRequested = false
+        sessionQueue.async {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 
     // MARK: - Speech-to-Text Dictation
@@ -179,9 +348,8 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate {
             Task { @MainActor in
                 guard let self, self.dictationToken == token else { return }
                 guard authStatus == .authorized else {
-                    self.dictationToken = nil
-                    self.activeRecordingHandler = nil
                     self.speechError = String(localized: "请在系统设置中允许语音识别权限后再使用语音输入。")
+                    self.stopDictation()
                     return
                 }
                 AVAudioApplication.requestRecordPermission { granted in
@@ -190,9 +358,8 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate {
                         if granted {
                             self.beginAudioCapture()
                         } else {
-                            self.dictationToken = nil
-                            self.activeRecordingHandler = nil
                             self.speechError = String(localized: "请在系统设置中允许麦克风权限后再使用语音输入。")
+                            self.stopDictation()
                         }
                     }
                 }
@@ -216,17 +383,26 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate {
 
     private func beginAudioCapture() {
         stopSpeaking()
+        guard let token = dictationToken else { return }
         guard let recognizer = SFSpeechRecognizer(locale: Locale.current) ?? SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")),
               recognizer.isAvailable else {
             speechError = String(localized: "当前设备暂不支持语音识别。")
+            stopDictation()
             return
         }
+        activateAudioSession(forRecording: true) { [weak self] error in
+            guard let self, self.dictationToken == token else { return }
+            if let error {
+                self.speechError = error.localizedDescription
+                self.stopDictation()
+                return
+            }
+            self.startRecognition(recognizer, token: token)
+        }
+    }
 
+    private func startRecognition(_ recognizer: SFSpeechRecognizer, token: UUID) {
         do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-
             let engine = AVAudioEngine()
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
@@ -241,17 +417,16 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate {
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
                 request.append(buffer)
             }
-
+            self.audioEngine = engine
+            self.recognitionRequest = request
             engine.prepare()
             try engine.start()
 
-            self.audioEngine = engine
-            self.recognitionRequest = request
             self.isRecording = true
 
             self.recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, self.dictationToken == token else { return }
                     if let result {
                         self.activeRecordingHandler?(result.bestTranscription.formattedString)
                         if result.isFinal {

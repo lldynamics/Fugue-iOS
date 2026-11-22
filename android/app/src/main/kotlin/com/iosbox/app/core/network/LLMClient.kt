@@ -8,13 +8,16 @@ import com.iosbox.app.core.model.MessageRole
 import com.iosbox.app.core.model.ModelSpec
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -39,6 +42,44 @@ class LLMHttpStatusException(
     val retryAfterSeconds: Double?
 ) : Exception(message)
 
+internal class CatalogReadBudget {
+    var remaining = 12L * 1024 * 1024
+    private var remainingEntries = 10_000
+
+    fun modelRows(items: JsonArray): List<JsonObject> {
+        if (items.size > remainingEntries) throw IOException("Model list has too many entries")
+        remainingEntries -= items.size
+        return items.mapNotNull { it as? JsonObject }
+    }
+
+    suspend fun validateStructure(data: ByteArray) {
+        val context = currentCoroutineContext()
+        var depth = 0
+        var separators = 0
+        var inString = false
+        var escaped = false
+        for (index in data.indices) {
+            if ((index and 16_383) == 0) context.ensureActive()
+            val char = data[index].toInt()
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    char == 92 -> escaped = true
+                    char == 34 -> inString = false
+                }
+                continue
+            }
+            when (char) {
+                34 -> inString = true
+                91, 123 -> { depth++; separators++ }
+                93, 125 -> if (--depth < 0) throw IOException("Malformed provider model list")
+                44, 58 -> separators++
+            }
+            if (depth > 64 || separators > 100_000) throw IOException("Provider model list is too complex")
+        }
+    }
+}
+
 class LLMClient(
     val capabilityCache: GatewayCapabilityCache = GatewayCapabilityCache(),
     val keyRouter: APIKeyPoolRouter = APIKeyPoolRouter(),
@@ -54,6 +95,29 @@ class LLMClient(
         .callTimeout(0, TimeUnit.SECONDS)
         .addInterceptor(PrivateCleartextOnlyInterceptor())
         .build()
+
+    private val lanHttpClient by lazy {
+        httpClient.newBuilder()
+            .proxy(java.net.Proxy.NO_PROXY)
+            .dns(object : okhttp3.Dns {
+                override fun lookup(hostname: String): List<java.net.InetAddress> =
+                    httpClient.dns.lookup(hostname).filter(NetworkLocation::isPrivateCleartextAddress).ifEmpty {
+                        throw BlockedTransportException(LLMError.InsecurePublicHttp("http://$hostname"))
+                    }
+            })
+            .addNetworkInterceptor { chain ->
+                val socket = chain.connection()?.socket()
+                if (socket == null || !NetworkLocation.isPrivateCleartextAddress(socket.inetAddress)) {
+                    throw BlockedTransportException(LLMError.InsecurePublicHttp("http://${chain.request().url.host}"))
+                }
+                chain.proceed(chain.request())
+            }
+            .build()
+    }
+
+    internal fun clientFor(request: Request): OkHttpClient = if (request.url.isHttps) httpClient else lanHttpClient
+
+    internal fun hasConsentAccepted(): Boolean = isConsentAccepted()
 
     internal val json = Json { ignoreUnknownKeys = true }
 
@@ -199,10 +263,6 @@ class LLMClient(
         var transientRetriesUsed = 0
         val idleTimeoutSec = resolvedIdleTimeoutSeconds(request)
         val idleTimeoutMs = (idleTimeoutSec * 1000.0).roundToLong().coerceIn(50L, 3_600_000L)
-        val attemptClient = httpClient.newBuilder()
-            .readTimeout(idleTimeoutMs, TimeUnit.MILLISECONDS)
-            .connectTimeout(minOf(30_000L, idleTimeoutMs), TimeUnit.MILLISECONDS)
-            .build()
 
         while (true) {
             val activeKey = orderedKeys[keyIndex]
@@ -211,6 +271,10 @@ class LLMClient(
 
             var accepted = false
             try {
+                val attemptClient = clientFor(okHttpRequest).newBuilder()
+                    .readTimeout(idleTimeoutMs, TimeUnit.MILLISECONDS)
+                    .connectTimeout(minOf(30_000L, idleTimeoutMs), TimeUnit.MILLISECONDS)
+                    .build()
                 executeCallCancellably(attemptClient.newCall(okHttpRequest)) { response ->
                     validateHttpResponse(response)
                     accepted = true
@@ -291,49 +355,36 @@ class LLMClient(
         emit(LLMStreamEvent.Done)
     }.flowOn(Dispatchers.IO)
 
-    internal suspend fun fetchJsonObject(request: Request): JsonObject {
-        val fresh = request.newBuilder()
-            .header("Cache-Control", "no-cache")
-            .build()
-        val client = httpClient.newBuilder()
-            .readTimeout(30, TimeUnit.SECONDS)
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .build()
-        return withContext(Dispatchers.IO) {
-            try {
-                executeCallCancellably(client.newCall(fresh)) { response ->
-                    val data = response.body?.bytes() ?: ByteArray(0)
-                    validateDataResponse(response, data)
-                    val text = data.toString(Charsets.UTF_8)
-                    val elem = runCatching { json.parseToJsonElement(text) }.getOrNull()
-                    (elem as? JsonObject) ?: throw IOException("Unexpected non-object JSON response")
-                }
-            } catch (blocked: BlockedTransportException) {
-                throw blocked.llmError
-            }
-        }
-    }
+    internal suspend fun fetchJsonObject(request: Request, budget: CatalogReadBudget): JsonObject =
+        (fetchJsonElement(request, budget) as? JsonObject) ?: throw IOException("Unexpected non-object JSON response")
 
-    internal suspend fun fetchJsonElement(request: Request): kotlinx.serialization.json.JsonElement {
-        val fresh = request.newBuilder()
-            .header("Cache-Control", "no-cache")
-            .build()
-        val client = httpClient.newBuilder()
+    internal suspend fun fetchJsonElement(
+        request: Request, budget: CatalogReadBudget = CatalogReadBudget()
+    ): kotlinx.serialization.json.JsonElement = withContext(Dispatchers.IO) {
+        val fresh = request.newBuilder().header("Cache-Control", "no-cache").build()
+        val client = clientFor(fresh).newBuilder()
             .readTimeout(30, TimeUnit.SECONDS)
             .connectTimeout(30, TimeUnit.SECONDS)
             .build()
-        return withContext(Dispatchers.IO) {
-            try {
-                executeCallCancellably(client.newCall(fresh)) { response ->
-                    val data = response.body?.bytes() ?: ByteArray(0)
-                    validateDataResponse(response, data)
-                    val text = data.toString(Charsets.UTF_8)
-                    runCatching { json.parseToJsonElement(text) }
-                        .getOrElse { throw IOException("Cannot parse JSON response", it) }
+        try {
+            executeCallCancellably(client.newCall(fresh)) { response ->
+                validateHttpResponse(response)
+                val body = response.body ?: throw LLMError.EmptyResponse()
+                val limit = minOf(4L * 1024 * 1024, budget.remaining)
+                val source = body.source()
+                if (limit <= 0 || body.contentLength() > limit || source.request(limit + 1)) {
+                    throw IOException("Provider model list exceeds the supported size")
                 }
-            } catch (blocked: BlockedTransportException) {
-                throw blocked.llmError
+                val data = source.readByteArray()
+                budget.remaining -= data.size.toLong()
+                budget.validateStructure(data)
+                runCatching { json.parseToJsonElement(data.toString(Charsets.UTF_8)) }
+                    .getOrElse { throw IOException("Cannot parse JSON response", it) }
             }
+        } catch (blocked: BlockedTransportException) {
+            throw blocked.llmError
+        } catch (status: LLMHttpStatusException) {
+            throw LLMError.HttpError(status.statusCode, status.message)
         }
     }
 
@@ -462,12 +513,6 @@ class LLMClient(
             }.getOrDefault(ByteArray(0))
             val msg = enrichErrorMessage(extractReadableErrorMessage(errBytes), response)
             throw LLMHttpStatusException(response.code, msg, retryAfter)
-        }
-
-        private fun validateDataResponse(response: Response, data: ByteArray) {
-            if (response.code in 200..299) return
-            val msg = enrichErrorMessage(extractReadableErrorMessage(data), response)
-            throw LLMError.HttpError(response.code, msg)
         }
 
         fun parseRetryAfter(response: Response, nowMillis: Long = System.currentTimeMillis()): Double? {

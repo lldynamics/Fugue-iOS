@@ -25,8 +25,6 @@ struct ProviderListView: View {
     @State private var backupAlert: BackupAlert?
     @State private var providerPendingDeletion: ProviderConfig?
 
-    private static let maximumBackupImportBytes = 256 * 1024 * 1024
-
     var body: some View {
         NavigationStack(path: $navigationPath) {
             List {
@@ -51,12 +49,16 @@ struct ProviderListView: View {
                 }
 
                 Section("个性化与联网") {
+                    NavigationLink { NewChatDefaultsView() } label: {
+                        Label("新对话默认设置", systemImage: "bubble.left.and.text.bubble.right")
+                    }
                     NavigationLink { AppearanceSettingsView() } label: { Label("阅读与交互偏好", systemImage: "textformat.size") }
+                    NavigationLink { VoiceSettingsView() } label: { Label("语音转写与自然朗读", systemImage: "waveform") }
                     NavigationLink { PersonalMemoryView() } label: { Label("个人长期记忆", systemImage: "brain.head.profile") }
                     NavigationLink { SearchSettingsView() } label: { Label("联网搜索", systemImage: "globe") }
                 }
 
-                Section("支持接入的协议说明") {
+                Section {
                     ForEach(APIProtocolType.allCases) { proto in
                         HStack(alignment: .top, spacing: 10) {
                             Image(systemName: proto.symbolName)
@@ -66,12 +68,14 @@ struct ProviderListView: View {
                                 Text(proto.displayName)
                                     .font(.footnote.weight(.semibold))
                                 Text(proto.subtitle)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .font(.caption)
                             }
                         }
                         .padding(.vertical, 2)
+                        .foregroundStyle(.primary)
                     }
+                } header: {
+                    Text("支持接入的协议说明").foregroundStyle(.primary)
                 }
 
                 Section {
@@ -101,7 +105,7 @@ struct ProviderListView: View {
                                 .font(.subheadline)
                         }
                     }
-                    .disabled(isExporting)
+                    .disabled(isExporting || !PersistenceController.canCommitUserData(in: modelContext))
 
                     Button {
                         exportPassword = ""
@@ -110,7 +114,7 @@ struct ProviderListView: View {
                         Label("导出密码加密备份 (含 API Key)", systemImage: "lock.doc.fill")
                             .font(.subheadline)
                     }
-                    .disabled(isExporting)
+                    .disabled(isExporting || !PersistenceController.canCommitUserData(in: modelContext))
 
                     if let url = exportedJSONURL {
                         ShareLink(item: url) {
@@ -203,6 +207,7 @@ struct ProviderListView: View {
                     providerPendingDeletion = nil
                 }
                 Button("删除并清除密钥", role: .destructive) {
+                    try? SystemIntegration.shared.setEnabled(false, provider: provider, context: modelContext)
                     provider.deleteAllSecrets()
                     modelContext.delete(provider)
                     try? modelContext.save()
@@ -240,6 +245,7 @@ struct ProviderListView: View {
     // MARK: - Backup
 
     private func exportBackup() async {
+        exportedJSONURL = nil
         isExporting = true
         defer { isExporting = false }
         do {
@@ -255,6 +261,7 @@ struct ProviderListView: View {
     }
 
     private func exportEncryptedBackup(password: String) async {
+        exportedJSONURL = nil
         isExporting = true
         defer { isExporting = false }
         do {
@@ -272,22 +279,16 @@ struct ProviderListView: View {
         isImporting = true
         defer { isImporting = false }
         do {
-            let maxBytes = Self.maximumBackupImportBytes
             let (rawData, isEncrypted) = try await Task.detached(priority: .userInitiated) {
                 let accessed = url.startAccessingSecurityScopedResource()
                 defer { if accessed { url.stopAccessingSecurityScopedResource() } }
                 let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-                guard values.isRegularFile == true,
-                      let fileSize = values.fileSize,
-                      fileSize <= maxBytes else {
-                    throw BackupError.fileTooLarge
-                }
+                guard values.isRegularFile == true, let fileSize = values.fileSize else { throw BackupError.unrecognizedFormat }
+                try BackupService.validateFileSize(fileSize)
                 let handle = try FileHandle(forReadingFrom: url)
                 defer { try? handle.close() }
-                let data = try handle.read(upToCount: maxBytes + 1) ?? Data()
-                guard data.count <= maxBytes else {
-                    throw BackupError.fileTooLarge
-                }
+                let data = try handle.read(upToCount: BackupService.maximumFileBytes + 1) ?? Data()
+                try BackupService.validateFileSize(data.count)
                 return (data, EncryptedBackupService.isEncryptedBackup(data))
             }.value
             if isEncrypted {
@@ -336,38 +337,32 @@ struct ProviderListView: View {
         let isLocal = NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL)
         let status: LocalizedStringResource = hasKey ? "Key 已配置" : (isLocal ? "本地地址" : "待填 Key")
         let statusColor = hasKey || isLocal ? Color.green : Color.orange
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(Color(hex: provider.accentHex).opacity(0.15))
-                    .frame(width: 40, height: 40)
-                Image(systemName: provider.iconSymbol)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(Color(hex: provider.accentHex))
-            }
+        HStack(spacing: DS.Spacing.md) {
+            DSIconTile(
+                systemImage: provider.iconSymbol,
+                tint: Color(hex: provider.accentHex),
+                size: 40,
+                cornerRadius: DS.Radius.sm
+            )
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                HStack(spacing: DS.Spacing.xs) {
                     Text(provider.name)
                         .font(.body.weight(.semibold))
                         .foregroundStyle(provider.isEnabled ? .primary : .secondary)
 
-                    Text(provider.protocolType.shortBadge)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1.5)
-                        .background(Color.secondary.opacity(0.12), in: Capsule())
+                    DSBadge(text: provider.protocolType.shortBadge, style: .neutral)
                 }
 
-                HStack(spacing: 8) {
-                    HStack(spacing: 3) {
+                HStack(spacing: DS.Spacing.sm) {
+                    HStack(spacing: 4) {
                         Circle()
                             .fill(statusColor)
                             .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
                         Text(status)
                             .font(.caption2)
-                            .foregroundStyle(statusColor)
+                            .foregroundStyle(.primary)
                     }
 
                     Text("· 已启用 \(provider.enabledModels.count) 个模型")

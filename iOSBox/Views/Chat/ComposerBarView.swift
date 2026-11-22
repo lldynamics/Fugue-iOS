@@ -44,6 +44,7 @@ struct ComposerBarView: View {
     var onOpenGroupSetup: (() -> Void)? = nil
     let onOpenOptions: () -> Void
     let onManageKnowledge: () -> Void
+    var onOpenAudioTranscription: (() -> Void)? = nil
     var writingFirst = false
     var needsModel = false
     var canChooseModel = false
@@ -592,11 +593,19 @@ struct ComposerBarView: View {
                 }
                 .disabled(!draft.isLoaded || draft.processingAttachments > 0)
 
-                drawerTile(title: String(localized: "清上文"), systemImage: "scissors") {
-                    isCapabilityDrawerOpen = false
-                    onInsertContextDivider()
+                if let onOpenAudioTranscription {
+                    drawerTile(title: String(localized: "音频纪要"), systemImage: "waveform") {
+                        isCapabilityDrawerOpen = false
+                        onOpenAudioTranscription()
+                    }
+                    .disabled(isGenerating)
+                } else {
+                    drawerTile(title: String(localized: "清上文"), systemImage: "scissors") {
+                        isCapabilityDrawerOpen = false
+                        onInsertContextDivider()
+                    }
+                    .disabled(isGenerating)
                 }
-                .disabled(isGenerating)
             }
 
             Divider().opacity(0.45)
@@ -604,6 +613,18 @@ struct ComposerBarView: View {
             // Row 2: Model & Capability Controls
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: DS.Spacing.sm) {
+                    if onOpenAudioTranscription != nil {
+                        drawerTogglePill(
+                            title: String(localized: "清上文"),
+                            systemImage: "scissors",
+                            isActive: false
+                        ) {
+                            isCapabilityDrawerOpen = false
+                            onInsertContextDivider()
+                        }
+                        .disabled(isGenerating)
+                    }
+
                     drawerTogglePill(
                         title: String(localized: "联网"),
                         systemImage: "globe",

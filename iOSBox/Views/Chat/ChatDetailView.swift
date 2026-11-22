@@ -4,22 +4,55 @@ import UIKit
 
 struct ChatDetailView: View {
     @Bindable var conversation: Conversation
+    let isLandingDraft: Bool
     var onOpenConversation: ((Conversation) -> Void)?
 
+    @Environment(WorkspaceNavigation.self) private var workspaceNavigation: WorkspaceNavigation?
     @Environment(\.modelContext) private var modelContext
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     @Query(sort: \AssistantPreset.sortOrder) private var presets: [AssistantPreset]
 
-    @Environment(\.scenePhase) private var scenePhase
     @State private var draft: ChatDraftState
+    @State private var readingRequest: ReadingRequest?
+    @State private var showsShelfReader = false
+    @State private var citationVolumeID: UUID?
+    @State private var citationPlace = BookReadingPlace()
+    @State private var readingPlace = BookReadingPlace()
+    @State private var hasInlineBook = false
+    @State private var ballotRound: BlindRound?
+    @State private var activeSheet: ChatActiveSheet?
+    @State private var infoAlert: ChatAlertItem?
+    @State private var modelDirectory = ChatModelDirectory()
+    @State private var checkingFeeds = false
+    @State private var showRenameAlert = false
+    @State private var renameDraft = ""
+    @State private var sendBlockedReason: SendOutcome?
+    @State private var sendingInterruption = false
+    @State private var pendingScrollMessageID: UUID?
+    @State private var arenaSearchFocus: MessageSearchFocus?
+    @State private var isGeneratingTitle = false
+    @State private var confirmClear = false
+    @State private var clearedHistory: ConversationBackup?
+    @State private var consent = AIConsentGate()
+    @State private var requestOptions = ComposerRequestOptions()
+    @State private var preferences = AppPreferences.shared
+    @State private var pendingAutoExtractSchedule = false
+    @FocusState private var inputFocused: Bool
+
+    @State private var isPinnedToBottom = true
+    @State private var isUserScrolling = false
 
     init(
         conversation: Conversation,
         initialMessageID: UUID? = nil,
+        isLandingDraft: Bool = false,
         onOpenConversation: ((Conversation) -> Void)? = nil
     ) {
+        self.isLandingDraft = isLandingDraft
         self.conversation = conversation
         self.onOpenConversation = onOpenConversation
         _pendingScrollMessageID = State(initialValue: initialMessageID)
@@ -27,50 +60,8 @@ struct ChatDetailView: View {
         _draft = State(initialValue: ChatDraftStore.shared.state(for: conversation.id))
     }
 
-    private enum ComposerPanel: String, Identifiable {
-        case options, model, arena, settings
-        var id: Self { self }
-    }
-    @State private var composerPanel: ComposerPanel?
-    @State private var modelDirectory = ChatModelDirectory()
-    private enum BookPanel: String, Identifiable {
-        case progress, invitation
-        var id: Self { self }
-    }
-    @State private var bookPanel: BookPanel?
-    @State private var showGroupSetup = false
-    @State private var checkingFeeds = false
-    @State private var feedReport: String?
-    @State private var showSearchSheet = false
-    @State private var showRenameAlert = false
-    @State private var renameDraft = ""
-    @State private var sendBlockedReason: SendOutcome?
-    @State private var sendingInterruption = false
-    @State private var synthesisGroupID: IdentifiableUUID?
-    @State private var pendingScrollMessageID: UUID?
-    @State private var arenaSearchFocus: MessageSearchFocus?
-    private struct AlertBanner: Identifiable {
-        let id = UUID()
-        let title: String
-        let message: String
-    }
-
-    @State private var shareFileURL: IdentifiableURL?
-    @State private var actionAlert: AlertBanner?
-    @State private var isGeneratingTitle = false
-    @State private var confirmClear = false
-    @State private var clearedHistory: ConversationBackup?
-    @State private var historyError: String?
-    @State private var showModelSetup = false
-    @State private var consent = AIConsentGate()
-
-    @State private var requestOptions = ComposerRequestOptions()
-    @FocusState private var inputFocused: Bool
-
-    @State private var isPinnedToBottom = true
-    @State private var isUserScrolling = false
-
     private var engine: ChatEngine { ChatEngine.shared }
+    private var theme: DS.AccentTheme { preferences.accentTheme }
 
     private func openBookConversation(_ chat: Conversation) {
         if let onOpenConversation { onOpenConversation(chat) }
@@ -79,10 +70,6 @@ struct ChatDetailView: View {
 
     private var activeMessages: [ChatMessage] {
         ConversationTree.activeMessages(in: conversation)
-    }
-
-    private var timelineItems: [TimelineEntry] {
-        TimelineEntry.build(from: activeMessages)
     }
 
     private var availableTargets: [ResolvedModelTarget] {
@@ -144,10 +131,75 @@ struct ChatDetailView: View {
             provider.models.filter { $0.retiredStarterDefault == true && $0.catalogStatus == .unlisted }
                 .map { provider.makeTarget(for: $0).id }
         }
-        conversation.updateDraftModel(from: available, replacingLegacy: Set(legacyIDs))
+        let protected = [AppPreferences.shared.defaultTargetID, conversation.assistanceSettings.privatePersona?.target.id].compactMap { $0 }
+        let awaitingActivation = Set(providers.filter { $0.isRestoredFromBackup && !$0.hasConfiguredChatAPI }.map(\.id))
+        conversation.updateDraftModel(from: available, replacingLegacy: Set(legacyIDs).subtracting(protected),
+                                      preservingUnavailableProviders: awaitingActivation)
         let selections = conversation.isArenaMode ? conversation.arenaTargets : [conversation.primaryTarget].compactMap { $0 }
         let ids = Set(selections.map(\.providerID))
         modelDirectory.update(configured: configured, automaticIDs: ids.isEmpty && chooseInitial ? nil : ids, in: modelContext)
+    }
+
+    private func messageActions(for msg: ChatMessage) -> MessageRowActions {
+        MessageRowActions(
+            onOpenCitation: openCitation,
+            onSwitchBranch: { targetMsg in
+                ConversationTree.switchBranch(to: targetMsg, in: conversation)
+                try? modelContext.save()
+            },
+            onSelectRevision: msg.role == .assistant ? { revIndex in
+                engine.selectRevision(index: revIndex, for: msg, context: modelContext)
+            } : nil,
+            onRegenerate: { retry(msg) },
+            onRegenerateWithCurrentModel: conversation.isGroupMode ? nil : { retry(msg, override: conversation.primaryTarget) },
+            onRegenerateWithOverride: msg.role == .assistant ? { chosen in retry(msg, override: chosen) } : nil,
+            onContinueGeneration: msg.role == .assistant ? { continueReply(msg) } : nil,
+            onEditAndResend: msg.role == .user ? { edited in editAndResend(msg, text: edited) } : nil,
+            onQuote: msg.role == .system ? nil : { content in
+                draft.quotedText = String(content.prefix(600))
+                draft.save()
+            },
+            onToggleBookmark: msg.role == .system ? nil : {
+                engine.toggleBookmark(for: msg, context: modelContext)
+            },
+            onToggleExcludeFromContext: msg.role == .system ? nil : {
+                engine.toggleContextExclusion(for: msg, context: modelContext)
+            },
+            onForkConversation: msg.role == .system ? nil : {
+                let forked = engine.forkConversation(upTo: msg, in: conversation, context: modelContext)
+                onOpenConversation?(forked)
+            },
+            onCompareWithModel: (!conversation.isGroupMode && msg.role == .assistant && msg.comparisonGroupID == nil) ? { second in
+                authorize([second]) {
+                    engine.compareWithAnotherModel(assistantMessage: msg, secondTarget: second,
+                                                   in: conversation, providers: providers, context: modelContext)
+                }
+            } : nil,
+            onMentionMember: conversation.isGroupMode ? { memberID in
+                guard let member = conversation.activeGroupMembers.first(where: { $0.id == memberID }) else { return }
+                draft.insertGroupMention("@\(member.mentionToken)", memberID: member.id)
+            } : nil,
+            onDeleteMessage: {
+                Task {
+                    await engine.deleteSingleMessage(msg, in: conversation, context: modelContext)
+                }
+            },
+            onGenerateFlashcards: msg.role == .assistant ? {
+                triggerStudyGeneration(for: msg, quiz: false)
+            } : nil,
+            onGenerateQuiz: msg.role == .assistant ? {
+                triggerStudyGeneration(for: msg, quiz: true)
+            } : nil,
+            onExtractSchedule: msg.role == .assistant ? {
+                triggerScheduleExtraction(for: msg)
+            } : nil,
+            onToggleSpeak: msg.role == .assistant ? {
+                toggleSpeechWithOptionalCloud(for: msg)
+            } : nil,
+            onSelectQuizOption: msg.role == .assistant ? { qID, optIdx in
+                engine.selectQuizOption(questionID: qID, optionIndex: optIdx, on: msg, context: modelContext)
+            } : nil
+        )
     }
 
     private var timelineAndComposer: some View {
@@ -157,13 +209,16 @@ struct ChatDetailView: View {
             ZStack(alignment: .bottomTrailing) {
                 ScrollView {
                     LazyVStack(spacing: 18) {
-                        if needsAPIKeyBanner {
+                        if needsAPIKeyBanner && conversation.readingVolumeID == nil {
                             missingKeyCard
                         } else if let unreadyPeerSummary {
                             partialUnreadyCard(unreadyPeerSummary)
                         }
 
-                        if items.isEmpty {
+                        if items.isEmpty && conversation.readingVolumeID != nil {
+                            Text("可以就原文提问，也可以长按段落引用。")
+                                .foregroundStyle(.secondary).padding()
+                        } else if items.isEmpty {
                             emptyWelcomeView
                                 .padding(.top, 36)
                         } else {
@@ -175,69 +230,10 @@ struct ChatDetailView: View {
                                         message: msg,
                                         branchSiblings: siblingsByID[msg.id] ?? [msg],
                                         availableCompareTargets: availableTargets,
-                                        onSwitchBranch: { targetMsg in
-                                            ConversationTree.switchBranch(to: targetMsg, in: conversation)
-                                            try? modelContext.save()
-                                        },
-                                        onSelectRevision: msg.role == .assistant ? { revIndex in
-                                            engine.selectRevision(index: revIndex, for: msg, context: modelContext)
-                                        } : nil,
-                                        onRegenerate: { retry(msg) },
-                                        onRegenerateWithCurrentModel: conversation.isGroupMode ? nil : { retry(msg, override: conversation.primaryTarget) },
-                                        onRegenerateWithOverride: msg.role == .assistant ? { chosen in retry(msg, override: chosen) } : nil,
-                                        onContinueGeneration: msg.role == .assistant ? { continueReply(msg) } : nil,
-                                        onEditAndResend: msg.role == .user ? { edited in editAndResend(msg, text: edited) } : nil,
-                                        onQuote: msg.role == .system ? nil : { content in
-                                            draft.quotedText = String(content.prefix(600))
-                                            draft.save()
-                                        },
-                                        onToggleBookmark: msg.role == .system ? nil : {
-                                            engine.toggleBookmark(for: msg, context: modelContext)
-                                        },
-                                        onToggleExcludeFromContext: msg.role == .system ? nil : {
-                                            engine.toggleContextExclusion(for: msg, context: modelContext)
-                                        },
-                                        onForkConversation: msg.role == .system ? nil : {
-                                            let forked = engine.forkConversation(upTo: msg, in: conversation, context: modelContext)
-                                            onOpenConversation?(forked)
-                                        },
-                                        onCompareWithModel: (!conversation.isGroupMode && msg.role == .assistant && msg.comparisonGroupID == nil) ? { second in
-                                            authorize([second]) {
-                                                engine.compareWithAnotherModel(assistantMessage: msg, secondTarget: second,
-                                                                               in: conversation, providers: providers, context: modelContext)
-                                            }
-                                        } : nil,
-                                        onMentionMember: conversation.isGroupMode ? { mention in
-                                            if !draft.text.isEmpty && !draft.text.hasSuffix(" ") {
-                                                draft.text.append(" ")
-                                            }
-                                            draft.text.append(mention)
-                                            draft.save()
-                                        } : nil,
-                                        onDeleteMessage: {
-                                            Task {
-                                                await engine.deleteSingleMessage(
-                                                    msg,
-                                                    in: conversation,
-                                                    context: modelContext
-                                                )
-                                            }
-                                        },
+                                        actions: messageActions(for: msg),
                                         studyDeckName: conversation.activeBookFriend.map { "《\($0.bookTitle)》" } ?? conversation.title,
                                         conversationID: conversation.id,
-                                        isGeneratingStudy: engine.generatingStudyMessageIDs.contains(msg.id),
-                                        onGenerateFlashcards: msg.role == .assistant ? {
-                                            triggerStudyGeneration(for: msg, quiz: false)
-                                        } : nil,
-                                        onGenerateQuiz: msg.role == .assistant ? {
-                                            triggerStudyGeneration(for: msg, quiz: true)
-                                        } : nil,
-                                        onExtractSchedule: msg.role == .assistant ? {
-                                            triggerScheduleExtraction(for: msg)
-                                        } : nil,
-                                        onSelectQuizOption: msg.role == .assistant ? { qID, optIdx in
-                                            engine.selectQuizOption(questionID: qID, optionIndex: optIdx, on: msg, context: modelContext)
-                                        } : nil
+                                        isGeneratingStudy: engine.generatingStudyMessageIDs.contains(msg.id)
                                     )
                                     .id(entry.id)
 
@@ -252,15 +248,12 @@ struct ChatDetailView: View {
                                             try? modelContext.save()
                                         },
                                         searchFocus: arenaSearchFocus?.groupID == gid ? arenaSearchFocus : nil,
-                                        onVote: { winner in
-                                            do { try engine.castBlindVote(for: winner, in: conversation, context: modelContext) }
-                                            catch { historyError = error.localizedDescription }
-                                        },
+                                        openBallot: { ballotRound = BlindRound(id: gid) },
                                         onFollowUp: { reply in
                                             do {
                                                 try engine.selectContextReply(reply, in: conversation, context: modelContext)
                                                 inputFocused = true
-                                            } catch { historyError = error.localizedDescription }
+                                            } catch { presentHistoryError(error.localizedDescription) }
                                         },
                                         onRegenerateSingle: { retry($0) },
                                         onContinueSingle: { continueReply($0) },
@@ -279,7 +272,7 @@ struct ChatDetailView: View {
                                             onOpenConversation?(forked)
                                         },
                                         onSynthesize: {
-                                            synthesisGroupID = IdentifiableUUID(id: gid)
+                                            activeSheet = .synthesis(gid)
                                         },
                                         onCrossCritique: {
                                             let sources = ArenaSynthesis.eligibleSources(in: groupMsgs, groupID: gid)
@@ -305,7 +298,7 @@ struct ChatDetailView: View {
                     .frame(maxWidth: horizontalSizeClass == .regular && !conversation.isArenaMode ? 820 : .infinity)
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 14)
-                    .padding(.top, 12)
+                    .padding(.top, DS.Spacing.md)
                     .padding(.bottom, 10)
                 }
                 .scrollDismissesKeyboard(.interactively)
@@ -327,17 +320,17 @@ struct ChatDetailView: View {
                         proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom)
                     }
                 }
-                    .task(id: pendingScrollMessageID) {
-                        guard let id = pendingScrollMessageID,
-                              let message = currentActiveMessages.first(where: { $0.id == id }) else { return }
-                        let focus = MessageSearchFocus(messageID: id, groupID: message.comparisonGroupID)
-                        arenaSearchFocus = focus
-                        isPinnedToBottom = false
-                        await Task.yield()
-                        guard !Task.isCancelled else { return }
-                        proxy.scrollTo(focus.anchorID, anchor: .top)
-                        pendingScrollMessageID = nil
-                    }
+                .task(id: pendingScrollMessageID) {
+                    guard let id = pendingScrollMessageID,
+                          let message = currentActiveMessages.first(where: { $0.id == id }) else { return }
+                    let focus = MessageSearchFocus(messageID: id, groupID: message.comparisonGroupID)
+                    arenaSearchFocus = focus
+                    isPinnedToBottom = false
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    proxy.scrollTo(focus.anchorID, anchor: .top)
+                    pendingScrollMessageID = nil
+                }
 
                 if !isPinnedToBottom && !items.isEmpty {
                     Button {
@@ -355,228 +348,386 @@ struct ChatDetailView: View {
                             }
                         }
                         .foregroundStyle(.primary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, DS.Spacing.md)
+                        .padding(.vertical, DS.Spacing.sm)
                         .background(.regularMaterial, in: Capsule())
-                        .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                        .overlay(Capsule().strokeBorder(DS.Surface.hairline, lineWidth: 1))
+                        .shadow(color: .black.opacity(0.10), radius: 6, y: 2)
                     }
                     .buttonStyle(.plain)
-                    .padding(.trailing, 16)
+                    .padding(.trailing, DS.Spacing.lg)
                     .padding(.bottom, 14)
                 }
             }
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 0) {
                     if let clearedHistory { undoClearBar(clearedHistory) }
+                    if let pending = engine.pendingWebpageApproval(in: conversation.id) {
+                        webpageApprovalBar(pending)
+                    }
                     if conversation.isGroupMode {
                         groupDiscussionControlBar
                     }
-                    RequestOptionsBar(
-                        conversation: conversation,
-                        providers: providers,
-                        text: draft.text,
-                        attachments: draft.attachments,
-                        quotedText: draft.quotedText,
-                        options: requestOptions,
-                        onOpenOptions: { composerPanel = .options }
-                    )
-                    .disabled(engine.isGenerating(in: conversation.id))
-                    .background(.ultraThinMaterial)
 
-                    ComposerBarView(
-                        conversation: conversation,
-                        draft: draft,
-                        providers: providers,
-                        presets: presets,
-                        isGenerating: engine.isGenerating(in: conversation.id),
-                        requestOptions: $requestOptions,
-                        onOpenModelPicker: { composerPanel = .model },
-                        onOpenArenaPicker: { composerPanel = .arena },
-                        onOpenGroupSetup: { showGroupSetup = true },
-                        onOpenOptions: { composerPanel = .options },
-                        inputFocus: $inputFocused,
-                        onInsertContextDivider: {
-                            engine.insertContextDivider(in: conversation, context: modelContext)
-                        },
-                        onSend: handleSend,
-                        onStop: { engine.stopGeneration(for: conversation.id) }
-                    )
+                    composer(writingFirst: false)
                 }
             }
         }
+    }
+
+    private var writingFirst: Bool {
+        conversation.messages.isEmpty && !conversation.isArenaMode && !conversation.isGroupMode &&
+        conversation.activeBookFriend == nil && conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty &&
+        conversation.assistanceSettings.studyCoachMode == .off && clearedHistory == nil
+    }
+
+    private var routedTarget: ResolvedModelTarget? {
+        let settings = conversation.assistanceSettings
+        guard !conversation.isArenaMode, !conversation.isGroupMode, requestOptions.temporaryTarget == nil,
+              settings.automaticRouting, let primary = conversation.primaryTarget else { return nil }
+        return AssistancePolicy.route(primary: primary, settings: settings, text: draft.text,
+                                      attachments: draft.attachments, providers: providers)
+    }
+
+    private func modelPickerButton(title: String? = nil) -> some View {
+        let target = requestOptions.temporaryTarget ?? routedTarget ?? conversation.primaryTarget
+        let actionTitle = canPickConnectedModel ? String(localized: "选择模型") : String(localized: "连接模型")
+        return ChatModelPickerButton(conversationTitle: title,
+                                     modelName: needsAPIKeyBanner ? actionTitle : (target?.modelDisplayName ?? actionTitle),
+                                     action: beginModelSetup)
+            .disabled(engine.isGenerating(in: conversation.id))
+    }
+
+    private func knowledgeMenu(compact: Bool = false) -> some View {
+        BoundKnowledgeMenu(ids: conversation.assistanceSettings.knowledgeVolumeIDs,
+                           omitted: $requestOptions.omitKnowledge, compact: compact,
+                           canManage: !engine.isGenerating(in: conversation.id),
+                           onManage: conversation.activeBookFriend == nil ? { activeSheet = .knowledge } : nil)
+    }
+
+    private func composer(writingFirst: Bool) -> some View {
+        ComposerBarView(
+            conversation: conversation,
+            draft: draft,
+            providers: providers,
+            presets: presets,
+            routedTarget: routedTarget,
+            isGenerating: engine.isGenerating(in: conversation.id),
+            requestOptions: $requestOptions,
+            onOpenModelPicker: beginModelSetup,
+            onOpenArenaPicker: { activeSheet = .arena },
+            onOpenBlindPicker: { activeSheet = .blindArena },
+            onOpenGroupSetup: { activeSheet = .groupSetup },
+            onOpenOptions: { activeSheet = .options },
+            onManageKnowledge: { activeSheet = .knowledge },
+            onOpenAudioTranscription: { activeSheet = .audioTranscription },
+            writingFirst: writingFirst,
+            needsModel: needsAPIKeyBanner,
+            canChooseModel: canPickConnectedModel,
+            inputFocus: $inputFocused,
+            onInsertContextDivider: {
+                engine.insertContextDivider(in: conversation, context: modelContext)
+            },
+            onSend: handleSend,
+            onStop: { engine.stopGeneration(for: conversation.id) }
+        )
+    }
+
+    private var writingWorkspace: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                composer(writingFirst: true)
+                    .frame(maxWidth: 1000)
+                    .padding(.horizontal, geometry.size.width >= 600 ? 36 : 16)
+                    .padding(.vertical, 16)
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: geometry.size.height, alignment: geometry.size.width < 600 ? .top : .center)
+            }
+            .scrollDismissesKeyboard(.interactively)
+        }
+    }
+
+    /// An untouched home has no history entry. Activate the same draft object on first use.
+    private func activateLandingDraft() {
+        guard isLandingDraft, conversation.modelContext == nil, !conversation.isDeleted else { return }
+        modelContext.insert(conversation)
+        do { try modelContext.save() }
+        catch { presentHistoryError(error.localizedDescription) }
     }
 
     private var draftProviderFingerprint: [String] {
         conversation.messages.isEmpty ? SystemIntegration.fingerprint(providers) : []
     }
 
+    private func webpageApprovalBar(_ request: ChatEngine.PendingWebpageApproval) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            Text("确认读取外部网页？").font(.headline)
+            ScrollView {
+                Text("AI 请求访问你未直接输入的外部链接：\n\(request.url.absoluteString)")
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 76)
+            HStack {
+                Button("允许本次") {
+                    engine.resolvePendingWebpageApproval(id: request.id, decision: .allow, rememberHost: false)
+                }
+                Button("拒绝", role: .cancel) {
+                    engine.resolvePendingWebpageApproval(id: request.id, decision: .deny, rememberHost: false)
+                }
+            }
+            .buttonStyle(.bordered)
+            if request.url.query == nil {
+                Button("本对话始终允许 \(request.host)") {
+                    engine.resolvePendingWebpageApproval(id: request.id, decision: .allow, rememberHost: true)
+                }
+            }
+        }
+        .font(.subheadline)
+        .padding(.horizontal)
+        .padding(.vertical, DS.Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+    }
+
+    @ViewBuilder
+    private var workspaceContent: some View {
+        if let volumeID = conversation.readingVolumeID {
+            GeometryReader { geometry in
+                let wide = geometry.size.width >= 720
+                HStack(spacing: 0) {
+                    if wide {
+                        originalBook(defaultID: volumeID)
+                            .frame(width: geometry.size.width * (geometry.size.width >= 1024 ? 0.60 : 0.53))
+                        Divider()
+                    }
+                    VStack(spacing: 0) {
+                        HStack(spacing: DS.Spacing.sm) {
+                            if conversation.activeBookFriend != nil {
+                                modelPickerButton()
+                            }
+                            if !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty {
+                                knowledgeMenu(compact: conversation.activeBookFriend != nil && !wide)
+                            }
+                            Spacer(minLength: 0)
+                            if !wide {
+                                Button {
+                                    citationVolumeID = nil
+                                    readingRequest = nil
+                                    activeSheet = .originalBook
+                                } label: {
+                                    Label(dynamicTypeSize.isAccessibilitySize ? String(localized: "原文") : String(localized: "查看原文"),
+                                          systemImage: "book")
+                                        .font(.subheadline.weight(.medium))
+                                        .fixedSize(horizontal: true, vertical: false)
+                                        .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
+                                }
+                                .accessibilityLabel("查看原文")
+                                    .accessibilityIdentifier("reading.open")
+                            }
+                        }
+                        .padding(.horizontal, 16).frame(minHeight: DS.TouchTarget.minimum)
+                        Divider()
+                        timelineAndComposer
+                    }
+                }
+                .onChange(of: SystemEntryRouter.shared.openOriginalForChatID, initial: true) { _, id in
+                    guard id == conversation.id else { return }
+                    SystemEntryRouter.shared.openOriginalForChatID = nil
+                    citationVolumeID = nil
+                    readingRequest = nil
+                    if !wide { showsShelfReader = true }
+                }
+                .onChange(of: wide, initial: true) { _, value in
+                    hasInlineBook = value
+                    if value { showsShelfReader = false }
+                }
+            }
+            .onDisappear { hasInlineBook = false }
+        } else if writingFirst { writingWorkspace } else { timelineAndComposer }
+    }
+
+    private func openCitation(_ citation: ReadingCitation) {
+        if let friend = conversation.activeBookFriend, citation.volumeID != friend.bookID { return }
+        citationVolumeID = citation.volumeID
+        readingRequest = ReadingRequest(citation: citation)
+        if !hasInlineBook { activeSheet = .originalBook }
+    }
+
+    private func originalBook(defaultID: UUID) -> some View {
+        let id = citationVolumeID ?? conversation.activeBookFriend?.bookID ?? defaultID
+        let limit = conversation.readingChapterLimits[id]
+        return BookOriginalView(volumeID: id, throughChapter: limit, request: $readingRequest,
+                                place: citationVolumeID == nil ? $readingPlace : $citationPlace,
+                                companionID: citationVolumeID == nil && conversation.isCompanion(for: id) ? conversation.id : nil,
+                                openShelf: workspaceNavigation.map { navigation in
+                                    { activeSheet = nil; showsShelfReader = false; navigation.openBookshelf() }
+                                }) { text in
+            draft.quotedText = String(text.prefix(600))
+            draft.save()
+            if activeSheet == .originalBook { activeSheet = nil }
+            showsShelfReader = false
+            inputFocused = true
+        }
+        .id("\(id)-\(limit ?? -1)-\(citationVolumeID != nil)")
+    }
+
+    private func readerNavigation(for id: UUID, close: @escaping () -> Void) -> some View {
+        NavigationStack {
+            originalBook(defaultID: id)
+                .navigationTitle("原文").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成", action: close) } }
+        }
+    }
+
     private var chatWithToolbar: some View {
-        timelineAndComposer
+        workspaceContent
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(horizontalSizeClass == .regular ? .automatic : .hidden, for: .tabBar)
+        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 if let friend = conversation.activeBookFriend {
-                    BookChatHeading(friend: friend, title: conversation.title) { bookPanel = .progress }
+                    BookChatHeading(friend: friend, title: conversation.title) { activeSheet = .bookProgress }
                         .disabled(engine.isGenerating(in: conversation.id))
+                } else if !conversation.isArenaMode && !conversation.isGroupMode {
+                    if writingFirst {
+                        Text(verbatim: conversation.title).font(.headline).lineLimit(1)
+                    } else {
+                        modelPickerButton(title: conversation.title)
+                    }
                 } else {
                     Button {
-                        if conversation.isGroupMode {
-                            showGroupSetup = true
-                        } else if conversation.isArenaMode {
-                            composerPanel = .arena
-                        } else {
-                            composerPanel = .model
-                        }
+                        activeSheet = conversation.isGroupMode ? .groupSetup : .arena
                     } label: {
-                        VStack(spacing: 1) {
-                            Text(conversation.title)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
+                        VStack(spacing: 2) {
+                            Text(verbatim: conversation.title).font(.headline).lineLimit(1)
                             HStack(spacing: 4) {
-                                if conversation.isGroupMode {
-                                    Text("群聊 · \(conversation.activeGroupMembers.count) 人")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                } else if conversation.isArenaMode {
-                                    Text("并发对比 · \(max(conversation.arenaTargets.count, 0)) 模型")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                } else if let target = requestOptions.temporaryTarget ?? conversation.primaryTarget {
-                                    Circle()
-                                        .fill(Color(hex: target.accentHex))
-                                        .frame(width: 6, height: 6)
-                                    Text(target.modelDisplayName)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                    if conversation.assistanceSettings.studyCoachMode != .off {
-                                        Text("· \(conversation.assistanceSettings.studyCoachMode.shortBadge)")
-                                            .font(.caption2.weight(.semibold))
-                                            .foregroundStyle(.indigo)
-                                    }
-                                } else {
-                                    Text("选择模型")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Image(systemName: "chevron.down")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundStyle(.tertiary)
+                                if conversation.isGroupMode { Text("群聊 · \(conversation.activeGroupMembers.count) 人") }
+                                else { Text("并发对比 · \(conversation.arenaTargets.count) 模型") }
+                                Image(systemName: "chevron.down").font(.caption2)
                             }
+                            .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     .buttonStyle(.plain)
                 }
             }
+            if (conversation.isGroupMode || conversation.isArenaMode) && !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) { knowledgeMenu(compact: true) }
+            }
             ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: 12) {
+                Menu {
                     Button {
-                        composerPanel = .settings
+                        activeSheet = .settings
                     } label: {
-                        Image(systemName: "slider.horizontal.3")
+                        Label("系统提示词与参数", systemImage: "slider.horizontal.3")
                     }
                     .keyboardShortcut(",", modifiers: [.command, .shift])
-                    .accessibilityLabel("系统提示词与参数")
 
-                    Menu {
-                        if conversation.activeBookFriend != nil {
-                            Button { bookPanel = .invitation } label: { Label("邀请进群", systemImage: "person.2.badge.plus") }
-                            Button { bookPanel = .progress } label: { Label("调整阅读进度", systemImage: "bookmark") }
-                                .disabled(engine.isGenerating(in: conversation.id))
-                            Divider()
-                        }
-                        Button {
-                            showSearchSheet = true
-                        } label: {
-                            Label("会话内查找与收藏", systemImage: "magnifyingglass")
-                        }
-                        .keyboardShortcut("f", modifiers: .command)
+                    if conversation.activeBookFriend != nil {
+                        Divider()
+                        Button { activeSheet = .bookInvitation } label: { Label("邀请进群", systemImage: "person.2.badge.plus") }
+                        Button { activeSheet = .bookProgress } label: { Label("调整阅读进度", systemImage: "bookmark") }
+                            .disabled(engine.isGenerating(in: conversation.id))
+                    }
 
-                        Button {
-                            renameDraft = conversation.title
-                            showRenameAlert = true
-                        } label: {
-                            Label("重命名对话", systemImage: "pencil")
-                        }
+                    Divider()
 
-                        Button {
-                            if let target = engine.titleTarget(in: conversation, providers: providers) {
-                                authorize([target]) {
-                                    isGeneratingTitle = true
-                                    Task {
-                                        defer { isGeneratingTitle = false }
-                                        _ = await engine.generateSmartTitle(for: conversation, providers: providers, context: modelContext)
-                                    }
+                    Button {
+                        activeSheet = .search
+                    } label: {
+                        Label("会话内查找与收藏", systemImage: "magnifyingglass")
+                    }
+                    .keyboardShortcut("f", modifiers: .command)
+
+                    Button {
+                        renameDraft = conversation.title
+                        showRenameAlert = true
+                    } label: {
+                        Label("重命名对话", systemImage: "pencil")
+                    }
+
+                    Button {
+                        if let target = engine.titleTarget(in: conversation, providers: providers) {
+                            authorize([target]) {
+                                isGeneratingTitle = true
+                                Task {
+                                    defer { isGeneratingTitle = false }
+                                    _ = await engine.generateSmartTitle(for: conversation, providers: providers, context: modelContext)
                                 }
                             }
-                        } label: {
-                            Label("AI 智能生成标题", systemImage: "sparkles")
                         }
-                        .disabled(isGeneratingTitle || activeMessages.count < 2)
-
-                        Divider()
-
-                        Button {
-                            composerPanel = .arena
-                        } label: {
-                            Label("配置多模型并发对比", systemImage: "square.split.2x1")
-                        }
-
-                        Button {
-                            showGroupSetup = true
-                        } label: {
-                            Label("配置圆桌群聊角色", systemImage: "person.3")
-                        }
-
-                        if PersonaFeedService.hasSubscriptions(conversation) {
-                            Button {
-                                checkingFeeds = true
-                                Task {
-                                    let report = await PersonaFeedService.shared.refresh(in: modelContext, chatID: conversation.id, force: true)
-                                    feedReport = report.message
-                                    checkingFeeds = false
-                                }
-                            } label: { Label("检查成员动态", systemImage: "arrow.clockwise") }
-                            .disabled(checkingFeeds)
-                        }
-
-                        Divider()
-
-                        Button {
-                            exportMarkdown()
-                        } label: {
-                            Label("导出 Markdown", systemImage: "doc.text")
-                        }
-                        .disabled(activeMessages.isEmpty)
-
-                        Button {
-                            exportShareImage()
-                        } label: {
-                            Label("生成分享长图", systemImage: "photo.on.rectangle")
-                        }
-                        .disabled(activeMessages.isEmpty)
-
-                        Divider()
-
-                        Button(role: .destructive) {
-                            confirmClear = true
-                        } label: {
-                            Label("清空当前消息记录", systemImage: "trash")
-                        }
-                        .disabled(conversation.messages.isEmpty)
                     } label: {
-                        Image(systemName: "ellipsis.circle")
+                        Label("AI 智能生成标题", systemImage: "sparkles")
                     }
-                    .accessibilityLabel("更多操作")
+                    .disabled(isGeneratingTitle || activeMessages.count < 2)
+
+                    Divider()
+
+                    Button {
+                        activeSheet = .arena
+                    } label: {
+                        Label("配置多模型并发对比", systemImage: "square.split.2x1")
+                    }
+
+                    Button {
+                        activeSheet = .groupSetup
+                    } label: {
+                        Label("配置圆桌群聊角色", systemImage: "person.3")
+                    }
+
+                    if PersonaFeedService.hasSubscriptions(conversation) {
+                        Button {
+                            checkingFeeds = true
+                            Task {
+                                let report = await PersonaFeedService.shared.refresh(in: modelContext, chatID: conversation.id, force: true)
+                                infoAlert = ChatAlertItem(title: String(localized: "成员订阅动态"), message: report.message)
+                                checkingFeeds = false
+                            }
+                        } label: { Label("检查成员动态", systemImage: "arrow.clockwise") }
+                        .disabled(checkingFeeds)
+                    }
+
+                    Divider()
+
+                    Button {
+                        exportMarkdown()
+                    } label: {
+                        Label("导出 Markdown", systemImage: "doc.text")
+                    }
+                    .disabled(activeMessages.isEmpty)
+
+                    Button {
+                        exportShareImage()
+                    } label: {
+                        Label("生成分享长图", systemImage: "photo.on.rectangle")
+                    }
+                    .disabled(activeMessages.isEmpty)
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        confirmClear = true
+                    } label: {
+                        Label("清空当前消息记录", systemImage: "trash")
+                    }
+                    .disabled(conversation.messages.isEmpty)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                 }
+                .accessibilityLabel("更多操作")
             }
         }
         .onChange(of: engine.isGenerating(in: conversation.id)) { wasGenerating, isNowGenerating in
             if wasGenerating && !isNowGenerating {
                 AppPreferences.shared.triggerLightHaptic()
+                triggerAutoScheduleExtractionIfPending()
+            }
+        }
+        .onChange(of: sendBlockedReason) { _, reason in
+            if reason != nil {
+                pendingAutoExtractSchedule = false
             }
         }
     }
@@ -600,20 +751,21 @@ struct ChatDetailView: View {
         } message: {
             Text("将移除所有分支中的 \(conversation.messages.count) 条消息及其附件。可以在此页面撤销，也可以从已有备份恢复。")
         }
-        .alert("成员订阅动态", isPresented: Binding(get: { feedReport != nil }, set: { if !$0 { feedReport = nil } })) {
-            Button("好", role: .cancel) {}
-        } message: { Text(verbatim: feedReport ?? "") }
-        .alert("无法更新对话记录", isPresented: Binding(get: { historyError != nil }, set: { if !$0 { historyError = nil } })) {
-            Button("好", role: .cancel) {}
-        } message: { Text(historyError ?? "") }
+        .alert(
+            infoAlert?.title ?? String(localized: "操作失败"),
+            isPresented: Binding(get: { infoAlert != nil }, set: { if !$0 { infoAlert = nil } })
+        ) {
+            Button("好", role: .cancel) { infoAlert = nil }
+        } message: { Text(verbatim: infoAlert?.message ?? "") }
         .aiConsentSheet(consent)
-        .sheet(isPresented: $showModelSetup) {
-            FirstModelSetupSheet { target in
-                do { try useModel(target, exitGroup: false) } catch { historyError = error.localizedDescription }
-            }
-        }
         .onChange(of: scenePhase) { _, phase in if phase != .active { saveDraft() } }
-        .onChange(of: draft.text) { _, _ in draft.scheduleAutosave() }
+        .onChange(of: inputFocused) { _, focused in if focused { activateLandingDraft() } }
+        .onChange(of: activeSheet) { _, sheet in if sheet != nil { activateLandingDraft() } }
+        .onChange(of: draft.attachments) { _, items in if !items.isEmpty { activateLandingDraft() } }
+        .onChange(of: draft.text) { _, _ in
+            activateLandingDraft()
+            draft.scheduleAutosave()
+        }
         .alert(
             draft.isLoaded ? String(localized: "草稿保存失败") : String(localized: "草稿读取失败"),
             isPresented: Binding(get: { draft.persistenceError != nil }, set: { if !$0 { draft.persistenceError = nil } })
@@ -628,102 +780,42 @@ struct ChatDetailView: View {
             }
             Button("取消", role: .cancel) { }
         } message: { Text(draft.persistenceError ?? "") }
-        .alert(
-            String(localized: "确认读取外部网页？"),
-            isPresented: Binding(
-                get: { engine.pendingWebpageApproval?.conversationID == conversation.id },
-                set: { isPresented in
-                    if !isPresented,
-                       let pending = engine.pendingWebpageApproval,
-                       pending.conversationID == conversation.id {
-                        engine.resolvePendingWebpageApproval(id: pending.id, decision: .deny, rememberHost: false)
-                    }
-                }
-            )
-        ) {
-            if let pending = engine.pendingWebpageApproval, pending.conversationID == conversation.id {
-                Button("允许本次") {
-                    engine.resolvePendingWebpageApproval(id: pending.id, decision: .allow, rememberHost: false)
-                }
-                if pending.url.query == nil {
-                    Button("本对话始终允许 \(pending.host)") {
-                        engine.resolvePendingWebpageApproval(id: pending.id, decision: .allow, rememberHost: true)
-                    }
-                }
-                Button("拒绝", role: .cancel) {
-                    engine.resolvePendingWebpageApproval(id: pending.id, decision: .deny, rememberHost: false)
-                }
-            }
-        } message: {
-            if let pending = engine.pendingWebpageApproval {
-                Text("AI 请求访问你未直接输入的外部链接：\n\(pending.url.absoluteString)")
-            }
-        }
-        .alert(
-            actionAlert?.title ?? String(localized: "操作失败"),
-            isPresented: Binding(get: { actionAlert != nil }, set: { if !$0 { actionAlert = nil } })
-        ) {
-            Button("确定", role: .cancel) { }
-        } message: { Text(actionAlert?.message ?? "") }
+    }
+
+    private var latestBlindRound: UUID? {
+        guard conversation.assistanceSettings.blindArenaMode,
+              let last = activeMessages.last, let group = last.comparisonGroupID,
+              !last.isSynthesis, !last.assistanceMetadata.blindArenaRevealed else { return nil }
+        return group
     }
 
     var body: some View {
         chatWithDraftControls
-        .sheet(item: $composerPanel) { panel in
-            Group {
-                switch panel {
-                case .options:
-                    ComposerOptionsSheet(conversation: conversation, options: $requestOptions, draftText: draft.text,
-                                         targets: availableTargets, onOpenArena: { composerPanel = .arena },
-                                         onOpenSettings: { composerPanel = .settings })
-                case .model, .arena:
-                    ModelPickerSheet(mode: panel == .model ? .single : .arenaMulti,
-                                     directory: modelDirectory, conversation: conversation) { target in
-                        try useModel(target, exitGroup: true)
-                    }
-                case .settings:
-                    ChatSettingsSheet(conversation: conversation)
-                }
+        .onChange(of: conversation.readingVolumeID) { _, _ in
+            readingRequest = nil
+            citationVolumeID = nil
+            citationPlace = BookReadingPlace()
+            readingPlace = BookReadingPlace()
+        }
+        .onChange(of: latestBlindRound, initial: true) { _, id in
+            if let id, pendingScrollMessageID == nil { ballotRound = BlindRound(id: id) }
+        }
+        .fullScreenCover(item: $ballotRound) { round in
+            BlindBallotView(groupID: round.id, messages: activeMessages,
+                           isGenerating: engine.isGenerating(in: conversation.id), initialAnswer: arenaSearchFocus?.messageID) {
+                try engine.castBlindVote(for: $0, in: conversation, context: modelContext)
             }
-            .presentationDetents(panel == .options ? [.large] : [.medium, .large])
+        }
+        .sheet(item: $activeSheet) { sheet in
+            sheetContent(for: sheet)
+        }
+        .fullScreenCover(isPresented: $showsShelfReader) {
+            if let id = conversation.readingVolumeID {
+                readerNavigation(for: id) { showsShelfReader = false }
+            }
         }
         .onChange(of: conversation.isArenaMode || conversation.isGroupMode) { _, multi in
             if multi { requestOptions.temporaryTarget = nil }
-        }
-        .sheet(isPresented: $showGroupSetup) {
-            GroupSetupSheet(
-                existingConversation: conversation,
-                providers: providers,
-                presets: presets
-            )
-        }
-        .sheet(item: $bookPanel) { panel in
-            if let friend = conversation.activeBookFriend {
-                switch panel {
-                case .progress: BookReadingProgressSheet(chat: conversation, friend: friend, onOpen: openBookConversation)
-                case .invitation: BookInvitationSheet(friend: friend, onOpen: openBookConversation)
-                }
-            }
-        }
-        .sheet(isPresented: $showSearchSheet) {
-            ConversationSearchSheet(
-                messages: activeMessages,
-                isBlindMode: conversation.assistanceSettings.blindArenaMode
-            ) { messageID in
-                pendingScrollMessageID = messageID
-            }
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(item: $synthesisGroupID) { wrapper in
-            SynthesisPickerSheet(
-                conversation: conversation,
-                groupID: wrapper.id,
-                providers: providers
-            )
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(item: $shareFileURL) { item in
-            ActivityShareSheet(url: item.url)
         }
         .alert("重命名对话", isPresented: $showRenameAlert) {
             TextField("对话标题", text: $renameDraft)
@@ -731,7 +823,7 @@ struct ChatDetailView: View {
             Button("保存") {
                 let t = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !t.isEmpty {
-                    conversation.title = t
+                    conversation.rename(to: t)
                     try? modelContext.save()
                 }
             }
@@ -752,24 +844,144 @@ struct ChatDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func sheetContent(for sheet: ChatActiveSheet) -> some View {
+        switch sheet {
+        case .options:
+            ComposerOptionsSheet(
+                conversation: conversation,
+                options: $requestOptions,
+                draftText: draft.text,
+                targets: availableTargets,
+                onOpenArena: { activeSheet = .arena },
+                onOpenSettings: { activeSheet = .settings }
+            )
+            .presentationDetents([.large])
+
+        case .model, .arena, .blindArena:
+            ModelPickerSheet(
+                mode: sheet == .model ? .single : .arenaMulti,
+                directory: modelDirectory,
+                conversation: conversation,
+                enableBlindMode: sheet == .blindArena
+            ) { target in
+                try useModel(target, exitGroup: true)
+            }
+            .presentationDetents([.medium, .large])
+
+        case .settings:
+            ChatSettingsSheet(conversation: conversation)
+                .presentationDetents([.medium, .large])
+
+        case .knowledge:
+            KnowledgeBindingSheet(selectedVolumeIDs: Binding(
+                get: { conversation.assistanceSettings.knowledgeVolumeIDs },
+                set: {
+                    conversation.assistanceSettings.knowledgeVolumeIDs = $0
+                    if $0.isEmpty { requestOptions.omitKnowledge = false }
+                    try? modelContext.save()
+                }
+            ))
+
+        case .groupSetup:
+            GroupSetupSheet(
+                existingConversation: conversation,
+                providers: providers,
+                presets: presets
+            )
+
+        case .originalBook:
+            if let id = citationVolumeID ?? conversation.readingVolumeID {
+                readerNavigation(for: id) { activeSheet = nil }
+                .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+            }
+
+        case .bookProgress:
+            if let friend = conversation.activeBookFriend {
+                BookReadingProgressSheet(chat: conversation, friend: friend, onOpen: openBookConversation)
+            }
+
+        case .bookInvitation:
+            if let friend = conversation.activeBookFriend {
+                BookInvitationSheet(friend: friend, onOpen: openBookConversation)
+            }
+
+        case .search:
+            ConversationSearchSheet(
+                messages: activeMessages,
+                isBlindMode: conversation.assistanceSettings.blindArenaMode
+            ) { messageID in
+                pendingScrollMessageID = messageID
+            }
+            .presentationDetents([.medium, .large])
+
+        case .modelSetup:
+            FirstModelSetupSheet { target in
+                do { try useModel(target, exitGroup: false) }
+                catch { presentHistoryError(error.localizedDescription) }
+            }
+
+        case .audioTranscription:
+            AudioTranscriptionSheet(providers: providers) { transcript, sourceLabel, mode, autoExtractSchedule in
+                let clean = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !clean.isEmpty else { return }
+                activateLandingDraft()
+                if mode == .insertRaw {
+                    let cur = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    draft.text = cur.isEmpty ? clean : "\(draft.text)\n\n\(clean)"
+                    saveDraft()
+                    return
+                }
+                let prompt = MeetingMinutesPromptBuilder.buildPrompt(
+                    transcript: clean,
+                    sourceLabel: sourceLabel,
+                    mode: mode
+                )
+                guard !prompt.isEmpty else { return }
+                pendingAutoExtractSchedule = autoExtractSchedule && mode == .meetingMinutes
+                draft.text = prompt
+                saveDraft()
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(250))
+                    handleSend()
+                }
+            }
+
+        case .synthesis(let groupID):
+            SynthesisPickerSheet(
+                conversation: conversation,
+                groupID: groupID,
+                providers: providers
+            )
+            .presentationDetents([.medium, .large])
+
+        case .shareFile(let url):
+            ActivityShareSheet(url: url)
+        }
+    }
+
+    private func presentHistoryError(_ message: String) {
+        infoAlert = ChatAlertItem(title: String(localized: "无法更新对话记录"), message: message)
+    }
+
     private func exportMarkdown() {
         do {
             let url = try ConversationExporter.writeMarkdownFile(for: conversation)
-            shareFileURL = IdentifiableURL(url: url)
+            activeSheet = .shareFile(url)
         } catch {
-            actionAlert = AlertBanner(title: String(localized: "导出失败"), message: error.localizedDescription)
+            infoAlert = ChatAlertItem(title: String(localized: "导出失败"), message: error.localizedDescription)
         }
     }
 
     private func exportShareImage() {
         do {
             if let url = try ConversationExporter.writeShareImageFile(for: conversation, colorScheme: colorScheme) {
-                shareFileURL = IdentifiableURL(url: url)
+                activeSheet = .shareFile(url)
             } else {
-                actionAlert = AlertBanner(title: String(localized: "导出失败"), message: String(localized: "当前对话暂无可生成分享图的消息内容。"))
+                infoAlert = ChatAlertItem(title: String(localized: "导出失败"), message: String(localized: "当前对话暂无可生成分享图的消息内容。"))
             }
         } catch {
-            actionAlert = AlertBanner(title: String(localized: "导出失败"), message: error.localizedDescription)
+            infoAlert = ChatAlertItem(title: String(localized: "导出失败"), message: error.localizedDescription)
         }
     }
 
@@ -778,6 +990,7 @@ struct ChatDetailView: View {
     private func saveDraft() { draft.save() }
 
     private func useModel(_ target: ResolvedModelTarget, exitGroup: Bool) throws {
+        activateLandingDraft()
         try ModelSetup.use(target, in: conversation, context: modelContext, exitGroup: exitGroup)
         requestOptions.temporaryTarget = conversation.assistanceSettings.automaticRouting ? conversation.primaryTarget : nil
     }
@@ -787,17 +1000,21 @@ struct ChatDetailView: View {
     }
 
     private func beginModelSetup() {
+        activateLandingDraft()
+        inputFocused = false
         saveDraft()
-        if canPickConnectedModel { composerPanel = conversation.isArenaMode ? .arena : .model }
-        else { showModelSetup = true }
+        if canPickConnectedModel { activeSheet = conversation.isArenaMode ? .arena : .model }
+        else { activeSheet = .modelSetup }
     }
 
     private func handleSend() {
         guard draft.canSend else { return }
+        activateLandingDraft()
         do { try AttachmentProcessor.validate(draft.attachments) }
         catch { draft.attachmentError = error.localizedDescription; return }
 
-        let options = requestOptions.forSend(in: conversation, quote: draft.quotedText)
+        var options = requestOptions.forSend(in: conversation, quote: draft.quotedText)
+        options.pickedMentions = draft.pickedMentions
         if let query = options.searchQuery {
             let cleaned = query.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleaned.isEmpty, cleaned.count <= TavilySearchClient.maximumQueryCharacters else {
@@ -808,26 +1025,33 @@ struct ChatDetailView: View {
         let text = draft.text
         let attachments = draft.attachments
         guard let plan = engine.sendTargets(text: text, attachments: attachments, in: conversation,
-                                            providers: providers, override: options.overrideTarget) else {
+                                            providers: providers, override: options.overrideTarget, pickedMentions: options.pickedMentions) else {
             sendBlockedReason = .noAvailableModel
             return
         }
         guard plan.candidates.contains(where: { $0.contains(where: isReady) }) else { beginModelSetup(); return }
         let targets = disclosureTargets(for: plan)
+        let requestOptionsSnapshot = options
+        options.authorizedGroupMentions = plan.mentionOnly ? plan.groupMentions : nil
         let usesTools = !conversation.isArenaMode && !conversation.isGroupMode && conversation.assistanceSettings.enableAgentTools
         authorize(targets, search: options.searchQuery != nil, tools: usesTools, isCurrent: {
-            guard options == requestOptions.forSend(in: conversation, quote: draft.quotedText),
+            var latestOptions = requestOptions.forSend(in: conversation, quote: draft.quotedText)
+            latestOptions.pickedMentions = draft.pickedMentions
+            guard requestOptionsSnapshot == latestOptions,
                   text == draft.text, attachments == draft.attachments,
                   usesTools == (!conversation.isArenaMode && !conversation.isGroupMode && conversation.assistanceSettings.enableAgentTools),
                   let latest = engine.sendTargets(text: text, attachments: attachments, in: conversation,
-                                                  providers: providers, override: options.overrideTarget) else { return false }
-            return disclosureTargets(for: latest) == targets
+                                                  providers: providers, override: options.overrideTarget,
+                                                  pickedMentions: latestOptions.pickedMentions) else { return false }
+            return disclosureTargets(for: latest) == targets && latest.mentionOnly == plan.mentionOnly
+                && (!plan.mentionOnly || latest.groupMentions == plan.groupMentions)
         }) { sendDraft(options) }
     }
 
     private func disclosureTargets(for plan: ChatEngine.SendTargets) -> [ResolvedModelTarget] {
         var targets = plan.candidates.flatMap { $0 }
-        if conversation.assistanceSettings.autoGenerateTitle, !conversation.messages.contains(where: { $0.role == .user }),
+        if !plan.mentionOnly, conversation.assistanceSettings.autoGenerateTitle,
+           !conversation.messages.contains(where: { $0.role == .user }),
            let title = engine.titleTarget(in: conversation, providers: providers) { targets.append(title) }
         return targets
     }
@@ -889,15 +1113,17 @@ struct ChatDetailView: View {
                     }
                     AppPreferences.shared.triggerLightHaptic()
                 } catch {
-                    actionAlert = AlertBanner(title: String(localized: "生成失败"), message: error.localizedDescription)
+                    infoAlert = ChatAlertItem(title: String(localized: "生成失败"), message: error.localizedDescription)
                 }
             }
         }
     }
 
-    private func triggerScheduleExtraction(for message: ChatMessage) {
+    private func triggerScheduleExtraction(for message: ChatMessage, suppressErrorAlert: Bool = false) {
         guard let resolved = engine.studyTarget(for: message, in: conversation, providers: providers) else {
-            sendBlockedReason = .noAvailableModel
+            if !suppressErrorAlert {
+                sendBlockedReason = .noAvailableModel
+            }
             return
         }
         authorize([resolved.target]) {
@@ -906,10 +1132,63 @@ struct ChatDetailView: View {
                     try await engine.extractScheduleItems(for: message, in: conversation, providers: providers, context: modelContext)
                     AppPreferences.shared.triggerLightHaptic()
                 } catch {
-                    actionAlert = AlertBanner(title: String(localized: "日程提取失败"), message: error.localizedDescription)
+                    if !suppressErrorAlert {
+                        infoAlert = ChatAlertItem(title: String(localized: "日程提取失败"), message: error.localizedDescription)
+                    }
                 }
             }
         }
+    }
+
+    private func triggerAutoScheduleExtractionIfPending() {
+        guard pendingAutoExtractSchedule else { return }
+        pendingAutoExtractSchedule = false
+        guard !conversation.isArenaMode,
+              !conversation.isGroupMode,
+              let lastAssistant = activeMessages.last(where: { $0.role == .assistant }),
+              !lastAssistant.isStreaming,
+              lastAssistant.errorMessage == nil,
+              !lastAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        triggerScheduleExtraction(for: lastAssistant, suppressErrorAlert: true)
+    }
+
+    private func toggleSpeechWithOptionalCloud(for msg: ChatMessage) {
+        let meta = msg.assistanceMetadata
+        var cloudSynthesizer: (@Sendable (String) async throws -> Data)?
+        if preferences.useCloudTTS,
+           AppCompliance.hasAcceptedAIDisclosure(),
+           let provider = AudioTranscriptionService.resolveAudioProvider(
+               in: providers,
+               preferredID: preferences.cloudTTSProviderID
+           ) {
+            let baseURL = provider.baseURL
+            let apiKey = provider.apiKey
+            let extraKeys = provider.extraAPIKeys
+            let headers = provider.resolvedCustomHeaders
+            let model = preferences.cloudTTSModel
+            let voice = preferences.cloudTTSVoice
+            cloudSynthesizer = { cleanedText in
+                try await CloudSpeechSynthesizer.synthesize(
+                    CloudTTSRequest(
+                        baseURL: baseURL,
+                        apiKey: apiKey,
+                        apiKeys: extraKeys,
+                        customHeaders: headers,
+                        model: model,
+                        voice: voice,
+                        input: cleanedText
+                    )
+                )
+            }
+        }
+        SpeechService.shared.toggleSpeaking(
+            messageID: msg.id,
+            text: msg.content,
+            personaID: meta.groupMemberID,
+            cloudSynthesizer: cloudSynthesizer
+        )
     }
 
     private func editAndResend(_ message: ChatMessage, text: String) {
@@ -924,7 +1203,8 @@ struct ChatDetailView: View {
             isPinnedToBottom = true
             Task {
                 let outcome = await engine.editUserMessageAndResend(userMessage: message, newText: text, in: conversation,
-                                                                    providers: providers, context: modelContext, keepBranch: true)
+                                                                    providers: providers, context: modelContext, keepBranch: true,
+                                                                    authorizedGroupMentions: plan.mentionOnly ? plan.groupMentions : nil)
                 if outcome != .sent { sendBlockedReason = outcome }
             }
         }
@@ -948,7 +1228,7 @@ struct ChatDetailView: View {
                     options: options
                 )
                 let sameDraft = draft.text == textSnapshot && draft.attachments == attachmentsSnapshot
-                    && draft.quotedText == options.quotedExcerpt
+                    && draft.quotedText == options.quotedExcerpt && draft.pickedMentions == options.pickedMentions
                 handleSendOutcome(outcome, clearDraft: sameDraft)
             }
             return
@@ -998,6 +1278,9 @@ struct ChatDetailView: View {
     private var sendBlockedMessage: String {
         switch sendBlockedReason {
         case .noAvailableModel:
+            if conversation.isGroupMode && conversation.assistanceSettings.groupSpeakingMode == .mentionOnly {
+                return String(localized: "用 @ 点名至少一位可用的群成员。你输入的内容已保留。")
+            }
             return conversation.assistanceSettings.automaticRouting
                 ? String(localized: "请启用服务商和模型，并检查会话参数中的路由目标与识图能力。你输入的内容已保留。")
                 : String(localized: "请先在「服务商」页面启用服务商并添加模型。你输入的内容已保留。")
@@ -1017,7 +1300,7 @@ struct ChatDetailView: View {
         do {
             clearedHistory = try BackupService.clearMessages(in: conversation, context: modelContext)
             SpotlightIndexService.shared.removeConversation(id: conversation.id)
-        } catch { historyError = error.localizedDescription }
+        } catch { presentHistoryError(error.localizedDescription) }
     }
 
     private func dismissUndoIfRestored() {
@@ -1035,17 +1318,19 @@ struct ChatDetailView: View {
                     try BackupService.undoClear(saved, in: modelContext)
                     clearedHistory = nil
                     SpotlightIndexService.shared.indexConversation(conversation)
-                } catch { historyError = error.localizedDescription }
+                } catch { presentHistoryError(error.localizedDescription) }
             }
             .disabled(engine.isGenerating(in: conversation.id))
             Button { clearedHistory = nil } label: { Image(systemName: "xmark") }
                 .accessibilityLabel("关闭")
         }
-        .padding(.horizontal).padding(.vertical, 6)
+        .padding(.horizontal)
+        .padding(.vertical, DS.Spacing.xs)
+        .background(.ultraThinMaterial)
     }
 
     private var missingKeyCard: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DS.Spacing.sm) {
             Image(systemName: "key.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
@@ -1061,12 +1346,11 @@ struct ChatDetailView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.mini)
         }
-        .padding(12)
-        .background(Color.orange.opacity(0.11), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .dsCard(cornerRadius: DS.Radius.md, fill: Color.orange.opacity(0.10), borderColor: Color.orange.opacity(0.22), padding: DS.Spacing.md)
     }
 
     private func partialUnreadyCard(_ warning: String) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DS.Spacing.sm) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             Text(warning)
@@ -1075,7 +1359,7 @@ struct ChatDetailView: View {
             Spacer()
             Button("调整") {
                 if conversation.isGroupMode {
-                    showGroupSetup = true
+                    activeSheet = .groupSetup
                 } else {
                     beginModelSetup()
                 }
@@ -1084,15 +1368,14 @@ struct ChatDetailView: View {
             .buttonStyle(.bordered)
             .controlSize(.mini)
         }
-        .padding(11)
-        .background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .dsCard(cornerRadius: DS.Radius.md, fill: Color.orange.opacity(0.08), borderColor: Color.orange.opacity(0.20), padding: DS.Spacing.md)
     }
 
     @ViewBuilder
     private var groupDiscussionControlBar: some View {
         let generating = engine.isGenerating(in: conversation.id)
         if generating {
-            HStack(spacing: 8) {
+            HStack(spacing: DS.Spacing.sm) {
                 ProgressView()
                     .controlSize(.mini)
                 Text(
@@ -1114,7 +1397,7 @@ struct ChatDetailView: View {
             .background(.ultraThinMaterial)
         } else if hasActiveTopicAfterDivider {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+                HStack(spacing: DS.Spacing.sm) {
                     Button {
                         runAuthorizedGroupAction {
                             _ = engine.continueGroupDiscussion(in: conversation, providers: providers, context: modelContext)
@@ -1122,9 +1405,10 @@ struct ChatDetailView: View {
                     } label: {
                         Label("继续聊一轮", systemImage: "bubble.left.and.bubble.right.fill")
                             .font(.caption.weight(.semibold))
+                            .foregroundStyle(theme.readableText)
                             .padding(.horizontal, 11)
                             .padding(.vertical, 6)
-                            .background(Color.accentColor.opacity(0.13), in: Capsule())
+                            .background(theme.softFill, in: Capsule())
                     }
                     .buttonStyle(.plain)
 
@@ -1135,37 +1419,50 @@ struct ChatDetailView: View {
                     } label: {
                         Label("发起表决", systemImage: "hand.raised.fill")
                             .font(.caption.weight(.medium))
+                            .foregroundStyle(.primary)
                             .padding(.horizontal, 11)
                             .padding(.vertical, 6)
-                            .background(Color(.secondarySystemBackground), in: Capsule())
+                            .background(DS.Surface.subtle, in: Capsule())
+                            .overlay(Capsule().strokeBorder(DS.Surface.hairline, lineWidth: 1))
                     }
                     .buttonStyle(.plain)
 
                     Menu {
                         ForEach(conversation.activeGroupMembers) { member in
                             Button("\(member.avatarEmoji) 由 \(member.displayLabel) 总结") {
-                                runAuthorizedGroupAction {
+                                guard let target = engine.groupSummarizer(member, in: conversation, providers: providers)?.target else {
+                                    sendBlockedReason = .noAvailableModel
+                                    return
+                                }
+                                authorize([target], isCurrent: {
+                                    engine.groupSummarizer(member, in: conversation, providers: providers)?.target == target
+                                }) {
+                                    isPinnedToBottom = true
                                     _ = engine.summarizeGroupDiscussion(by: member, in: conversation, providers: providers, context: modelContext)
                                 }
                             }
+                            .disabled(engine.groupSummarizer(member, in: conversation, providers: providers) == nil)
                         }
                     } label: {
                         Label("总结纪要", systemImage: "list.clipboard")
                             .font(.caption.weight(.medium))
+                            .foregroundStyle(.primary)
                             .padding(.horizontal, 11)
                             .padding(.vertical, 6)
-                            .background(Color(.secondarySystemBackground), in: Capsule())
+                            .background(DS.Surface.subtle, in: Capsule())
+                            .overlay(Capsule().strokeBorder(DS.Surface.hairline, lineWidth: 1))
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, DS.Spacing.md)
+                .padding(.vertical, DS.Spacing.xs)
             }
             .background(.ultraThinMaterial)
         }
     }
 
     private func runAuthorizedGroupAction(_ action: @escaping () -> Void) {
-        guard let plan = engine.sendTargets(text: "", attachments: [], in: conversation, providers: providers) else {
+        guard let plan = engine.sendTargets(text: "", attachments: [], in: conversation,
+                                            providers: providers, forGroupAction: true) else {
             sendBlockedReason = .noAvailableModel
             return
         }
@@ -1181,34 +1478,42 @@ struct ChatDetailView: View {
 
     private var emptyWelcomeView: some View {
         let friend = conversation.activeBookFriend
-        return VStack(spacing: 16) {
-            Text(conversation.assistantEmoji)
-                .font(.system(size: 46))
+        return VStack(spacing: DS.Spacing.lg) {
+            ZStack {
+                RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
+                    .fill(theme.softFill)
+                    .frame(width: 64, height: 64)
+                AssistantEmojiIcon(emoji: conversation.assistantEmoji, font: .system(size: 34))
+                    .frame(width: 64, height: 64)
+            }
+            .accessibilityHidden(true)
 
-            Text(
-                friend?.byline ?? (conversation.isGroupMode
-                    ? conversation.title
-                    : (conversation.isArenaMode ? String(localized: "多模型并发对比已开启") : String(localized: "开始自由 AI 对话")))
-            )
-            .font(.title3.weight(.bold))
+            VStack(spacing: DS.Spacing.xs) {
+                Text(
+                    friend?.byline ?? (conversation.isGroupMode
+                        ? conversation.title
+                        : (conversation.isArenaMode ? String(localized: "多模型并发对比已开启") : String(localized: "开始自由 AI 对话")))
+                )
+                .font(.title3.weight(.bold))
 
-            Text(
-                friend.map { String(localized: "和《\($0.bookTitle)》中的\($0.name)聊聊天。") } ?? (conversation.isGroupMode
-                    ? String(localized: "像真人群聊一样抛出一句话，不同模型扮演的角色会互相接话、挑刺反驳或向你反问；你也可以随时输入 @ 点名或插话打断。")
-                    : (conversation.isArenaMode
-                        ? String(localized: "发送一条提问，同时请求多个服务商模型并排比对思考链与答案质量。")
-                        : String(localized: "支持随时在底部切换不同服务商的模型接力回答，也可发送图片与 PDF 文档。")))
-            )
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 24)
+                Text(
+                    friend.map { String(localized: "和《\($0.bookTitle)》中的\($0.name)聊聊天。") } ?? (conversation.isGroupMode
+                        ? String(localized: "像真人群聊一样抛出一句话，不同模型扮演的角色会互相接话、挑刺反驳或向你反问；你也可以随时输入 @ 点名或插话打断。")
+                        : (conversation.isArenaMode
+                            ? String(localized: "发送一条提问，同时请求多个服务商模型并排比对思考链与答案质量。")
+                            : String(localized: "支持随时在底部切换不同服务商的模型接力回答，也可发送图片与 PDF 文档。")))
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+            }
 
             if conversation.isGroupMode && !conversation.groupMembers.isEmpty {
-                VStack(spacing: 8) {
+                VStack(spacing: DS.Spacing.sm) {
                     FlowGroupRosterPreview(members: conversation.groupMembers)
                     Button {
-                        showGroupSetup = true
+                        activeSheet = .groupSetup
                     } label: {
                         Label("调整群成员与发言规则", systemImage: "person.3.fill")
                             .font(.caption.weight(.semibold))
@@ -1218,7 +1523,7 @@ struct ChatDetailView: View {
                 }
             }
 
-            VStack(spacing: 8) {
+            VStack(spacing: DS.Spacing.sm) {
                 if friend != nil {
                     quickSuggestionButton(String(localized: "你好，可以讲讲你的故事吗？"))
                     quickSuggestionButton(String(localized: "遇到难以决定的事时，你会怎么做？"))
@@ -1241,7 +1546,7 @@ struct ChatDetailView: View {
                     quickSuggestionButton(String(localized: "帮我写一段高质量的 Python 异步并发请求模板"))
                 }
             }
-            .padding(.top, 6)
+            .padding(.top, DS.Spacing.xxs)
         }
     }
 
@@ -1249,7 +1554,7 @@ struct ChatDetailView: View {
         Button {
             draft.text = prompt
         } label: {
-            HStack {
+            HStack(spacing: DS.Spacing.sm) {
                 Text(prompt)
                     .font(.footnote)
                     .foregroundStyle(.primary)
@@ -1260,8 +1565,12 @@ struct ChatDetailView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.vertical, 11)
+            .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                    .strokeBorder(DS.Surface.hairline, lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
     }
@@ -1272,9 +1581,9 @@ private struct FlowGroupRosterPreview: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: DS.Spacing.sm) {
                 ForEach(members) { member in
-                    HStack(spacing: 6) {
+                    HStack(spacing: DS.Spacing.xs) {
                         Text(member.avatarEmoji)
                             .font(.subheadline)
                         VStack(alignment: .leading, spacing: 1) {
@@ -1288,22 +1597,17 @@ private struct FlowGroupRosterPreview: View {
                         }
                     }
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color(hex: member.accentHex).opacity(0.11), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(.vertical, DS.Spacing.xs)
+                    .background(Color(hex: member.accentHex).opacity(0.11), in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                            .strokeBorder(DS.Surface.hairline, lineWidth: 1)
+                    )
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, DS.Spacing.lg)
         }
     }
-}
-
-private struct IdentifiableUUID: Identifiable {
-    let id: UUID
-}
-
-private struct IdentifiableURL: Identifiable {
-    let id = UUID()
-    let url: URL
 }
 
 private struct ActivityShareSheet: UIViewControllerRepresentable {

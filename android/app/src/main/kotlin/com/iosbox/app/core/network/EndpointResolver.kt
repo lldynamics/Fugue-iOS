@@ -105,6 +105,32 @@ object EndpointResolver {
         runCatching { chatEndpoint(baseURL, protocolType, sampleModel).toASCIIString() }
             .getOrElse { L10n.text("URL 格式待完善", "Enter a valid URL") }
 
+    fun audioTranscriptionsEndpoint(baseURL: String): URI =
+        openAIAudioEndpoint(baseURL, suffix = "/audio/transcriptions", siblingSuffix = "/audio/speech")
+
+    fun audioSpeechEndpoint(baseURL: String): URI =
+        openAIAudioEndpoint(baseURL, suffix = "/audio/speech", siblingSuffix = "/audio/transcriptions")
+
+    private fun openAIAudioEndpoint(
+        baseURL: String,
+        suffix: String,
+        siblingSuffix: String
+    ): URI {
+        val parsed = parseBaseComponents(baseURL)
+        var path = parsed.path
+        if (path.endsWith("/chat/completions")) {
+            path = stripTrailingSlash(path.removeSuffix("/chat/completions"))
+        } else if (path.endsWith("/models")) {
+            path = stripTrailingSlash(path.removeSuffix("/models"))
+        } else if (path.endsWith(siblingSuffix)) {
+            path = stripTrailingSlash(path.removeSuffix(siblingSuffix))
+        }
+        if (!path.endsWith(suffix)) {
+            path = if (parsed.forceRaw) "$path$suffix" else "${ensureOpenAIVersionPrefix(path)}$suffix"
+        }
+        return finalizeURI(parsed, path, parsed.rawQuery, baseURL)
+    }
+
     private data class ParsedBase(
         val scheme: String,
         val rawUserInfo: String?,

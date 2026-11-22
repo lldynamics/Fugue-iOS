@@ -1,13 +1,25 @@
 package com.iosbox.app.core.system
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.iosbox.app.core.model.L10n
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
+import java.util.UUID
 
 object SpeechTextCleaner {
     private val FENCED_CODE_REGEX = Regex("```[\\s\\S]*?```")
@@ -59,6 +71,7 @@ object SpeechTextCleaner {
 
 class SpeechController(context: Context) {
     private val appContext = context.applicationContext
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _speakingMessageID = MutableStateFlow<String?>(null)
     val speakingMessageID: StateFlow<String?> = _speakingMessageID.asStateFlow()
 
@@ -71,7 +84,15 @@ class SpeechController(context: Context) {
     @Volatile
     private var pendingUtterance: Pair<String, String>? = null
 
-    fun toggleSpeak(messageID: String, rawMarkdown: String) {
+    private var cloudJob: Job? = null
+    private var mediaPlayer: MediaPlayer? = null
+    private var activeTempAudioFile: File? = null
+
+    fun toggleSpeak(
+        messageID: String,
+        rawMarkdown: String,
+        cloudSynthesizer: (suspend (cleanedText: String) -> ByteArray?)? = null
+    ) {
         if (_speakingMessageID.value == messageID) {
             stopSpeaking()
             return
@@ -79,7 +100,35 @@ class SpeechController(context: Context) {
         val spokenText = SpeechTextCleaner.cleanForSpeech(rawMarkdown)
         if (spokenText.isEmpty()) return
 
+        stopSpeaking()
         _speakingMessageID.value = messageID
+
+        if (cloudSynthesizer == null) {
+            speakLocally(messageID, spokenText)
+            return
+        }
+
+        cloudJob = scope.launch {
+            val audioBytes = withContext(Dispatchers.IO) {
+                try {
+                    cloudSynthesizer(spokenText)
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+            if (_speakingMessageID.value != messageID) return@launch
+            if (audioBytes != null && audioBytes.isNotEmpty() && playMp3Bytes(messageID, audioBytes, spokenText)) {
+                return@launch
+            }
+            if (_speakingMessageID.value == messageID) {
+                speakLocally(messageID, spokenText)
+            }
+        }
+    }
+
+    private fun speakLocally(messageID: String, spokenText: String) {
         val instance = tts
         if (instance == null) {
             pendingUtterance = messageID to spokenText
@@ -93,21 +142,83 @@ class SpeechController(context: Context) {
         speakInternal(instance, messageID, spokenText)
     }
 
+    private fun playMp3Bytes(messageID: String, bytes: ByteArray, fallbackText: String): Boolean {
+        return runCatching {
+            val ttsDir = File(appContext.cacheDir, "tts").apply { mkdirs() }
+            ttsDir.listFiles()?.forEach { stale ->
+                if (System.currentTimeMillis() - stale.lastModified() > 60 * 60 * 1000L) {
+                    stale.delete()
+                }
+            }
+            val file = File(ttsDir, "speech_${UUID.randomUUID()}.mp3")
+            file.writeBytes(bytes)
+            activeTempAudioFile = file
+            val player = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                setDataSource(file.absolutePath)
+                setOnCompletionListener {
+                    scope.launch {
+                        cleanupMediaPlayer()
+                        if (_speakingMessageID.value == messageID) {
+                            _speakingMessageID.value = null
+                        }
+                    }
+                }
+                setOnErrorListener { _, _, _ ->
+                    scope.launch {
+                        cleanupMediaPlayer()
+                        if (_speakingMessageID.value == messageID) {
+                            speakLocally(messageID, fallbackText)
+                        }
+                    }
+                    true
+                }
+                prepare()
+                start()
+            }
+            mediaPlayer = player
+            true
+        }.getOrElse {
+            cleanupMediaPlayer()
+            false
+        }
+    }
+
+    private fun cleanupMediaPlayer() {
+        runCatching {
+            mediaPlayer?.stop()
+        }
+        runCatching {
+            mediaPlayer?.release()
+        }
+        mediaPlayer = null
+        runCatching { activeTempAudioFile?.delete() }
+        activeTempAudioFile = null
+    }
+
     fun stopSpeaking() {
+        cloudJob?.cancel()
+        cloudJob = null
         pendingUtterance = null
         _speakingMessageID.value = null
+        cleanupMediaPlayer()
         runCatching { tts?.stop() }
     }
 
     fun shutdown() {
-        pendingUtterance = null
-        _speakingMessageID.value = null
+        stopSpeaking()
         runCatching {
             tts?.stop()
             tts?.shutdown()
         }
         tts = null
         isReady = false
+        scope.cancel()
     }
 
     private fun initTts() {

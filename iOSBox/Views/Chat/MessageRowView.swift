@@ -796,9 +796,16 @@ struct MessageRowView: View {
 
                 if isSpeaking {
                     Button {
-                        speech.toggleSpeaking(messageID: message.id, text: message.content, personaID: meta.groupMemberID)
+                        if let onToggleSpeak = actions.onToggleSpeak {
+                            onToggleSpeak()
+                        } else {
+                            speech.toggleSpeaking(messageID: message.id, text: message.content, personaID: meta.groupMemberID)
+                        }
                     } label: {
-                        Label("停止朗读", systemImage: "speaker.wave.2.circle.fill")
+                        Label(
+                            speech.isSynthesizingCloudSpeech ? String(localized: "合成语音中…") : String(localized: "停止朗读"),
+                            systemImage: "speaker.wave.2.circle.fill"
+                        )
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(preferences.accentTheme.readableText)
                     }
@@ -895,7 +902,11 @@ struct MessageRowView: View {
                         }
 
                         Button {
-                            speech.toggleSpeaking(messageID: message.id, text: message.content, personaID: meta.groupMemberID)
+                            if let onToggleSpeak = actions.onToggleSpeak {
+                                onToggleSpeak()
+                            } else {
+                                speech.toggleSpeaking(messageID: message.id, text: message.content, personaID: meta.groupMemberID)
+                            }
                         } label: {
                             Label(
                                 isSpeaking ? String(localized: "停止朗读") : String(localized: "朗读回复"),

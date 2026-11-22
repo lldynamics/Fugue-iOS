@@ -1,6 +1,7 @@
 package com.iosbox.app.ui.providers
 
 import android.content.Context
+import android.util.JsonReader
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.School
@@ -37,6 +39,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -44,10 +47,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,19 +69,28 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iosbox.app.AppContainer
 import com.iosbox.app.core.backup.EncryptedBackupCrypto
+import com.iosbox.app.core.model.APIProtocolType
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.network.AudioTranscriptionService
+import com.iosbox.app.core.network.CloudSpeechSynthesizer
 import com.iosbox.app.core.network.NetworkLocation
 import com.iosbox.app.core.security.SecretStore
 import com.iosbox.app.core.storage.AccentTheme
 import com.iosbox.app.core.storage.ProviderItem
 import com.iosbox.app.core.storage.ThemeAppearanceMode
 import com.iosbox.app.ui.theme.DS
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -105,9 +119,17 @@ fun ProviderListScreen(
     var pendingExportBytes by remember { mutableStateOf<ByteArray?>(null) }
     var showExportPasswordDialog by remember { mutableStateOf(false) }
     var exportPassword by remember { mutableStateOf("") }
-    var pendingEncryptedImport by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingEncryptedImport by remember { mutableStateOf<File?>(null) }
     var importPassword by remember { mutableStateOf("") }
     var isBusyBackup by remember { mutableStateOf(false) }
+
+    fun discardPendingBackup() {
+        pendingEncryptedImport?.delete()
+        pendingEncryptedImport = null
+        importPassword = ""
+    }
+
+    DisposableEffect(Unit) { onDispose { discardPendingBackup() } }
 
     val saveBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
@@ -122,8 +144,16 @@ fun ProviderListScreen(
                         ?: error("Cannot open output stream")
                 }
             }.onSuccess {
-                alertInfo = L10n.text("导出成功", "Export Complete") to
+                val localLimit = EncryptedBackupCrypto.safeImportBytes
+                val maxSize = android.text.format.Formatter.formatShortFileSize(context, localLimit.toLong())
+                val description = if (bytes.size > localLimit) {
+                    L10n.text("备份文件已保存。本设备的导入上限为 $maxSize，这份备份需在支持更大文件的设备上恢复。",
+                        "Backup saved. This device can import up to $maxSize. Restore this backup on a device that supports larger imports.")
+                } else {
                     L10n.text("备份文件已保存。", "Backup file saved successfully.")
+                }
+                alertInfo = L10n.text("导出成功", "Export Complete") to
+                    description
             }.onFailure { err ->
                 alertInfo = L10n.text("导出失败", "Export Failed") to (err.message ?: "Error")
             }
@@ -136,19 +166,27 @@ fun ProviderListScreen(
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             isBusyBackup = true
+            val staged = File(context.cacheDir, "backup-import-${UUID.randomUUID()}.tmp")
             try {
-                val bytes = readUriLimited(context, uri)
-                if (EncryptedBackupCrypto.isEncryptedBackup(bytes)) {
-                    importPassword = ""
-                    pendingEncryptedImport = bytes
+                val encrypted = withContext(Dispatchers.IO) {
+                    stageBackup(context, uri, staged)
+                    isStagedEncryptedBackup(staged)
+                }
+                if (encrypted) {
+                    discardPendingBackup()
+                    pendingEncryptedImport = staged
                 } else {
-                    val summary = container.backupRepository.importPlainJsonBytes(bytes)
+                    val summary = withContext(Dispatchers.IO) {
+                        container.backupRepository.importPlainJsonBytes(staged.readBytes())
+                    }
                     container.flashcardRepository.reload()
                     alertInfo = summary.title to summary.description
                 }
             } catch (t: Throwable) {
+                if (t is CancellationException) throw t
                 alertInfo = L10n.text("导入失败", "Import Failed") to (t.message ?: "Error")
             } finally {
+                if (pendingEncryptedImport != staged) staged.delete()
                 isBusyBackup = false
             }
         }
@@ -360,6 +398,249 @@ fun ProviderListScreen(
                             modifier = Modifier.align(Alignment.End)
                         ) {
                             Text(L10n.text("保存 Tavily Key", "Save Tavily Key"))
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text(
+                    text = L10n.text("语音转写与自然朗读 (Whisper / TTS)", "Voice Transcription & Cloud TTS"),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = DS.Spacing.sm)
+                )
+            }
+
+            item {
+                val openAIProviders = remember(providers) {
+                    providers.filter {
+                        it.isEnabled &&
+                            it.protocolType == APIProtocolType.OPEN_AI_COMPATIBLE &&
+                            it.hasConfiguredChatAPI
+                    }
+                }
+                var whisperModelDraft by remember(prefs.audioTranscriptionModel) {
+                    mutableStateOf(prefs.audioTranscriptionModel)
+                }
+                var ttsModelDraft by remember(prefs.cloudTTSModel) {
+                    mutableStateOf(prefs.cloudTTSModel)
+                }
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(DS.Spacing.md),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.GraphicEq,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = L10n.text("录音 / 音频转写 (/audio/transcriptions)", "Audio Transcription (/audio/transcriptions)"),
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+
+                        if (openAIProviders.isEmpty()) {
+                            Text(
+                                text = L10n.text(
+                                    "请先添加并启用 OpenAI 兼容服务商（如 OpenAI、Groq、硅基流动或本地 Whisper），即可使用录音转文字与会议纪要。",
+                                    "Add and enable any OpenAI-compatible provider to unlock Whisper transcription and Cloud TTS."
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            Text(
+                                text = L10n.text("转写服务商", "Transcription Provider"),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                FilterChip(
+                                    selected = prefs.audioTranscriptionProviderID == null,
+                                    onClick = { scope.launch { container.preferences.setAudioTranscriptionProviderID(null) } },
+                                    label = { Text(L10n.text("自动（首选兼容商）", "Auto")) }
+                                )
+                                for (p in openAIProviders) {
+                                    FilterChip(
+                                        selected = prefs.audioTranscriptionProviderID.equals(p.id, ignoreCase = true),
+                                        onClick = { scope.launch { container.preferences.setAudioTranscriptionProviderID(p.id) } },
+                                        label = { Text(p.name) }
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = L10n.text("转写模型", "Whisper / ASR Model"),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                for (presetModel in AudioTranscriptionService.PRESET_MODELS) {
+                                    FilterChip(
+                                        selected = prefs.audioTranscriptionModel == presetModel,
+                                        onClick = {
+                                            whisperModelDraft = presetModel
+                                            scope.launch { container.preferences.setAudioTranscriptionModel(presetModel) }
+                                        },
+                                        label = { Text(presetModel) }
+                                    )
+                                }
+                            }
+                            OutlinedTextField(
+                                value = whisperModelDraft,
+                                onValueChange = { whisperModelDraft = it },
+                                singleLine = true,
+                                label = { Text(L10n.text("自定义转写模型名", "Custom Transcription Model")) },
+                                trailingIcon = {
+                                    if (whisperModelDraft.trim() != prefs.audioTranscriptionModel && whisperModelDraft.isNotBlank()) {
+                                        TextButton(onClick = {
+                                            scope.launch { container.preferences.setAudioTranscriptionModel(whisperModelDraft) }
+                                        }) {
+                                            Text(L10n.text("应用", "Apply"))
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Text(
+                                text = L10n.text("语言偏好", "Language Hint"),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                for ((code, label) in AudioTranscriptionService.PRESET_LANGUAGES) {
+                                    FilterChip(
+                                        selected = prefs.audioTranscriptionLanguage == code,
+                                        onClick = { scope.launch { container.preferences.setAudioTranscriptionLanguage(code) } },
+                                        label = { Text(label) }
+                                    )
+                                }
+                            }
+                        }
+
+                        HorizontalDivider()
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = L10n.text("启用云端自然语音朗读 (/audio/speech)", "Enable Cloud Natural TTS"),
+                                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                                )
+                                Text(
+                                    text = L10n.text(
+                                        "开启后优先调用云端自然人声，失败或离线时自动回退免费系统 TTS。",
+                                        "Uses OpenAI-compatible /audio/speech when enabled, with automatic free system TTS fallback."
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = prefs.useCloudTTS,
+                                onCheckedChange = { enabled ->
+                                    scope.launch { container.preferences.setUseCloudTTS(enabled) }
+                                }
+                            )
+                        }
+
+                        if (prefs.useCloudTTS && openAIProviders.isNotEmpty()) {
+                            Text(
+                                text = L10n.text("朗读服务商", "TTS Provider"),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                FilterChip(
+                                    selected = prefs.cloudTTSProviderID == null,
+                                    onClick = { scope.launch { container.preferences.setCloudTTSProviderID(null) } },
+                                    label = { Text(L10n.text("自动（首选兼容商）", "Auto")) }
+                                )
+                                for (p in openAIProviders) {
+                                    FilterChip(
+                                        selected = prefs.cloudTTSProviderID.equals(p.id, ignoreCase = true),
+                                        onClick = { scope.launch { container.preferences.setCloudTTSProviderID(p.id) } },
+                                        label = { Text(p.name) }
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = L10n.text("语音模型与音色", "TTS Model & Voice"),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                for (m in CloudSpeechSynthesizer.PRESET_MODELS) {
+                                    FilterChip(
+                                        selected = prefs.cloudTTSModel == m,
+                                        onClick = {
+                                            ttsModelDraft = m
+                                            scope.launch { container.preferences.setCloudTTSModel(m) }
+                                        },
+                                        label = { Text(m) }
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                for (v in CloudSpeechSynthesizer.PRESET_VOICES) {
+                                    FilterChip(
+                                        selected = prefs.cloudTTSVoice == v,
+                                        onClick = { scope.launch { container.preferences.setCloudTTSVoice(v) } },
+                                        label = { Text(v) }
+                                    )
+                                }
+                            }
+                            OutlinedTextField(
+                                value = ttsModelDraft,
+                                onValueChange = { ttsModelDraft = it },
+                                singleLine = true,
+                                label = { Text(L10n.text("自定义 TTS 模型名", "Custom TTS Model")) },
+                                trailingIcon = {
+                                    if (ttsModelDraft.trim() != prefs.cloudTTSModel && ttsModelDraft.isNotBlank()) {
+                                        TextButton(onClick = {
+                                            scope.launch { container.preferences.setCloudTTSModel(ttsModelDraft) }
+                                        }) {
+                                            Text(L10n.text("应用", "Apply"))
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
                 }
@@ -625,9 +906,9 @@ fun ProviderListScreen(
         )
     }
 
-    pendingEncryptedImport?.let { encBytes ->
+    pendingEncryptedImport?.let { staged ->
         AlertDialog(
-            onDismissRequest = { pendingEncryptedImport = null },
+            onDismissRequest = { if (!isBusyBackup) discardPendingBackup() },
             title = { Text(L10n.text("输入备份解密密码", "Enter Backup Password")) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -647,20 +928,24 @@ fun ProviderListScreen(
             },
             confirmButton = {
                 Button(
-                    enabled = importPassword.isNotEmpty(),
+                    enabled = importPassword.isNotEmpty() && !isBusyBackup,
                     onClick = {
                         val pwd = importPassword
-                        pendingEncryptedImport = null
-                        importPassword = ""
                         scope.launch {
                             isBusyBackup = true
+                            pendingEncryptedImport = null
+                            importPassword = ""
                             try {
-                                val summary = container.backupRepository.importEncryptedBytes(encBytes, pwd)
+                                val summary = withContext(Dispatchers.IO) {
+                                    container.backupRepository.importEncryptedBytes(staged.readBytes(), pwd)
+                                }
                                 container.flashcardRepository.reload()
                                 alertInfo = summary.title to summary.description
                             } catch (t: Throwable) {
+                                if (t is CancellationException) throw t
                                 alertInfo = L10n.text("导入失败", "Import Failed") to (t.message ?: "Error")
                             } finally {
+                                staged.delete()
                                 isBusyBackup = false
                             }
                         }
@@ -670,7 +955,7 @@ fun ProviderListScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingEncryptedImport = null }) {
+                TextButton(onClick = { discardPendingBackup() }, enabled = !isBusyBackup) {
                     Text(L10n.text("取消", "Cancel"))
                 }
             }
@@ -781,20 +1066,47 @@ private fun ProviderCard(
     }
 }
 
-private suspend fun readUriLimited(context: Context, uri: android.net.Uri): ByteArray =
-    withContext(Dispatchers.IO) {
-        val stream = context.contentResolver.openInputStream(uri) ?: error("Cannot read file")
-        stream.use { input ->
-            val out = java.io.ByteArrayOutputStream()
+private suspend fun stageBackup(context: Context, uri: android.net.Uri, destination: File) {
+    val stream = context.contentResolver.openInputStream(uri) ?: error("Cannot read file")
+    stream.use { input ->
+        destination.outputStream().buffered().use { output ->
             val buf = ByteArray(32_768)
+            val limit = EncryptedBackupCrypto.safeImportBytes
+            var bytes = 0
             while (true) {
+                currentCoroutineContext().ensureActive()
                 val read = input.read(buf)
-                if (read <= 0) break
-                if (out.size() + read > EncryptedBackupCrypto.MAXIMUM_FILE_BYTES) {
-                    throw com.iosbox.app.core.backup.BackupException.FileTooLarge()
-                }
-                out.write(buf, 0, read)
+                if (read < 0) break
+                bytes += read
+                EncryptedBackupCrypto.requireImportSize(bytes, limit)
+                output.write(buf, 0, read)
             }
-            out.toByteArray()
         }
     }
+}
+
+private fun isStagedEncryptedBackup(file: File): Boolean {
+    val marker = EncryptedBackupCrypto.ENVELOPE_MAGIC
+    val hasMarker = RandomAccessFile(file, "r").use { input ->
+        val header = ByteArray(minOf(input.length(), 4096L).toInt())
+        input.readFully(header)
+        if (header.toString(Charsets.UTF_8).contains(marker)) return@use true
+        if (input.length() <= header.size) return@use false
+        input.seek(input.length() - header.size)
+        input.readFully(header)
+        header.toString(Charsets.UTF_8).contains(marker)
+    }
+    if (!hasMarker) return false
+    // iOS sorts its JSON keys, so the ciphertext can appear before the magic field.
+    // Skip it with the streaming reader before the password dialog allocates any archive buffers.
+    return runCatching {
+        JsonReader(file.reader(Charsets.UTF_8)).use { json ->
+            json.beginObject()
+            while (json.hasNext()) {
+                if (json.nextName() == "magic") return@use json.nextString() == marker
+                json.skipValue()
+            }
+            false
+        }
+    }.getOrDefault(false)
+}

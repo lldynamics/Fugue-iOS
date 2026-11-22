@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Image
@@ -227,6 +228,7 @@ fun ChatDetailScreen(
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
     var showAttachMenu by remember { mutableStateOf(false) }
+    var showAudioSheet by remember { mutableStateOf(false) }
     var activeBallotGroupID by remember { mutableStateOf<String?>(null) }
     var judgeGroupID by remember { mutableStateOf<String?>(null) }
     var compareSourceMessage by remember { mutableStateOf<ChatMessageItem?>(null) }
@@ -1245,6 +1247,14 @@ fun ChatDetailScreen(
                                 )
                             }
                         )
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null) },
+                            text = { Text(L10n.text("录音 / 音频转会议纪要", "Voice / Audio Transcription")) },
+                            onClick = {
+                                showAttachMenu = false
+                                showAudioSheet = true
+                            }
+                        )
                     }
                 }
 
@@ -1257,12 +1267,7 @@ fun ChatDetailScreen(
                         }
                         val launched = runCatching { speechLauncher.launch(speechIntent) }.isSuccess
                         if (!launched) {
-                            vm.reportBannerError(
-                                L10n.text(
-                                    "当前设备未安装系统语音识别服务。",
-                                    "No system speech recognizer is available on this device."
-                                )
-                            )
+                            showAudioSheet = true
                         }
                     },
                     enabled = !state.isGenerating
@@ -1413,6 +1418,17 @@ fun ChatDetailScreen(
             chatRepository = container.chatRepository,
             onApply = vm::updateBoundKnowledgeVolumes,
             onDismiss = { showKnowledgeSheet = false }
+        )
+    }
+
+    if (showAudioSheet) {
+        AudioTranscriptionSheet(
+            container = container,
+            provider = vm.resolveAudioTranscriptionProvider(),
+            onGoToProviders = onGoToProviders,
+            onTranscribe = vm::transcribeAudioBytes,
+            onSubmit = vm::submitTranscript,
+            onDismiss = { showAudioSheet = false }
         )
     }
 

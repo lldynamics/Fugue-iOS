@@ -21,7 +21,9 @@ import com.iosbox.app.core.model.MessageAssistanceMetadata
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.MessageRole
 import com.iosbox.app.core.model.PersonaExcerpt
+import com.iosbox.app.core.model.PersonaFeed
 import com.iosbox.app.core.model.PersonalMemoryPrompt
+import com.iosbox.app.core.model.PickedGroupMention
 import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestMetrics
 import com.iosbox.app.core.model.RequestStatus
@@ -30,6 +32,10 @@ import com.iosbox.app.core.model.StudyCardDraft
 import com.iosbox.app.core.model.StudyCoachMode
 import com.iosbox.app.core.network.AgentToolRunner
 import com.iosbox.app.core.network.ArenaSynthesis
+import com.iosbox.app.core.network.AudioTranscriptionRequest
+import com.iosbox.app.core.network.AudioTranscriptionService
+import com.iosbox.app.core.network.CloudSpeechSynthesizer
+import com.iosbox.app.core.network.CloudTTSRequest
 import com.iosbox.app.core.network.GroupDiscussionCoordinator
 import com.iosbox.app.core.network.GroupStreamSanitizer
 import com.iosbox.app.core.network.GroupTurnDirective
@@ -39,15 +45,19 @@ import com.iosbox.app.core.network.LLMPromptMessage
 import com.iosbox.app.core.network.LLMStreamEvent
 import com.iosbox.app.core.network.LLMThinkingBlock
 import com.iosbox.app.core.network.LLMToolCall
+import com.iosbox.app.core.network.MeetingMinutesPromptBuilder
 import com.iosbox.app.core.network.PersonaFeedReader
 import com.iosbox.app.core.network.PersonaMaterials
+import com.iosbox.app.core.network.ScheduleExtractionError
 import com.iosbox.app.core.network.ScheduleExtractorService
 import com.iosbox.app.core.network.SearchError
 import com.iosbox.app.core.network.SearchEvidence
 import com.iosbox.app.core.network.SearchSource
 import com.iosbox.app.core.network.StudyGeneratorService
 import com.iosbox.app.core.network.TavilySearchClient
+import com.iosbox.app.core.network.TranscriptActionMode
 import com.iosbox.app.core.network.WebpageApprovalDecision
+import com.iosbox.app.core.network.WebpageReader
 import com.iosbox.app.core.security.SecretStore
 import com.iosbox.app.core.system.GenerationNotificationState
 import com.iosbox.app.core.system.GenerationServiceBridge
@@ -88,6 +98,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.net.URI
 import java.util.UUID
@@ -138,7 +150,13 @@ class ChatViewModel(
 ) : ViewModel() {
     private val repo = container.chatRepository
 
-    private val draftText = MutableStateFlow("")
+    private data class ComposerText(
+        val text: String = "",
+        val pickedMentions: List<PickedGroupMention> = emptyList(),
+        val suppliedLinks: Set<String> = emptySet()
+    )
+
+    private val composerText = MutableStateFlow(ComposerText())
     private val draftAttachments = MutableStateFlow<List<MessageAttachment>>(emptyList())
     private val streamingOverlays = MutableStateFlow<Map<String, ChatMessageItem>>(emptyMap())
     private val activeGroupSpeaker = MutableStateFlow<String?>(null)
@@ -214,7 +232,7 @@ class ChatViewModel(
 
     val uiState: StateFlow<ChatDetailUiState> = combine(
         baseDataFlow,
-        draftText,
+        composerText,
         draftAttachments,
         streamingOverlays,
         extrasFlow
@@ -243,7 +261,7 @@ class ChatViewModel(
             personaProfiles = base.personaProfiles,
             books = base.books,
             enabledMemoryCount = base.enabledMemoryCount,
-            draftText = draft,
+            draftText = draft.text,
             draftAttachments = atts,
             quotedExcerpt = extras.powerTools.quotedExcerpt,
             temporaryTargetOverride = extras.powerTools.temporaryTargetOverride,
@@ -272,37 +290,47 @@ class ChatViewModel(
         }
         val staged = container.externalEntryRouter.consumeInitialDraft(conversationId)
         if (staged != null) {
-            draftText.value = staged.text
+            val suppliedLinks = if (staged.userAuthored) emptySet() else AgentToolRunner.extractUserProvidedURLs(listOf(staged.text))
+            composerText.value = ComposerText(staged.text, suppliedLinks = suppliedLinks)
             draftAttachments.value = staged.attachments
-            draftLoaded = true
-            if (staged.autoSend && container.preferences.isConsentAccepted) {
-                viewModelScope.launch {
+        }
+        viewModelScope.launch {
+            try {
+                repo.prepareDraftStore()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                bannerError.value = L10n.text("无法打开本机草稿。", "Local drafts could not be opened.")
+                return@launch
+            }
+            if (staged != null) {
+                draftLoaded = true
+                if (staged.autoSend && container.preferences.isConsentAccepted) {
                     uiState.first { it.conversation != null && it.providers.isNotEmpty() }
-                    sendCurrentDraft()
+                    if (composerText.value.text == staged.text && draftAttachments.value == staged.attachments) {
+                        sendCurrentDraft()
+                    }
+                } else withContext(Dispatchers.IO) {
+                    val draft = composerText.value
+                    runCatching { container.draftStore.save(
+                        conversationId,
+                        ChatDraft(text = draft.text, attachments = draftAttachments.value, quotedExcerpt = quotedExcerpt.value,
+                            pickedMentions = draft.pickedMentions)
+                    ) }
                 }
             } else {
-                viewModelScope.launch(Dispatchers.IO) {
-                    runCatching {
-                        container.draftStore.save(
-                            conversationId,
-                            ChatDraft(text = staged.text, attachments = staged.attachments)
-                        )
-                    }
-                }
-            }
-        } else {
-            viewModelScope.launch {
                 val restored = withContext(Dispatchers.IO) {
                     runCatching { container.draftStore.load(conversationId) }.getOrNull()
                 }
                 if (
                     restored != null &&
                     !restored.isEmpty &&
-                    draftText.value.isEmpty() &&
+                    composerText.value.text.isEmpty() &&
                     draftAttachments.value.isEmpty() &&
                     quotedExcerpt.value == null
                 ) {
-                    draftText.value = restored.text
+                    composerText.value = ComposerText(
+                        restored.text, restored.pickedMentions, AgentToolRunner.extractUserProvidedURLs(listOf(restored.text))
+                    )
                     draftAttachments.value = restored.attachments
                     quotedExcerpt.value = restored.quotedExcerpt
                 }
@@ -311,8 +339,8 @@ class ChatViewModel(
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            combine(draftText, draftAttachments, quotedExcerpt) { t, a, q ->
-                ChatDraft(text = t, attachments = a, quotedExcerpt = q)
+            combine(composerText, draftAttachments, quotedExcerpt) { draft, a, q ->
+                ChatDraft(text = draft.text, attachments = a, quotedExcerpt = q, pickedMentions = draft.pickedMentions)
             }.collectLatest { draft ->
                 if (draftLoaded) {
                     delay(400)
@@ -357,6 +385,7 @@ class ChatViewModel(
         val target: ResolvedModelTarget,
         val provider: ProviderItem,
         val history: List<LLMPromptMessage>,
+        val userProvidedURLs: Set<String> = emptySet(),
         val kind: RequestKind,
         val systemPromptOverride: String? = null,
         val temperatureOverride: Double? = null,
@@ -371,6 +400,8 @@ class ChatViewModel(
     private sealed interface GroupRunMode {
         data class AfterUserMessage(
             val userMessage: ChatMessageItem,
+            val mentions: GroupDiscussionCoordinator.MentionParseResult,
+            val mentionOnly: Boolean,
             val searchQuery: String? = null
         ) : GroupRunMode
 
@@ -383,10 +414,12 @@ class ChatViewModel(
         cancelPendingWebpageApproval()
         container.speechController.stopSpeaking()
         if (draftLoaded) {
+            val draft = composerText.value
             val snapshot = ChatDraft(
-                text = draftText.value,
+                text = draft.text,
                 attachments = draftAttachments.value,
-                quotedExcerpt = quotedExcerpt.value
+                quotedExcerpt = quotedExcerpt.value,
+                pickedMentions = draft.pickedMentions
             )
             runCatching { container.draftStore.save(conversationId, snapshot) }
         }
@@ -394,17 +427,22 @@ class ChatViewModel(
     }
 
     fun updateDraftText(text: String) {
-        draftText.value = text
+        val current = composerText.value
+        composerText.value = current.copy(
+            text = text, pickedMentions = PickedGroupMention.updating(current.pickedMentions, current.text, text)
+        )
     }
 
     fun appendMentionToDraft(member: GroupMember) {
-        val token = "@${member.mentionToken} "
-        val current = draftText.value
-        draftText.value = if (current.isEmpty() || current.endsWith(' ') || current.endsWith('\n')) {
-            current + token
-        } else {
-            "$current $token"
-        }
+        val token = "@${member.mentionToken}"
+        val current = composerText.value
+        val beforeMention = current.text.removeSuffix("@")
+        val prefix = if (beforeMention.lastOrNull()?.isWhitespace() == false) "$beforeMention " else beforeMention
+        val text = "$prefix$token "
+        val keptMentions = PickedGroupMention.updating(current.pickedMentions, current.text, text)
+        composerText.value = current.copy(
+            text = text, pickedMentions = keptMentions + PickedGroupMention(prefix.length, token, member.id)
+        )
     }
 
     fun toggleUseWebSearchOnce() {
@@ -479,8 +517,10 @@ class ChatViewModel(
         val clean = excerpt.trim().take(400)
         if (clean.isEmpty()) return
         val quoted = "> ${clean.replace("\n", "\n> ")}\n\n"
-        val current = draftText.value
-        draftText.value = if (current.isBlank()) quoted else "$quoted$current"
+        val current = composerText.value.text
+        updateDraftText(if (current.isBlank()) quoted else "$quoted$current")
+        val draft = composerText.value
+        composerText.value = draft.copy(suppliedLinks = draft.suppliedLinks + AgentToolRunner.extractUserProvidedURLs(listOf(clean)))
     }
 
     fun changeBookFriendProgress(throughChapter: Int?, onOpenConversation: (String) -> Unit) {
@@ -519,24 +559,14 @@ class ChatViewModel(
     }
 
     fun toggleBookmark(message: ChatMessageItem) {
-        val meta = message.assistanceMetadata
         viewModelScope.launch {
-            repo.saveMessage(
-                message.copy(
-                    assistanceMetadata = meta.copy(isBookmarked = !meta.isBookmarked)
-                )
-            )
+            repo.updateMessageMetadata(message.id) { current -> current.copy(isBookmarked = !current.isBookmarked) }
         }
     }
 
     fun toggleExcludedFromContext(message: ChatMessageItem) {
-        val meta = message.assistanceMetadata
         viewModelScope.launch {
-            repo.saveMessage(
-                message.copy(
-                    assistanceMetadata = meta.copy(isExcludedFromContext = !meta.isExcludedFromContext)
-                )
-            )
+            repo.updateMessageMetadata(message.id) { current -> current.copy(isExcludedFromContext = !current.isExcludedFromContext) }
         }
     }
 
@@ -634,12 +664,12 @@ class ChatViewModel(
 
     fun selectMentionOverride(target: ResolvedModelTarget) {
         temporaryTargetOverride.value = target
-        draftText.value = ModelMentionParser.stripTrailingMention(draftText.value)
+        updateDraftText(ModelMentionParser.stripTrailingMention(composerText.value.text))
     }
 
     fun applySlashCommand(command: SlashPromptCommand) {
         if (command.id == "clear-context") {
-            draftText.value = ""
+            composerText.value = ComposerText()
             insertContextDivider()
             return
         }
@@ -648,7 +678,7 @@ class ChatViewModel(
         } else if (command.id == "feynman-coach") {
             setStudyCoachMode(StudyCoachMode.FEYNMAN)
         }
-        draftText.value = command.templatePrefix
+        composerText.value = ComposerText(command.templatePrefix)
     }
 
     fun switchBranch(targetMessage: ChatMessageItem) {
@@ -671,17 +701,8 @@ class ChatViewModel(
         val ready = ChatRepository.readyTargets(state.providers)
 
         if (conv.isGroupMode) {
-            val activePairs = resolveGroupPairs(conv, state.providers, ready)
-            if (activePairs.isEmpty()) {
-                bannerError.value = L10n.text(
-                    "群内暂无未静音且模型可用的成员，请检查群设置或服务商 API Key。",
-                    "No unmuted group member has a ready model configured."
-                )
-                return
-            }
-            val summary = consentSummaryFor(activePairs.map { it.second to it.third }.distinctBy { it.first.id })
-            runWithConsent(summary) {
-                executeEditBranchGroup(original, trimmed, conv)
+            authorizeGroupTurn(conv, trimmed, resolveGroupPairs(conv, state.providers, ready)) { mentions, mentionOnly ->
+                executeEditBranchGroup(original, trimmed, conv, mentions, mentionOnly)
             }
             return
         }
@@ -706,14 +727,14 @@ class ChatViewModel(
             return
         }
 
-        val target = resolveActiveTarget(conv, state.providers, ready)
+        val target = ChatRepository.resolveChatTarget(conv.primaryTarget, ready)
         val provider = target?.let { t ->
             state.providers.firstOrNull { it.id.equals(t.providerID, ignoreCase = true) }
         }
         if (target == null || provider == null) {
             bannerError.value = L10n.text(
-                "请先在「服务商」配置 API Key 并启用至少一个模型。",
-                "Configure an API key and enable at least one model in Providers first."
+                "当前模型不可用，请在顶部选择可用模型。",
+                "The current model is unavailable. Choose a ready model from the top bar."
             )
             return
         }
@@ -750,23 +771,23 @@ class ChatViewModel(
                 var baselines = 0
                 val errors = mutableListOf<String>()
 
-                val liveConv = repo.getConversation(conv.id) ?: conv
-                val currentAllMsgs = repo.getMessages(liveConv.id)
-                val treeActive = ConversationTree.usesTree(liveConv.activeLeafMessageID, currentAllMsgs)
-                var currentLeaf = if (treeActive) ConversationTree.currentAnchorID(liveConv.activeLeafMessageID, currentAllMsgs) else null
-                var nextSort = (currentAllMsgs.maxOfOrNull { it.sortIndex } ?: 0) + 1
-                val noticesToInsert = mutableListOf<ChatMessageItem>()
+                val liveConv = repo.getConversation(conv.id) ?: return@launch
+                val noticesToInsert = mutableListOf<Pair<PersonaFeed, ChatMessageItem>>()
 
                 val updatedMembers = liveConv.groupMembers.map { member ->
                     val persona = member.persona ?: return@map member
                     if (member.isMuted || persona.feeds.none { it.enabled }) return@map member
-                    val nextFeeds = persona.feeds.map { feed ->
+                    val nextFeeds = persona.feeds.map feedLoop@ { feed ->
                         if (!feed.enabled) {
                             feed
                         } else {
+                            val liveMember = repo.getConversation(liveConv.id)?.activeGroupMembers
+                                ?.firstOrNull { it.id.equals(member.id, ignoreCase = true) }
+                            val approved = liveMember?.persona?.feeds?.firstOrNull { it.enabled && it.sameSourceAs(feed) }
+                                ?: return@feedLoop feed
                             checked++
-                            val wasInitial = feed.checkpoint == null
-                            val res = runCatching { reader.read(feed, nowMs = now) }
+                            val wasInitial = approved.checkpoint == null
+                            val res = runCatching { reader.read(approved, nowMs = now) }
                             res.fold(
                                 onSuccess = { batch ->
                                     if (wasInitial) {
@@ -814,24 +835,24 @@ class ChatViewModel(
                                                     isPersonaSimulation = member.isSimulatedPersona,
                                                     sourceNotice = notice
                                                 ),
-                                                parentMessageID = currentLeaf,
-                                                sortIndex = nextSort++,
+                                                parentMessageID = null,
+                                                sortIndex = 0,
                                                 createdAtEpochMs = now + added
                                             )
-                                            if (treeActive) currentLeaf = noticeId
-                                            noticesToInsert.add(noticeMsg)
+                                            noticesToInsert.add(approved to noticeMsg)
                                         }
                                     }
-                                    feed.copy(
+                                    approved.copy(
                                         checkpoint = batch.checkpoint,
                                         lastChecked = now,
                                         lastError = null
                                     )
                                 },
                                 onFailure = { err ->
+                                    if (err is CancellationException) throw err
                                     val msg = err.message ?: L10n.text("读取失败", "Fetch failed")
                                     errors.add("${member.name} · $msg")
-                                    feed.copy(
+                                    approved.copy(
                                         lastChecked = now,
                                         lastError = msg
                                     )
@@ -842,12 +863,7 @@ class ChatViewModel(
                     member.copy(persona = persona.copy(feeds = nextFeeds))
                 }
 
-                val savedConv = liveConv.copy(
-                    assistanceSettings = liveConv.assistanceSettings.copy(groupMembers = updatedMembers),
-                    activeLeafMessageID = if (treeActive) currentLeaf else liveConv.activeLeafMessageID,
-                    updatedAtEpochMs = System.currentTimeMillis()
-                )
-                repo.saveConversationAndMessages(savedConv, noticesToInsert)
+                added = repo.saveGroupFeedRefresh(liveConv.id, now, updatedMembers, noticesToInsert)
 
                 val summaryParts = mutableListOf<String>()
                 if (checked > 0) {
@@ -872,23 +888,128 @@ class ChatViewModel(
 
     fun sendQuickPrompt(promptText: String) {
         if (uiState.value.isGenerating) return
-        draftText.value = promptText
+        composerText.value = ComposerText(promptText)
         sendCurrentDraft()
     }
 
     fun toggleSpeakMessage(message: ChatMessageItem) {
-        container.speechController.toggleSpeak(message.id, message.content)
+        val prefs = container.preferences.state.value
+        val provider = if (prefs.useCloudTTS && container.preferences.isConsentAccepted) {
+            AudioTranscriptionService.resolveAudioProvider(
+                providers = uiState.value.providers,
+                preferredProviderID = prefs.cloudTTSProviderID
+            )
+        } else null
+
+        val cloudSynthesizer: (suspend (String) -> ByteArray?)? = provider?.let { p ->
+            val keys = container.secretStore.loadAllAPIKeys(p.id)
+            val headers = p.resolvedCustomHeaders(container.secretStore)
+            suspend { cleanedText ->
+                CloudSpeechSynthesizer.synthesize(
+                    llmClient = container.llmClient,
+                    request = CloudTTSRequest(
+                        baseURL = p.baseURL,
+                        apiKey = keys.firstOrNull() ?: "",
+                        apiKeys = keys.drop(1),
+                        customHeaders = headers,
+                        model = prefs.cloudTTSModel,
+                        voice = prefs.cloudTTSVoice,
+                        input = cleanedText
+                    )
+                )
+            }
+        }
+        container.speechController.toggleSpeak(
+            messageID = message.id,
+            rawMarkdown = message.content,
+            cloudSynthesizer = cloudSynthesizer
+        )
+    }
+
+    fun resolveAudioTranscriptionProvider(): ProviderItem? =
+        AudioTranscriptionService.resolveAudioProvider(
+            providers = uiState.value.providers,
+            preferredProviderID = container.preferences.state.value.audioTranscriptionProviderID
+        )
+
+    fun requestAudioConsentIfNeeded(provider: ProviderItem, onConfirmed: () -> Unit) {
+        val model = container.preferences.state.value.audioTranscriptionModel
+        val host = runCatching { URI(provider.baseURL.trim().trimEnd('#')).host ?: "" }.getOrDefault("")
+        val summary = if (host.isEmpty()) "${provider.name} · $model" else "${provider.name} · $model ($host)"
+        runWithConsent(summary, onConfirmed)
+    }
+
+    suspend fun transcribeAudioBytes(
+        fileName: String,
+        mimeType: String,
+        bytes: ByteArray
+    ): Result<String> {
+        val provider = resolveAudioTranscriptionProvider()
+            ?: return Result.failure(
+                IllegalStateException(
+                    L10n.text(
+                        "请先在「服务商」页面配置并启用一个 OpenAI 兼容服务商（如 OpenAI、Groq、硅基流动等）。",
+                        "Configure and enable an OpenAI-compatible provider in Providers first."
+                    )
+                )
+            )
+        val prefs = container.preferences.state.value
+        val allKeys = container.secretStore.loadAllAPIKeys(provider.id)
+        val headers = provider.resolvedCustomHeaders(container.secretStore)
+        return try {
+            val transcript = AudioTranscriptionService.transcribe(
+                llmClient = container.llmClient,
+                request = AudioTranscriptionRequest(
+                    baseURL = provider.baseURL,
+                    apiKey = allKeys.firstOrNull() ?: "",
+                    apiKeys = allKeys.drop(1),
+                    customHeaders = headers,
+                    model = prefs.audioTranscriptionModel,
+                    language = prefs.audioTranscriptionLanguage,
+                    fileName = fileName,
+                    mimeType = mimeType,
+                    audioBytes = bytes
+                )
+            )
+            Result.success(transcript)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            Result.failure(t)
+        }
+    }
+
+    fun submitTranscript(
+        transcript: String,
+        sourceLabel: String?,
+        mode: TranscriptActionMode,
+        autoExtractSchedule: Boolean
+    ) {
+        val clean = transcript.trim()
+        if (clean.isEmpty()) return
+        if (mode == TranscriptActionMode.INSERT_RAW) {
+            appendDictatedText(clean)
+            return
+        }
+        if (uiState.value.isGenerating) return
+        val prompt = MeetingMinutesPromptBuilder.buildPrompt(
+            transcript = clean,
+            sourceLabel = sourceLabel,
+            mode = mode
+        )
+        if (prompt.isBlank()) return
+        composerText.value = ComposerText(prompt)
+        sendCurrentDraft(autoExtractScheduleForSingleReply = autoExtractSchedule && mode == TranscriptActionMode.MEETING_MINUTES)
     }
 
     fun appendDictatedText(spoken: String) {
         val clean = spoken.trim()
         if (clean.isEmpty()) return
-        val cur = draftText.value
-        draftText.value = when {
+        val cur = composerText.value.text
+        updateDraftText(when {
             cur.isBlank() -> clean
             cur.endsWith(' ') || cur.endsWith('\n') -> "$cur$clean"
             else -> "$cur $clean"
-        }
+        })
     }
 
     fun reportBannerError(message: String) {
@@ -900,7 +1021,7 @@ class ChatViewModel(
         val conv = state.conversation ?: return
         if (state.scheduleExtractingMessageID != null || state.isGenerating) return
         val ready = ChatRepository.readyTargets(state.providers)
-        val target = resolveReplyTarget(message, conv, state.providers, ready)
+        val target = resolveReplyTarget(message, conv, ready)
         val provider = target?.let { t ->
             state.providers.firstOrNull { it.id.equals(t.providerID, ignoreCase = true) }
         }
@@ -911,31 +1032,39 @@ class ChatViewModel(
         runWithConsent(consentSummaryFor(listOf(target to provider))) {
             bannerError.value = null
             viewModelScope.launch {
-                scheduleExtractingMessageID.value = message.id
-                try {
-                    val items = ScheduleExtractorService.requestScheduleItems(
-                        sourceText = message.content,
-                        target = target,
-                        provider = provider,
-                        conversationID = conv.id,
-                        messageID = message.id,
-                        repo = repo,
-                        secretStore = container.secretStore,
-                        llmClient = container.llmClient
-                    )
-                    repo.saveMessage(
-                        message.copy(
-                            assistanceMetadata = message.assistanceMetadata.copy(proposedSchedules = items)
-                        )
-                    )
-                } catch (t: Throwable) {
-                    if (t !is CancellationException) {
-                        bannerError.value = t.message ?: L10n.text("提取日程失败", "Failed to extract schedules")
-                    }
-                } finally {
-                    scheduleExtractingMessageID.value = null
-                }
+                runScheduleExtraction(message, conv, target, provider, suppressEmptyError = false)
             }
+        }
+    }
+
+    private suspend fun runScheduleExtraction(
+        message: ChatMessageItem,
+        conv: ConversationItem,
+        target: ResolvedModelTarget,
+        provider: ProviderItem,
+        suppressEmptyError: Boolean
+    ) {
+        if (scheduleExtractingMessageID.value != null) return
+        scheduleExtractingMessageID.value = message.id
+        try {
+            val items = ScheduleExtractorService.requestScheduleItems(
+                sourceText = message.content,
+                target = target,
+                provider = provider,
+                conversationID = conv.id,
+                messageID = message.id,
+                repo = repo,
+                secretStore = container.secretStore,
+                llmClient = container.llmClient
+            )
+            repo.updateMessageMetadata(message.id) { current -> current.copy(proposedSchedules = items) }
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            if (!(suppressEmptyError && t is ScheduleExtractionError.ParseFailed)) {
+                bannerError.value = t.message ?: L10n.text("提取日程失败", "Failed to extract schedules")
+            }
+        } finally {
+            scheduleExtractingMessageID.value = null
         }
     }
 
@@ -944,7 +1073,7 @@ class ChatViewModel(
         val conv = state.conversation ?: return
         if (state.studyGeneratingMessageID != null || state.isGenerating) return
         val ready = ChatRepository.readyTargets(state.providers)
-        val target = resolveReplyTarget(message, conv, state.providers, ready)
+        val target = resolveReplyTarget(message, conv, ready)
         val provider = target?.let { t ->
             state.providers.firstOrNull { it.id.equals(t.providerID, ignoreCase = true) }
         }
@@ -967,11 +1096,7 @@ class ChatViewModel(
                         secretStore = container.secretStore,
                         llmClient = container.llmClient
                     )
-                    repo.saveMessage(
-                        message.copy(
-                            assistanceMetadata = message.assistanceMetadata.copy(generatedFlashcards = cards)
-                        )
-                    )
+                    repo.updateMessageMetadata(message.id) { current -> current.copy(generatedFlashcards = cards) }
                 } catch (t: Throwable) {
                     if (t !is CancellationException) {
                         bannerError.value = t.message ?: L10n.text("生成闪卡失败", "Failed to generate flashcards")
@@ -988,7 +1113,7 @@ class ChatViewModel(
         val conv = state.conversation ?: return
         if (state.studyGeneratingMessageID != null || state.isGenerating) return
         val ready = ChatRepository.readyTargets(state.providers)
-        val target = resolveReplyTarget(message, conv, state.providers, ready)
+        val target = resolveReplyTarget(message, conv, ready)
         val provider = target?.let { t ->
             state.providers.firstOrNull { it.id.equals(t.providerID, ignoreCase = true) }
         }
@@ -1012,11 +1137,7 @@ class ChatViewModel(
                         secretStore = container.secretStore,
                         llmClient = container.llmClient
                     )
-                    repo.saveMessage(
-                        message.copy(
-                            assistanceMetadata = message.assistanceMetadata.copy(generatedQuiz = quiz)
-                        )
-                    )
+                    repo.updateMessageMetadata(message.id) { current -> current.copy(generatedQuiz = quiz) }
                 } catch (t: Throwable) {
                     if (t !is CancellationException) {
                         bannerError.value = t.message ?: L10n.text("生成测验失败", "Failed to generate quiz")
@@ -1029,18 +1150,16 @@ class ChatViewModel(
     }
 
     fun selectQuizOption(message: ChatMessageItem, questionID: String, optionIndex: Int) {
-        val quiz = message.assistanceMetadata.generatedQuiz ?: return
-        val updatedQuestions = quiz.questions.map { q ->
-            if (q.id == questionID) q.copy(selectedIndex = optionIndex) else q
-        }
         viewModelScope.launch {
-            repo.saveMessage(
-                message.copy(
-                    assistanceMetadata = message.assistanceMetadata.copy(
-                        generatedQuiz = quiz.copy(questions = updatedQuestions)
-                    )
-                )
-            )
+            repo.updateMessageMetadata(message.id) { current ->
+                val quiz = current.generatedQuiz ?: return@updateMessageMetadata current
+                val updatedQuestions = quiz.questions.map { question ->
+                    if (question.id == questionID && optionIndex in question.options.indices) {
+                        question.copy(selectedIndex = optionIndex)
+                    } else question
+                }
+                current.copy(generatedQuiz = quiz.copy(questions = updatedQuestions))
+            }
         }
     }
 
@@ -1102,20 +1221,25 @@ class ChatViewModel(
         }
     }
 
+    private val attachmentImportLock = Mutex()
+
     fun attachUris(contentResolver: ContentResolver, uris: List<Uri>, imageOnly: Boolean) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
-            val current = draftAttachments.value.toMutableList()
-            val added = runCatching {
-                withContext(Dispatchers.IO) {
-                    val parsed = uris.map { AttachmentProcessor.processUri(contentResolver, it, imageOnly) }
-                    val combined = current + parsed
-                    AttachmentProcessor.validate(combined)
-                    combined
+            attachmentImportLock.withLock {
+                try {
+                    val current = draftAttachments.value
+                    val added = withContext(Dispatchers.IO) {
+                        AttachmentProcessor.processBatch(contentResolver, uris, imageOnly, existing = current)
+                    }
+                    draftAttachments.update {
+                        (it + added).also(AttachmentProcessor::validate)
+                    }
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    bannerError.value = error.message ?: L10n.text("附件添加失败", "Failed to add attachment")
                 }
             }
-            added.onSuccess { draftAttachments.value = it }
-                .onFailure { bannerError.value = it.message ?: L10n.text("附件添加失败", "Failed to add attachment") }
         }
     }
 
@@ -1234,10 +1358,11 @@ class ChatViewModel(
         }
     }
 
-    fun sendCurrentDraft() {
+    fun sendCurrentDraft(autoExtractScheduleForSingleReply: Boolean = false) {
         val state = uiState.value
         val conv = state.conversation ?: return
-        val text = state.draftText.trim()
+        val draft = composerText.value
+        val text = draft.text.trim()
         val attachments = state.draftAttachments
         val activeQuote = state.quotedExcerpt
         if (text.isEmpty() && attachments.isEmpty() && activeQuote.isNullOrBlank()) return
@@ -1245,17 +1370,10 @@ class ChatViewModel(
         val ready = ChatRepository.readyTargets(state.providers)
 
         if (conv.isGroupMode) {
-            val activePairs = resolveGroupPairs(conv, state.providers, ready)
-            if (activePairs.isEmpty()) {
-                bannerError.value = L10n.text(
-                    "群内暂无未静音且模型可用的成员，请检查群设置或服务商 API Key。",
-                    "No unmuted group member has a ready model configured."
-                )
-                return
-            }
-            val summary = consentSummaryFor(activePairs.map { it.second to it.third }.distinctBy { it.first.id })
-            runWithConsent(summary) {
-                executeSendGroupMessage(text, attachments, conv, activeQuote)
+            authorizeGroupTurn(conv, draft.text, resolveGroupPairs(conv, state.providers, ready), draft.pickedMentions) { mentions, mentionOnly ->
+                if (composerText.value == draft && draftAttachments.value == attachments && quotedExcerpt.value == activeQuote) {
+                    executeSendGroupMessage(text, attachments, conv, mentions, mentionOnly, activeQuote)
+                }
             }
             return
         }
@@ -1293,15 +1411,14 @@ class ChatViewModel(
             return
         }
 
-        val overrideTarget = state.temporaryTargetOverride?.let { ov ->
-            ready.firstOrNull { it.id == ov.id }
-        }
-        val target = overrideTarget ?: resolveActiveTarget(conv, state.providers, ready)
+        val overrideTarget = state.temporaryTargetOverride
+        val target = ChatRepository.resolveChatTarget(overrideTarget ?: conv.primaryTarget, ready)
         if (target == null) {
-            bannerError.value = L10n.text(
-                "请先在「服务商」配置 API Key 并启用至少一个模型。",
-                "Configure an API key and enable at least one model in Providers first."
-            )
+            bannerError.value = if (overrideTarget != null) {
+                L10n.text("临时模型不可用，请清除临时选择。", "The one-turn model is unavailable. Clear the temporary selection.")
+            } else {
+                L10n.text("当前模型不可用，请在顶部选择可用模型。", "The current model is unavailable. Choose a ready model from the top bar.")
+            }
             return
         }
         val provider = state.providers.firstOrNull { it.id.equals(target.providerID, ignoreCase = true) }
@@ -1320,7 +1437,9 @@ class ChatViewModel(
                 provider = provider,
                 searchQuery = capturedSearch,
                 quotedExcerptText = activeQuote,
-                isTemporaryOverride = (overrideTarget != null)
+                isTemporaryOverride = (overrideTarget != null),
+                userProvidedURLs = AgentToolRunner.extractUserProvidedURLs(listOf(text)) - draft.suppliedLinks,
+                autoExtractSchedule = autoExtractScheduleForSingleReply
             )
         }
     }
@@ -1429,7 +1548,7 @@ class ChatViewModel(
         val ready = ChatRepository.readyTargets(state.providers)
 
         if (assistantMessage.isSynthesis && assistantMessage.comparisonGroupID != null) {
-            val judgeTarget = resolveReplyTarget(assistantMessage, conv, state.providers, ready)
+            val judgeTarget = resolveReplyTarget(assistantMessage, conv, ready)
             if (judgeTarget == null) {
                 bannerError.value = L10n.text("原裁判模型当前不可用。", "The judge model is currently unavailable.")
                 return
@@ -1452,7 +1571,7 @@ class ChatViewModel(
         } else null
 
         val resolved = groupSpeaker?.target?.let { gt -> ready.firstOrNull { it.id == gt.id } }
-            ?: resolveReplyTarget(assistantMessage, conv, state.providers, ready)
+            ?: resolveReplyTarget(assistantMessage, conv, ready)
         val provider = resolved?.let { r -> state.providers.firstOrNull { it.id.equals(r.providerID, ignoreCase = true) } }
         if (resolved == null || provider == null) {
             bannerError.value = L10n.text("没有可用的模型用于重答。", "No ready model available to regenerate.")
@@ -1954,7 +2073,8 @@ class ChatViewModel(
             return WebpageApprovalDecision.ALLOW
         }
         val host = uri.host?.lowercase().orEmpty()
-        if (uri.rawQuery == null && host.isNotEmpty() && approvedWebpageHosts.contains(host)) {
+        val origin = WebpageReader.origin(uri)
+        if (uri.rawQuery == null && origin != null && approvedWebpageHosts.contains(origin)) {
             return WebpageApprovalDecision.ALLOW
         }
 
@@ -1968,11 +2088,13 @@ class ChatViewModel(
             host = host,
             hasQuery = uri.rawQuery != null,
             onResolve = { allow, rememberHost ->
-                if (allow && rememberHost && uri.rawQuery == null && host.isNotEmpty()) {
-                    approvedWebpageHosts.add(host)
+                if (pendingApprovalDeferred === deferred && deferred.isActive) {
+                    if (allow && rememberHost && uri.rawQuery == null && origin != null) {
+                        approvedWebpageHosts.add(origin)
+                    }
+                    pendingWebpageApproval.value = null
+                    deferred.complete(if (allow) WebpageApprovalDecision.ALLOW else WebpageApprovalDecision.DENY)
                 }
-                pendingWebpageApproval.value = null
-                deferred.complete(if (allow) WebpageApprovalDecision.ALLOW else WebpageApprovalDecision.DENY)
             }
         )
 
@@ -2011,13 +2133,15 @@ class ChatViewModel(
         text: String,
         attachments: List<MessageAttachment>,
         conv: ConversationItem,
+        mentions: GroupDiscussionCoordinator.MentionParseResult,
+        mentionOnly: Boolean,
         quotedExcerptText: String? = null
     ) {
         val capturedSearch = if (useWebSearchOnce.value) {
             text.take(TavilySearchClient.MAXIMUM_QUERY_CHARACTERS).ifBlank { null }
         } else null
         useWebSearchOnce.value = false
-        draftText.value = ""
+        composerText.value = ComposerText()
         draftAttachments.value = emptyList()
         quotedExcerpt.value = null
         bannerError.value = null
@@ -2029,9 +2153,10 @@ class ChatViewModel(
                 previousJob.cancelAndJoin()
                 cleanupInterruptedGroupTail(conv.id)
             }
-            val currentMessages = repo.getMessages(conv.id)
-            val treeActive = ConversationTree.usesTree(conv.activeLeafMessageID, currentMessages)
-            val parentId = if (treeActive) ConversationTree.currentAnchorID(conv.activeLeafMessageID, currentMessages) else null
+            val current = repo.getConversation(conv.id)?.takeIf { it.isGroupMode } ?: return@launch
+            val currentMessages = repo.getMessages(current.id)
+            val treeActive = ConversationTree.usesTree(current.activeLeafMessageID, currentMessages)
+            val parentId = if (treeActive) ConversationTree.currentAnchorID(current.activeLeafMessageID, currentMessages) else null
             val nextSort = (currentMessages.maxOfOrNull { it.sortIndex } ?: 0) + 1
             val now = System.currentTimeMillis()
             val userMsg = makeUserMessage(
@@ -2045,20 +2170,20 @@ class ChatViewModel(
             )
 
             val updatedTitle = if (currentMessages.none { it.role == MessageRole.USER } &&
-                ConversationItem.isDefaultTitle(conv.title)
+                ConversationItem.isDefaultTitle(current.title)
             ) {
                 ChatRepository.makeConversationTitle(text, attachments)
             } else {
-                conv.title
+                current.title
             }
-            val updatedConv = conv.copy(
+            val updatedConv = current.copy(
                 title = updatedTitle,
-                activeLeafMessageID = if (treeActive) userMsg.id else conv.activeLeafMessageID,
+                activeLeafMessageID = if (treeActive) userMsg.id else current.activeLeafMessageID,
                 updatedAtEpochMs = now
             )
             repo.saveConversationAndMessages(updatedConv, listOf(userMsg))
 
-            runGroupRelaySession(updatedConv, GroupRunMode.AfterUserMessage(userMsg, capturedSearch))
+            runGroupRelaySession(updatedConv, GroupRunMode.AfterUserMessage(userMsg, mentions, mentionOnly, capturedSearch))
         }
     }
 
@@ -2158,10 +2283,16 @@ class ChatViewModel(
     ) {
         val providers = repo.getProviders()
         val ready = ChatRepository.readyTargets(providers)
-        val initialPairs = resolveGroupPairs(initialConversation, providers, ready)
+        val liveStart = repo.getConversation(initialConversation.id)?.takeIf { it.isGroupMode } ?: return
+        val settings = liveStart.assistanceSettings
+        val speakingMode = if (mode is GroupRunMode.AfterUserMessage && mode.mentionOnly) {
+            GroupSpeakingMode.MENTION_ONLY
+        } else settings.groupSpeakingMode
+        val initialPairs = resolveGroupPairs(liveStart, providers, ready).filter { (member, target) ->
+            mode !is GroupRunMode.AfterUserMessage || speakingMode != GroupSpeakingMode.MENTION_ONLY ||
+                mode.mentions.members.any { it.id == member.id && it.target.id == target.id }
+        }
         if (initialPairs.isEmpty()) return
-
-        val settings = initialConversation.assistanceSettings
         val activeMembers = initialPairs.map { it.first }
 
         data class RelayStep(
@@ -2196,7 +2327,7 @@ class ChatViewModel(
         } else allBeforeRound
         val knowledgeQuery = when (mode) {
             is GroupRunMode.AfterUserMessage -> mode.userMessage.content
-            else -> priorBeforeRound.lastOrNull { it.role == MessageRole.USER }?.content.orEmpty()
+            else -> ChatRepository.contextMessages(priorBeforeRound).lastOrNull { it.role == MessageRole.USER }?.content.orEmpty()
         }
         val groupKnowledge = if (settings.knowledgeVolumeIDs.isNotEmpty() && knowledgeQuery.isNotBlank()) {
             retrieveKnowledgeForTurn(settings.knowledgeVolumeIDs, knowledgeQuery)
@@ -2209,15 +2340,19 @@ class ChatViewModel(
         when (mode) {
             is GroupRunMode.AfterUserMessage -> {
                 val priorOnly = priorBeforeRound.filterNot { it.id == mode.userMessage.id }
+                val mentions = mode.mentions.copy(members = mode.mentions.members.mapNotNull { chosen ->
+                    activeMembers.firstOrNull { it.id == chosen.id && it.target.id == chosen.target.id }
+                })
                 val planned = GroupDiscussionCoordinator.selectInitialPlan(
                     userText = mode.userMessage.content,
                     activeMembers = activeMembers,
-                    speakingMode = settings.groupSpeakingMode,
+                    speakingMode = speakingMode,
                     maxRelayTurns = settings.groupMaxRelayTurns,
-                    priorMessages = priorOnly
+                    priorMessages = priorOnly,
+                    resolvedMentions = mentions
                 )
                 if (planned.isEmpty()) {
-                    if (settings.groupSpeakingMode == GroupSpeakingMode.MENTION_ONLY) {
+                    if (speakingMode == GroupSpeakingMode.MENTION_ONLY) {
                         bannerError.value = L10n.text(
                             "仅 @点名模式下，使用 @成员名 点名才会触发发言。",
                             "In @Mention Only mode, use @MemberName to trigger a reply."
@@ -2226,11 +2361,11 @@ class ChatViewModel(
                     return
                 }
                 val hasExplicitMentions = planned.any { it.explicitMention }
-                if (settings.groupSpeakingMode == GroupSpeakingMode.SMART_RELAY && !hasExplicitMentions) {
+                if (speakingMode == GroupSpeakingMode.SMART_RELAY && !hasExplicitMentions) {
                     explicitQueue.add(RelayStep(planned[0].member, planned[0].intent, allowPass = false))
                     maxRelayTurns = minOf(maxOf(settings.groupMaxRelayTurns, 1), maxOf(activeMembers.size + 1, 2))
                     dynamicSmartRelay = true
-                } else if (settings.groupSpeakingMode == GroupSpeakingMode.SMART_RELAY && hasExplicitMentions) {
+                } else if (speakingMode == GroupSpeakingMode.SMART_RELAY && hasExplicitMentions) {
                     planned.forEach { explicitQueue.add(RelayStep(it.member, it.intent, allowPass = false)) }
                     maxRelayTurns = maxOf(planned.size, settings.groupMaxRelayTurns)
                     dynamicSmartRelay = true
@@ -2248,8 +2383,8 @@ class ChatViewModel(
                 } ?: -1
                 val startIdx = if (lastIdx >= 0) (lastIdx + 1) % activeMembers.size else 0
                 explicitQueue.add(RelayStep(activeMembers[startIdx], GroupSpeechIntent.REBUTTAL, allowPass = false))
-                maxRelayTurns = minOf(maxOf(settings.groupMaxRelayTurns, 2), maxOf(activeMembers.size, 2))
-                dynamicSmartRelay = true
+                dynamicSmartRelay = speakingMode != GroupSpeakingMode.MENTION_ONLY
+                maxRelayTurns = if (dynamicSmartRelay) minOf(maxOf(settings.groupMaxRelayTurns, 2), maxOf(activeMembers.size, 2)) else 1
             }
             GroupRunMode.GroupVote -> {
                 activeMembers.forEach { explicitQueue.add(RelayStep(it, GroupSpeechIntent.VOTE, allowPass = false)) }
@@ -2276,9 +2411,11 @@ class ChatViewModel(
             while (nextStep != null && turnsCompleted < maxRelayTurns) {
                 coroutineScope { ensureActive() }
                 val step = nextStep
-                val liveConv = repo.getConversation(initialConversation.id) ?: initialConversation
+                val liveConv = repo.getConversation(initialConversation.id) ?: break
                 val livePairs = resolveGroupPairs(liveConv, providers, ready)
-                val matchedPair = livePairs.firstOrNull { it.first.id.equals(step.member.id, ignoreCase = true) }
+                val matchedPair = livePairs.firstOrNull {
+                    it.first.id.equals(step.member.id, ignoreCase = true) && it.second.id == step.member.target.id
+                }
                 if (!liveConv.isGroupMode || matchedPair == null) {
                     nextStep = if (explicitQueue.isEmpty()) null else explicitQueue.removeFirst()
                     continue
@@ -2388,10 +2525,7 @@ class ChatViewModel(
                 streamingOverlays.update { it + (replyPlaceholder.id to replyPlaceholder) }
                 if (treeActive) {
                     currentLeafID = replyPlaceholder.id
-                    repo.saveConversationAndMessages(
-                        liveConv.copy(activeLeafMessageID = currentLeafID, updatedAtEpochMs = now),
-                        listOf(replyPlaceholder)
-                    )
+                    repo.updateConversationActivity(liveConv.id, now, leaf = currentLeafID, messages = listOf(replyPlaceholder))
                 } else {
                     repo.saveMessage(replyPlaceholder)
                 }
@@ -2565,13 +2699,8 @@ class ChatViewModel(
             activeGroupSpeaker.value = null
             streamingOverlays.value = emptyMap()
             GenerationServiceBridge.stop(container.appContext)
-            val fresh = repo.getConversation(initialConversation.id) ?: initialConversation
-            repo.saveConversation(
-                fresh.copy(
-                    activeLeafMessageID = if (treeActive) currentLeafID else fresh.activeLeafMessageID,
-                    updatedAtEpochMs = System.currentTimeMillis()
-                )
-            )
+            repo.updateConversationActivity(initialConversation.id, System.currentTimeMillis(),
+                leaf = if (treeActive) currentLeafID else null)
         }
     }
 
@@ -2583,9 +2712,11 @@ class ChatViewModel(
         provider: ProviderItem,
         searchQuery: String? = null,
         quotedExcerptText: String? = null,
-        isTemporaryOverride: Boolean = false
+        isTemporaryOverride: Boolean = false,
+        userProvidedURLs: Set<String> = emptySet(),
+        autoExtractSchedule: Boolean = false
     ) {
-        draftText.value = ""
+        composerText.value = ComposerText()
         draftAttachments.value = emptyList()
         quotedExcerpt.value = null
         if (isTemporaryOverride) {
@@ -2662,11 +2793,13 @@ class ChatViewModel(
                     target = target,
                     provider = provider,
                     history = history,
+                    userProvidedURLs = userProvidedURLs,
                     kind = RequestKind.ANSWER
                 )
             ),
             preTurnSearchQuery = searchQuery,
-            preTurnEvidenceQuery = text
+            preTurnEvidenceQuery = text,
+            autoExtractSchedule = autoExtractSchedule
         )
     }
 
@@ -2691,7 +2824,7 @@ class ChatViewModel(
         searchQuery: String? = null,
         quotedExcerptText: String? = null
     ) {
-        draftText.value = ""
+        composerText.value = ComposerText()
         draftAttachments.value = emptyList()
         quotedExcerpt.value = null
         bannerError.value = null
@@ -2938,7 +3071,9 @@ class ChatViewModel(
     private fun executeEditBranchGroup(
         original: ChatMessageItem,
         newContent: String,
-        conv: ConversationItem
+        conv: ConversationItem,
+        mentions: GroupDiscussionCoordinator.MentionParseResult,
+        mentionOnly: Boolean
     ) {
         bannerError.value = null
         val previousJob = activeJob
@@ -2948,15 +3083,16 @@ class ChatViewModel(
                 previousJob.cancelAndJoin()
                 cleanupInterruptedGroupTail(conv.id)
             }
-            val allMsgs = repo.getMessages(conv.id)
+            val current = repo.getConversation(conv.id)?.takeIf { it.isGroupMode } ?: return@launch
+            val allMsgs = repo.getMessages(current.id)
             val now = System.currentTimeMillis()
             val turn = prepareBranchedUserTurn(allMsgs, original, newContent, conv.id, now)
-            val updatedConv = conv.copy(
+            val updatedConv = current.copy(
                 activeLeafMessageID = turn.branchedUser.id,
                 updatedAtEpochMs = now
             )
             repo.saveConversationAndMessages(updatedConv, turn.changedLinks + turn.branchedUser)
-            runGroupRelaySession(updatedConv, GroupRunMode.AfterUserMessage(turn.branchedUser))
+            runGroupRelaySession(updatedConv, GroupRunMode.AfterUserMessage(turn.branchedUser, mentions, mentionOnly))
         }
     }
 
@@ -3097,7 +3233,8 @@ class ChatViewModel(
         extraMessagesToInsert: List<ChatMessageItem>,
         slots: List<StreamSlot>,
         preTurnSearchQuery: String? = null,
-        preTurnEvidenceQuery: String? = null
+        preTurnEvidenceQuery: String? = null,
+        autoExtractSchedule: Boolean = false
     ) {
         activeJob?.cancel()
         activeJob = viewModelScope.launch {
@@ -3106,7 +3243,8 @@ class ChatViewModel(
                 extraMessagesToInsert = extraMessagesToInsert,
                 slots = slots,
                 preTurnSearchQuery = preTurnSearchQuery,
-                preTurnEvidenceQuery = preTurnEvidenceQuery
+                preTurnEvidenceQuery = preTurnEvidenceQuery,
+                autoExtractSchedule = autoExtractSchedule
             )
         }
     }
@@ -3116,7 +3254,8 @@ class ChatViewModel(
         extraMessagesToInsert: List<ChatMessageItem>,
         slots: List<StreamSlot>,
         preTurnSearchQuery: String? = null,
-        preTurnEvidenceQuery: String? = null
+        preTurnEvidenceQuery: String? = null,
+        autoExtractSchedule: Boolean = false
     ) {
         repo.saveConversationAndMessages(conversation, extraMessagesToInsert)
         val initialOverlays = slots.associate { it.message.id to it.message }
@@ -3222,16 +3361,36 @@ class ChatViewModel(
                 }
             }
 
-            coroutineScope {
+            val outcomes = coroutineScope {
                 effectiveSlots.map { slot ->
                     async { runSingleSlot(slot, conversation) }
                 }.awaitAll()
+            }
+            val completedSingle = outcomes.singleOrNull()?.message
+            if (autoExtractSchedule &&
+                !conversation.isArenaMode &&
+                !conversation.isGroupMode &&
+                completedSingle != null &&
+                !completedSingle.isStreaming &&
+                completedSingle.errorMessage == null &&
+                completedSingle.content.isNotBlank()
+            ) {
+                val (extractTarget, extractProvider) = effectiveSlots.first().let { it.target to it.provider }
+                viewModelScope.launch {
+                    runScheduleExtraction(
+                        message = completedSingle,
+                        conv = conversation,
+                        target = extractTarget,
+                        provider = extractProvider,
+                        suppressEmptyError = true
+                    )
+                }
             }
         } finally {
             val ids = slots.mapTo(HashSet()) { it.message.id }
             streamingOverlays.update { current -> current - ids }
             GenerationServiceBridge.stop(container.appContext)
-            repo.saveConversation(conversation.copy(updatedAtEpochMs = System.currentTimeMillis()))
+            repo.updateConversationActivity(conversation.id, System.currentTimeMillis())
         }
     }
 
@@ -3267,15 +3426,29 @@ class ChatViewModel(
 
         val systemSource = slot.systemPromptOverride ?: conversation.systemPrompt
         var renderedSystem = PromptTemplateEngine.render(systemSource, target)
-        if (conversation.assistanceSettings.usePersonalMemory && slot.kind != RequestKind.SYNTHESIS) {
+        var includesMemory = false
+        if (conversation.assistanceSettings.usePersonalMemory && slot.kind != RequestKind.SYNTHESIS &&
+            repo.getConversation(conversation.id)?.assistanceSettings?.usePersonalMemory == true) {
             val memories = repo.getEnabledPersonalMemories()
             val (memPrompt, memCount) = PersonalMemoryPrompt.buildPrompt(memories.map { it.content })
             if (memCount > 0) {
+                includesMemory = true
                 renderedSystem = if (renderedSystem.isBlank()) memPrompt else "$renderedSystem\n\n$memPrompt"
                 liveReply = liveReply.copy(
                     assistanceMetadata = liveReply.assistanceMetadata.copy(memoryCount = memCount)
                 )
                 streamingOverlays.update { it + (liveReply.id to liveReply) }
+            }
+        }
+
+        suspend fun validateTurnScope(requiresTools: Boolean) {
+            if (!includesMemory && !requiresTools) return
+            val live = repo.getConversation(conversation.id)
+            if (includesMemory && live?.assistanceSettings?.usePersonalMemory != true) {
+                throw LLMError.ApiError(L10n.text("个人记忆已关闭，请重新发送。", "Personal memory was turned off. Send again."))
+            }
+            if (requiresTools && (live == null || live.isGroupMode || live.isArenaMode || !live.assistanceSettings.enableAgentTools)) {
+                throw LLMError.ApiError(L10n.text("本轮工具已停用。", "Tools for this turn were disabled."))
             }
         }
         val coachMode = conversation.assistanceSettings.studyCoachMode
@@ -3287,12 +3460,12 @@ class ChatViewModel(
             }
         }
         val allKeys = container.secretStore.loadAllAPIKeys(provider.id)
-        val userProvidedURLs = AgentToolRunner.extractUserProvidedURLs(
-            slot.history.filter { it.role == MessageRole.USER }.map { it.content } + conversation.systemPrompt
-        )
-
         var workingHistory = slot.history
         var toolRound = 0
+        var remainingText = maxOf(0, 1_000_000 - liveReply.content.length - liveReply.reasoningContent.length)
+        var remainingMedia = 24L * 1024 * 1024 - liveReply.attachments.sumOf { it.dataBase64?.length?.toLong() ?: 0L }
+        var remainingToolCalls = AgentToolRunner.MAX_CALLS_PER_TURN
+        var remainingSearches = AgentToolRunner.MAX_SEARCHES_PER_TURN
         var reasoningStartMs: Int? = null
         var thinkingEndMs: Int? = null
         var lastDbFlushMs = 0L
@@ -3377,13 +3550,15 @@ class ChatViewModel(
                 enablePromptCaching = conversation.assistanceSettings.enablePromptCaching,
                 enableNativeSearch = enableNativeSearch,
                 idleTimeoutSeconds = provider.idleTimeoutSeconds.takeIf { it > 0 }?.toDouble(),
-                tools = toolDefinitions
+                tools = toolDefinitions,
+                validateBeforeSending = { validateTurnScope(requiresTools = toolDefinitions.isNotEmpty() || toolRound > 0) }
             )
 
             val roundText = StringBuilder()
             val roundReasoning = StringBuilder()
             val roundThinkingBlocks = mutableListOf<LLMThinkingBlock>()
             val roundToolCalls = mutableListOf<LLMToolCall>()
+            var auxiliaryCharacters = 0
 
             try {
                 container.llmClient.streamChat(llmRequest).collect { event ->
@@ -3393,6 +3568,8 @@ class ChatViewModel(
                             record = record.copy(isStreamed = false)
                         }
                         is LLMStreamEvent.ReasoningDelta -> if (event.text.isNotEmpty()) {
+                            remainingText -= event.text.length
+                            if (remainingText < 0) throw LLMError.InterruptedStream()
                             roundReasoning.append(event.text)
                             if (reasoningStartMs == null) {
                                 reasoningStartMs = ((System.nanoTime() - startNanos) / 1_000_000L).toInt().coerceAtLeast(0)
@@ -3408,9 +3585,14 @@ class ChatViewModel(
                             streamingOverlays.update { it + (liveReply.id to liveReply) }
                         }
                         is LLMStreamEvent.ThinkingBlock -> {
+                            auxiliaryCharacters += event.block.thinking.length + (event.block.signature?.length ?: 0) +
+                                (event.block.redactedData?.length ?: 0)
+                            if (auxiliaryCharacters > 512 * 1024 || roundThinkingBlocks.size >= 64) throw LLMError.InterruptedStream()
                             roundThinkingBlocks.add(event.block)
                         }
                         is LLMStreamEvent.ContentDelta -> {
+                            remainingText -= event.text.length
+                            if (remainingText < 0) throw LLMError.InterruptedStream()
                             val visibleDelta = slot.groupSanitizer?.ingest(event.text) ?: event.text
                             if (visibleDelta.isNotEmpty()) {
                                 roundText.append(visibleDelta)
@@ -3434,6 +3616,8 @@ class ChatViewModel(
                             }
                         }
                         is LLMStreamEvent.AttachmentDelta -> {
+                            remainingMedia -= event.attachment.dataBase64?.length?.toLong() ?: 0L
+                            if (remainingMedia < 0 || liveReply.attachments.size >= 8) throw LLMError.InterruptedStream()
                             record = record.copy(
                                 firstContentMs = record.firstContentMs ?: elapsedMs,
                                 lastOutputMs = elapsedMs,
@@ -3443,14 +3627,18 @@ class ChatViewModel(
                             streamingOverlays.update { it + (liveReply.id to liveReply) }
                         }
                         is LLMStreamEvent.ToolCall -> {
+                            auxiliaryCharacters += event.call.argumentsJSON.length
+                            if (auxiliaryCharacters > 512 * 1024 || roundToolCalls.size >= AgentToolRunner.MAX_CALLS_PER_TURN) {
+                                throw LLMError.UnavailableTool()
+                            }
                             roundToolCalls.add(event.call)
                         }
                         is LLMStreamEvent.GroundingSource -> {
-                            if (event.url.isNotBlank() && groundedSources.none { it.url == event.url }) {
+                            if (event.url.length in 1..2048 && groundedSources.size < 8 && groundedSources.none { it.url == event.url }) {
                                 groundedSources.add(
                                     SearchSource(
                                         id = groundedSources.size + 1,
-                                        title = event.title.ifBlank { event.url },
+                                        title = event.title.ifBlank { event.url }.take(300),
                                         url = event.url,
                                         snippet = L10n.text("来自模型原生联网检索", "From model native web grounding")
                                     )
@@ -3503,6 +3691,12 @@ class ChatViewModel(
 
                 val roundDurationMs = ((System.nanoTime() - roundStartNanos) / 1_000_000L).toInt().coerceAtLeast(0)
                 if (roundToolCalls.isNotEmpty() && allowToolsNow) {
+                    val searches = roundToolCalls.count { it.name == "web_search" }
+                    if (roundToolCalls.size > remainingToolCalls || searches > remainingSearches) {
+                        throw LLMError.ApiError(L10n.text("本轮工具调用已达上限。", "Tool call limit reached for this turn."))
+                    }
+                    remainingToolCalls -= roundToolCalls.size
+                    remainingSearches -= searches
                     record = record.copy(
                         status = RequestStatus.SUCCEEDED,
                         durationMs = roundDurationMs,
@@ -3520,6 +3714,7 @@ class ChatViewModel(
 
                     for (call in roundToolCalls) {
                         coroutineScope { ensureActive() }
+                        validateTurnScope(requiresTools = true)
                         val exec = AgentToolRunner.execute(
                             call = call,
                             searchHandler = { q ->
@@ -3530,7 +3725,11 @@ class ChatViewModel(
                                 )
                             },
                             webpageApproval = { uri ->
-                                requestWebpageApproval(uri, userProvidedURLs)
+                                val decision = withContext(Dispatchers.Main.immediate) {
+                                    requestWebpageApproval(uri, slot.userProvidedURLs)
+                                }
+                                validateTurnScope(requiresTools = true)
+                                decision
                             },
                             knowledgeHandler = if (conversation.assistanceSettings.knowledgeVolumeIDs.isNotEmpty()) {
                                 { q ->
@@ -3721,6 +3920,31 @@ class ChatViewModel(
         )
     }
 
+    private fun authorizeGroupTurn(
+        conversation: ConversationItem,
+        text: String,
+        activePairs: List<Triple<GroupMember, ResolvedModelTarget, ProviderItem>>,
+        pickedMentions: List<PickedGroupMention> = emptyList(),
+        send: (GroupDiscussionCoordinator.MentionParseResult, Boolean) -> Unit
+    ) {
+        val parsed = GroupDiscussionCoordinator.extractMentions(text, conversation.groupMembers, pickedMentions)
+        val mentions = parsed.copy(members = parsed.members.mapNotNull { named ->
+            activePairs.firstOrNull { it.first.id == named.id && it.second.id == named.target.id }?.first
+        })
+        val mentionOnly = conversation.assistanceSettings.groupSpeakingMode == GroupSpeakingMode.MENTION_ONLY
+        val recipients = if (mentionOnly) activePairs.filter { pair -> mentions.members.any { it.id == pair.first.id } } else activePairs
+        if (recipients.isEmpty()) {
+            bannerError.value = if (mentionOnly) {
+                L10n.text("用 @ 点名至少一位可用的群成员。", "Use @ to mention at least one available member.")
+            } else {
+                L10n.text("群内暂无未静音且模型可用的成员，请检查群设置或服务商 API Key。", "No unmuted group member has a ready model configured.")
+            }
+            return
+        }
+        val summary = consentSummaryFor(recipients.map { it.second to it.third }.distinctBy { it.first.id })
+        runWithConsent(summary) { send(mentions, mentionOnly) }
+    }
+
     private fun resolveGroupPairs(
         conv: ConversationItem,
         providers: List<ProviderItem>,
@@ -3778,31 +4002,12 @@ class ChatViewModel(
     private fun resolveReplyTarget(
         message: ChatMessageItem,
         conv: ConversationItem,
-        providers: List<ProviderItem>,
         ready: List<ResolvedModelTarget>
     ): ResolvedModelTarget? {
         val ownTarget = message.providerID?.let { pid ->
             ready.firstOrNull { it.providerID.equals(pid, ignoreCase = true) && it.modelID == message.modelID }
         }
-        return ownTarget ?: resolveActiveTarget(conv, providers, ready)
-    }
-
-    private fun resolveActiveTarget(
-        conv: ConversationItem,
-        providers: List<ProviderItem>,
-        ready: List<ResolvedModelTarget>
-    ): ResolvedModelTarget? {
-        val current = conv.primaryTarget
-        if (current != null) {
-            ready.firstOrNull { it.id == current.id }?.let { return it }
-            val provider = providers.firstOrNull { it.id.equals(current.providerID, ignoreCase = true) }
-            if (provider != null && provider.isReadyForChat &&
-                provider.enabledModels.any { it.id == current.modelID }
-            ) {
-                return current
-            }
-        }
-        return ready.firstOrNull()
+        return ownTarget ?: ChatRepository.resolveChatTarget(conv.primaryTarget, ready)
     }
 
     companion object {

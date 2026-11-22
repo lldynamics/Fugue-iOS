@@ -104,6 +104,30 @@ enum EndpointResolver {
             ?? String(localized: "URL 格式待完善")
     }
 
+    static func audioTranscriptionsEndpoint(baseURL: String) throws -> URL {
+        try openAIAudioEndpoint(baseURL: baseURL, suffix: "/audio/transcriptions", siblingSuffix: "/audio/speech")
+    }
+
+    static func audioSpeechEndpoint(baseURL: String) throws -> URL {
+        try openAIAudioEndpoint(baseURL: baseURL, suffix: "/audio/speech", siblingSuffix: "/audio/transcriptions")
+    }
+
+    private static func openAIAudioEndpoint(baseURL: String, suffix: String, siblingSuffix: String) throws -> URL {
+        let (components, rawPath, forceRaw) = try parseBaseComponents(baseURL)
+        var path = rawPath
+        if path.hasSuffix("/chat/completions") {
+            path = stripTrailingSlash(String(path.dropLast("/chat/completions".count)))
+        } else if path.hasSuffix("/models") {
+            path = stripTrailingSlash(String(path.dropLast("/models".count)))
+        } else if path.hasSuffix(siblingSuffix) {
+            path = stripTrailingSlash(String(path.dropLast(siblingSuffix.count)))
+        }
+        if !path.hasSuffix(suffix) {
+            path = forceRaw ? "\(path)\(suffix)" : "\(ensureOpenAIVersionPrefix(path: path))\(suffix)"
+        }
+        return try finalizeURL(components: components, path: path, forceRaw: forceRaw, rawInput: baseURL)
+    }
+
     // MARK: - Helpers
 
     private static func sanitizeInput(_ input: String) -> String {
