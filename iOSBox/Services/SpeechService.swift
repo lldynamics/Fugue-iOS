@@ -4,6 +4,8 @@ import Speech
 import NaturalLanguage
 import Observation
 
+typealias CloudSpeechSynthesizerHandler = @Sendable (String) async throws -> Data
+
 @MainActor
 @Observable
 final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
@@ -24,6 +26,8 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
     @ObservationIgnored private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     @ObservationIgnored private var recognitionTask: SFSpeechRecognitionTask?
     @ObservationIgnored private var activeRecordingHandler: ((String) -> Void)?
+    @ObservationIgnored private var activeLevelHandler: ((Float) -> Void)?
+    @ObservationIgnored private var onSpeechFinished: (@MainActor () -> Void)?
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
     @ObservationIgnored private let sessionQueue = DispatchQueue(label: "com.iosbox.speech.audio-session", qos: .userInitiated)
     @ObservationIgnored private var audioSessionRequested = false
@@ -111,7 +115,8 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
         messageID: UUID,
         text: String,
         personaID: UUID? = nil,
-        cloudSynthesizer: (@Sendable (String) async throws -> Data)? = nil
+        cloudSynthesizer: (@Sendable (String) async throws -> Data)? = nil,
+        onFinished: (@MainActor () -> Void)? = nil
     ) {
         if speakingMessageID == messageID {
             stopSpeaking()
@@ -123,6 +128,7 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
         stopSpeaking()
         let cleaned = Self.cleanForSpeech(text)
         guard !cleaned.isEmpty else { return }
+        onSpeechFinished = onFinished
 
         guard let cloudSynthesizer else {
             speakLocally(messageID: messageID, text: cleaned, personaID: personaID)
@@ -192,6 +198,7 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
             || speakingMessageID != nil
             || synthesizer.isSpeaking
             || (audioPlayer?.isPlaying == true)
+        onSpeechFinished = nil
         cloudSpeechTask?.cancel()
         cloudSpeechTask = nil
         isSynthesizingCloudSpeech = false
@@ -224,7 +231,10 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
             self.activePlayerID = nil
             self.audioPlayer = nil
             self.speakingMessageID = nil
+            let callback = flag ? self.onSpeechFinished : nil
+            self.onSpeechFinished = nil
             self.deactivateAudioSessionIfIdle()
+            callback?()
         }
     }
 
@@ -235,6 +245,7 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
             self.activePlayerID = nil
             self.audioPlayer = nil
             self.speakingMessageID = nil
+            self.onSpeechFinished = nil
             self.deactivateAudioSessionIfIdle()
         }
     }
@@ -242,22 +253,25 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         let finishedID = ObjectIdentifier(utterance)
         Task { @MainActor in
-            self.handleUtteranceEnded(finishedID)
+            self.handleUtteranceEnded(finishedID, finishedNaturally: true)
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         let cancelledID = ObjectIdentifier(utterance)
         Task { @MainActor in
-            self.handleUtteranceEnded(cancelledID)
+            self.handleUtteranceEnded(cancelledID, finishedNaturally: false)
         }
     }
 
-    func handleUtteranceEnded(_ utteranceID: ObjectIdentifier) {
+    func handleUtteranceEnded(_ utteranceID: ObjectIdentifier, finishedNaturally: Bool = true) {
         if activeUtteranceID == utteranceID {
             activeUtteranceID = nil
             speakingMessageID = nil
+            let callback = finishedNaturally ? onSpeechFinished : nil
+            onSpeechFinished = nil
             deactivateAudioSessionIfIdle()
+            callback?()
         } else if activeUtteranceID == nil {
             // Manual `stopSpeaking()` already cleared `activeUtteranceID`; now that the synthesizer
             // finished cancelling, release the ducked playback session so other apps' volume restores.
@@ -334,7 +348,10 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
 
     // MARK: - Speech-to-Text Dictation
 
-    func startDictation(onTranscript: @escaping (String) -> Void) {
+    func startDictation(
+        onTranscript: @escaping (String) -> Void,
+        onAudioLevel: ((Float) -> Void)? = nil
+    ) {
         if isRecording || dictationToken != nil {
             stopDictation()
             return
@@ -343,6 +360,7 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
         let token = UUID()
         dictationToken = token
         activeRecordingHandler = onTranscript
+        activeLevelHandler = onAudioLevel
 
         SFSpeechRecognizer.requestAuthorization { [weak self] authStatus in
             Task { @MainActor in
@@ -377,6 +395,7 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
         recognitionRequest = nil
         recognitionTask = nil
         activeRecordingHandler = nil
+        activeLevelHandler = nil
         isRecording = false
         deactivateAudioSessionIfIdle()
     }
@@ -414,8 +433,13 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
                 stopDictation()
                 return
             }
+            let levelEmitter: AudioTapEmitter? = activeLevelHandler == nil ? nil : AudioTapEmitter { [weak self] level in
+                guard let self, self.dictationToken == token else { return }
+                self.activeLevelHandler?(level)
+            }
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
                 request.append(buffer)
+                levelEmitter?.emitIfDue(from: buffer)
             }
             self.audioEngine = engine
             self.recognitionRequest = request
@@ -444,5 +468,44 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
             speechError = error.localizedDescription
             stopDictation()
         }
+    }
+}
+
+private final class AudioTapEmitter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastEmitTime: CFAbsoluteTime = 0
+    private let handler: @MainActor (Float) -> Void
+
+    init(handler: @escaping @MainActor (Float) -> Void) {
+        self.handler = handler
+    }
+
+    func emitIfDue(from buffer: AVAudioPCMBuffer) {
+        let now = CFAbsoluteTimeGetCurrent()
+        let shouldSend = lock.withLock {
+            guard now - lastEmitTime >= 0.075 else { return false }
+            lastEmitTime = now
+            return true
+        }
+        guard shouldSend else { return }
+        let level = Self.normalizedRMS(from: buffer)
+        Task { @MainActor [handler] in
+            handler(level)
+        }
+    }
+
+    private static func normalizedRMS(from buffer: AVAudioPCMBuffer) -> Float {
+        guard let channelData = buffer.floatChannelData, buffer.frameLength > 0 else { return 0 }
+        let samples = channelData[0]
+        let count = Int(buffer.frameLength)
+        var sum: Float = 0
+        for index in 0..<count {
+            let s = samples[index]
+            sum += s * s
+        }
+        let rms = sqrtf(sum / Float(max(1, count)))
+        // Map typical spoken RMS (~0.005 ... 0.25) smoothly into 0...1.
+        let clamped = min(max(rms * 5.0, 0), 1)
+        return clamped
     }
 }

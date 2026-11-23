@@ -45,6 +45,7 @@ struct ComposerBarView: View {
     let onOpenOptions: () -> Void
     let onManageKnowledge: () -> Void
     var onOpenAudioTranscription: (() -> Void)? = nil
+    var onOpenVoiceConversation: (() -> Void)? = nil
     var externalDocumentScanTrigger: Int = 0
     var writingFirst = false
     var needsModel = false
@@ -699,6 +700,18 @@ struct ComposerBarView: View {
                         ) {
                             isCapabilityDrawerOpen = false
                             onInsertContextDivider()
+                        }
+                        .disabled(isGenerating)
+                    }
+
+                    if let onOpenVoiceConversation {
+                        drawerTogglePill(
+                            title: String(localized: "语音对谈"),
+                            systemImage: "headphones",
+                            isActive: false
+                        ) {
+                            isCapabilityDrawerOpen = false
+                            onOpenVoiceConversation()
                         }
                         .disabled(isGenerating)
                     }

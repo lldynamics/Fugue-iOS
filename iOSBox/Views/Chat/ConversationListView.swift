@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct ConversationListView: View {
     @Binding var pendingConversationToOpen: Conversation?
@@ -21,6 +22,7 @@ struct ConversationListView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \Conversation.updatedAt, order: .reverse) private var conversations: [Conversation]
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     @Query(sort: \AssistantPreset.sortOrder) private var presets: [AssistantPreset]
@@ -59,6 +61,7 @@ struct ConversationListView: View {
     @State private var showBatchDeleteConfirm = false
     @State private var showBatchTagAlert = false
     @State private var batchTagDraft = ""
+    @State private var batchExportItem: BatchExportSharePayload?
     @State private var preferences = AppPreferences.shared
     private var theme: DS.AccentTheme { preferences.accentTheme }
 
@@ -213,6 +216,9 @@ struct ConversationListView: View {
                     WidgetSnapshotService.shared.sync(context: modelContext)
                 }
             )
+        }
+        .sheet(item: $batchExportItem) { item in
+            BatchExportShareSheet(items: [item.url])
         }
         .safeAreaInset(edge: .bottom) {
             if let error = SystemIntegration.shared.error {
@@ -461,6 +467,46 @@ struct ConversationListView: View {
         .buttonStyle(.plain)
     }
 
+    private func conversationPreview(_ conv: Conversation) -> some View {
+        HStack(spacing: 6) {
+            if let summary = ChatDraftStore.shared.previews[conv.id]?.summary {
+                Text("草稿").fontWeight(.semibold).foregroundStyle(theme.readableText).fixedSize()
+                Text(verbatim: summary).foregroundStyle(.secondary)
+            } else if let lastMsg = latestPreviewMessage(in: conv) {
+                let basePreview = lastMsg.content.isEmpty
+                    ? (lastMsg.isStreaming ? String(localized: "正在生成…") : String(localized: "[附件消息]"))
+                    : lastMsg.content
+                let previewText: String = {
+                    if lastMsg.assistanceMetadataData != nil,
+                       let speaker = lastMsg.assistanceMetadata.groupMemberName, !speaker.isEmpty {
+                        return "\(speaker)：\(basePreview)"
+                    }
+                    return basePreview
+                }()
+                Text(previewText)
+                    .foregroundStyle(.secondary)
+            } else if conv.isGroupMode {
+                let members = conv.groupMembers
+                if !members.isEmpty {
+                    let names = members.map(\.name).joined(separator: String(localized: "、"))
+                    Text("\(members.count) 位成员：\(names)")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("点击开始对话")
+                        .foregroundStyle(.secondary)
+                }
+            } else if let target = conv.primaryTarget {
+                Text("\(target.providerName) · \(target.modelDisplayName)")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("点击开始对话")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption)
+        .lineLimit(1)
+    }
+
     @ViewBuilder
     private func conversationRow(_ conv: Conversation, useSplitSelection: Bool = false) -> some View {
         let isSelected = useSplitSelection && (splitSelection ?? landingDraft)?.id == conv.id && splitSearchRoute == nil
@@ -497,47 +543,7 @@ struct ConversationListView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                HStack(spacing: 6) {
-                    if let lastMsg = latestPreviewMessage(in: conv) {
-                        let basePreview = lastMsg.content.isEmpty
-                            ? (lastMsg.isStreaming ? String(localized: "正在生成…") : String(localized: "[附件消息]"))
-                            : lastMsg.content
-                        let previewText: String = {
-                            if lastMsg.assistanceMetadataData != nil,
-                               let speaker = lastMsg.assistanceMetadata.groupMemberName, !speaker.isEmpty {
-                                return "\(speaker)：\(basePreview)"
-                            }
-                            return basePreview
-                        }()
-                        Text(previewText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    } else if conv.isGroupMode {
-                        let members = conv.groupMembers
-                        if !members.isEmpty {
-                            let names = members.map(\.name).joined(separator: String(localized: "、"))
-                            Text("\(members.count) 位成员：\(names)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        } else {
-                            Text("点击开始对话")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    } else if let target = conv.primaryTarget {
-                        Text("\(target.providerName) · \(target.modelDisplayName)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    } else {
-                        Text("点击开始对话")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                conversationPreview(conv)
             }
         }
         .padding(.vertical, 3)
@@ -569,7 +575,10 @@ struct ConversationListView: View {
                     HStack(spacing: 12) {
                         Image(systemName: conv.readingVolumeID != nil ? "book" : (conv.isArenaMode ? "rectangle.split.2x1" : "bubble.left"))
                             .foregroundStyle(isSelected ? theme.readableText : .secondary)
-                        Text(verbatim: conv.title).lineLimit(1)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(verbatim: conv.title).lineLimit(1)
+                            conversationPreview(conv)
+                        }
                         Spacer()
                         if conv.isPinned { Image(systemName: "pin.fill").font(.caption) }
                     }
@@ -582,6 +591,9 @@ struct ConversationListView: View {
                     rowContent
                 }
             }
+        }
+        .task(id: scenePhase) {
+            if scenePhase == .active { await ChatDraftStore.shared.loadPreview(for: conv.id) }
         }
         .contextMenu {
             Button {
@@ -645,7 +657,7 @@ struct ConversationListView: View {
         if let selectSection {
             VStack(alignment: .leading, spacing: 0) {
                 Divider()
-                Button { selectSection(1) } label: { Label("助手与书架", systemImage: "books.vertical").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading) }
+                Button { selectSection(1) } label: { Label("好友与书架", systemImage: "books.vertical").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading) }
                 Menu {
                     Button { selectSection(2) } label: { Label("服务商与设置", systemImage: "server.rack") }
                     Button { selectSection(3) } label: { Label("用量与测速", systemImage: "chart.bar") }
@@ -675,6 +687,23 @@ struct ConversationListView: View {
             .controlSize(.small)
             .disabled(batchSelectedIDs.isEmpty)
 
+            Menu("批量导出") {
+                Button {
+                    exportBatchSelected(asPDF: false)
+                } label: {
+                    Label("导出为 Markdown", systemImage: "doc.text")
+                }
+
+                Button {
+                    exportBatchSelected(asPDF: true)
+                } label: {
+                    Label("导出为 PDF", systemImage: "doc.richtext")
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(batchSelectedIDs.isEmpty)
+
             Button("删除 (\(batchSelectedIDs.count))", role: .destructive) {
                 showBatchDeleteConfirm = true
             }
@@ -686,6 +715,19 @@ struct ConversationListView: View {
         .padding(.horizontal, DS.Spacing.lg)
         .padding(.vertical, DS.Spacing.sm)
         .background(.bar)
+    }
+
+    private func exportBatchSelected(asPDF: Bool) {
+        let targets = conversations.filter { batchSelectedIDs.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        do {
+            let url = asPDF
+                ? try BatchArchiveExporter.writeConversationsPDFFile(conversations: targets)
+                : try BatchArchiveExporter.writeConversationsMarkdownFile(conversations: targets)
+            batchExportItem = BatchExportSharePayload(url: url)
+        } catch {
+            deletionError = error.localizedDescription
+        }
     }
 
     private func applyBatchTag() {
@@ -818,4 +860,19 @@ struct ConversationListView: View {
         openConversation(conv)
         return conv
     }
+}
+
+private struct BatchExportSharePayload: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct BatchExportShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

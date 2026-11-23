@@ -42,6 +42,7 @@ struct ChatDetailView: View {
     @State private var preferences = AppPreferences.shared
     @State private var entryRouter = SystemEntryRouter.shared
     @State private var externalDocumentScanTrigger = 0
+    @State private var showVoiceConversation = false
     @State private var pendingAutoExtractSchedule = false
     @FocusState private var inputFocused: Bool
 
@@ -423,6 +424,7 @@ struct ChatDetailView: View {
             onOpenOptions: { activeSheet = .options },
             onManageKnowledge: { activeSheet = .knowledge },
             onOpenAudioTranscription: { activeSheet = .audioTranscription },
+            onOpenVoiceConversation: (conversation.isGroupMode || conversation.isArenaMode) ? nil : openVoiceConversation,
             externalDocumentScanTrigger: externalDocumentScanTrigger,
             writingFirst: writingFirst,
             needsModel: needsAPIKeyBanner,
@@ -644,6 +646,15 @@ struct ChatDetailView: View {
                     }
                     .keyboardShortcut("f", modifiers: .command)
 
+                    if !conversation.isGroupMode && !conversation.isArenaMode {
+                        Button {
+                            openVoiceConversation()
+                        } label: {
+                            Label("通勤语音对谈", systemImage: "headphones")
+                        }
+                        .disabled(engine.isGenerating(in: conversation.id))
+                    }
+
                     Button {
                         renameDraft = conversation.title
                         showRenameAlert = true
@@ -829,6 +840,30 @@ struct ChatDetailView: View {
             if let id = conversation.readingVolumeID {
                 readerNavigation(for: id) { showsShelfReader = false }
             }
+        }
+        .fullScreenCover(isPresented: $showVoiceConversation) {
+            VoiceConversationView(
+                conversationTitle: conversation.title,
+                modelDisplayName: routedTarget?.modelDisplayName ?? conversation.primaryTarget?.modelDisplayName ?? String(localized: "未选模型"),
+                isGenerating: engine.isGenerating(in: conversation.id),
+                latestAssistantMessage: activeMessages.last(where: { $0.role == .assistant }),
+                needsModelSetup: needsAPIKeyBanner,
+                onOpenModelSetup: beginModelSetup,
+                onSendPrompt: { spokenText in
+                    let clean = spokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !clean.isEmpty, !engine.isGenerating(in: conversation.id) else { return false }
+                    draft.text = clean
+                    saveDraft()
+                    handleSend()
+                    return engine.isGenerating(in: conversation.id)
+                },
+                onStopGeneration: {
+                    engine.stopGeneration(for: conversation.id)
+                },
+                cloudTTSTemplateProvider: {
+                    makeCloudTTSRequestTemplate()
+                }
+            )
         }
         .onChange(of: conversation.isArenaMode || conversation.isGroupMode) { _, multi in
             if multi { requestOptions.temporaryTarget = nil }
@@ -1170,41 +1205,74 @@ struct ChatDetailView: View {
         triggerScheduleExtraction(for: lastAssistant, suppressErrorAlert: true)
     }
 
+    private func makeCloudTTSRequestTemplate() -> CloudTTSRequest? {
+        guard preferences.useCloudTTS,
+              AppCompliance.hasAcceptedAIDisclosure(),
+              let provider = AudioTranscriptionService.resolveAudioProvider(
+                  in: providers,
+                  preferredID: preferences.cloudTTSProviderID
+              ) else {
+            return nil
+        }
+        return CloudTTSRequest(
+            baseURL: provider.baseURL,
+            apiKey: provider.apiKey,
+            apiKeys: provider.extraAPIKeys,
+            customHeaders: provider.resolvedCustomHeaders,
+            model: preferences.cloudTTSModel,
+            voice: preferences.cloudTTSVoice,
+            input: ""
+        )
+    }
+
+    private func openVoiceConversation() {
+        guard !conversation.isGroupMode && !conversation.isArenaMode else { return }
+        if needsAPIKeyBanner {
+            beginModelSetup()
+            return
+        }
+        if AppCompliance.hasAcceptedAIDisclosure() {
+            showVoiceConversation = true
+            return
+        }
+        if let target = requestOptions.temporaryTarget ?? conversation.primaryTarget {
+            let backups = conversation.assistanceSettings.fallbackEnabled ? conversation.assistanceSettings.fallbackTargets : []
+            authorize([target] + backups, search: false, tools: conversation.assistanceSettings.enableAgentTools) {
+                showVoiceConversation = true
+            }
+        } else {
+            beginModelSetup()
+        }
+    }
+
     private func toggleSpeechWithOptionalCloud(for msg: ChatMessage) {
         let meta = msg.assistanceMetadata
-        var cloudSynthesizer: (@Sendable (String) async throws -> Data)?
-        if preferences.useCloudTTS,
-           AppCompliance.hasAcceptedAIDisclosure(),
-           let provider = AudioTranscriptionService.resolveAudioProvider(
-               in: providers,
-               preferredID: preferences.cloudTTSProviderID
-           ) {
-            let baseURL = provider.baseURL
-            let apiKey = provider.apiKey
-            let extraKeys = provider.extraAPIKeys
-            let headers = provider.resolvedCustomHeaders
-            let model = preferences.cloudTTSModel
-            let voice = preferences.cloudTTSVoice
-            cloudSynthesizer = { cleanedText in
-                try await CloudSpeechSynthesizer.synthesize(
-                    CloudTTSRequest(
-                        baseURL: baseURL,
-                        apiKey: apiKey,
-                        apiKeys: extraKeys,
-                        customHeaders: headers,
-                        model: model,
-                        voice: voice,
-                        input: cleanedText
+        if let tpl = makeCloudTTSRequestTemplate() {
+            SpeechService.shared.toggleSpeaking(
+                messageID: msg.id,
+                text: msg.content,
+                personaID: meta.groupMemberID,
+                cloudSynthesizer: { [tpl] cleanedText in
+                    try await CloudSpeechSynthesizer.synthesize(
+                        CloudTTSRequest(
+                            baseURL: tpl.baseURL,
+                            apiKey: tpl.apiKey,
+                            apiKeys: tpl.apiKeys,
+                            customHeaders: tpl.customHeaders,
+                            model: tpl.model,
+                            voice: tpl.voice,
+                            input: cleanedText
+                        )
                     )
-                )
-            }
+                }
+            )
+        } else {
+            SpeechService.shared.toggleSpeaking(
+                messageID: msg.id,
+                text: msg.content,
+                personaID: meta.groupMemberID
+            )
         }
-        SpeechService.shared.toggleSpeaking(
-            messageID: msg.id,
-            text: msg.content,
-            personaID: meta.groupMemberID,
-            cloudSynthesizer: cloudSynthesizer
-        )
     }
 
     private func editAndResend(_ message: ChatMessage, text: String) {

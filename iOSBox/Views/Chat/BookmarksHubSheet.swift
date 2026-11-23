@@ -158,11 +158,59 @@ struct BookmarksHubSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        let filterLabel = [selectedTag, searchText.trimmingCharacters(in: .whitespacesAndNewlines)]
+                            .compactMap { $0 }
+                            .filter { !$0.isEmpty }
+                            .joined(separator: " · ")
+
+                        Button {
+                            exportArchiveMarkdown(entries: filtered, filterDescription: filterLabel)
+                        } label: {
+                            Label("导出当前为 Markdown（\(filtered.count) 条）", systemImage: "doc.text")
+                        }
+
+                        Button {
+                            exportArchivePDF(entries: filtered, filterDescription: filterLabel)
+                        } label: {
+                            Label("导出当前为 PDF（\(filtered.count) 条）", systemImage: "doc.richtext")
+                        }
+
+                        Button {
+                            let md = BatchArchiveExporter.makeBookmarksMarkdown(
+                                entries: filtered,
+                                filterDescription: filterLabel.isEmpty ? nil : filterLabel
+                            )
+                            UIPasteboard.general.string = md
+                            preferences.triggerLightHaptic()
+                        } label: {
+                            Label("复制当前汇总 (Markdown)", systemImage: "doc.on.doc")
+                        }
+
+                        if filtered.count != entries.count && !entries.isEmpty {
+                            Divider()
+                            Button {
+                                exportArchiveMarkdown(entries: entries, filterDescription: nil)
+                            } label: {
+                                Label("导出全部为 Markdown（\(entries.count) 条）", systemImage: "tray.full")
+                            }
+                            Button {
+                                exportArchivePDF(entries: entries, filterDescription: nil)
+                            } label: {
+                                Label("导出全部为 PDF（\(entries.count) 条）", systemImage: "doc.richtext.fill")
+                            }
+                        }
+                    } label: {
+                        Label("批量归档", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(filtered.isEmpty)
+                }
             }
             .sheet(item: $exportShareItem) { item in
                 BookmarkActivityShareSheet(items: [item.url])
             }
-            .alert("无法导出 PDF", isPresented: Binding(
+            .alert("导出失败", isPresented: Binding(
                 get: { exportErrorMessage != nil },
                 set: { if !$0 { exportErrorMessage = nil } }
             )) {
@@ -263,6 +311,30 @@ struct BookmarksHubSheet: View {
             .padding(.top, 2)
         }
         .padding(.vertical, 4)
+    }
+
+    private func exportArchiveMarkdown(entries: [BookmarkedMessageEntry], filterDescription: String?) {
+        do {
+            let url = try BatchArchiveExporter.writeBookmarksMarkdownFile(
+                entries: entries,
+                filterDescription: (filterDescription?.isEmpty == false) ? filterDescription : nil
+            )
+            exportShareItem = BookmarkSharePayload(url: url)
+        } catch {
+            exportErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func exportArchivePDF(entries: [BookmarkedMessageEntry], filterDescription: String?) {
+        do {
+            let url = try BatchArchiveExporter.writeBookmarksPDFFile(
+                entries: entries,
+                filterDescription: (filterDescription?.isEmpty == false) ? filterDescription : nil
+            )
+            exportShareItem = BookmarkSharePayload(url: url)
+        } catch {
+            exportErrorMessage = error.localizedDescription
+        }
     }
 
     private func tagChip(title: String, selected: Bool, action: @escaping () -> Void) -> some View {
