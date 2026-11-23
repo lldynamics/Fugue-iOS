@@ -16,6 +16,7 @@ final class ProviderConfig {
     var notes: String
     var createdAt: Date
     var updatedAt: Date
+    private var restoredCredentialID: UUID?
 
     init(
         id: UUID = UUID(),
@@ -28,7 +29,8 @@ final class ProviderConfig {
         sortOrder: Int = 0,
         models: [ModelSpec] = [],
         customHeaders: [CustomHeader] = [],
-        notes: String = ""
+        notes: String = "",
+        isRestored: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -43,7 +45,16 @@ final class ProviderConfig {
         self.notes = notes
         self.createdAt = Date()
         self.updatedAt = Date()
+        self.restoredCredentialID = isRestored ? UUID() : nil
     }
+
+    // Backup IDs preserve conversation references. Only a locally generated ID can
+    // select a new Keychain namespace when that backup recreates a missing provider.
+    var credentialID: UUID { restoredCredentialID ?? id }
+
+    var isRestoredFromBackup: Bool { restoredCredentialID != nil }
+
+    var apiKey: String { KeychainService.shared.loadAPIKey(for: credentialID) }
 
     var protocolType: APIProtocolType {
         get { APIProtocolType(rawValue: protocolRaw) ?? .openAICompatible }
@@ -74,7 +85,7 @@ final class ProviderConfig {
     }
 
     var hasAuthentication: Bool {
-        KeychainService.shared.hasAPIKey(for: id) || resolvedCustomHeaders.contains {
+        KeychainService.shared.hasAPIKey(for: credentialID) || resolvedCustomHeaders.contains {
             $0.isEnabled && CustomHeader.looksSensitive($0.key) && !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
@@ -128,7 +139,7 @@ final class ProviderConfig {
             guard header.isSecret else { return header }
             var resolved = header
             resolved.value = KeychainService.shared.loadSecret(
-                account: KeychainService.headerAccount(providerID: id, headerID: header.id)
+                account: KeychainService.headerAccount(providerID: credentialID, headerID: header.id)
             )
             return resolved
         }
@@ -139,7 +150,7 @@ final class ProviderConfig {
     func addCustomHeader(key: String, value: String, isSecret: Bool, save: (String, String) -> Bool = { KeychainService.shared.saveSecret($0, account: $1) }) -> Bool {
         var header = CustomHeader(key: key, value: value, isSecret: isSecret)
         if isSecret {
-            guard save(value, KeychainService.headerAccount(providerID: id, headerID: header.id)) else { return false }
+            guard save(value, KeychainService.headerAccount(providerID: credentialID, headerID: header.id)) else { return false }
             header.value = ""
         }
         customHeaders = customHeaders + [header]
@@ -150,7 +161,7 @@ final class ProviderConfig {
         guard let header = customHeaders.first(where: { $0.id == headerID }) else { return }
         if header.isSecret {
             KeychainService.shared.deleteSecret(
-                account: KeychainService.headerAccount(providerID: id, headerID: headerID)
+                account: KeychainService.headerAccount(providerID: credentialID, headerID: headerID)
             )
         }
         customHeaders = customHeaders.filter { $0.id != headerID }
@@ -158,21 +169,21 @@ final class ProviderConfig {
 
     /// Removes every Keychain item owned by this provider (API keys + secret headers) and connection overrides.
     func deleteAllSecrets() {
-        KeychainService.shared.deleteAPIKey(for: id)
+        KeychainService.shared.deleteAPIKey(for: credentialID)
         for header in customHeaders where header.isSecret {
             KeychainService.shared.deleteSecret(
-                account: KeychainService.headerAccount(providerID: id, headerID: header.id)
+                account: KeychainService.headerAccount(providerID: credentialID, headerID: header.id)
             )
         }
         ProviderConnectionSettingsStore.shared.remove(for: id)
     }
 
     var extraAPIKeys: [String] {
-        KeychainService.shared.loadExtraAPIKeys(for: id)
+        KeychainService.shared.loadExtraAPIKeys(for: credentialID)
     }
 
     var allAPIKeys: [String] {
-        KeychainService.shared.loadAllAPIKeys(for: id)
+        KeychainService.shared.loadAllAPIKeys(for: credentialID)
     }
 
     /// 0 means automatic (45s standard / 120s reasoning & LAN); > 0 overrides stream idle timeout in seconds.
@@ -201,7 +212,7 @@ final class ProviderConfig {
             }
             let saved = KeychainService.shared.saveSecret(
                 header.value,
-                account: KeychainService.headerAccount(providerID: id, headerID: header.id)
+                account: KeychainService.headerAccount(providerID: credentialID, headerID: header.id)
             )
             guard saved else { return header } // keep plaintext rather than lose the credential
             var secured = header

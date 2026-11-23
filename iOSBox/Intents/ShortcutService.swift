@@ -55,8 +55,8 @@ enum ShortcutService {
         let context = suppliedContext ?? AppRuntime.persistence.container.mainContext
         let providers = try context.fetch(FetchDescriptor<ProviderConfig>(sortBy: [SortDescriptor(\.sortOrder)]))
         let ready = ProviderConfig.readyTargets(in: providers)
-        if let preferredModelID,
-           let matched = ready.first(where: { $0.id == preferredModelID }) {
+        if let preferredModelID {
+            guard let matched = ready.first(where: { $0.id == preferredModelID }) else { throw LLMError.unavailableModel }
             if requiresVision && !matched.supportsVision {
                 throw LLMError.apiError(String(localized: "所选模型未启用识图能力，请选择支持图片的模型。"))
             }
@@ -130,7 +130,8 @@ enum ShortcutService {
             in: conversation,
             providers: providers,
             context: context,
-            kind: .shortcut
+            kind: .shortcut,
+            options: GenerationOptions(omitKnowledge: true)
         )
         guard outcome == .sent else {
             context.delete(conversation)

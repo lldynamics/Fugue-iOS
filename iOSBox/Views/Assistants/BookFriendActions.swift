@@ -181,11 +181,12 @@ struct GroupCreationFlow: View {
     let providers: [ProviderConfig]
     let presets: [AssistantPreset]
     var invitedFriend: BookFriend? = nil
+    var invitedProfile: GroupMember? = nil
     let onCreated: (Conversation) -> Void
 
     var body: some View {
         GroupModelGate(providers: providers) {
-            GroupSetupSheet(invitedFriend: invitedFriend, providers: providers, presets: presets, onCreated: onCreated)
+            GroupSetupSheet(invitedFriend: invitedFriend, invitedProfile: invitedProfile, providers: providers, presets: presets, onCreated: onCreated)
         }
     }
 }

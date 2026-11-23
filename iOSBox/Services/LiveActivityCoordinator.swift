@@ -2,14 +2,72 @@ import ActivityKit
 import Foundation
 import Observation
 
+struct GenerationOutcome {
+    let phase: String
+    let completedTurns: Int
+
+    init(statuses: [RequestStatus], stopped: Bool) {
+        completedTurns = statuses.filter { $0 == .succeeded }.count
+        if stopped || statuses.contains(.cancelled) {
+            phase = String(localized: "已停止生成")
+        } else if !statuses.isEmpty && completedTurns == statuses.count {
+            phase = String(localized: "已完成")
+        } else if completedTurns > 0 || statuses.contains(.incomplete) {
+            phase = String(localized: "部分完成")
+        } else {
+            phase = String(localized: "生成失败")
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class LiveActivityCoordinator {
     static let shared = LiveActivityCoordinator()
+    private static let previewKey = "iosbox.liveActivity.showPreviews"
+    @ObservationIgnored private let defaults: UserDefaults
+    private(set) var showsPreviews: Bool
 
     private(set) var activeStates: [UUID: IOSBoxGenerationAttributes.ContentState] = [:]
     @ObservationIgnored private var activities: [UUID: Activity<IOSBoxGenerationAttributes>] = [:]
     @ObservationIgnored private var lastUpdateTime: [UUID: ContinuousClock.Instant] = [:]
+    @ObservationIgnored private var pendingUpdates: [String: Task<Void, Never>] = [:]
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        showsPreviews = defaults.bool(forKey: Self.previewKey)
+    }
+
+    func setShowsPreviews(_ enabled: Bool) {
+        showsPreviews = enabled
+        defaults.set(enabled, forKey: Self.previewKey)
+        guard !enabled else { return }
+        for (id, var state) in activeStates where state.presentation == .preview {
+            state.hideDetails()
+            activeStates[id] = state
+            if let activity = activities[id] { publishCurrentState(for: id, to: activity) }
+        }
+        dismissUntrackedActivities()
+    }
+
+    func anonymizeComparison(in conversationID: UUID) {
+        if var state = activeStates[conversationID] {
+            state.presentation = .anonymous
+            state.hideDetails()
+            activeStates[conversationID] = state
+            if let activity = activities[conversationID] { publishCurrentState(for: conversationID, to: activity) }
+        }
+        dismissUntrackedActivities(in: conversationID)
+    }
+
+    // Dismiss previews left visible by an earlier process or a just-finished turn.
+    private func dismissUntrackedActivities(in conversationID: UUID? = nil) {
+        let runningIDs = Set(activities.values.map(\.id))
+        for activity in Activity<IOSBoxGenerationAttributes>.activities where !runningIDs.contains(activity.id) {
+            if let conversationID, activity.attributes.conversationID != conversationID.uuidString { continue }
+            endActivity(activity, state: activity.content.state, policy: .immediate)
+        }
+    }
 
     func start(
         conversationID: UUID,
@@ -17,20 +75,24 @@ final class LiveActivityCoordinator {
         modeBadge: String,
         speakerOrModel: String,
         phaseText: String,
-        totalTurns: Int = 1
+        totalTurns: Int = 1,
+        isBlind: Bool = false
     ) {
-        let initialState = IOSBoxGenerationAttributes.ContentState(
+        var initialState = IOSBoxGenerationAttributes.ContentState(
             speakerOrModel: speakerOrModel,
             phaseText: phaseText,
             completedTurns: 0,
             totalTurns: totalTurns,
             previewSnippet: ""
         )
+        initialState.presentation = isBlind ? .anonymous : (showsPreviews ? .preview : .status)
+        if initialState.presentation == .preview {
+            initialState.previewTitle = String(chatTitle.prefix(60))
+        } else {
+            initialState.hideDetails()
+        }
         if let existing = activities.removeValue(forKey: conversationID) {
-            let endContent = ActivityContent(state: initialState, staleDate: nil)
-            Task {
-                await existing.end(endContent, dismissalPolicy: .immediate)
-            }
+            endActivity(existing, state: existing.content.state, policy: .immediate)
         }
         activeStates[conversationID] = initialState
         lastUpdateTime[conversationID] = .now
@@ -38,7 +100,7 @@ final class LiveActivityCoordinator {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let attrs = IOSBoxGenerationAttributes(
             conversationID: conversationID.uuidString,
-            chatTitle: String(chatTitle.prefix(60)),
+            chatTitle: "",
             modeBadge: modeBadge
         )
         do {
@@ -63,13 +125,13 @@ final class LiveActivityCoordinator {
         if !force, let last = lastUpdateTime[conversationID], last.duration(to: .now) < .milliseconds(1200) {
             return
         }
-        if let speakerOrModel { current.speakerOrModel = speakerOrModel }
+        if current.presentation == .preview, let speakerOrModel { current.speakerOrModel = speakerOrModel }
         if let phaseText { current.phaseText = phaseText }
         if let completedTurns { current.completedTurns = completedTurns }
         if let totalTurns { current.totalTurns = max(1, totalTurns) }
-        if let previewSnippet {
+        if current.presentation == .preview, let previewSnippet {
             current.previewSnippet = String(
-                previewSnippet
+                previewSnippet.suffix(180)
                     .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .suffix(90)
@@ -79,32 +141,39 @@ final class LiveActivityCoordinator {
         lastUpdateTime[conversationID] = .now
 
         if let activity = activities[conversationID] {
-            let content = ActivityContent(state: current, staleDate: Date().addingTimeInterval(600))
-            Task {
-                await activity.update(content)
-            }
+            publishCurrentState(for: conversationID, to: activity)
         }
     }
 
-    func end(conversationID: UUID, finalPhase: String? = nil) {
-        var finalState = activeStates.removeValue(forKey: conversationID)
+    private func publishCurrentState(for conversationID: UUID, to activity: Activity<IOSBoxGenerationAttributes>) {
+        let previous = pendingUpdates[activity.id]
+        pendingUpdates[activity.id] = Task {
+            await previous?.value
+            guard activities[conversationID]?.id == activity.id, let current = activeStates[conversationID] else { return }
+            await activity.update(ActivityContent(state: current, staleDate: Date().addingTimeInterval(600)))
+        }
+    }
+
+    private func endActivity(_ activity: Activity<IOSBoxGenerationAttributes>, state: IOSBoxGenerationAttributes.ContentState,
+                             policy: ActivityUIDismissalPolicy) {
+        let previous = pendingUpdates.removeValue(forKey: activity.id)
+        Task {
+            await previous?.value
+            var summary = state
+            summary.hideDetails()
+            await activity.end(ActivityContent(state: summary, staleDate: nil), dismissalPolicy: policy)
+        }
+    }
+
+    @discardableResult
+    func end(conversationID: UUID, outcome: GenerationOutcome) -> IOSBoxGenerationAttributes.ContentState? {
+        guard var finalState = activeStates.removeValue(forKey: conversationID) else { return nil }
         lastUpdateTime.removeValue(forKey: conversationID)
-        if let finalPhase, var st = finalState {
-            st.phaseText = finalPhase
-            st.completedTurns = st.totalTurns
-            finalState = st
-        }
+        finalState.phaseText = outcome.phase
+        finalState.completedTurns = min(outcome.completedTurns, finalState.totalTurns)
         if let activity = activities.removeValue(forKey: conversationID) {
-            let stateToPublish = finalState ?? IOSBoxGenerationAttributes.ContentState(
-                speakerOrModel: String(localized: "夜奔"),
-                phaseText: finalPhase ?? String(localized: "已完成"),
-                completedTurns: 1,
-                totalTurns: 1
-            )
-            let content = ActivityContent(state: stateToPublish, staleDate: nil)
-            Task {
-                await activity.end(content, dismissalPolicy: .after(Date().addingTimeInterval(12)))
-            }
+            endActivity(activity, state: finalState, policy: .after(Date().addingTimeInterval(12)))
         }
+        return finalState
     }
 }

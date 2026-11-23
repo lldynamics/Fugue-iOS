@@ -285,15 +285,24 @@ struct StudyFlashcard: Codable, Equatable, Sendable, Identifiable {
         dueAt <= date
     }
 
+    static let maximumReviewCount = 1_000_000
+    static let maximumIntervalDays: Double = 3_650
+
     /// Applies SM-2 / FSRS-inspired spaced-repetition scheduling deterministically.
     func applying(_ rating: StudyReviewRating, now: Date = Date()) -> StudyFlashcard {
         var next = self
+        let repetitions = min(max(0, self.repetitions), Self.maximumReviewCount)
+        let intervalDays = self.intervalDays.isFinite ? min(max(0, self.intervalDays), Self.maximumIntervalDays) : 0
+        let easeFactor = self.easeFactor.isFinite ? min(max(1.3, self.easeFactor), 5) : 2.5
+        next.repetitions = repetitions
+        next.lapses = min(max(0, lapses), Self.maximumReviewCount)
+        next.easeFactor = easeFactor
         next.lastReviewedAt = now
 
         switch rating {
         case .again:
             next.repetitions = 0
-            next.lapses += 1
+            next.lapses = min(next.lapses + 1, Self.maximumReviewCount)
             next.intervalDays = 0
             next.easeFactor = max(1.3, easeFactor - 0.2)
             next.dueAt = now.addingTimeInterval(10 * 60) // 10 minutes
@@ -319,7 +328,7 @@ struct StudyFlashcard: Codable, Equatable, Sendable, Identifiable {
             } else {
                 days = max(1.0, (intervalDays * easeFactor).rounded())
             }
-            next.repetitions = repetitions + 1
+            next.repetitions = min(repetitions + 1, Self.maximumReviewCount)
             next.intervalDays = days
             next.dueAt = now.addingTimeInterval(days * 86_400)
 
@@ -333,9 +342,13 @@ struct StudyFlashcard: Codable, Equatable, Sendable, Identifiable {
             } else {
                 days = max(4.0, (intervalDays * next.easeFactor * 1.3).rounded())
             }
-            next.repetitions = repetitions + 1
+            next.repetitions = min(repetitions + 1, Self.maximumReviewCount)
             next.intervalDays = days
             next.dueAt = now.addingTimeInterval(days * 86_400)
+        }
+        if next.intervalDays > Self.maximumIntervalDays {
+            next.intervalDays = Self.maximumIntervalDays
+            next.dueAt = now.addingTimeInterval(next.intervalDays * 86_400)
         }
         return next
     }

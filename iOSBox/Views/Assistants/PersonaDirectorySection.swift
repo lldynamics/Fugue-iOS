@@ -1,0 +1,184 @@
+import SwiftUI
+import SwiftData
+
+struct PersonaDirectorySection: View {
+    let invite: (GroupMember) -> Void
+    @Environment(\.modelContext) private var context
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Query(sort: \PersonaProfile.name) private var profiles: [PersonaProfile]
+    @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
+    @State private var editing: GroupMember?
+    @State private var removing: PersonaProfile?
+    @State private var connecting = false
+    @State private var error: String?
+
+    var body: some View {
+        Section("人物档案") {
+            Button {
+                let ready = ProviderConfig.readyTargets(in: providers)
+                if let target = AppPreferences.shared.initialTarget(from: ready) ?? ready.first { create(using: target) }
+                else { connecting = true }
+            } label: { Label("新建人物档案", systemImage: "person.crop.circle.badge.plus") }
+
+            ForEach(profiles) { profile in
+                let member = try? profile.member()
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Button { openPrivateChat(profile) } label: {
+                            HStack {
+                                if let member { PersonaAvatar(identity: PersonaByline(member), size: 38) }
+                                VStack(alignment: .leading) {
+                                    Text(verbatim: profile.name).font(.headline)
+                                    if let title = member?.title, !title.isEmpty {
+                                        Text(verbatim: title).font(.subheadline).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(Text(verbatim: profile.name))
+                        .accessibilityHint("私聊")
+                        Spacer()
+                        Menu {
+                            Button("编辑人物档案") { do { editing = try profile.member() } catch { self.error = error.localizedDescription } }
+                            Button("删除人物档案", role: .destructive) { removing = profile }
+                        } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
+                        .accessibilityLabel("人物操作")
+                    }
+                    let layout = dynamicTypeSize.isAccessibilitySize
+                        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                        : AnyLayout(HStackLayout(spacing: 8))
+                    layout { actions(for: profile) }
+                }
+            }
+        }
+        .sheet(item: $editing) { PersonaProfileEditor(draft: $0) }
+        .sheet(isPresented: $connecting) { FirstModelSetupSheet { target in connecting = false; create(using: target) } }
+        .confirmationDialog("删除人物档案？", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { profile in
+            Button("删除人物档案", role: .destructive) {
+                do {
+                    try context.save()
+                    try context.transaction { context.delete(profile); try context.save() }
+                } catch { context.rollback(); self.error = error.localizedDescription }
+            }
+        } message: { _ in Text("已有聊天会保留人物资料和历史回答。") }
+        .alert("人物档案", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("好", role: .cancel) {}
+        } message: { Text(verbatim: error ?? "") }
+    }
+
+    private func create(using target: ResolvedModelTarget) {
+        editing = GroupMember(name: "", rolePrompt: "", target: target)
+    }
+
+    private func openPrivateChat(_ profile: PersonaProfile) {
+        do {
+            SystemEntryRouter.shared.conversationID = try PersonaLibrary.privateChat(with: profile, in: context).id
+        } catch { self.error = error.localizedDescription }
+    }
+
+    @ViewBuilder
+    private func actions(for profile: PersonaProfile) -> some View {
+        Button { openPrivateChat(profile) } label: {
+            FriendActionLabel(title: "私聊", icon: "bubble.left")
+        }.buttonStyle(.plain)
+        Button {
+            do { invite(try profile.member()) } catch { self.error = error.localizedDescription }
+        } label: {
+            FriendActionLabel(title: "邀请进群", icon: "person.2.badge.plus")
+        }.buttonStyle(.plain)
+    }
+}
+
+struct FriendActionLabel: View {
+    let title: LocalizedStringKey
+    let icon: String
+
+    var body: some View {
+        let theme = AppPreferences.shared.accentTheme
+        return Label(title, systemImage: icon)
+            .labelStyle(.titleAndIcon)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(theme.readableText)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(theme.softFill, in: Capsule())
+            .frame(minHeight: DS.TouchTarget.minimum)
+            .contentShape(Rectangle())
+    }
+}
+
+private struct PersonaProfileEditor: View {
+    @State var draft: GroupMember
+    @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
+    @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("人物姓名", text: $draft.name)
+                TextField("说话风格与关注点", text: $draft.rolePrompt, axis: .vertical)
+                let targets = ProviderConfig.readyTargets(in: providers)
+                Picker("人物使用的模型", selection: $draft.target) {
+                    if !targets.contains(where: { $0.id == draft.target.id }) {
+                        Text("原模型不可用").tag(draft.target)
+                    }
+                    ForEach(targets) { target in
+                        Text(verbatim: "\(target.providerName) · \(target.modelDisplayName)").tag(target)
+                    }
+                }
+                NavigationLink("人物资料与订阅来源") { PersonaEditorView(member: $draft, isProfile: true) }
+                if let error { Text(verbatim: error).foregroundStyle(.red) }
+            }
+            .navigationTitle("人物档案")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        do { _ = try PersonaLibrary.save(draft, in: context); dismiss() }
+                        catch { self.error = error.localizedDescription }
+                    }.disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+}
+
+struct PersonaInvitationView: View {
+    let member: GroupMember
+    @Query(sort: \Conversation.updatedAt, order: .reverse) private var conversations: [Conversation]
+    @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
+    @Query(sort: \AssistantPreset.sortOrder) private var presets: [AssistantPreset]
+    @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
+    @State private var creating = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Button("创建新群") { creating = true }
+                ForEach(conversations.filter(\.isGroupMode)) { chat in
+                    Button(chat.title) {
+                        do {
+                            try PersonaLibrary.invite(member, to: chat, in: context)
+                            finish(chat)
+                        } catch { self.error = error.localizedDescription }
+                    }.disabled(chat.groupMembers.count >= 6 || chat.groupMembers.contains { $0.profileID == member.profileID })
+                }
+                if let error { Text(verbatim: error).foregroundStyle(.red) }
+            }
+            .navigationTitle("邀请进群")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
+            .sheet(isPresented: $creating) {
+                GroupCreationFlow(providers: providers, presets: presets, invitedProfile: member, onCreated: finish)
+            }
+        }
+    }
+
+    private func finish(_ chat: Conversation) {
+        dismiss()
+        SystemEntryRouter.shared.conversationID = chat.id
+    }
+}

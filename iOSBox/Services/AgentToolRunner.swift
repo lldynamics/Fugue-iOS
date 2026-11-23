@@ -7,6 +7,8 @@ enum WebpageApprovalDecision: Sendable, Equatable {
 
 enum AgentToolRunner {
     static let maxToolRounds = 3
+    static let maxCallsPerTurn = 6
+    static let maxSearchesPerTurn = 3
 
     /// Extracts canonicalized `https://` URLs explicitly typed by the user so user-supplied links
     /// do not trigger redundant confirmation prompts, while model-invented or prompt-injected URLs
@@ -28,14 +30,7 @@ enum AgentToolRunner {
     }
 
     static func canonicalURLKey(_ url: URL) -> String {
-        guard var comp = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return url.absoluteString
-        }
-        comp.scheme = comp.scheme?.lowercased()
-        comp.host = comp.host?.lowercased()
-        comp.fragment = nil
-        if comp.port == 443 { comp.port = nil }
-        return comp.string ?? url.absoluteString
+        URLReader.requestIdentity(url)
     }
 
     static func definitions(hasTavilyKey: Bool, hasKnowledgeBase: Bool = false) -> [LLMToolDefinition] {
@@ -122,7 +117,7 @@ enum AgentToolRunner {
     static func execute(
         _ call: LLMToolCall,
         searchHandler: @Sendable (String) async throws -> SearchEvidence,
-        webpageHandler: @Sendable (URL) async throws -> ReadablePage = { try await URLReader.read($0) },
+        webpageHandler: (@Sendable (URL) async throws -> ReadablePage)? = nil,
         webpageApproval: (@Sendable (URL) async -> WebpageApprovalDecision)? = nil,
         knowledgeHandler: (@Sendable (String) async throws -> KnowledgeEvidence)? = nil
     ) async -> ExecutionOutput {
@@ -183,10 +178,10 @@ enum AgentToolRunner {
                         id: call.id,
                         name: call.name,
                         argumentsSummary: query,
-                        resultSummary: String(localized: "\(evidence.passages.count) 处片段"),
+                        resultSummary: evidence.passages.isEmpty ? String(localized: "未找到相关原文") : String(localized: "\(evidence.passages.count) 处片段"),
                         succeeded: true
                     ),
-                    knowledgeEvidence: evidence.passages.isEmpty ? nil : evidence
+                    knowledgeEvidence: evidence
                 )
             } catch {
                 return ExecutionOutput(
@@ -221,7 +216,16 @@ enum AgentToolRunner {
                         )
                     }
                 }
-                let page = try await webpageHandler(url)
+                let page: ReadablePage
+                if let webpageHandler {
+                    page = try await webpageHandler(url)
+                } else {
+                    try AppCompliance.requireConsent()
+                    page = try await URLReader.read(url, authorizeRedirect: {
+                        guard let webpageApproval else { return false }
+                        return await webpageApproval($0) == .allow
+                    })
+                }
                 let payload: [String: Any] = [
                     "url": page.url.absoluteString,
                     "title": page.title,

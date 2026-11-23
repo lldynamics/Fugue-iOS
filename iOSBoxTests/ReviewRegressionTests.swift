@@ -1,6 +1,24 @@
 import XCTest
 import SwiftData
 @testable import iOSBox
+
+let onePixelPNGFixture = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOQmbDvPwAEoAJqugc36QAAAABJRU5ErkJggg=="
+
+private actor RedirectFixture {
+    private(set) var requested: [URL] = []
+
+    func exchange(_ request: URLRequest, types: Set<String>?) throws -> (Data, HTTPURLResponse) {
+        let url = try XCTUnwrap(request.url)
+        requested.append(url)
+        if requested.count == 1 {
+            return (Data(), try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 302, httpVersion: "HTTP/1.1",
+                                                         headerFields: ["Location": "https://library.example.com/notes"])))
+        }
+        return (Data("Reading notes".utf8), try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                                                        headerFields: ["Content-Type": "text/plain"])))
+    }
+}
+
 // Regression fixtures never contact real providers.
 private final class ReviewFixtureURLProtocol: URLProtocol {
     private static let lock = NSLock()
@@ -51,6 +69,163 @@ final class ReviewRegressionTests: XCTestCase {
         let schema = Schema(versionedSchema: CurrentSchema.self)
         return try ModelContainer(for: schema,
                                   configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    }
+
+    func testBoundedReviewDatesAndMalformedStoredNumbers() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let card = StudyFlashcard(deckName: "Notes", front: "Q", back: "A", repetitions: .max,
+                                  intervalDays: 10_000, easeFactor: 4, lapses: .max)
+        let reviewed = card.applying(.easy, now: now)
+        XCTAssertEqual(reviewed.repetitions, StudyFlashcard.maximumReviewCount)
+        XCTAssertEqual(reviewed.intervalDays, StudyFlashcard.maximumIntervalDays)
+        XCTAssertEqual(reviewed.dueAt, now.addingTimeInterval(StudyFlashcard.maximumIntervalDays * 86_400))
+        XCTAssertEqual(card.applying(.again, now: now).lapses, StudyFlashcard.maximumReviewCount)
+        XCTAssertEqual(LLMUsage.combined(18, nil, .max, -2), 18)
+        XCTAssertEqual(LLMUsage.saturatedSum(.max, 1), .max)
+        XCTAssertEqual(ReadingCitation.marker(document: "Guide", chapter: "Intro", index: .max, offset: 2), "[Guide · Intro]")
+        XCTAssertEqual(ReadingCitation.marker(document: "Guide", chapter: "Intro", index: 1, offset: 2), "[Guide · Intro #2.2]")
+    }
+
+    func testRestoredSortOrderIsNormalizedBeforeAppending() {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let conversation = Conversation(title: "Reading")
+        let first = ChatMessage(role: .user, content: "First", sortIndex: 7, createdAt: date)
+        let second = ChatMessage(role: .assistant, content: "Second", sortIndex: .max, createdAt: date.addingTimeInterval(1))
+        conversation.messages = [second, first]
+        XCTAssertEqual(conversation.nextMessageSortIndex(), 2)
+        XCTAssertEqual(conversation.sortedMessages.map(\.id), [first.id, second.id])
+        XCTAssertEqual(conversation.sortedMessages.map(\.sortIndex), [0, 1])
+    }
+
+    func testArticleSourceRedactionAndOrdinaryHTMLExtraction() throws {
+        let url = try XCTUnwrap(ReadingInput.sharedSourceURL("https://reader:secret@example.com/guide?tracking=1#part"))
+        XCTAssertEqual(url.absoluteString, "https://example.com/guide")
+        XCTAssertNil(ReadingInput.sharedSourceURL(""))
+        let page = try HTMLTextExtractor.extract(
+            "<title>Guide &amp; notes</title><nav>Menu</nav><article><svg /><p>One &lt; two</p><p>Second line.</p></article>", url: url
+        )
+        XCTAssertEqual(page.title, "Guide & notes")
+        XCTAssertTrue(page.text.contains("One < two"))
+        XCTAssertTrue(page.text.contains("Second line."))
+        XCTAssertFalse(page.text.contains("Menu"))
+    }
+
+    func testOversizedMarkdownTableHasBoundedTextFallback() {
+        let lines = ["| Title | Page |", "| --- | --- |"] + Array(repeating: "| Chapter | 1 |", count: 129)
+        let blocks = MarkdownBlockParser.parse(lines.joined(separator: "\n"))
+        guard case .codeBlock(_, let code) = blocks.first else { return XCTFail("Expected bounded text") }
+        XCTAssertTrue(code.contains("Chapter"))
+        XCTAssertLessThanOrEqual(code.utf8.count, 16_000)
+    }
+
+    func testTablesShareTheRenderingBudgetOfTheMessage() {
+        let header = "|" + Array(repeating: " Chapter ", count: 16).joined(separator: "|") + "|"
+        let separator = "|" + Array(repeating: " --- ", count: 16).joined(separator: "|") + "|"
+        let table = ([header, separator] + Array(repeating: header, count: 70)).joined(separator: "\n")
+        let blocks = MarkdownBlockParser.parse(table + "\n\n" + table)
+        XCTAssertEqual(blocks.count, 2)
+        guard case .table = blocks.first, case .codeBlock = blocks.last else {
+            return XCTFail("The second table exceeds the remaining cell budget.")
+        }
+    }
+
+    func testUnreadableImagePayloadDoesNotEnterThumbnailCache() {
+        let attachment = MessageAttachment(kind: .image, fileName: "note.png", mimeType: "image/png",
+                                           dataBase64: Data("A note".utf8).base64EncodedString(), byteSize: 6)
+        XCTAssertNil(attachment.withBoundedImagePayload.dataBase64)
+        XCTAssertNil(attachment.cachedImage)
+    }
+
+    func testShareGrantRequiresTheApprovedDestinationAndProviderInstance() throws {
+        let suite = "iosbox.test.share.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let integration = SystemIntegration(defaults: defaults)
+        let provider = ProviderConfig(name: "Library", protocolType: .openAICompatible, baseURL: "https://library.example/v1")
+        defaults.set([provider.credentialID.uuidString: SystemIntegration.destinationDigest(for: provider)],
+                     forKey: "systemShareProviderDestinations")
+        XCTAssertTrue(integration.isEnabled(provider))
+        provider.baseURL = "https://library.example/other-endpoint"
+        XCTAssertFalse(integration.isEnabled(provider))
+        provider.baseURL = "https://library.example/v1"
+        let restored = ProviderConfig(id: provider.id, name: provider.name, protocolType: provider.protocolType,
+                                      baseURL: provider.baseURL, isRestored: true)
+        XCTAssertFalse(integration.isEnabled(restored))
+    }
+
+    func testWebpageRedirectChecksAuthorizationBeforeTheSecondRequest() async throws {
+        let start = URLRequest(url: try XCTUnwrap(URL(string: "https://reader.example.com/article")))
+        let denied = RedirectFixture()
+        do {
+            _ = try await URLReader.follow(start, accepting: ["text/plain"], authorizeRedirect: { _ in false }) { request, types in
+                try await denied.exchange(request, types: types)
+            }
+            XCTFail("A new destination needs approval.")
+        } catch URLReaderError.destinationNotApproved {}
+        let deniedRequests = await denied.requested
+        XCTAssertEqual(deniedRequests.map(\.host), ["reader.example.com"])
+
+        let allowed = RedirectFixture()
+        let (data, result) = try await URLReader.follow(start, accepting: ["text/plain"],
+                                                        authorizeRedirect: { $0.host == "library.example.com" }) { request, types in
+            try await allowed.exchange(request, types: types)
+        }
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "Reading notes")
+        XCTAssertEqual(result.url?.host, "library.example.com")
+    }
+
+    func testPinnedWebpageTransportAcceptsNumericPublicEndpointsAndOrdinaryChunking() throws {
+        XCTAssertNotNil(PinnedHTTPSReader.publicEndpoint("8.8.8.8"))
+        XCTAssertNil(PinnedHTTPSReader.publicEndpoint("127.0.0.1"))
+        XCTAssertNil(PinnedHTTPSReader.publicEndpoint("ff02::1"))
+        let url = try XCTUnwrap(URL(string: "https://reader.example.com"))
+        var parser = PinnedHTTPSReader.ResponseParser(url: url, types: ["text/plain"])
+        XCTAssertNil(try parser.receive(Data("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHel".utf8)))
+        let (data, response) = try XCTUnwrap(parser.receive(Data("lo\r\n0\r\n\r\n".utf8)))
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "Hello")
+        XCTAssertEqual(response.textEncodingName, "utf-8")
+
+        var fixed = PinnedHTTPSReader.ResponseParser(url: url, types: ["text/plain"])
+        XCTAssertNil(try fixed.receive(Data("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nHel".utf8)))
+        XCTAssertEqual(try fixed.receive(Data("lo".utf8))?.0, Data("Hello".utf8))
+
+        var closed = PinnedHTTPSReader.ResponseParser(url: url, types: ["text/plain"])
+        XCTAssertNil(try closed.receive(Data("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nHello".utf8)))
+        XCTAssertEqual(try closed.receive(Data(), end: true)?.0, Data("Hello".utf8))
+    }
+
+    func testReadingProgressIsBoundedAndKeepsItsSpoilerLimit() throws {
+        let store = try container()
+        let context = store.mainContext
+        let book = try BookLibrary.store(PreparedBook(BookManuscript(title: "Book", chapters: [
+            BookChapter(title: "First", text: "Guide"), BookChapter(title: "Second", text: "Guide")
+        ])), in: context)
+        let friend = BookFriend(bookID: book.id, bookTitle: book.title, name: "Guide", aliases: [], throughChapter: Int.max)
+        let restored = friend.validatingRestoredProgress(chapterCount: 2)
+        XCTAssertEqual(restored.throughChapter, -1)
+        XCTAssertEqual(friend.progressLabel(in: nil), restored.progressLabel(in: nil))
+        var valid = friend
+        valid.throughChapter = 0
+        XCTAssertEqual(valid.validatingRestoredProgress(chapterCount: 2).throughChapter, 0)
+        XCTAssertNotEqual(valid.progressLabel(in: book), restored.progressLabel(in: book))
+
+        let chat = Conversation(title: "Book friend")
+        chat.assistanceSettings.bookFriend = restored
+        context.insert(chat)
+        try context.save()
+        let updated = try BookLibrary.changeProgress(in: chat, through: 0, context: context)
+        XCTAssertEqual(updated.id, chat.id)
+        XCTAssertEqual(updated.activeBookFriend?.throughChapter, 0)
+    }
+
+    func testShareImageRequiresARegularBoundedImageFile() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = directory.appendingPathComponent("cover.png")
+        try XCTUnwrap(Data(base64Encoded: onePixelPNGFixture)).write(to: fixture)
+        XCTAssertNotNil(ShareInputLoader.downsampleImage(at: fixture, maxPixelSize: 256))
+        XCTAssertNil(ShareInputLoader.downsampleImage(at: directory, maxPixelSize: 256))
     }
 
     func testHeaderOnlyGatewayHasAuthentication() throws {

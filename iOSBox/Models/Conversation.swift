@@ -1,6 +1,51 @@
 import Foundation
 import SwiftData
 
+struct ImportedOrganization: Codable, Equatable {
+    var title: String
+    var isPinned: Bool
+    var folderTag: String?
+}
+
+struct ImportedSettingsVersion: Codable, Equatable {
+    let digest: UUID
+    let exportedAt: Date
+}
+
+struct ConversationOrganizationEdits: Codable, Equatable {
+    var title: TimeInterval?
+    var pin: TimeInterval?
+    var tag: TimeInterval?
+}
+
+struct ConversationBackupState: Codable, Equatable {
+    var lastImportedOrganization: ImportedOrganization?
+    var lastImportedSettings: ImportedSettingsVersion?
+    var legacyImportID: UUID?
+    var organizationEdits: ConversationOrganizationEdits?
+}
+
+// Keep the original settings keys at the top level for old databases and older app versions.
+private struct StoredConversationSettings: Codable {
+    var settings = AssistanceSettings()
+    var backupState = ConversationBackupState()
+
+    private enum CodingKeys: String, CodingKey { case backupState }
+    init() {}
+    init(from decoder: Decoder) throws {
+        settings = try AssistanceSettings(from: decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        backupState = try container.decodeIfPresent(ConversationBackupState.self, forKey: .backupState) ?? .init()
+    }
+    func encode(to encoder: Encoder) throws {
+        try settings.encode(to: encoder)
+        if backupState != .init() {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(backupState, forKey: .backupState)
+        }
+    }
+}
+
 @Model
 final class Conversation {
     @Attribute(.unique) var id: UUID
@@ -29,7 +74,7 @@ final class Conversation {
     var messages: [ChatMessage] = []
 
     @Transient private var cachedSettingsSource: Data?
-    @Transient private var cachedSettingsDecoded: AssistanceSettings?
+    @Transient private var cachedSettingsDecoded: StoredConversationSettings?
     @Transient private var cachedPrimarySource: Data?
     @Transient private var cachedPrimaryDecoded: ResolvedModelTarget??
     @Transient private var cachedArenaSource: Data?
@@ -81,15 +126,15 @@ final class Conversation {
         self.updatedAt = Date()
     }
 
-    var assistanceSettings: AssistanceSettings {
+    private var storedSettings: StoredConversationSettings {
         get {
             guard let raw = assistanceSettingsData, !raw.isEmpty else {
-                return AssistanceSettings()
+                return StoredConversationSettings()
             }
             if let cached = cachedSettingsDecoded, cachedSettingsSource == raw {
                 return cached
             }
-            let decoded = (try? JSONDecoder().decode(AssistanceSettings.self, from: raw)) ?? AssistanceSettings()
+            let decoded = (try? JSONDecoder().decode(StoredConversationSettings.self, from: raw)) ?? StoredConversationSettings()
             cachedSettingsSource = raw
             cachedSettingsDecoded = decoded
             return decoded
@@ -102,9 +147,61 @@ final class Conversation {
         }
     }
 
+    var assistanceSettings: AssistanceSettings {
+        get { storedSettings.settings }
+        set { storedSettings.settings = newValue }
+    }
+
+    var backupState: ConversationBackupState {
+        get { storedSettings.backupState }
+        set { storedSettings.backupState = newValue }
+    }
+
+    func rename(to value: String) {
+        guard title != value else { return }
+        title = value
+        recordOrganizationEdit(\.title)
+    }
+
+    func setPinned(_ value: Bool) {
+        guard isPinned != value else { return }
+        isPinned = value
+        recordOrganizationEdit(\.pin)
+    }
+
+    func setFolderTag(_ value: String?) {
+        guard folderTag != value else { return }
+        folderTag = value
+        recordOrganizationEdit(\.tag)
+    }
+
+    private func recordOrganizationEdit(_ field: WritableKeyPath<ConversationOrganizationEdits, TimeInterval?>) {
+        var edits = backupState.organizationEdits ?? .init()
+        edits[keyPath: field] = Date().timeIntervalSince1970
+        backupState.organizationEdits = edits
+    }
+
+    var readingVolumeID: UUID? {
+        guard !isArenaMode, !isGroupMode else { return nil }
+        return activeBookFriend?.bookID ?? assistanceSettings.knowledgeVolumeIDs.first
+    }
+
     var activeBookFriend: BookFriend? {
         let settings = assistanceSettings
         return !isArenaMode && !settings.isGroupMode ? settings.bookFriend : nil
+    }
+
+    /// A shared knowledge document obeys the tightest reading boundary for that book in this chat.
+    var readingChapterLimits: [UUID: Int] {
+        let friends = isGroupMode ? groupMembers.compactMap(\.bookFriend) : [activeBookFriend].compactMap { $0 }
+        var limits: [UUID: Int] = [:]
+        for friend in friends {
+            if let end = friend.throughChapter {
+                let limit = (0..<BookManuscript.maximumChapters).contains(end) ? end : -1
+                limits[friend.bookID] = min(limits[friend.bookID] ?? limit, limit)
+            }
+        }
+        return limits
     }
 
     var isGroupMode: Bool {
@@ -120,7 +217,10 @@ final class Conversation {
     }
 
     var groupMembers: [GroupMember] {
-        get { assistanceSettings.groupMembers }
+        get {
+            var seen = Set<UUID>()
+            return assistanceSettings.groupMembers.filter { seen.insert($0.id).inserted }
+        }
         set {
             var s = assistanceSettings
             s.groupMembers = newValue
@@ -129,7 +229,7 @@ final class Conversation {
     }
 
     var activeGroupMembers: [GroupMember] {
-        assistanceSettings.groupMembers.filter { !$0.isMuted }
+        groupMembers.filter { !$0.isMuted }
     }
 
     var primaryTarget: ResolvedModelTarget? {
@@ -173,7 +273,8 @@ final class Conversation {
     }
 
     /// Refresh an unsent chat's selection within its chosen API account. Sent messages retain their model snapshots.
-    func updateDraftModel(from available: [ResolvedModelTarget], replacingLegacy legacyIDs: Set<String> = []) {
+    func updateDraftModel(from available: [ResolvedModelTarget], replacingLegacy legacyIDs: Set<String> = [],
+                          preservingUnavailableProviders providerIDs: Set<UUID> = []) {
         guard messages.isEmpty, !isGroupMode else { return }
         if isArenaMode {
             let saved = arenaTargets
@@ -181,6 +282,7 @@ final class Conversation {
             var replacements = available.filter { !selectedIDs.contains($0.id) }
             let current = saved.compactMap { target -> ResolvedModelTarget? in
                 if let live = available.first(where: { $0.id == target.id }) { return live }
+                if providerIDs.contains(target.providerID) { return target }
                 guard legacyIDs.contains(target.id),
                       let index = replacements.firstIndex(where: { $0.providerID == target.providerID }) else { return nil }
                 return replacements.remove(at: index)
@@ -190,6 +292,7 @@ final class Conversation {
         }
         guard let selected = primaryTarget else { return }
         let current = available.first { $0.id == selected.id }
+        if current == nil && providerIDs.contains(selected.providerID) { return }
         let next = current ?? (legacyIDs.contains(selected.id) ? available.first { $0.providerID == selected.providerID } : nil)
         if selected != next { primaryTarget = next }
     }
@@ -201,6 +304,18 @@ final class Conversation {
             }
             return lhs.createdAt < rhs.createdAt
         }
+    }
+
+    func normalizeMessageOrderIfNeeded() {
+        guard messages.contains(where: { !(0...Int(Int32.max)).contains($0.sortIndex) }) else { return }
+        for (index, message) in sortedMessages.enumerated() {
+            message.sortIndex = index
+        }
+    }
+
+    func nextMessageSortIndex() -> Int {
+        normalizeMessageOrderIfNeeded()
+        return (sortedMessages.last?.sortIndex ?? 0) + 1
     }
 
     func applyPreset(_ preset: AssistantPreset) {

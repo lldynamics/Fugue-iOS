@@ -11,6 +11,7 @@ struct ModelPickerSheet: View {
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     let directory: ChatModelDirectory
     @Bindable var conversation: Conversation
+    var enableBlindMode = false
     let selectSingle: (ResolvedModelTarget) throws -> Void
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -145,9 +146,17 @@ struct ModelPickerSheet: View {
                         Button("开启对比 (\(draftArenaTargets.count))") {
                             let valid = validTargets(draftArenaTargets)
                             guard valid.count >= 2 else { draftArenaTargets = valid; return }
+                            let previous = (conversation.arenaTargetsData, conversation.isArenaMode, conversation.assistanceSettingsData)
                             conversation.arenaTargets = valid
                             conversation.isGroupMode = false
                             conversation.isArenaMode = true
+                            if enableBlindMode { conversation.assistanceSettings.blindArenaMode = true }
+                            do { try modelContext.save() }
+                            catch {
+                                (conversation.arenaTargetsData, conversation.isArenaMode, conversation.assistanceSettingsData) = previous
+                                selectionError = error.localizedDescription
+                                return
+                            }
                             for item in valid {
                                 preferences.recordRecentModel(item)
                             }
@@ -306,6 +315,11 @@ struct ModelPickerSheet: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(spec.isStarred ? String(localized: "取消置顶模型") : String(localized: "置顶常用模型"))
+        }
+        .contextMenu {
+            Button("设为默认模型") {
+                if let live = validTargets([target]).first { preferences.defaultTargetID = live.id }
+            }
         }
     }
 

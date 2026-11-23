@@ -20,6 +20,16 @@ struct ReadingInput {
     var isTruncated = false
     var attachments: [MessageAttachment] = []
 
+    static func sharedSourceURL(_ input: String) -> URL? {
+        guard var parts = URLComponents(string: input.trimmingCharacters(in: .whitespacesAndNewlines)),
+              ["https", "http"].contains(parts.scheme?.lowercased() ?? ""), parts.host?.isEmpty == false else { return nil }
+        parts.user = nil
+        parts.password = nil
+        parts.query = nil
+        parts.fragment = nil
+        return parts.url
+    }
+
     static func from(text: String) -> ReadingInput {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let url = URL(string: trimmed), ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
@@ -178,12 +188,7 @@ final class ReadingSession {
                     if !delta.isEmpty { record.observeOutput(reasoning: false, elapsedMs: ms); receipt?.answer += delta }
                 case .reasoningDelta(let delta):
                     if !delta.isEmpty { record.observeOutput(reasoning: true, elapsedMs: ms); receipt?.reasoning += delta }
-                case .usage(let input, let output):
-                    if let input, input >= 0 { record.promptTokens = input }
-                    if let output, output >= 0 { record.completionTokens = output }
-                case .cacheUsage(let cached, let cacheWrite):
-                    if let cached, cached >= 0 { record.cachedTokens = cached }
-                    if let cacheWrite, cacheWrite >= 0 { record.cacheWriteTokens = cacheWrite }
+                case .usage, .cacheUsage: record.observe(event, elapsedMs: ms)
                 case .attachmentDelta, .toolCall, .thinkingBlock, .groundingSource: break
                 case .finished(let reason): receipt?.finishReason = reason.rawValue
                 case .done: break

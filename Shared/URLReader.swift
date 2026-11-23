@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import CoreFoundation
 
@@ -10,10 +9,11 @@ struct ReadablePage: Equatable {
 }
 
 enum URLReaderError: LocalizedError {
-    case unsafeURL, tooLarge, unsupportedType, empty, http(Int)
+    case unsafeURL, destinationNotApproved, tooLarge, unsupportedType, empty, http(Int)
     var errorDescription: String? {
         switch self {
         case .unsafeURL: return String(localized: "网页精读仅支持不含账号密码的公开 HTTPS 链接。")
+        case .destinationNotApproved: return String(localized: "用户已拒绝访问")
         case .tooLarge: return String(localized: "网页超过 2 MB，无法在分享窗口中读取。请改为分享选中的文字。")
         case .unsupportedType: return String(localized: "该链接不是 HTML 或纯文本网页。PDF 请在 App 中作为附件发送。")
         case .empty: return String(localized: "未提取到正文。网页可能需要登录或 JavaScript，可在 Safari 选中文字后分享。")
@@ -49,61 +49,25 @@ enum URLReader {
         }
     }
 
-    /// Resolves DNS records for `host` and rejects if any returned A/AAAA record maps to a private,
-    /// loopback, link-local, CGNAT, or NAT64-local IP (defending against custom domains pointing at LAN).
-    static func verifyPublicDNSResolution(for host: String) async throws {
-        let cleanHost = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        try await Task.detached(priority: .userInitiated) {
-            var hints = addrinfo()
-            hints.ai_socktype = SOCK_STREAM
-            hints.ai_family = AF_UNSPEC
-            var res: UnsafeMutablePointer<addrinfo>?
-            let status = getaddrinfo(cleanHost, nil, &hints, &res)
-            guard status == 0, let head = res else {
-                throw URLReaderError.unsafeURL
-            }
-            defer { freeaddrinfo(head) }
+    typealias RedirectAuthorization = @Sendable (URL) async -> Bool
+    typealias Exchange = (URLRequest, Set<String>?) async throws -> (Data, HTTPURLResponse)
 
-            var sawAnyAddress = false
-            var cursor: UnsafeMutablePointer<addrinfo>? = head
-            while let info = cursor {
-                defer { cursor = info.pointee.ai_next }
-                if info.pointee.ai_family == AF_INET, let sa = info.pointee.ai_addr {
-                    let sin = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
-                    var addr = sin.sin_addr
-                    var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-                    if inet_ntop(AF_INET, &addr, &buf, socklen_t(INET_ADDRSTRLEN)) != nil {
-                        let ip = String(cString: buf)
-                        sawAnyAddress = true
-                        if NetworkLocation.isLocalOrPrivate(host: ip) {
-                            throw URLReaderError.unsafeURL
-                        }
-                    }
-                } else if info.pointee.ai_family == AF_INET6, let sa = info.pointee.ai_addr {
-                    let sin6 = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
-                    var addr6 = sin6.sin6_addr
-                    var buf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
-                    if inet_ntop(AF_INET6, &addr6, &buf, socklen_t(INET6_ADDRSTRLEN)) != nil {
-                        let ip = String(cString: buf)
-                        sawAnyAddress = true
-                        if NetworkLocation.isLocalOrPrivate(host: ip) {
-                            throw URLReaderError.unsafeURL
-                        }
-                    }
-                }
-            }
-            if !sawAnyAddress {
-                throw URLReaderError.unsafeURL
-            }
-        }.value
+    static func requestIdentity(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url.absoluteString }
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        components.fragment = nil
+        if components.port == 443 { components.port = nil }
+        if components.percentEncodedPath.isEmpty { components.percentEncodedPath = "/" }
+        return components.string ?? url.absoluteString
     }
 
-    /// No cookies, credentials, JavaScript, subresources or ambient browser session.
-    /// Redirects and resolved peer IPs are validated before any content is returned.
-    static func read(_ url: URL, session suppliedSession: URLSession? = nil) async throws -> ReadablePage {
+    static func read(_ url: URL, session suppliedSession: URLSession? = nil,
+                     authorizeRedirect: RedirectAuthorization? = nil) async throws -> ReadablePage {
         var request = URLRequest(url: url)
         request.setValue("text/html, text/plain;q=0.9", forHTTPHeaderField: "Accept")
-        let (data, response) = try await fetch(request, accepting: ["text/html", "application/xhtml+xml", "text/plain"], session: suppliedSession)
+        let (data, response) = try await fetch(request, accepting: ["text/html", "application/xhtml+xml", "text/plain"],
+                                               session: suppliedSession, authorizeRedirect: authorizeRedirect)
         let finalURL = response.url ?? url
         let source = decode(data, charset: response.textEncodingName)
         if response.mimeType?.lowercased() == "text/plain" {
@@ -116,49 +80,65 @@ enum URLReader {
     }
 
     static func fetch(_ request: URLRequest, accepting types: Set<String>? = nil,
-                      session suppliedSession: URLSession? = nil) async throws -> (Data, HTTPURLResponse) {
-        guard let url = request.url, let initialHost = url.host else { throw URLReaderError.unsafeURL }
-        try validate(url)
-        let enforceLivePeerIP = (suppliedSession == nil)
-        if enforceLivePeerIP {
-            try await verifyPublicDNSResolution(for: initialHost)
+                      session suppliedSession: URLSession? = nil,
+                      authorizeRedirect: RedirectAuthorization? = nil) async throws -> (Data, HTTPURLResponse) {
+        try await follow(request, accepting: types, authorizeRedirect: authorizeRedirect) { request, types in
+            if let suppliedSession {
+                // In-process URLProtocol fixtures can supply a session. Production always uses pinned HTTPS.
+                let (bytes, result) = try await suppliedSession.bytes(for: request, delegate: ReaderFixtureDelegate())
+                defer { bytes.task.cancel() }
+                guard let response = result as? HTTPURLResponse else { throw URLReaderError.empty }
+                guard (200..<300).contains(response.statusCode) else { return (Data(), response) }
+                try checkResponse(response, accepting: types)
+                var data = Data()
+                for try await byte in bytes {
+                    try Task.checkCancellation()
+                    guard data.count < maximumBytes else { throw URLReaderError.tooLarge }
+                    data.append(byte)
+                }
+                return (data, response)
+            }
+            return try await PinnedHTTPSReader.exchange(request, accepting: types)
         }
-        let config = URLSessionConfiguration.ephemeral
-        config.httpCookieStorage = nil
-        config.urlCredentialStorage = nil
-        config.urlCache = nil
-        config.httpShouldSetCookies = false
-        config.timeoutIntervalForRequest = 20
-        config.timeoutIntervalForResource = 30
-        let session = suppliedSession ?? URLSession(configuration: config)
-        defer { if suppliedSession == nil { session.invalidateAndCancel() } }
-        let authenticatedHost = request.value(forHTTPHeaderField: "Authorization") == nil ? nil : url.host?.lowercased()
-        let delegate = ReaderRedirectDelegate(authenticatedHost: authenticatedHost, enforceLivePeerIP: enforceLivePeerIP)
-        let (bytes, response) = try await session.bytes(for: request, delegate: delegate)
-        if delegate.sawPrivatePeerAddress {
-            bytes.task.cancel()
-            throw URLReaderError.unsafeURL
+    }
+
+    static func follow(_ initial: URLRequest, accepting types: Set<String>?,
+                       authorizeRedirect: RedirectAuthorization?, exchange: Exchange) async throws -> (Data, HTTPURLResponse) {
+        guard let original = initial.url, let originalHost = original.host?.lowercased() else { throw URLReaderError.unsafeURL }
+        var request = initial
+        var permitted = Set([requestIdentity(original)])
+        for redirects in 0...5 {
+            try Task.checkCancellation()
+            guard let url = request.url else { throw URLReaderError.unsafeURL }
+            try validate(url)
+            let (data, response) = try await exchange(request, types)
+            if [301, 302, 303, 307, 308].contains(response.statusCode) {
+                guard redirects < 5, let location = response.value(forHTTPHeaderField: "Location"),
+                      !location.isEmpty, let next = URL(string: location, relativeTo: url)?.absoluteURL
+                else { throw URLReaderError.http(response.statusCode) }
+                try validate(next)
+                if initial.value(forHTTPHeaderField: "Authorization") != nil, next.host?.lowercased() != originalHost {
+                    throw URLReaderError.unsafeURL
+                }
+                let key = requestIdentity(next)
+                if !permitted.contains(key), let authorizeRedirect {
+                    guard await authorizeRedirect(next) else { throw URLReaderError.destinationNotApproved }
+                    permitted.insert(key)
+                }
+                request.url = next
+            } else {
+                try checkResponse(response, accepting: types)
+                guard data.count <= maximumBytes else { throw URLReaderError.tooLarge }
+                return (data, response)
+            }
         }
-        guard let response = response as? HTTPURLResponse, let finalURL = response.url else { throw URLReaderError.empty }
-        try validate(finalURL)
-        if enforceLivePeerIP, let finalHost = finalURL.host, finalHost.caseInsensitiveCompare(initialHost) != .orderedSame {
-            try await verifyPublicDNSResolution(for: finalHost)
-        }
-        if let authenticatedHost, finalURL.host?.lowercased() != authenticatedHost { throw URLReaderError.unsafeURL }
+        throw URLReaderError.unsafeURL
+    }
+
+    static func checkResponse(_ response: HTTPURLResponse, accepting types: Set<String>?) throws {
         guard (200..<300).contains(response.statusCode) else { throw URLReaderError.http(response.statusCode) }
         if let types, !types.contains(response.mimeType?.lowercased() ?? "") { throw URLReaderError.unsupportedType }
         guard response.expectedContentLength <= maximumBytes else { throw URLReaderError.tooLarge }
-        var data = Data()
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            if delegate.sawPrivatePeerAddress { throw URLReaderError.unsafeURL }
-            guard data.count < maximumBytes else { throw URLReaderError.tooLarge }
-            data.append(byte)
-        }
-        if delegate.sawPrivatePeerAddress {
-            throw URLReaderError.unsafeURL
-        }
-        return (data, response)
     }
 
     static func decode(_ data: Data, charset: String?) -> String {
@@ -173,89 +153,40 @@ enum URLReader {
     }
 }
 
-private final class ReaderRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    private let authenticatedHost: String?
-    private let enforceLivePeerIP: Bool
-    init(authenticatedHost: String?, enforceLivePeerIP: Bool) {
-        self.authenticatedHost = authenticatedHost
-        self.enforceLivePeerIP = enforceLivePeerIP
-    }
-    private let lock = NSLock()
-    private var redirectCount = 0
-    private var _sawPrivatePeerAddress = false
-
-    var sawPrivatePeerAddress: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return _sawPrivatePeerAddress
-    }
-
+private final class ReaderFixtureDelegate: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        lock.lock()
-        redirectCount += 1
-        let withinLimit = redirectCount <= 5
-        lock.unlock()
-        guard withinLimit, let url = request.url, (try? URLReader.validate(url)) != nil,
-              authenticatedHost == nil || url.host?.lowercased() == authenticatedHost else {
-            completionHandler(nil); return
-        }
-        guard enforceLivePeerIP, let nextHost = url.host else {
-            completionHandler(request)
-            return
-        }
-        Task {
-            do {
-                try await URLReader.verifyPublicDNSResolution(for: nextHost)
-                completionHandler(request)
-            } catch {
-                completionHandler(nil)
-            }
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-        guard enforceLivePeerIP else { return }
-        for tx in metrics.transactionMetrics {
-            if let remoteIP = tx.remoteAddress, NetworkLocation.isLocalOrPrivate(host: remoteIP) {
-                lock.lock()
-                _sawPrivatePeerAddress = true
-                lock.unlock()
-                task.cancel()
-                return
-            }
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
-                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        completionHandler(challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust
-                          ? .performDefaultHandling : .cancelAuthenticationChallenge, nil)
+        completionHandler(nil)
     }
 }
 
 enum HTMLTextExtractor {
-    private static let titleRegex = try! NSRegularExpression(pattern: #"(?is)<title\b[^>]*>(.*?)</title\s*>"#)
-    private static let commentRegex = try! NSRegularExpression(pattern: #"(?is)<!--.*?-->"#)
-    private static let boilerplateRegex = try! NSRegularExpression(pattern: #"(?is)<(script|style|noscript|nav|header|footer|form|svg|template|aside)\b[^>]*>.*?</\1\s*>"#)
-    private static let articleRegex = try! NSRegularExpression(pattern: #"(?is)<article\b[^>]*>(.*?)</article\s*>"#)
-    private static let mainRegex = try! NSRegularExpression(pattern: #"(?is)<main\b[^>]*>(.*?)</main\s*>"#)
-    private static let bodyRegex = try! NSRegularExpression(pattern: #"(?is)<body\b[^>]*>(.*?)</body\s*>"#)
-    private static let blockTagRegex = try! NSRegularExpression(pattern: #"(?i)</?(?:p|div|h[1-6]|li|br|hr|tr|blockquote|section)\b[^>]*>"#)
-    private static let anyTagRegex = try! NSRegularExpression(pattern: #"(?s)<[^>]*>"#)
-    private static let whitespaceRegex = try! NSRegularExpression(pattern: #"[\t\p{Zs}]+"#)
-    private static let entityRegex = try! NSRegularExpression(pattern: #"&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);"#)
+    private static let hidden: Set<String> = ["script", "style", "noscript", "nav", "header", "footer", "form", "svg", "template", "aside"]
+    private static let blocks: Set<String> = ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "br", "hr", "tr", "blockquote", "section"]
+    private static let names = ["amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "nbsp": " ",
+                                "ndash": "–", "mdash": "—", "hellip": "…", "lsquo": "‘", "rsquo": "’", "ldquo": "“", "rdquo": "”"]
 
-    /// A bounded, non-rendering text extractor. It intentionally doesn't use a WebView or
-    /// NSAttributedString's HTML importer, both of which can fetch external resources.
     static func extract(_ html: String, url: URL) throws -> ReadablePage {
-        let title = plainText(firstCapture(titleRegex, in: html) ?? url.host ?? "")
-        var cleaned = replacing(commentRegex, in: html, with: " ")
-        cleaned = replacing(boilerplateRegex, in: cleaned, with: " ")
-        let body = firstCapture(articleRegex, in: cleaned)
-            ?? firstCapture(mainRegex, in: cleaned)
-            ?? firstCapture(bodyRegex, in: cleaned) ?? cleaned
-        let text = plainText(body)
+        try Task.checkCancellation()
+        let bytes = Array(html.utf8.prefix(2 * 1024 * 1024))
+        let sections: Set<String> = ["title", "article", "main", "body"]
+        var ranges: [String: Range<Int>] = [:]
+        var opening: [String: Int] = [:]
+        var suppressed: String?
+        scan(bytes, in: bytes.indices, text: { _ in }) { name, closing, selfClosing, range in
+            if let hidden = suppressed {
+                if closing && name == hidden { suppressed = nil }
+            } else if !closing && Self.hidden.contains(name) && !(name == "svg" && selfClosing) {
+                suppressed = name
+            } else if sections.contains(name) && ranges[name] == nil {
+                if closing, let start = opening[name] { ranges[name] = start..<range.lowerBound }
+                else if !closing && opening[name] == nil { opening[name] = range.upperBound }
+            }
+        }
+        let title = ranges["title"].map { render(bytes, in: $0) } ?? url.host ?? ""
+        let body = ranges["article"] ?? ranges["main"] ?? ranges["body"] ?? bytes.indices
+        let text = render(bytes, in: body)
+        try Task.checkCancellation()
         guard !text.isEmpty else { throw URLReaderError.empty }
         return ReadablePage(url: url, title: String(title.prefix(300)),
                             text: String(text.prefix(URLReader.maximumCharacters)),
@@ -263,36 +194,141 @@ enum HTMLTextExtractor {
     }
 
     static func plainText(_ html: String) -> String {
-        var text = replacing(blockTagRegex, in: html, with: "\n")
-        text = replacing(anyTagRegex, in: text, with: " ")
-        text = decodeEntities(text)
-        return text.components(separatedBy: .newlines).map {
-            replacing(whitespaceRegex, in: $0, with: " ").trimmingCharacters(in: .whitespaces)
-        }.filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let bytes = Array(html.utf8.prefix(2 * 1024 * 1024))
+        return render(bytes, in: bytes.indices)
     }
 
-    static func decodeEntities(_ input: String) -> String {
-        let names = ["amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "nbsp": " ",
-                     "ndash": "–", "mdash": "—", "hellip": "…", "lsquo": "‘", "rsquo": "’", "ldquo": "“", "rdquo": "”"]
-        var result = input
-        for match in entityRegex.matches(in: input, range: NSRange(input.startIndex..., in: input)).reversed() {
-            guard let full = Range(match.range, in: result), let keyRange = Range(match.range(at: 1), in: input) else { continue }
-            let key = String(input[keyRange])
-            var value = names[key]
-            if key.hasPrefix("#x"), let code = UInt32(key.dropFirst(2), radix: 16), let scalar = UnicodeScalar(code) { value = String(scalar) }
-            else if key.hasPrefix("#"), let code = UInt32(key.dropFirst()), let scalar = UnicodeScalar(code) { value = String(scalar) }
-            if let value { result.replaceSubrange(full, with: value) }
+    private static func render(_ bytes: [UInt8], in range: Range<Int>) -> String {
+        var visible = [UInt8]()
+        var suppressed: String?
+        scan(bytes, in: range, text: { span in
+            if suppressed == nil { visible.append(contentsOf: bytes[span]) }
+        }) { name, closing, selfClosing, _ in
+            if let hidden = suppressed {
+                if closing && name == hidden { suppressed = nil }
+            } else if !closing && hidden.contains(name) && !(name == "svg" && selfClosing) {
+                suppressed = name
+                visible.append(32)
+            } else {
+                visible.append(blocks.contains(name) ? 10 : 32)
+            }
         }
+
+        let decoded = decodeEntities(String(decoding: visible, as: UTF8.self))
+        let limit = URLReader.maximumCharacters + 1
+        var remaining = limit
+        var result = ""
+        var line = ""
+        var pendingSpace = false
+        func flush() {
+            guard !line.isEmpty else { return }
+            if !result.isEmpty && remaining > 0 {
+                let separator = String("\n\n".prefix(remaining))
+                result.append(separator)
+                remaining -= separator.count
+            }
+            let part = line.prefix(remaining)
+            result.append(contentsOf: part)
+            remaining -= part.count
+            line.removeAll(keepingCapacity: true)
+        }
+        for scalar in decoded.unicodeScalars {
+            if remaining == 0 { break }
+            if CharacterSet.newlines.contains(scalar) {
+                flush()
+                pendingSpace = false
+            } else if CharacterSet.whitespaces.contains(scalar) {
+                pendingSpace = !line.isEmpty
+            } else {
+                if pendingSpace { line.append(" "); pendingSpace = false }
+                line.unicodeScalars.append(scalar)
+            }
+        }
+        flush()
         return result
     }
 
-    private static func firstCapture(_ re: NSRegularExpression, in text: String) -> String? {
-        guard let m = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let range = Range(m.range(at: 1), in: text) else { return nil }
-        return String(text[range])
+    private static func scan(_ bytes: [UInt8], in range: Range<Int>, text: (Range<Int>) -> Void,
+                             tag: (String, Bool, Bool, Range<Int>) -> Void) {
+        var index = range.lowerBound
+        var textStart = index
+        var nextCancellationCheck = index
+        let end = range.upperBound
+        func letter(_ byte: UInt8) -> Bool { (65...90).contains(byte) || (97...122).contains(byte) }
+        while index < end {
+            if index >= nextCancellationCheck {
+                guard !Task.isCancelled else { return }
+                nextCancellationCheck = index + 4_096
+            }
+            guard bytes[index] == 60, index + 1 < end else { index += 1; continue }
+            let start = index
+            if start + 4 <= end && bytes[start..<start + 4].elementsEqual([60, 33, 45, 45]) {
+                text(textStart..<start)
+                var next = start + 4
+                while next + 2 < end && !bytes[next..<next + 3].elementsEqual([45, 45, 62]) {
+                    if next & 4095 == 0 && Task.isCancelled { return }
+                    next += 1
+                }
+                index = min(end, next + 3)
+                textStart = index
+                continue
+            }
+            let closing = bytes[index + 1] == 47
+            var next = start + (closing ? 2 : 1)
+            guard next < end else { break }
+            let special = bytes[next] == 33 || bytes[next] == 63
+            guard special || letter(bytes[next]) else { index += 1; continue }
+            let nameStart = next
+            while next < end && next - nameStart < 64 &&
+                (letter(bytes[next]) || (48...57).contains(bytes[next]) || bytes[next] == 45) { next += 1 }
+            let name = special ? "" : String(decoding: bytes[nameStart..<next], as: UTF8.self).lowercased()
+            var quote: UInt8?
+            while next < end && next - start < 8192 {
+                let value = bytes[next]
+                if let activeQuote = quote {
+                    if value == activeQuote { quote = nil }
+                } else if value == 62 || value == 60 {
+                    break
+                } else if value == 34 || value == 39 {
+                    quote = value
+                }
+                next += 1
+            }
+            if next < end, bytes[next] == 62, quote == nil {
+                text(textStart..<start)
+                var tail = next - 1
+                while tail > start && [9, 10, 12, 13, 32].contains(bytes[tail]) { tail -= 1 }
+                tag(name, closing, bytes[tail] == 47, start..<next + 1)
+                index = next + 1
+                textStart = index
+            } else {
+                index = max(start + 1, next)
+            }
+        }
+        text(textStart..<end)
     }
 
-    private static func replacing(_ re: NSRegularExpression, in text: String, with replacement: String) -> String {
-        re.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: replacement)
+    static func decodeEntities(_ input: String) -> String {
+        let bytes = Array(input.utf8)
+        var decoded = [UInt8]()
+        decoded.reserveCapacity(bytes.count)
+        var index = 0
+        while index < bytes.count {
+            if bytes[index] == 38, index + 1 < bytes.count,
+               let end = bytes[(index + 1)..<min(bytes.count, index + 24)].firstIndex(of: 59) {
+                let key = String(decoding: bytes[(index + 1)..<end], as: UTF8.self)
+                var value = names[key]
+                if key.hasPrefix("#x"), let code = UInt32(key.dropFirst(2), radix: 16), let scalar = UnicodeScalar(code) { value = String(scalar) }
+                else if key.hasPrefix("#"), let code = UInt32(key.dropFirst()), let scalar = UnicodeScalar(code) { value = String(scalar) }
+                if let value {
+                    decoded.append(contentsOf: value.utf8)
+                    index = end + 1
+                    continue
+                }
+            }
+            decoded.append(bytes[index])
+            index += 1
+        }
+        return String(decoding: decoded, as: UTF8.self)
     }
 }

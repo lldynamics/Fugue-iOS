@@ -10,6 +10,8 @@ final class SpotlightIndexService {
     /// Defaults to `false` (opt-in) so private chat snippets are never written to system-wide Spotlight
     /// unless the user explicitly enables it in Settings.
     static let enabledKey = "com.iosbox.spotlightIndexingEnabled.v1"
+    private static let conversationIndexVersionKey = "com.iosbox.spotlightConversationIndexVersion"
+    private var removingPreviewRecords = false
 
     struct IndexedEntry: Equatable, Sendable {
         let identifier: String
@@ -30,6 +32,10 @@ final class SpotlightIndexService {
 
     var isEnabled: Bool {
         defaults.bool(forKey: Self.enabledKey)
+    }
+
+    var needsLegacyPreviewPurge: Bool {
+        CSSearchableIndex.isIndexingAvailable() && defaults.integer(forKey: Self.conversationIndexVersionKey) < 1
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -87,6 +93,20 @@ final class SpotlightIndexService {
     }
 
     func syncRecentConversations(in context: ModelContext, limit: Int = 80) {
+        if needsLegacyPreviewPurge {
+            guard !removingPreviewRecords else { return }
+            removingPreviewRecords = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.removingPreviewRecords = false }
+                do {
+                    try await Self.removeLegacyConversationEntries()
+                    self.defaults.set(1, forKey: Self.conversationIndexVersionKey)
+                    self.syncRecentConversations(in: context, limit: limit)
+                } catch { return }
+            }
+            return
+        }
         guard isEnabled else { return }
         var descriptor = FetchDescriptor<Conversation>(sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
         descriptor.fetchLimit = limit
@@ -107,16 +127,26 @@ final class SpotlightIndexService {
         }
     }
 
+    private static func removeLegacyConversationEntries() async throws {
+        // Deleting a domain also removes its child domains, including bookmarked messages.
+        let query = CSSearchQuery(queryString: "title == '*'", queryContext: CSSearchQueryContext())
+        var conversationKeys: [String] = []
+        for try await result in query.results {
+            let key = result.item.uniqueIdentifier
+            if let route = parseIdentifier(key), route.messageID == nil {
+                conversationKeys.append(key)
+            }
+        }
+        let index = CSSearchableIndex.default()
+        for start in stride(from: 0, to: conversationKeys.count, by: 256) {
+            let batch = conversationKeys[start..<min(start + 256, conversationKeys.count)]
+            try await index.deleteSearchableItems(withIdentifiers: Array(batch))
+        }
+    }
+
     private func buildSearchableItems(for conversation: Conversation) -> (items: [CSSearchableItem], staleMessageKeys: [String]) {
         guard !conversation.isDeleted else { return ([], []) }
         let convID = conversation.id.uuidString
-        let active = ConversationTree.activeMessages(in: conversation)
-        let latestSnippet = active
-            .reversed()
-            .first(where: { $0.role != .system && !$0.content.isEmpty })?
-            .content
-            .prefix(240) ?? ""
-
         var keywords: [String] = ["AI", "夜奔", "Fugue"]
         if let tag = conversation.folderTag?.trimmingCharacters(in: .whitespacesAndNewlines), !tag.isEmpty {
             keywords.append(tag)
@@ -130,18 +160,16 @@ final class SpotlightIndexService {
 
         // 1. Index the conversation itself
         let convIdentifier = Self.makeIdentifier(conversationID: conversation.id, messageID: nil)
-        let convDesc = String(latestSnippet)
         let convEntry = IndexedEntry(
             identifier: convIdentifier,
             title: "\(conversation.assistantEmoji) \(conversation.title)",
-            contentDescription: convDesc,
+            contentDescription: "",
             keywords: keywords
         )
         recordSnapshot(convEntry)
 
         let convAttr = CSSearchableItemAttributeSet(contentType: .text)
         convAttr.title = convEntry.title
-        convAttr.contentDescription = convEntry.contentDescription
         convAttr.keywords = convEntry.keywords
         convAttr.contentModificationDate = conversation.updatedAt
         searchableItems.append(CSSearchableItem(

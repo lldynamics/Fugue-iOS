@@ -11,6 +11,8 @@ struct RequestLedgerView: View {
     @State private var providerID: UUID?
     @State private var modelID: String?
     @State private var visibleLimit = 50
+    @State private var showsFilters = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var preferences = AppPreferences.shared
     @State private var showBudgetSheet = false
     @State private var budgetLimitInput = ""
@@ -58,8 +60,15 @@ struct RequestLedgerView: View {
     var body: some View {
         let rows = filtered
         let modelRows = rows.filter { $0.kind != .webSearch }
+        let totalPrompt = rows.compactMap { LLMUsage.valid($0.promptTokens) }.reduce(0, LLMUsage.saturatedSum)
+        let totalCompletion = rows.compactMap { LLMUsage.valid($0.completionTokens) }.reduce(0, LLMUsage.saturatedSum)
+        let totalCached = rows.compactMap { LLMUsage.valid($0.cachedTokens) }.reduce(0, LLMUsage.saturatedSum)
+        let succeededCount = rows.filter { $0.status == .succeeded }.count
+        let totals = RequestLedger.costs(modelRows)
+        let savings = RequestLedger.cacheSavings(modelRows)
+        let unpricedCount = modelRows.filter { $0.status != .running && $0.status != .blocked && !$0.hasModelPricing }.count
         let monthSpentByCurrency = RequestLedger.costs(
-            records.filter { $0.kind != .webSearch && LedgerPeriod.month.includes($0.startedAt, now: referenceDate) }
+            records.filter { $0.kind != .webSearch && LedgerPeriod.month.includes($0.startedAt) }
         )
         let budgetEval = MonthlyBudgetEvaluator.evaluate(
             spentByCurrency: monthSpentByCurrency,
@@ -71,229 +80,162 @@ struct RequestLedgerView: View {
         return NavigationStack {
             List {
                 Section {
-                    if budgetEval.level == .unconfigured {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("未设置月度预算上限")
-                                    .font(.subheadline.weight(.medium))
-                                Text("可设置每月预算与提醒阈值（默认 80%），超额自动醒目提醒。")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("设置") {
-                                openBudgetEditor()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                        }
-                    } else {
-                        let tint: Color = switch budgetEval.level {
-                        case .exceeded: .red
-                        case .warning: .orange
-                        default: theme.tintColor
-                        }
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("\(RequestLedger.costText(budgetEval.spent, currency: budgetEval.currency)) / \(RequestLedger.costText(budgetEval.limit, currency: budgetEval.currency))")
-                                    .font(.subheadline.monospacedDigit().weight(.semibold))
-                                Spacer()
-                                Text("\(Int((budgetEval.ratio * 100).rounded()))%")
-                                    .font(.caption.monospacedDigit().weight(.bold))
-                                    .foregroundStyle(tint)
-                            }
-                            ProgressView(value: min(max(budgetEval.ratio, 0), 1))
-                                .tint(tint)
-                            HStack {
-                                Text(budgetStatusLine(for: budgetEval))
-                                    .font(.caption)
-                                    .foregroundStyle(budgetEval.level == .normal ? .secondary : tint)
-                                Spacer()
-                                Button("调整预算") {
-                                    openBudgetEditor()
-                                }
-                                .font(.caption.weight(.medium))
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
-                } header: {
-                    Text("月度预算监控").foregroundStyle(Color(uiColor: .label))
-                }
-
-                Section {
-                    Picker("统计周期", selection: $period) {
-                        ForEach(LedgerPeriod.allCases) { Text($0.title).tag($0) }
-                    }.pickerStyle(.segmented)
-                    if period != .all {
-                        DatePicker("统计日期", selection: $referenceDate, displayedComponents: [.date])
-                    }
-                    Picker("服务商", selection: $providerID) {
-                        Text("全部").tag(UUID?.none)
-                        ForEach(providerOptions, id: \.0) { id, name in Text(name).tag(Optional(id)) }
-                    }
-                    Picker("模型", selection: $modelID) {
-                        Text("全部").tag(String?.none)
-                        ForEach(modelOptions, id: \.self) { Text($0).tag(Optional($0)) }
-                    }
-                }
-
-                Section("用量与预估费用") {
-                    let totalPrompt = rows.compactMap { LLMUsage.valid($0.promptTokens) }.reduce(0, LLMUsage.saturatedSum)
-                    let totalCompletion = rows.compactMap { LLMUsage.valid($0.completionTokens) }.reduce(0, LLMUsage.saturatedSum)
-                    let totalCached = rows.compactMap { LLMUsage.valid($0.cachedTokens) }.reduce(0, LLMUsage.saturatedSum)
-                    let succeededCount = rows.filter { $0.status == .succeeded }.count
-                    let totals = RequestLedger.costs(modelRows)
-                    let savings = RequestLedger.cacheSavings(modelRows)
-                    let primaryCurrency = totals.keys.sorted().first
-                    let primaryCostText = primaryCurrency.map { RequestLedger.costText(totals[$0] ?? 0, currency: $0) } ?? "—"
-                    let primarySavingsText: String? = primaryCurrency.flatMap { cur in
-                        guard let saved = savings[cur], saved > 0 else { return nil }
-                        return String(localized: "缓存省 \(RequestLedger.costText(saved, currency: cur))")
-                    }
                     let speedSummary = overallMedianTPS(in: modelRows)
                     let speedText = speedSummary.map { "\($0.tps.formatted(.number.precision(.fractionLength(1)))) tok/s" } ?? "—"
                     let speedDetail = speedSummary.map { String(localized: "\($0.count) 样本") }
 
-                    LazyVGrid(
-                        columns: [
-                            GridItem(.flexible(), spacing: DS.Spacing.sm),
-                            GridItem(.flexible(), spacing: DS.Spacing.sm)
-                        ],
-                        spacing: DS.Spacing.sm
-                    ) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: DS.Spacing.sm),
+                                             count: dynamicTypeSize.isAccessibilitySize ? 1 : 2), spacing: DS.Spacing.sm) {
                         DSMetricTile(
                             title: String(localized: "预估费用"),
-                            value: primaryCostText,
-                            detail: primarySavingsText
+                            value: RequestLedger.costOverviewText(totals: totals, modelRecords: modelRows, requestCount: rows.count),
+                            detail: additionalCostDetail(totals: totals, savings: savings, unpricedCount: unpricedCount)
                         )
                         DSMetricTile(
-                            title: String(localized: "中位速率"),
-                            value: speedText,
-                            detail: speedDetail,
-                            valueTint: theme.readableText
-                        )
-                        DSMetricTile(
-                            title: String(localized: "请求次数"),
-                            value: "\(rows.count)",
+                            title: String(localized: "请求次数"), value: "\(rows.count)",
                             detail: String(localized: "完整 \(succeededCount)")
                         )
-                        DSMetricTile(
-                            title: String(localized: "已知 Token"),
-                            value: compactTokenText(LLMUsage.saturatedSum(totalPrompt, totalCompletion)),
-                            detail: totalCached > 0 ? String(localized: "缓存命中 \(compactTokenText(totalCached))") : nil
-                        )
+                        if !rows.isEmpty {
+                            DSMetricTile(title: String(localized: "中位速率"), value: speedText,
+                                         detail: speedDetail, valueTint: theme.readableText)
+                            DSMetricTile(title: String(localized: "已知 Token"),
+                                         value: compactTokenText(LLMUsage.saturatedSum(totalPrompt, totalCompletion)),
+                                         detail: totalCached > 0 ? String(localized: "缓存命中 \(compactTokenText(totalCached))") : nil)
+                        }
                     }
                     .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                     .listRowBackground(Color.clear)
+                    if rows.isEmpty {
+                        Text(emptyMessage).foregroundStyle(.primary)
+                            .accessibilityIdentifier("usage.empty")
+                    }
+                } header: {
+                    Text(periodTitle).foregroundStyle(.primary).accessibilityIdentifier("usage.period")
+                }
 
-                    let buckets = RequestLedger.trendBuckets(rows, period: period)
-                    if buckets.count >= 2 {
-                        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                            Text("Token 消耗趋势")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Chart(buckets) { item in
-                                BarMark(
-                                    x: .value(String(localized: "时间"), item.date, unit: period == .today ? .hour : (period == .month ? .day : .month)),
-                                    y: .value("Tokens", item.totalTokens)
-                                )
-                                .foregroundStyle(theme.tintColor.gradient)
-                                .cornerRadius(4)
-                            }
-                            .frame(height: 135)
+                if budgetEval.level == .warning || budgetEval.level == .exceeded {
+                    Section {
+                        Button(action: openBudgetEditor) {
+                            Label(budgetStatusLine(for: budgetEval), systemImage: "exclamationmark.circle.fill")
+                                .foregroundStyle(.primary)
                         }
-                        .padding(.vertical, DS.Spacing.xxs)
+                        .accessibilityIdentifier("usage.budgetWarning")
                     }
+                }
 
-                    LabeledContent("请求次数", value: String(rows.count))
-                    LabeledContent("完整完成", value: String(succeededCount))
-                    LabeledContent("已知输入 Token", value: Double(totalPrompt).formatted(.number.precision(.fractionLength(0))))
-                    LabeledContent("已知输出 Token", value: Double(totalCompletion).formatted(.number.precision(.fractionLength(0))))
-                    if totalCached > 0 {
-                        LabeledContent("缓存命中 Token", value: Double(totalCached).formatted(.number.precision(.fractionLength(0))))
+                filterSection
+                if !rows.isEmpty {
+                    Section("用量与预估费用") {
+                        let buckets = RequestLedger.trendBuckets(rows, period: period)
+                        if buckets.count >= 2 {
+                            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                                Text("Token 消耗趋势")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Chart(buckets) { item in
+                                    BarMark(
+                                        x: .value(String(localized: "时间"), item.date, unit: period == .today ? .hour : (period == .month ? .day : .month)),
+                                        y: .value("Tokens", item.totalTokens)
+                                    )
+                                    .foregroundStyle(theme.tintColor.gradient)
+                                    .cornerRadius(4)
+                                }
+                                .frame(height: 135)
+                            }
+                            .padding(.vertical, DS.Spacing.xxs)
+                        }
+
+                        LabeledContent("请求次数", value: String(rows.count))
+                        LabeledContent("完整完成", value: String(succeededCount))
+                        LabeledContent("已知输入 Token", value: Double(totalPrompt).formatted(.number.precision(.fractionLength(0))))
+                        LabeledContent("已知输出 Token", value: Double(totalCompletion).formatted(.number.precision(.fractionLength(0))))
+                        if totalCached > 0 {
+                            LabeledContent("缓存命中 Token", value: Double(totalCached).formatted(.number.precision(.fractionLength(0))))
+                        }
+                        let searchCount = rows.count - modelRows.count
+                        if searchCount > 0 { Text("含联网搜索 \(searchCount) 次；搜索费用另计。").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(totals.keys.sorted(), id: \.self) { currency in
+                            LabeledContent("预估费用", value: RequestLedger.costText(totals[currency] ?? 0, currency: currency))
+                        }
+                        ForEach(savings.keys.sorted(), id: \.self) { currency in
+                            LabeledContent("缓存已节省", value: RequestLedger.costText(savings[currency] ?? 0, currency: currency))
+                                .foregroundStyle(.primary)
+                        }
+                        if totals.isEmpty { Text("暂无可计价记录").foregroundStyle(.primary) }
+                        let unpriced = modelRows.filter { $0.status != .running && $0.status != .blocked && $0.estimatedCost == nil }.count
+                        Text("缺少用量或单价：\(unpriced) 次（不按零费用计算）")
+                            .font(.footnote).foregroundStyle(Color(uiColor: .label))
+                        Text("按请求开始时间归入本地日期。费用采用请求当时的单价，不合并不同币种；可在服务商的模型列表设置单价。")
+                            .font(.footnote).foregroundStyle(Color(uiColor: .label))
                     }
-                    let searchCount = rows.count - modelRows.count
-                    if searchCount > 0 { Text("含联网搜索 \(searchCount) 次；搜索费用另计。").font(.caption).foregroundStyle(.secondary) }
-                    ForEach(totals.keys.sorted(), id: \.self) { currency in
-                        LabeledContent("预估费用", value: RequestLedger.costText(totals[currency] ?? 0, currency: currency))
-                    }
-                    ForEach(savings.keys.sorted(), id: \.self) { currency in
-                        LabeledContent("缓存已节省", value: RequestLedger.costText(savings[currency] ?? 0, currency: currency))
-                            .foregroundStyle(.primary)
-                    }
-                    if totals.isEmpty { Text("暂无可计价记录").foregroundStyle(.primary) }
-                    let unpriced = modelRows.filter { $0.status != .running && $0.status != .blocked && $0.estimatedCost == nil }.count
-                    Text("缺少用量或单价：\(unpriced) 次（不按零费用计算）")
-                        .font(.footnote).foregroundStyle(Color(uiColor: .label))
-                    Text("按请求开始时间归入本地日期。费用采用请求当时的单价，不合并不同币种；可在服务商的模型列表设置单价。")
-                        .font(.footnote).foregroundStyle(Color(uiColor: .label))
                 }
 
                 let groups = RequestLedger.groups(modelRows)
                 let rankedSpeedGroups = Array(groups.filter { $0.medianTPS != nil }.prefix(6))
 
-                Section {
-                    if rankedSpeedGroups.count >= 2 {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("输出吞吐速率对比 (tok/s)")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Chart(rankedSpeedGroups) { item in
-                                BarMark(
-                                    x: .value("tok/s", item.medianTPS ?? 0),
-                                    y: .value(String(localized: "模型"), "\(item.modelName) (\(item.providerName))")
-                                )
-                                .foregroundStyle(theme.tintColor.gradient)
-                                .cornerRadius(4)
-                                .annotation(position: .trailing) {
-                                    if let tps = item.medianTPS {
-                                        Text("\(tps.formatted(.number.precision(.fractionLength(1))))")
-                                            .font(.caption2.monospacedDigit())
-                                            .foregroundStyle(.secondary)
+                if !groups.isEmpty {
+                    Section {
+                        if rankedSpeedGroups.count >= 2 {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("输出吞吐速率对比 (tok/s)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Chart(rankedSpeedGroups) { item in
+                                    BarMark(
+                                        x: .value("tok/s", item.medianTPS ?? 0),
+                                        y: .value(String(localized: "模型"), "\(item.modelName) (\(item.providerName))")
+                                    )
+                                    .foregroundStyle(theme.tintColor.gradient)
+                                    .cornerRadius(4)
+                                    .annotation(position: .trailing) {
+                                        if let tps = item.medianTPS {
+                                            Text("\(tps.formatted(.number.precision(.fractionLength(1))))")
+                                                .font(.caption2.monospacedDigit())
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
                                 }
+                                .frame(height: CGFloat(max(90, rankedSpeedGroups.count * 34)))
                             }
-                            .frame(height: CGFloat(max(90, rankedSpeedGroups.count * 34)))
+                            .padding(.vertical, DS.Spacing.xxs)
                         }
-                        .padding(.vertical, DS.Spacing.xxs)
-                    }
 
-                    ForEach(groups) { group in
-                        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(group.modelName).font(.subheadline.weight(.semibold))
-                                Spacer()
-                                if let tps = group.medianTPS {
-                                    Text("≈ \(tps.formatted(.number.precision(.fractionLength(1)))) tok/s")
-                                        .font(.caption.monospacedDigit().weight(.semibold))
-                                        .foregroundStyle(theme.readableText)
+                        ForEach(groups) { group in
+                            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(group.modelName).font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    if let tps = group.medianTPS {
+                                        Text("≈ \(tps.formatted(.number.precision(.fractionLength(1)))) tok/s")
+                                            .font(.caption.monospacedDigit().weight(.semibold))
+                                            .foregroundStyle(theme.readableText)
+                                    }
                                 }
-                            }
-                            Text("\(group.providerName) · \(group.kind.title)").font(.caption).foregroundStyle(.secondary)
-                            Text("已完成 \(group.completed.count)/\(group.records.count) · 速度样本 \(group.speedSampleCount)")
-                                .font(.caption)
+                                Text("\(group.providerName) · \(group.kind.title)").font(.caption).foregroundStyle(.secondary)
+                                Text("已完成 \(group.completed.count)/\(group.records.count) · 速度样本 \(group.speedSampleCount)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                HStack(spacing: DS.Spacing.md) {
+                                    if let first = group.medianFirstOutputMs {
+                                        Text("首段 \(RequestLedger.seconds(Int(first)))")
+                                    }
+                                    if let content = group.medianFirstContentMs {
+                                        Text("正文 \(RequestLedger.seconds(Int(content)))")
+                                    }
+                                }
+                                .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
-                            HStack(spacing: DS.Spacing.md) {
-                                if let first = group.medianFirstOutputMs {
-                                    Text("首段 \(RequestLedger.seconds(Int(first)))")
-                                }
-                                if let content = group.medianFirstContentMs {
-                                    Text("正文 \(RequestLedger.seconds(Int(content)))")
+                                ForEach(group.costs.keys.sorted(), id: \.self) { currency in
+                                    Text(RequestLedger.costText(group.costs[currency] ?? 0, currency: currency)).font(.caption)
                                 }
                             }
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            ForEach(group.costs.keys.sorted(), id: \.self) { currency in
-                                Text(RequestLedger.costText(group.costs[currency] ?? 0, currency: currency)).font(.caption)
-                            }
+                            .padding(.vertical, 3)
                         }
-                        .padding(.vertical, 3)
+                    } header: {
+                        Text("测速榜（中位数）").foregroundStyle(.primary)
+                    } footer: {
+                        Text("按服务商、模型和请求类型分组。首段包含思考；正文为首个正文片段。速度仅统计完整流式回复，用 API 返回的输出 Token 除以首末输出间隔，可能包含思考 Token。不同提示词和输入长度会影响结果。")
                     }
-                } header: {
-                    Text("测速榜（中位数）").foregroundStyle(.primary)
-                } footer: {
-                    Text("按服务商、模型和请求类型分组。首段包含思考；正文为首个正文片段。速度仅统计完整流式回复，用 API 返回的输出 Token 除以首末输出间隔，可能包含思考 Token。不同提示词和输入长度会影响结果。")
                 }
 
                 let blindLeaderboard = ArenaBallot.standings(from: arenaMessages)
@@ -335,42 +277,56 @@ struct RequestLedgerView: View {
                     }
                 }
 
-                Section("请求明细") {
-                    ForEach(Array(rows.prefix(visibleLimit))) { record in
-                        NavigationLink {
-                            RequestRecordDetailView(record: record)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 5) {
-                                HStack {
-                                    Text(record.modelDisplayName).lineLimit(1)
-                                    Spacer()
-                                    if let cost = record.estimatedCost, let currency = record.currency {
-                                        Text(RequestLedger.costText(cost, currency: currency))
-                                            .font(.caption2.monospacedDigit())
-                                            .foregroundStyle(.secondary)
+                if !rows.isEmpty {
+                    Section("请求明细") {
+                        ForEach(Array(rows.prefix(visibleLimit))) { record in
+                            NavigationLink {
+                                RequestRecordDetailView(record: record)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    HStack {
+                                        Text(record.modelDisplayName).lineLimit(1)
+                                        Spacer()
+                                        if let cost = record.estimatedCost, let currency = record.currency {
+                                            Text(RequestLedger.costText(cost, currency: currency))
+                                                .font(.caption2.monospacedDigit())
+                                                .foregroundStyle(.secondary)
+                                        } else if record.kind != .webSearch, record.status != .running, record.status != .blocked, !record.hasModelPricing {
+                                            Text("未定价").font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Text(record.status.title).font(.caption).foregroundStyle(.secondary)
                                     }
-                                    Text(record.status.title).font(.caption).foregroundStyle(.secondary)
+                                    Text("\(record.providerName) · \(record.kind.title) · #\(record.attempt)")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    Text(record.startedAt, format: .dateTime.month().day().hour().minute().second())
+                                        .font(.caption2).foregroundStyle(.secondary)
                                 }
-                                Text("\(record.providerName) · \(record.kind.title) · #\(record.attempt)")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Text(record.startedAt, format: .dateTime.month().day().hour().minute().second())
-                                    .font(.caption2).foregroundStyle(.secondary)
                             }
                         }
+                        if rows.count > visibleLimit {
+                            Button("显示更多") { visibleLimit += 50 }
+                        }
                     }
-                    if rows.count > visibleLimit {
-                        Button("显示更多") { visibleLimit += 50 }
-                    }
-                    if rows.isEmpty { Text("暂无请求记录").foregroundStyle(.secondary) }
                 }
             }
             .navigationTitle("用量与测速")
+            .toolbar {
+                Button(action: openBudgetEditor) { Label("月度预算", systemImage: "gauge.with.dots.needle.50percent") }
+                    .accessibilityIdentifier("usage.budget")
+            }
+            .onChange(of: referenceDate) { _, _ in visibleLimit = 50 }
             .onChange(of: providerID) { _, _ in modelID = nil; visibleLimit = 50 }
             .onChange(of: period) { _, _ in visibleLimit = 50 }
             .onChange(of: modelID) { _, _ in visibleLimit = 50 }
             .sheet(isPresented: $showBudgetSheet) {
                 NavigationStack {
                     Form {
+                        if budgetEval.level != .unconfigured {
+                            Section("月度预算监控") {
+                                LabeledContent("预估费用", value: RequestLedger.costText(budgetEval.spent, currency: budgetEval.currency))
+                                Text(budgetStatusLine(for: budgetEval))
+                            }
+                        }
                         Section {
                             TextField("每月预算金额（填 0 停用）", text: $budgetLimitInput)
                                 .keyboardType(.decimalPad)
@@ -409,6 +365,87 @@ struct RequestLedgerView: View {
                 .presentationDetents([.medium])
             }
         }
+    }
+
+    private var periodTitle: String {
+        switch period {
+        case .month: referenceDate.formatted(.dateTime.year().month(.wide))
+        case .today: referenceDate.formatted(date: .long, time: .omitted)
+        case .all: String(localized: "全部时间")
+        }
+    }
+
+    private var emptyMessage: String {
+        if providerID != nil || modelID != nil { return String(localized: "当前筛选下没有请求") }
+        switch period {
+        case .month:
+            return LedgerPeriod.month.includes(referenceDate) ? String(localized: "本月还没有请求") : String(localized: "该月没有请求")
+        case .today:
+            return Calendar.current.isDateInToday(referenceDate) ? String(localized: "今天还没有请求") : String(localized: "当天没有请求")
+        case .all: return String(localized: "暂无请求记录")
+        }
+    }
+
+    private var filterSection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $showsFilters) {
+                Picker("统计周期", selection: $period) {
+                    ForEach(LedgerPeriod.allCases) { Text($0.title).tag($0) }
+                }.pickerStyle(.segmented)
+                if period == .today {
+                    DatePicker("统计日期", selection: $referenceDate, displayedComponents: [.date])
+                } else if period == .month {
+                    HStack {
+                        monthButton(offset: -1, title: "上个月", icon: "chevron.backward")
+                        Spacer()
+                        Text(periodTitle)
+                        Spacer()
+                        monthButton(offset: 1, title: "下个月", icon: "chevron.forward")
+                    }
+                }
+                Picker("服务商", selection: $providerID) {
+                    Text("全部").tag(UUID?.none)
+                    ForEach(providerOptions, id: \.0) { id, name in Text(name).tag(Optional(id)) }
+                }
+                Picker("模型", selection: $modelID) {
+                    Text("全部").tag(String?.none)
+                    ForEach(modelOptions, id: \.self) { Text($0).tag(Optional($0)) }
+                }
+            } label: {
+                HStack {
+                    Label("筛选", systemImage: "line.3.horizontal.decrease")
+                    Spacer()
+                    Text(verbatim: [providerOptions.first { $0.0 == providerID }?.1, modelID]
+                        .compactMap { $0 }.joined(separator: " · "))
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("usage.filters")
+        }
+    }
+
+    private func monthButton(offset: Int, title: LocalizedStringKey, icon: String) -> some View {
+        Button {
+            if let month = Calendar.current.date(byAdding: .month, value: offset, to: referenceDate) {
+                referenceDate = month
+            }
+        } label: {
+            Image(systemName: icon).frame(width: DS.TouchTarget.minimum, height: DS.TouchTarget.minimum)
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(Text(title))
+    }
+
+    private func additionalCostDetail(totals: [String: Double], savings: [String: Double], unpricedCount: Int) -> String? {
+        let currencies = totals.keys.sorted()
+        guard let first = currencies.first else { return nil }
+        var details = currencies.dropFirst().map { RequestLedger.costText(totals[$0] ?? 0, currency: $0) }
+        if unpricedCount > 0 {
+            details.insert(String(localized: "另有 \(unpricedCount) 次未定价"), at: 0)
+        } else if currencies.count == 1, let saved = savings[first], saved > 0 {
+            details.append(String(localized: "缓存省 \(RequestLedger.costText(saved, currency: first))"))
+        }
+        return details.isEmpty ? nil : details.joined(separator: " · ")
     }
 
     private func openBudgetEditor() {

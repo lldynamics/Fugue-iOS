@@ -457,7 +457,12 @@ final class ConnectionResilienceTests: XCTestCase {
 
         let dstContainer = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         _ = try EncryptedBackupService.decryptAndApply(data: encrypted, password: "Strong-Password-123!", to: dstContainer.mainContext)
-        XCTAssertEqual(KeychainService.shared.loadAllAPIKeys(for: pid), ["sk-primary-1111", "sk-backup-2222", "sk-backup-3333"])
+        let restored = try XCTUnwrap(dstContainer.mainContext.fetch(FetchDescriptor<ProviderConfig>()).first)
+        defer { restored.deleteAllSecrets() }
+        XCTAssertEqual(restored.id, pid)
+        XCTAssertFalse(restored.isEnabled)
+        XCTAssertEqual(restored.allAPIKeys, ["sk-primary-1111", "sk-backup-2222", "sk-backup-3333"])
+        XCTAssertTrue(KeychainService.shared.loadAllAPIKeys(for: pid).isEmpty)
         XCTAssertEqual(ProviderConnectionSettingsStore.shared.idleTimeoutSeconds(for: pid), 120)
     }
 }
@@ -497,6 +502,29 @@ extension ConnectionResilienceTests {
         XCTAssertEqual(models.first?.displayName, "New model")
         XCTAssertEqual(models.first?.supportsVision, true)
         XCTAssertEqual(models.first?.supportsReasoning, true)
+    }
+
+    func testModelListRejectsBodyExceedingTheCatalogBudget() async {
+        do {
+            _ = try await listedModels(.openAICompatible) { _, _ in
+                #"{"data":[]}"# + String(repeating: " ", count: 4 * 1024 * 1024)
+            }
+            XCTFail("The catalog should fit within one page's size limit.")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .dataLengthExceedsMaximum)
+        }
+    }
+
+    func testModelListChargesRowsAcrossPagesBeforeDeduplication() async {
+        do {
+            _ = try await listedModels(.anthropic) { _, page in
+                let rows = Array(repeating: #"{"id":"fixture"}"#, count: 6_000).joined(separator: ",")
+                return "{\"data\":[\(rows)],\"has_more\":\(page == 1),\"last_id\":\"page-1\"}"
+            }
+            XCTFail("The second page should exceed the shared catalog entry budget.")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .dataLengthExceedsMaximum)
+        }
     }
 
     func testAnthropicListsAllPagesWithGatewayQueryAndOriginalCredentials() async throws {

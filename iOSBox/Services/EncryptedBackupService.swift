@@ -63,7 +63,7 @@ enum EncryptedBackupService {
     }
 
     static func isEncryptedBackup(_ data: Data) -> Bool {
-        guard !data.isEmpty, data.count <= 256 * 1024 * 1024 else { return false }
+        guard !data.isEmpty, data.count <= BackupService.maximumFileBytes else { return false }
         let magicBytes = Data(envelopeMagic.utf8)
         let headEnd = min(data.count, 4096)
         let tailStart = max(0, data.count - 4096)
@@ -94,7 +94,7 @@ enum EncryptedBackupService {
             for header in p.customHeaders {
                 if header.isSecret {
                     let secret = KeychainService.shared.loadSecret(
-                        account: KeychainService.headerAccount(providerID: p.id, headerID: header.id)
+                        account: KeychainService.headerAccount(providerID: p.credentialID, headerID: header.id)
                     )
                     if !secret.isEmpty {
                         headerSecrets[header.id.uuidString] = secret
@@ -109,7 +109,7 @@ enum EncryptedBackupService {
                 providerID: p.id,
                 rawBaseURL: p.baseURL,
                 isEnabled: p.isEnabled,
-                apiKey: KeychainService.shared.loadAPIKey(for: p.id),
+                apiKey: p.apiKey,
                 extraAPIKeys: extras.isEmpty ? nil : extras,
                 idleTimeoutSeconds: customTimeout > 0 ? customTimeout : nil,
                 secretHeaders: headerSecrets
@@ -128,6 +128,9 @@ enum EncryptedBackupService {
 
     nonisolated static func encryptPayload(_ payload: FullPayload, password: String) throws -> Data {
         guard isValidExportPassword(password) else { throw EncryptedBackupError.emptyPassword }
+        // Base64 needs at least four bytes per three bytes of ciphertext.
+        let maximumPlaintext = BackupService.maximumFileBytes / 4 * 3
+        try BackupService.checkContentSize(payload.archive, limit: maximumPlaintext)
 
         var salt = Data(count: 16)
         let saltStatus = salt.withUnsafeMutableBytes { buf in
@@ -142,6 +145,7 @@ enum EncryptedBackupService {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             let plaintext = try encoder.encode(payload)
+            guard plaintext.count <= maximumPlaintext else { throw BackupError.fileTooLarge }
             let sealed = try AES.GCM.seal(plaintext, using: key, authenticating: aad)
             guard let combined = sealed.combined else { throw EncryptedBackupError.keyDerivationFailed }
             return combined.base64EncodedString()
@@ -155,7 +159,9 @@ enum EncryptedBackupService {
         )
         let outEncoder = JSONEncoder()
         outEncoder.outputFormatting = [.sortedKeys]
-        return try outEncoder.encode(envelope)
+        let data = try outEncoder.encode(envelope)
+        try BackupService.validateFileSize(data.count)
+        return data
     }
 
     @MainActor
@@ -194,6 +200,7 @@ enum EncryptedBackupService {
     }
 
     static func writeEncryptedTemporaryFile(_ data: Data) throws -> URL {
+        try BackupService.validateFileSize(data.count)
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -204,6 +211,7 @@ enum EncryptedBackupService {
     }
 
     nonisolated static func decryptPayload(data: Data, password: String) throws -> FullPayload {
+        try BackupService.validateFileSize(data.count)
         guard !password.isEmpty else { throw EncryptedBackupError.wrongPasswordOrCorrupted }
 
         guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data),
@@ -267,7 +275,6 @@ enum EncryptedBackupService {
         for i in archive.providers.indices where archive.providers[i].baseURL.isEmpty {
             guard let bundle = bundles[archive.providers[i].id], validDestination(bundle.rawBaseURL) else { continue }
             archive.providers[i].baseURL = bundle.rawBaseURL
-            archive.providers[i].isEnabled = bundle.isEnabled
         }
         var summary = try BackupService.apply(.full(archive), to: context,
                                               flashcardStore: flashcardStore, knowledgeStore: knowledgeStore)
@@ -293,10 +300,11 @@ enum EncryptedBackupService {
                 continue
             }
 
-            restore(bundle.apiKey, account: id.uuidString)
+            let credentialID = provider.credentialID
+            restore(bundle.apiKey, account: credentialID.uuidString)
             if let keys = bundle.extraAPIKeys, !keys.isEmpty {
                 if let value = KeychainService.encodedExtraAPIKeys(keys) {
-                    restore(value, account: KeychainService.extraKeysAccount(providerID: id))
+                    restore(value, account: KeychainService.extraKeysAccount(providerID: credentialID))
                 } else { summary.failedCredentialWrites += 1 }
             }
             if let timeout = bundle.idleTimeoutSeconds, timeout > 0,
@@ -313,7 +321,7 @@ enum EncryptedBackupService {
                     headerConflict = true
                     continue
                 }
-                restore(value, account: KeychainService.headerAccount(providerID: id, headerID: headerID))
+                restore(value, account: KeychainService.headerAccount(providerID: credentialID, headerID: headerID))
             }
             if headerConflict { summary.credentialConflicts.append(provider.name) }
         }

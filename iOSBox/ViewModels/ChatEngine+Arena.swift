@@ -4,6 +4,13 @@ import SwiftData
 extension ChatEngine {
     // MARK: - Arena Comparison, Critique, Synthesis & Blind Voting
 
+    static func setBlindArenaMode(_ enabled: Bool, in conversation: Conversation) {
+        conversation.assistanceSettings.blindArenaMode = enabled
+        if enabled, conversation.isArenaMode || conversation.messages.contains(where: { $0.comparisonGroupID != nil && $0.isStreaming }) {
+            LiveActivityCoordinator.shared.anonymizeComparison(in: conversation.id)
+        }
+    }
+
     /// Promotes a single-chat assistant reply into a side-by-side comparison group with a second model.
     func compareWithAnotherModel(
         assistantMessage: ChatMessage,
@@ -27,6 +34,7 @@ extension ChatEngine {
         guard !historySnapshot.isEmpty else { return }
 
         let groupID = UUID()
+        conversation.normalizeMessageOrderIfNeeded()
         assistantMessage.comparisonGroupID = groupID
         assistantMessage.isSelectedInGroup = true
 
@@ -45,6 +53,7 @@ extension ChatEngine {
         context.insert(secondReply)
 
         let meta = assistantMessage.assistanceMetadata
+        if meta.omittedKnowledge { secondReply.assistanceMetadata.omittedKnowledge = true }
         let memoryInfo = prepareMemory(
             conversation: conversation,
             omitMemory: meta.omittedMemory,
@@ -110,7 +119,7 @@ extension ChatEngine {
             anchorID = nil
         }
 
-        let nextSort = (conversation.sortedMessages.last?.sortIndex ?? 0) + 1
+        let nextSort = conversation.nextMessageSortIndex()
         let critiquePromptMsg = ChatMessage(
             role: .user,
             content: String(localized: "请各模型审阅同组其他候选答案，吸收优点并修正遗漏或错误，给出完善后的最终回答。"),
@@ -186,7 +195,7 @@ extension ChatEngine {
                 try? context.save()
                 SpotlightIndexService.shared.indexConversation(conversation)
             }
-            self.finishGeneration(conversationID: convID, token: token)
+            self.finishGeneration(conversationID: convID, token: token, statuses: slots.map { Self.outcomeStatus(of: $0.message) })
         }
         activeGenerations[convID] = ActiveGeneration(token: token, task: task, context: context)
         updateBackgroundExecution()
@@ -257,6 +266,7 @@ extension ChatEngine {
             summaryMessage.synthesisSourceDigest = digest
             summaryMessage.isStreaming = true
         } else {
+            conversation.normalizeMessageOrderIfNeeded()
             let groupMaxSort = conversation.sortedMessages.filter { $0.comparisonGroupID == groupID }.map(\.sortIndex).max()
                 ?? (conversation.sortedMessages.last?.sortIndex ?? 0)
             let created = ChatMessage(

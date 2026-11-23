@@ -40,7 +40,8 @@ final class ReleaseReadinessTests: XCTestCase {
         })
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<Conversation>()), 0)
         XCTAssertTrue(cards.cards.isEmpty)
-        XCTAssertNoThrow(try BackupService.makeArchive(context: context, flashcardStore: cards))
+        XCTAssertThrowsError(try BackupService.makeArchive(context: context, flashcardStore: cards))
+        XCTAssertThrowsError(try EncryptedBackupService.makeExportPayload(context: context, flashcardStore: cards))
         let disk = try directory().appendingPathComponent("library.store")
         do {
             let target = try container(at: disk)
@@ -105,13 +106,17 @@ final class ReleaseReadinessTests: XCTestCase {
         let first = try EncryptedBackupService.applyDecryptedPayload(data, to: db.mainContext) { _, _ in false }
         XCTAssertEqual(first.failedCredentialWrites, 5)
         XCTAssertTrue(first.hasWarnings)
-        var saved: [String: String] = [local.id.uuidString: "local"]
+        let restored = try XCTUnwrap(db.mainContext.fetch(FetchDescriptor<ProviderConfig>()).first)
+        XCTAssertFalse(restored.isEnabled)
+        XCTAssertNotEqual(restored.credentialID, local.id)
+        var saved = [local.id.uuidString: "original", restored.credentialID.uuidString: "local"]
         let retry = try EncryptedBackupService.applyDecryptedPayload(data, to: db.mainContext) { value, account in
             if saved[account] == nil { saved[account] = value }; return true
         }
         XCTAssertFalse(retry.hasWarnings)
-        XCTAssertEqual(saved.count, 5)
-        XCTAssertEqual(saved[local.id.uuidString], "local")
+        XCTAssertEqual(saved.count, 6)
+        XCTAssertEqual(saved[local.id.uuidString], "original")
+        XCTAssertEqual(saved[restored.credentialID.uuidString], "local")
         XCTAssertEqual(try db.mainContext.fetchCount(FetchDescriptor<ProviderConfig>()), 1)
         let account = UUID().uuidString
         defer { KeychainService.shared.deleteSecret(account: account) }

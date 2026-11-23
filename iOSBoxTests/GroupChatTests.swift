@@ -287,6 +287,67 @@ final class GroupChatTests: XCTestCase {
         XCTAssertTrue(finalMessages.last?.content.contains("12 个月存款") == true)
     }
 
+    func testMentionOnlyUsesThePickedMemberAcrossDraftReloadAndRelay() async throws {
+        let container = try makeInMemoryContainer()
+        let context = container.mainContext
+        let provider = makeLocalProvider()
+        context.insert(provider)
+        let targets = provider.enabledModels.map { provider.makeTarget(for: $0) }
+        let member = GroupMember(name: "Alex", title: "", rolePrompt: "", target: targets[0])
+        let sameName = GroupMember(name: "Alex", title: "Editor", rolePrompt: "", target: targets[1])
+        let longerName = GroupMember(name: "Alexandra", title: "", rolePrompt: "", target: targets[2])
+        let room = Conversation(title: "Reading circle", primaryTarget: targets[0])
+        context.insert(room)
+        room.assistanceSettings.isGroupMode = true
+        room.assistanceSettings.groupMembers = [member, sameName, longerName]
+        room.assistanceSettings.groupSpeakingMode = .mentionOnly
+        room.assistanceSettings.autoGenerateTitle = true
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let draft = ChatDraftStore(directory: directory).state(for: room.id)
+        draft.insertGroupMention("@Alex", memberID: sameName.id)
+        draft.text = "📚 " + draft.text + "Any book suggestions?"
+        draft.save()
+        let reloaded = ChatDraftStore(directory: directory).state(for: room.id)
+        let captures = GroupRequestCapture()
+        let engine = ChatEngine(stream: { request in
+            captures.append(request)
+            return AsyncThrowingStream { continuation in
+                continuation.yield(.contentDelta("Try a short story."))
+                continuation.yield(.done)
+                continuation.finish()
+            }
+        })
+        XCTAssertNil(engine.sendTargets(text: "@Alex Suggestions?", attachments: [], in: room, providers: [provider]))
+        XCTAssertEqual(engine.sendTargets(text: "@Alexandra, suggestions?", attachments: [], in: room,
+                                          providers: [provider])?.candidates.flatMap { $0 }.map(\.id), [targets[2].id])
+        let approved = try XCTUnwrap(engine.sendTargets(text: reloaded.text, attachments: [], in: room,
+                                                       providers: [provider], pickedMentions: reloaded.pickedMentions))
+        XCTAssertEqual(approved.candidates.flatMap { $0 }.map(\.id), [targets[1].id])
+        XCTAssertEqual(engine.sendUserMessage(text: reloaded.text, attachments: [], in: room, providers: [provider],
+                                              context: context, options: .init(pickedMentions: reloaded.pickedMentions,
+                                                                               authorizedGroupMentions: approved.groupMentions)), .sent)
+        await waitUntilIdle(engine, conversationID: room.id)
+        XCTAssertEqual(captures.requests.map(\.modelID), [targets[1].modelID])
+    }
+
+    func testWholeMentionTokensAndReservedNames() {
+        let provider = makeLocalProvider()
+        let target = provider.makeTarget(for: provider.models[0])
+        let first = GroupMember(name: "all", title: "", rolePrompt: "", target: target)
+        let second = GroupMember(name: "Member", title: "", rolePrompt: "", target: target)
+        let members = [first, second]
+        let picked = PickedGroupMention(offset: 0, token: "@all", memberID: first.id)
+        XCTAssertEqual(GroupDiscussionCoordinator.extractMentions(in: "@all hello", activeMembers: members,
+                                                                   pickedMentions: [picked]).members.map(\.id), [first.id])
+        XCTAssertTrue(GroupDiscussionCoordinator.extractMentions(in: "@all hello", activeMembers: [second],
+                                                                  pickedMentions: [picked]).members.isEmpty)
+        XCTAssertTrue(GroupDiscussionCoordinator.extractMentions(in: "@everyone, hi!", activeMembers: members).mentionsAll)
+        XCTAssertTrue(GroupDiscussionCoordinator.extractMentions(in: "@everyoneElse and editor@example.com",
+                                                                  activeMembers: members).members.isEmpty)
+    }
+
     func testGroupSettingsAndMetadataBackupRoundTrip() throws {
         let provider = makeLocalProvider()
         let target = provider.makeTarget(for: provider.models[0])
@@ -321,6 +382,27 @@ final class GroupChatTests: XCTestCase {
         XCTAssertEqual(decodedMeta.groupSpeechIntent, .rebuttal)
         XCTAssertEqual(decodedMeta.groupReactions.count, 1)
         XCTAssertTrue(decodedMeta.groupAskedHost)
+    }
+
+    func testBackupKeepsFirstStoredGroupMemberAndRejectsConflictingRoster() throws {
+        let store = try makeInMemoryContainer()
+        let context = store.mainContext
+        let provider = makeLocalProvider()
+        let member = GroupMember(name: "Reader", rolePrompt: "", target: provider.makeTarget(for: provider.models[0]), isMuted: true)
+        var duplicate = member
+        duplicate.isMuted = false
+        let chat = Conversation(title: "Reading group")
+        chat.assistanceSettings = AssistanceSettings(isGroupMode: true, groupMembers: [member, duplicate])
+        context.insert(chat)
+        try context.save()
+
+        XCTAssertTrue(chat.activeGroupMembers.isEmpty)
+        var archive = try BackupService.makeArchive(context: context)
+        XCTAssertEqual(archive.conversations[0].assistanceSettings?.groupMembers, [member])
+        archive.conversations[0].assistanceSettings?.groupMembers.append(duplicate)
+        XCTAssertThrowsError(try BackupService.apply(.full(archive), to: context)) { error in
+            guard case BackupError.conflictingIDs = error else { return XCTFail("Unexpected error: \(error)") }
+        }
     }
 
     func testBracketColonChunkSplitAndHostMentionPunctuation() {
@@ -495,8 +577,11 @@ final class GroupChatTests: XCTestCase {
 
         let conv = Conversation(title: "初始群名", primaryTarget: modelTarget)
         let memberA = GroupMember(name: "林晓", title: "产品", rolePrompt: "P1", target: modelTarget)
+        let localObservers = (1...3).map { index in
+            GroupMember(name: "观察员 \(index)", rolePrompt: "", target: modelTarget, isMuted: true)
+        }
         conv.isGroupMode = true
-        conv.groupMembers = [memberA]
+        conv.groupMembers = [memberA] + localObservers
         sourceCtx.insert(conv)
 
         let msg = ChatMessage(role: .user, content: "第一句话", sortIndex: 1)
@@ -511,8 +596,12 @@ final class GroupChatTests: XCTestCase {
 
         // Mutate group title, members, bookmark & reaction in sourceCtx without adding new message IDs
         let memberB = GroupMember(name: "老王", title: "架构", rolePrompt: "P2", target: modelTarget)
+        let alternate = makeLocalProvider()
+        sourceCtx.insert(alternate)
+        let memberC = GroupMember(name: "小林", rolePrompt: "P3", target: alternate.makeTarget(for: alternate.models[0]))
+        let extraMember = GroupMember(name: "新成员", rolePrompt: "P4", target: modelTarget)
         conv.title = "升级后的圆桌群"
-        conv.groupMembers = [memberA, memberB]
+        conv.groupMembers = [memberA, memberB, memberC, extraMember]
         conv.updatedAt = Date().addingTimeInterval(30)
         var meta = msg.assistanceMetadata
         meta.isBookmarked = true
@@ -526,7 +615,8 @@ final class GroupChatTests: XCTestCase {
 
         let syncedConv = try XCTUnwrap(targetCtx.fetch(FetchDescriptor<Conversation>()).first)
         XCTAssertEqual(syncedConv.title, "升级后的圆桌群")
-        XCTAssertEqual(syncedConv.groupMembers.count, 2)
+        XCTAssertEqual(syncedConv.groupMembers.map(\.id), [memberA.id] + localObservers.map(\.id) + [memberB.id, memberC.id])
+        XCTAssertEqual(syncedConv.activeGroupMembers.map(\.id), [memberA.id, memberB.id])
         let syncedMsg = try XCTUnwrap(syncedConv.messages.first)
         XCTAssertTrue(syncedMsg.assistanceMetadata.isBookmarked)
         XCTAssertEqual(syncedMsg.assistanceMetadata.groupReactions.first?.emoji, "🤨")

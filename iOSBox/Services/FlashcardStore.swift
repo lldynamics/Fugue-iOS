@@ -222,9 +222,9 @@ final class FlashcardStore {
                 normalized.front = String(cleanFront.prefix(600))
                 normalized.back = String(cleanBack.prefix(2000))
                 normalized.easeFactor = card.easeFactor.isFinite ? min(max(card.easeFactor, 1.3), 5.0) : 2.5
-                normalized.intervalDays = card.intervalDays.isFinite ? min(max(card.intervalDays, 0), 3650) : 0
-                normalized.repetitions = max(0, card.repetitions)
-                normalized.lapses = max(0, card.lapses)
+                normalized.intervalDays = card.intervalDays.isFinite ? min(max(card.intervalDays, 0), StudyFlashcard.maximumIntervalDays) : 0
+                normalized.repetitions = min(max(0, card.repetitions), StudyFlashcard.maximumReviewCount)
+                normalized.lapses = min(max(0, card.lapses), StudyFlashcard.maximumReviewCount)
                 if let hint = card.hint?.trimmingCharacters(in: .whitespacesAndNewlines), !hint.isEmpty {
                     normalized.hint = String(hint.prefix(300))
                 } else {

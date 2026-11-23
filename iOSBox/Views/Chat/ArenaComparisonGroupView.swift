@@ -7,7 +7,7 @@ struct ArenaComparisonGroupView: View {
     let isGenerating: Bool
     let onToggleBlindMode: (() -> Void)?
     let searchFocus: MessageSearchFocus?
-    let onVote: (ChatMessage) -> Void
+    let openBallot: () -> Void
     let onFollowUp: (ChatMessage) -> Void
     let onRegenerateSingle: (ChatMessage) -> Void
     let onContinueSingle: ((ChatMessage) -> Void)?
@@ -22,55 +22,60 @@ struct ArenaComparisonGroupView: View {
     @State private var activeTabID: UUID?
     @State private var sideBySideLayout: Bool = false
     @State private var didApplyInitialLayout = false
+    @State private var preferences = AppPreferences.shared
 
     private var isRevealed: Bool {
         !isBlindMode || messages.filter { !$0.isSynthesis }.contains { $0.assistanceMetadata.blindArenaRevealed }
     }
 
-    private var orderedMessages: [ChatMessage] {
-        if !isRevealed {
-            return ArenaSynthesis.blindDisplayOrder(for: messages, groupID: groupID)
-        }
-        return messages
-    }
-
     private var currentActiveMessage: ChatMessage? {
-        let pool = orderedMessages
+        let pool = messages
         if let activeTabID, let found = pool.first(where: { $0.id == activeTabID }) {
             return found
         }
-        return isRevealed ? (pool.first(where: \.isSelectedInGroup) ?? pool.first) : pool.first
+        return pool.first(where: \.isSelectedInGroup) ?? pool.first
     }
 
-    private func displayName(for msg: ChatMessage, in list: [ChatMessage]) -> String {
+    private func displayName(for msg: ChatMessage) -> String {
         if msg.isSynthesis {
             return String(localized: "汇总 · \(msg.modelDisplayName)")
-        }
-        if !isRevealed {
-            let candidates = list.filter { !$0.isSynthesis }
-            if let idx = candidates.firstIndex(where: { $0.id == msg.id }) {
-                return ArenaSynthesis.blindLabel(at: idx)
-            }
         }
         return msg.modelDisplayName
     }
 
     var body: some View {
-        let pool = orderedMessages
-        let completeCount = messages.filter { !$0.isSynthesis && ArenaSynthesis.isComplete($0) }.count
+        if !isRevealed {
+            Button(action: openBallot) {
+                Label("进入双盲对比", systemImage: "rectangle.split.2x1")
+                    .frame(maxWidth: .infinity, minHeight: 48)
+            }
+            .buttonStyle(.bordered)
+        } else {
+            revealedComparison
+        }
+    }
 
-        VStack(alignment: .leading, spacing: 10) {
-            // Header bar
-            HStack(spacing: 6) {
+    private var revealedComparison: some View {
+        let pool = messages
+        let completeCount = ArenaSynthesis.eligibleSources(in: messages, groupID: groupID).count
+        let theme = preferences.accentTheme
+
+        return VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+            // Compact Header Row
+            HStack(spacing: DS.Spacing.xs) {
                 Image(systemName: "square.split.2x1.fill")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(theme.readableText)
+                    .accessibilityHidden(true)
                 Text("多模型并发对比 (\(messages.filter { !$0.isSynthesis }.count))")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
                 Spacer()
 
+                if isBlindMode {
+                    Button("查看选票", action: openBallot).font(.footnote)
+                }
                 if let onToggleBlindMode {
                     Button(action: onToggleBlindMode) {
                         HStack(spacing: 3) {
@@ -78,11 +83,11 @@ struct ArenaComparisonGroupView: View {
                             Text("双盲")
                         }
                         .font(.caption2.weight(.medium))
-                        .foregroundStyle(isBlindMode ? Color.accentColor : .secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                        .foregroundStyle(isBlindMode ? theme.readableText : .secondary)
+                        .padding(.horizontal, DS.Spacing.sm)
+                        .padding(.vertical, DS.Spacing.xxs)
                         .background(
-                            isBlindMode ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.12),
+                            isBlindMode ? theme.softFill : DS.Surface.neutralChipFill,
                             in: Capsule()
                         )
                     }
@@ -99,61 +104,36 @@ struct ArenaComparisonGroupView: View {
                         Text(sideBySideLayout ? String(localized: "标签视图") : String(localized: "并排横滑"))
                     }
                     .font(.caption2.weight(.medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.12), in: Capsule())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, DS.Spacing.sm)
+                    .padding(.vertical, DS.Spacing.xxs)
+                    .background(DS.Surface.neutralChipFill, in: Capsule())
                 }
                 .buttonStyle(.plain)
             }
 
-            HStack(spacing: 8) {
-                Button(action: onSynthesize) {
-                    Label("由裁判模型综合提炼", systemImage: "sparkles")
-                        .font(.subheadline.weight(.medium))
-                }
-                .buttonStyle(.bordered)
-                .disabled(isGenerating || completeCount < 2)
-
-                if let onCrossCritique {
-                    Button(action: onCrossCritique) {
-                        Label("互评修正", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.subheadline.weight(.medium))
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isGenerating || completeCount < 2)
-                }
-            }
-
-            if completeCount < 2 {
-                Text("至少需要两条完整答案才能汇总。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            if !isRevealed {
-                Text("双盲评测中：投票选出最佳回复后将揭晓模型身份。")
+            if isBlindMode && !messages.contains(where: { $0.assistanceMetadata.blindArenaBallot != nil }) {
+                Text("此轮已揭晓，未记录独立选票。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
-            if isBlindMode && isRevealed && !messages.contains(where: { $0.assistanceMetadata.blindArenaBallot != nil }) {
-                Text("此轮已揭晓，未记录独立选票。").font(.caption2).foregroundStyle(.secondary)
-            }
-
+            // Answer-First Content Stage
             if sideBySideLayout {
                 if horizontalSizeClass == .regular && pool.count >= 2 {
                     let colCount = min(pool.count, 3)
-                    let cols = Array(repeating: GridItem(.flexible(minimum: 220), spacing: 12, alignment: .top), count: colCount)
-                    LazyVGrid(columns: cols, alignment: .leading, spacing: 12) {
+                    let cols = Array(repeating: GridItem(.flexible(minimum: 220), spacing: DS.Spacing.md, alignment: .top), count: colCount)
+                    LazyVGrid(columns: cols, alignment: .leading, spacing: DS.Spacing.md) {
                         ForEach(pool) { msg in
-                            singleModelCard(msg, in: pool)
+                            singleModelCard(msg)
                         }
                     }
                 } else {
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 12) {
+                        HStack(alignment: .top, spacing: DS.Spacing.md) {
                             ForEach(pool) { msg in
-                                singleModelCard(msg, in: pool)
-                                    .frame(width: 305)
+                                singleModelCard(msg)
+                                    .frame(width: 308)
                             }
                         }
                         .scrollTargetLayout()
@@ -161,9 +141,9 @@ struct ArenaComparisonGroupView: View {
                     .scrollTargetBehavior(.viewAligned)
                 }
             } else {
-                // Model tab strip
+                // Sleek model tab strip directly above the answer card
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: DS.Spacing.xs) {
                         ForEach(pool) { msg in
                             let isSelectedTab = (currentActiveMessage?.id == msg.id)
                             Button {
@@ -171,13 +151,14 @@ struct ArenaComparisonGroupView: View {
                                     activeTabID = msg.id
                                 }
                             } label: {
-                                HStack(spacing: 6) {
+                                HStack(spacing: DS.Spacing.xs) {
                                     Circle()
-                                        .fill(isRevealed || msg.isSynthesis ? Color(hex: msg.accentHex) : Color.secondary)
+                                        .fill(Color(hex: msg.accentHex))
                                         .frame(width: 7, height: 7)
 
-                                    Text(displayName(for: msg, in: pool))
+                                    Text(displayName(for: msg))
                                         .font(.caption.weight(isSelectedTab ? .semibold : .regular))
+                                        .foregroundStyle(isSelectedTab ? .primary : .secondary)
                                         .lineLimit(1)
 
                                     if msg.isStreaming {
@@ -187,23 +168,21 @@ struct ArenaComparisonGroupView: View {
                                         Image(systemName: "exclamationmark.circle.fill")
                                             .font(.caption2)
                                             .foregroundStyle(.orange)
-                                    } else if isRevealed && msg.isSelectedInGroup {
+                                    } else if msg.isSelectedInGroup {
                                         Image(systemName: "checkmark.seal.fill")
                                             .font(.caption2)
-                                            .foregroundStyle(Color.accentColor)
+                                            .foregroundStyle(theme.readableText)
                                     }
                                 }
-                                .padding(.horizontal, 11)
+                                .padding(.horizontal, DS.Spacing.md)
                                 .padding(.vertical, 7)
                                 .background(
-                                    isSelectedTab
-                                        ? Color.accentColor.opacity(0.15)
-                                        : Color(.secondarySystemBackground),
+                                    isSelectedTab ? DS.Surface.canvas : DS.Surface.neutralChipFill,
                                     in: Capsule()
                                 )
                                 .overlay(
                                     Capsule().strokeBorder(
-                                        isSelectedTab ? Color.accentColor.opacity(0.6) : Color.clear,
+                                        isSelectedTab ? theme.tintColor.opacity(0.45) : Color.clear,
                                         lineWidth: 1
                                     )
                                 )
@@ -214,16 +193,41 @@ struct ArenaComparisonGroupView: View {
                 }
 
                 if let active = currentActiveMessage {
-                    singleModelCard(active, in: pool)
+                    singleModelCard(active)
                 }
             }
+
+            // Bottom Group Synthesis & Critique Bar (placed cleanly after reading)
+            HStack(spacing: DS.Spacing.sm) {
+                Button(action: onSynthesize) {
+                    Label("由裁判模型综合提炼", systemImage: "sparkles")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isGenerating || completeCount < 2)
+
+                if let onCrossCritique {
+                    Button(action: onCrossCritique) {
+                        Label("互评修正", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption.weight(.medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isGenerating || completeCount < 2)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 2)
+
+            if completeCount < 2 {
+                Text("至少需要两条完整答案才能汇总。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .padding(12)
-        .background(Color(.secondarySystemBackground).opacity(0.55), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
-        )
+        .dsCard(cornerRadius: DS.Radius.lg, fill: DS.Surface.subtle.opacity(0.7), padding: DS.Spacing.md)
         .onAppear {
             if !didApplyInitialLayout {
                 didApplyInitialLayout = true
@@ -243,86 +247,79 @@ struct ArenaComparisonGroupView: View {
     }
 
     @ViewBuilder
-    private func singleModelCard(_ msg: ChatMessage, in pool: [ChatMessage]) -> some View {
-        let title = displayName(for: msg, in: pool)
-        let blindOverride = (!isRevealed && !msg.isSynthesis) ? title : nil
+    private func singleModelCard(_ msg: ChatMessage) -> some View {
+        let theme = preferences.accentTheme
 
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+            // Identity header
+            HStack(spacing: DS.Spacing.xs) {
                 Circle()
-                    .fill(blindOverride != nil ? Color.secondary : Color(hex: msg.accentHex))
+                    .fill(Color(hex: msg.accentHex))
                     .frame(width: 8, height: 8)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(blindOverride ?? msg.modelDisplayName)
-                        .font(.footnote.weight(.semibold))
-                        .lineLimit(1)
-                    if blindOverride == nil {
-                        Text(msg.providerName)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
+                    .accessibilityHidden(true)
+
+                Text(msg.modelDisplayName)
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(1)
+
+                Text("· \(msg.providerName)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
 
                 Spacer()
 
-                if msg.assistanceMetadata.blindArenaBallot != nil {
-                    Label("盲评得票", systemImage: "checkmark.seal.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
+                if msg.isSynthesis {
+                    DSBadge(text: String(localized: "裁判汇总"), icon: "sparkles", style: .accent(theme))
+                } else if msg.assistanceMetadata.blindArenaBallot != nil {
+                    DSBadge(text: String(localized: "盲评得票"), icon: "checkmark.seal.fill", style: .accent(theme))
                 }
             }
 
-            HStack {
-                if !isRevealed && !msg.isSynthesis {
-                    Button("投票并揭晓") {
-                        activeTabID = msg.id
-                        onVote(msg)
-                    }
-                    .disabled(!ArenaSynthesis.isComplete(msg) || ArenaSynthesis.eligibleSources(in: pool, groupID: groupID).count < 2)
-                }
+            if msg.isSynthesis, !ArenaSynthesis.isCurrent(msg, in: messages) {
+                Text("原答案已更新，此汇总已过期，不会用于后续上下文。请重新汇总。")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            // Answer content immediately visible
+            MessageRowView(
+                message: msg,
+                isCompactCard: true,
+                actions: MessageRowActions(
+                    onSelectRevision: onSelectRevision.map { handler in { idx in handler(msg, idx) } },
+                    onRegenerate: { if msg.isSynthesis { onSynthesize() } else { onRegenerateSingle(msg) } },
+                    onContinueGeneration: onContinueSingle.map { handler in { handler(msg) } },
+                    onQuote: onQuote,
+                    onToggleBookmark: onToggleBookmark.map { handler in { handler(msg) } },
+                    onForkConversation: onForkConversation.map { handler in { handler(msg) } }
+                )
+            )
+
+            Divider().opacity(0.45)
+
+            // Action controls cleanly anchored at card bottom
+            HStack(spacing: DS.Spacing.sm) {
                 Button { onFollowUp(msg) } label: {
-                    if isRevealed && msg.isSelectedInGroup {
-                        Label("当前追问回复", systemImage: "checkmark.circle")
+                    if msg.isSelectedInGroup {
+                        Label("当前追问回复", systemImage: "checkmark.circle.fill")
                     } else {
                         Text("沿这条回答追问")
                     }
                 }
-                .disabled(msg.isSynthesis && (!ArenaSynthesis.isComplete(msg) || !ArenaSynthesis.isCurrent(msg, in: messages)))
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isGenerating || (msg.isSynthesis && (!ArenaSynthesis.isComplete(msg) || !ArenaSynthesis.isCurrent(msg, in: messages))))
+
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(isGenerating)
-
-            if msg.isSynthesis {
-                Label("裁判汇总", systemImage: "sparkles").font(.caption).foregroundStyle(.purple)
-                if !ArenaSynthesis.isCurrent(msg, in: messages) {
-                    Text("原答案已更新，此汇总已过期，不会用于后续上下文。请重新汇总。")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-            }
-
-            Divider().opacity(0.5)
-
-            MessageRowView(
-                message: msg,
-                isCompactCard: true,
-                blindLabel: blindOverride,
-                onSelectRevision: onSelectRevision.map { handler in { idx in handler(msg, idx) } },
-                onRegenerate: { if msg.isSynthesis { onSynthesize() } else { onRegenerateSingle(msg) } },
-                onRegenerateWithCurrentModel: nil,
-                onContinueGeneration: onContinueSingle.map { handler in { handler(msg) } },
-                onQuote: onQuote,
-                onToggleBookmark: onToggleBookmark.map { handler in { handler(msg) } },
-                onForkConversation: onForkConversation.map { handler in { handler(msg) } }
-            )
         }
-        .padding(12)
-        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .padding(DS.Spacing.md)
+        .background(DS.Surface.canvas, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
+            RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
                 .strokeBorder(
-                    isRevealed && msg.isSelectedInGroup ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.06),
+                    msg.isSelectedInGroup ? theme.tintColor.opacity(0.42) : DS.Surface.hairline,
                     lineWidth: 1
                 )
         )

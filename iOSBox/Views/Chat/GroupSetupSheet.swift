@@ -4,6 +4,7 @@ import SwiftData
 struct GroupSetupSheet: View {
     var existingConversation: Conversation? = nil
     var invitedFriend: BookFriend? = nil
+    var invitedProfile: GroupMember? = nil
     let providers: [ProviderConfig]
     let presets: [AssistantPreset]
     var onCreated: ((Conversation) -> Void)? = nil
@@ -12,6 +13,7 @@ struct GroupSetupSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \Conversation.updatedAt, order: .reverse) private var conversations: [Conversation]
     @Query private var books: [BookVolume]
+    @Query(sort: \PersonaProfile.name) private var profiles: [PersonaProfile]
 
     @State private var roomTitle: String = ""
     @State private var roomEmoji: String = "👥"
@@ -114,6 +116,21 @@ struct GroupSetupSheet: View {
                             members.remove(atOffsets: offsets)
                         }
 
+                        if !profiles.isEmpty {
+                            Menu("从人物档案邀请") {
+                                ForEach(profiles) { profile in
+                                    Button(profile.name) {
+                                        do {
+                                            let member = try profile.member().inRoom()
+                                            members.append(member)
+                                            expandedMemberID = member.id
+                                        } catch { saveError = error.localizedDescription }
+                                    }
+                                    .disabled(members.contains { $0.profileID == profile.id })
+                                }
+                            }
+                            .disabled(members.count >= 6)
+                        }
                         Button { pickingFriend = true } label: { Label("从好友选择", systemImage: "book.pages") }
                             .disabled(members.count >= 6 || availableTargets.isEmpty)
 
@@ -376,94 +393,26 @@ struct GroupSetupSheet: View {
             if isExpanded {
                 Divider()
 
-                HStack(spacing: 8) {
-                    TextField("头像", text: member.avatarEmoji)
-                        .frame(width: 40)
-                        .multilineTextAlignment(.center)
-                        .padding(.vertical, 6)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-                        .onChange(of: member.wrappedValue.avatarEmoji) { _, val in
-                            if let first = val.first {
-                                let single = String(first)
-                                if val != single { member.wrappedValue.avatarEmoji = single }
+                if profiles.contains(where: { $0.id == m.profileID }) {
+                    Text("人物资料和模型可在「助手」中的人物档案编辑。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    ForEach(m.persona?.feeds ?? []) { feed in
+                        Toggle(isOn: Binding(get: {
+                            member.wrappedValue.persona?.feeds.first { $0.id == feed.id }?.enabled ?? false
+                        }, set: { enabled in
+                            if let i = member.wrappedValue.persona?.feeds.firstIndex(where: { $0.id == feed.id }) {
+                                member.wrappedValue.persona?.feeds[i].enabled = enabled
+                            }
+                        })) {
+                            VStack(alignment: .leading) {
+                                Text("自动分享到本群")
+                                Text(verbatim: feed.displayName).font(.caption).foregroundStyle(.secondary)
+                                if let error = feed.lastError { Text(verbatim: error).font(.caption).foregroundStyle(.orange) }
                             }
                         }
-
-                    TextField("昵称（必填，用于 @点名）", text: member.name)
-                        .textFieldStyle(.roundedBorder)
-
-                    TextField("头衔（如：架构师）", text: member.title)
-                        .textFieldStyle(.roundedBorder)
-                }
-                .font(.footnote)
-
-                Button {
-                    editingPersonaID = m.id
-                } label: {
-                    HStack {
-                        Label("人物资料与动态", systemImage: "person.text.rectangle")
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                     }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-
-                Picker("底层模型", selection: member.target) {
-                    if !availableTargets.contains(where: { $0.id == m.target.id }) {
-                        Text("不可用 · \(m.target.modelDisplayName)").tag(m.target)
-                    }
-                    ForEach(availableTargets) { target in
-                        Text("\(target.providerName) · \(target.modelDisplayName)")
-                            .tag(target)
-                    }
-                }
-                .font(.footnote)
-
-                HStack(spacing: 8) {
-                    Text("角色色标")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    ForEach(Array(GroupMember.paletteHexes.enumerated()), id: \.element) { idx, hex in
-                        let isChosen = m.accentHex.uppercased() == hex.uppercased()
-                        Button {
-                            member.wrappedValue.accentHex = hex
-                        } label: {
-                            Circle()
-                                .fill(Color(hex: hex))
-                                .frame(width: 22, height: 22)
-                                .overlay {
-                                    if isChosen {
-                                        Image(systemName: "checkmark")
-                                            .font(.system(size: 10, weight: .bold))
-                                            .foregroundStyle(.white)
-                                    }
-                                }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(String(localized: "颜色方案 \(idx + 1)"))
-                        .accessibilityAddTraits(isChosen ? .isSelected : [])
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("角色立场与性格提示词")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField("描述该角色的思考视角、说话风格与关注重点…", text: member.rolePrompt, axis: .vertical)
-                        .lineLimit(2...5)
-                        .font(.footnote)
-                        .padding(8)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-                }
-
-                HStack {
-                    Text("性格发散度 \(String(format: "%.2f", m.temperature))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                    Slider(value: member.temperature, in: 0.1...1.2, step: 0.05)
+                } else {
+                    roleSettings(member)
                 }
 
                 HStack {
@@ -484,6 +433,108 @@ struct GroupSetupSheet: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func roleSettings(_ member: Binding<GroupMember>) -> some View {
+        let m = member.wrappedValue
+        HStack(spacing: 8) {
+            TextField("头像", text: member.avatarEmoji)
+                .frame(width: 40)
+                .multilineTextAlignment(.center)
+                .padding(.vertical, 6)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                .onChange(of: member.wrappedValue.avatarEmoji) { _, val in
+                    if let first = val.first {
+                        let single = String(first)
+                        if val != single { member.wrappedValue.avatarEmoji = single }
+                    }
+                }
+
+            TextField("昵称（必填，用于 @点名）", text: member.name)
+                .textFieldStyle(.roundedBorder)
+
+            TextField("头衔（如：架构师）", text: member.title)
+                .textFieldStyle(.roundedBorder)
+        }
+        .font(.footnote)
+
+        Button {
+            editingPersonaID = m.id
+        } label: {
+            HStack {
+                Label("人物资料与动态", systemImage: "person.text.rectangle")
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+
+        if m.bookFriend == nil {
+            Button("保存为独立人物档案") {
+                do {
+                    let profile = try PersonaLibrary.save(m, in: modelContext)
+                    member.wrappedValue.profileID = profile.id
+                } catch { saveError = error.localizedDescription }
+            }.disabled(m.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        Picker("底层模型", selection: member.target) {
+            if !availableTargets.contains(where: { $0.id == m.target.id }) {
+                Text("不可用 · \(m.target.modelDisplayName)").tag(m.target)
+            }
+            ForEach(availableTargets) { target in
+                Text("\(target.providerName) · \(target.modelDisplayName)")
+                    .tag(target)
+            }
+        }
+        .font(.footnote)
+
+        HStack(spacing: 8) {
+            Text("角色色标")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            ForEach(Array(GroupMember.paletteHexes.enumerated()), id: \.element) { idx, hex in
+                let isChosen = m.accentHex.uppercased() == hex.uppercased()
+                Button {
+                    member.wrappedValue.accentHex = hex
+                } label: {
+                    Circle()
+                        .fill(Color(hex: hex))
+                        .frame(width: 22, height: 22)
+                        .overlay {
+                            if isChosen {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "颜色方案 \(idx + 1)"))
+                .accessibilityAddTraits(isChosen ? .isSelected : [])
+            }
+        }
+
+        VStack(alignment: .leading, spacing: 4) {
+            Text("角色立场与性格提示词")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("描述该角色的思考视角、说话风格与关注重点…", text: member.rolePrompt, axis: .vertical)
+                .lineLimit(2...5)
+                .font(.footnote)
+                .padding(8)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+        }
+
+        HStack {
+            Text("性格发散度 \(String(format: "%.2f", m.temperature))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            Slider(value: member.temperature, in: 0.1...1.2, step: 0.05)
+        }
     }
 
     // MARK: - Actions
@@ -520,6 +571,9 @@ struct GroupSetupSheet: View {
                 roomEmoji = defaultTemplate.roomEmoji
                 if sharedPrompt.isEmpty { sharedPrompt = defaultTemplate.sharedTopicPrompt }
             }
+        } else if let invitedProfile {
+            members = [invitedProfile.inRoom()]
+            roomTitle = invitedProfile.name
         } else if let invitedFriend {
             roomTitle = String(localized: "《\(invitedFriend.bookTitle)》读书群")
             roomEmoji = "📚"
@@ -542,7 +596,7 @@ struct GroupSetupSheet: View {
         sharedPrompt = template.sharedTopicPrompt
         speakingMode = template.speakingMode
         speechStyle = template.speechStyle
-        members = template.instantiate(using: availableTargets)
+        members = template.instantiate(using: availableTargets, profiles: profiles.compactMap { try? $0.member() })
         expandedMemberID = nil
     }
 
@@ -592,6 +646,9 @@ struct GroupSetupSheet: View {
     private func saveGroupConfiguration() {
         guard canConfirm else { return }
         let sanitizedMembers: [GroupMember] = members.enumerated().compactMap { idx, m in
+            if let profile = profiles.first(where: { $0.id == m.profileID }), let shared = try? profile.member() {
+                return shared.inRoom(replacing: m)
+            }
             var copy = m
             copy.name = m.name.trimmingCharacters(in: .whitespacesAndNewlines)
             copy.title = m.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -617,7 +674,7 @@ struct GroupSetupSheet: View {
             }
             let previous = (conv.title, conv.assistantEmoji, conv.systemPrompt, conv.isArenaMode,
                             conv.primaryTargetData, conv.assistanceSettingsData, conv.updatedAt)
-            conv.title = effectiveTitle
+            conv.rename(to: effectiveTitle)
             conv.assistantEmoji = effectiveEmoji
             conv.systemPrompt = sharedPrompt
             conv.isArenaMode = false

@@ -135,17 +135,38 @@ struct PersonaFeedReader {
         guard posts.count == page.meta.result_count, posts.allSatisfy({ isPostID($0.id) }) else { throw PersonaError.invalidFeed }
         let newest = state.pendingNewestID ?? page.meta.newest_id ?? posts.first?.id
         state.startedAt = state.startedAt ?? now
-        state.nextPage = initial ? nil : page.meta.next_token
-        state.pendingNewestID = state.nextPage == nil ? nil : newest
-        if state.nextPage == nil { state.sinceID = newest ?? state.sinceID }
+        if initial {
+            state.sinceID = newest
+            return PersonaFeedBatch(items: [], checkpoint: state)
+        }
+
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let items = initial ? [] : posts.reversed().compactMap { post -> PersonaFeedItem? in
-            guard let url = URL(string: "https://x.com/i/web/status/" + post.id) else { return nil }
-            return PersonaFeedItem(id: post.id, title: String(post.text.prefix(500)), url: url,
-                                   published: post.created_at.flatMap { iso.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) })
+        var batch = state.pendingItems ?? []
+        var known = Set(batch.map(\.id))
+        for post in posts where known.insert(post.id).inserted {
+            guard let url = URL(string: "https://x.com/i/web/status/" + post.id) else { throw PersonaError.invalidFeed }
+            batch.append(PersonaFeedItem(id: post.id, title: String(post.text.prefix(500)), url: url,
+                                         published: post.created_at.flatMap { iso.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) }))
         }
-        return PersonaFeedBatch(items: items, checkpoint: state)
+        // X returns newest-first pages. Keep the oldest window; any newer overflow is fetched
+        // again from the last published ID, which bounds persisted checkpoint size across polls.
+        batch.sort { $0.id.count == $1.id.count ? $0.id < $1.id : $0.id.count < $1.id.count }
+        if batch.count > 400 {
+            batch.removeLast(batch.count - 400)
+            state.truncatedBatch = true
+        }
+        state.nextPage = page.meta.next_token
+        if state.nextPage != nil {
+            state.pendingNewestID = newest
+            state.pendingItems = batch
+            return PersonaFeedBatch(items: [], checkpoint: state)
+        }
+        state.sinceID = (state.truncatedBatch == true ? batch.last?.id : newest) ?? state.sinceID
+        state.pendingNewestID = nil
+        state.pendingItems = nil
+        state.truncatedBatch = nil
+        return PersonaFeedBatch(items: batch, checkpoint: state)
     }
 
     private func isPostID(_ id: String) -> Bool {

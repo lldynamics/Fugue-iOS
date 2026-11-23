@@ -470,9 +470,11 @@ final class ComprehensiveReviewFixesTests: XCTestCase {
 
         let approvalCounter = OSAllocatedUnfairLock(initialState: [URL]())
         let roundBox = OSAllocatedUnfairLock(initialState: 0)
+        let reference = SearchSource(id: 1, title: "Reference guide",
+                                     url: try XCTUnwrap(URL(string: "https://reference.example.com/guide")), snippet: "Guide")
 
         let engine = ChatEngine(
-            search: { q in SearchEvidence(query: q, searchedAt: Date(), sources: [], credits: nil) },
+            search: { query in SearchEvidence(query: query, searchedAt: Date(), sources: [reference], credits: nil) },
             stream: { req in
                 let step = roundBox.withLock { val -> Int in
                     defer { val += 1 }
@@ -481,7 +483,6 @@ final class ComprehensiveReviewFixesTests: XCTestCase {
                 return AsyncThrowingStream { cont in
                     switch step {
                     case 0:
-                        // Round 0: call user-typed URL (auto-allowed) and model-invented URL (gated!)
                         cont.yield(.toolCall(LLMToolCall(
                             id: "u1",
                             name: "read_webpage",
@@ -490,7 +491,12 @@ final class ComprehensiveReviewFixesTests: XCTestCase {
                         cont.yield(.toolCall(LLMToolCall(
                             id: "u2",
                             name: "read_webpage",
-                            argumentsJSON: #"{"url":"https://unrequested.example.com/leak?secret=123"}"#
+                            argumentsJSON: #"{"url":"https://reading.example.com/notes"}"#
+                        )))
+                        cont.yield(.toolCall(LLMToolCall(
+                            id: "u3",
+                            name: "read_webpage",
+                            argumentsJSON: #"{"url":"https://reference.example.com/guide"}"#
                         )))
                     default:
                         cont.yield(.contentDelta("Backup answered safely with \(req.modelID)."))
@@ -513,7 +519,9 @@ final class ComprehensiveReviewFixesTests: XCTestCase {
             attachments: [],
             in: chat,
             providers: [disabledPrimary, healthyBackup],
-            context: ctx
+            context: ctx,
+            options: GenerationOptions(searchQuery: "Swift beginner documentation",
+                                       quotedExcerpt: "Reading notes https://reading.example.com/notes")
         )
         XCTAssertEqual(sendOutcome, .sent)
         let deadline = ContinuousClock.now + .seconds(4)
@@ -524,13 +532,10 @@ final class ComprehensiveReviewFixesTests: XCTestCase {
         XCTAssertEqual(assistantReply.modelID, "live-backup")
         XCTAssertTrue(assistantReply.content.contains("live-backup"))
 
-        // User-typed URL bypassed prompt and succeeded; unrequested URL hit confirmation gate and was denied!
         let gatedURLs = approvalCounter.withLock { $0 }
-        XCTAssertEqual(gatedURLs.map(\.absoluteString), ["https://unrequested.example.com/leak?secret=123"])
-        let toolRecords = assistantReply.assistanceMetadata.toolCalls
-        XCTAssertEqual(toolRecords.count, 2)
-        XCTAssertEqual(toolRecords.first?.succeeded, true)
-        XCTAssertEqual(toolRecords.last?.succeeded, false)
+        XCTAssertEqual(assistantReply.assistanceMetadata.search?.sources.first?.url, reference.url)
+        XCTAssertEqual(gatedURLs.map(\.absoluteString), ["https://reading.example.com/notes", reference.url.absoluteString])
+        XCTAssertEqual(assistantReply.assistanceMetadata.toolCalls.map(\.succeeded), [true, false, false])
 
         // 6b. StudyGeneratorService.parseQuizJSON preserves exact right answer when empty options are filtered
         let trickyQuizJSON = """

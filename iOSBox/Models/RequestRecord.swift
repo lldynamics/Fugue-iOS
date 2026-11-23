@@ -128,6 +128,11 @@ final class RequestRecord {
         Self.validPrice(CachePriceSnapshotStore.shared.entry(for: id)?.write)
     }
 
+    var hasModelPricing: Bool {
+        Self.validPrice(inputPricePerMillion) != nil && Self.validPrice(outputPricePerMillion) != nil
+            && Self.currencies.contains(currency ?? "")
+    }
+
     var estimatedCost: Double? {
         guard let input = LLMUsage.valid(promptTokens), let output = LLMUsage.valid(completionTokens),
               let inPrice = Self.validPrice(inputPricePerMillion),

@@ -19,6 +19,20 @@ enum LedgerPeriod: String, CaseIterable, Identifiable {
 }
 
 enum RequestLedger {
+    static func costOverviewText(totals: [String: Double], modelRecords: [RequestRecord], requestCount: Int) -> String {
+        if let currency = totals.keys.sorted().first, let amount = totals[currency] {
+            return costText(amount, currency: currency)
+        }
+        guard requestCount > 0 else { return "0" }
+        guard !modelRecords.isEmpty else { return String(localized: "搜索费用另计") }
+        let completed = modelRecords.filter { $0.status != .running && $0.status != .blocked }
+        if completed.isEmpty {
+            return modelRecords.contains { $0.status == .running } ? String(localized: "等待用量") : String(localized: "无计费记录")
+        }
+        let missingPrice = completed.contains { !$0.hasModelPricing }
+        return missingPrice ? String(localized: "未定价") : String(localized: "缺少用量")
+    }
+
     struct Group: Identifiable {
         let id: String
         let providerName: String
@@ -88,7 +102,9 @@ enum RequestLedger {
             calendar.dateInterval(of: component, for: record.startedAt)?.start ?? record.startedAt
         }
         return grouped.map { bucketDate, items in
-            let tokens = items.reduce(0) { $0 + ($1.promptTokens ?? 0) + ($1.completionTokens ?? 0) }
+            let tokens = items.reduce(0) { total, item in
+                LLMUsage.saturatedSum(total, LLMUsage.combined(item.promptTokens, item.completionTokens) ?? 0)
+            }
             return TrendBucket(id: bucketDate, date: bucketDate, requestCount: items.count, totalTokens: tokens)
         }
         .sorted { $0.date < $1.date }

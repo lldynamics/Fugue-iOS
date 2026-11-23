@@ -846,252 +846,236 @@ struct MessageRowView: View {
             ?? meta.groupSpeakerDisplayTitle
             ?? (message.modelDisplayName.isEmpty ? String(localized: "AI 助手") : message.modelDisplayName)
 
-        HStack(spacing: 12) {
-            if !message.content.isEmpty {
-                Button {
-                    UIPasteboard.general.string = PlainTextFormatter.format(message.content)
-                    triggerCopiedToast(String(localized: "已复制纯文本"))
-                } label: {
-                    Label(copiedToastText ?? String(localized: "纯文本"), systemImage: copiedToastText != nil ? "checkmark" : "doc.plaintext")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(copiedToastText != nil ? .green : .secondary)
-                        .lineLimit(1)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("复制纯文本")
-
-                Button {
-                    if let onToggleSpeak = actions.onToggleSpeak {
-                        onToggleSpeak()
-                    } else {
-                        speech.toggleSpeaking(messageID: message.id, text: message.content, personaID: meta.groupMemberID)
-                    }
-                } label: {
-                    Label(
-                        isSpeaking
-                            ? (speech.isSynthesizingCloudSpeech ? String(localized: "合成中") : String(localized: "停止"))
-                            : String(localized: "朗读"),
-                        systemImage: isSpeaking ? "speaker.wave.2.circle.fill" : "speaker.wave.2"
-                    )
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(isSpeaking ? preferences.accentTheme.readableText : .secondary)
-                    .lineLimit(1)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isSpeaking ? String(localized: "停止朗读") : String(localized: "朗读回复"))
-
-                if !isCompactCard && !message.isStreaming, let onExtractSchedule = actions.onExtractSchedule {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                if !message.content.isEmpty {
                     Button {
-                        onExtractSchedule()
+                        UIPasteboard.general.string = PlainTextFormatter.format(message.content)
+                        triggerCopiedToast(String(localized: "已复制纯文本"))
                     } label: {
-                        Label("日程", systemImage: "calendar.badge.plus")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                        replyActionLabel(copiedToastText == nil ? "复制" : "已复制",
+                                         icon: copiedToastText == nil ? "doc.on.doc" : "checkmark")
                     }
                     .buttonStyle(.plain)
-                    .disabled(isGeneratingStudy)
-                    .accessibilityLabel("提取待办与日程")
+                    .accessibilityLabel("复制纯文本")
+                    .accessibilityIdentifier("reply.copy")
                 }
-            }
 
-            if let onRegenerate = actions.onRegenerate {
-                Menu {
-                    Button {
-                        onRegenerate()
+                if let onRegenerate = actions.onRegenerate {
+                    Menu {
+                        Button {
+                            onRegenerate()
+                        } label: {
+                            Label(
+                                blindLabel != nil
+                                    ? String(localized: "使用原模型重答")
+                                    : String(localized: "使用原模型重答 (\(message.modelDisplayName))"),
+                                systemImage: "arrow.clockwise"
+                            )
+                        }
+                        if let onRegenerateWithCurrentModel = actions.onRegenerateWithCurrentModel {
+                            Button {
+                                onRegenerateWithCurrentModel()
+                            } label: {
+                                Label("使用当前顶部所选模型重答", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                        }
+                        if let onRegenerateWithOverride = actions.onRegenerateWithOverride, groupPersona != nil, !availableCompareTargets.isEmpty {
+                            let others = availableCompareTargets.filter {
+                                $0.modelID != message.modelID || $0.providerID != message.providerID
+                            }
+                            if !others.isEmpty {
+                                Menu("换用其他模型重答此条") {
+                                    ForEach(others) { target in
+                                        Button("\(target.providerName) · \(target.modelDisplayName)") {
+                                            onRegenerateWithOverride(target)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if !isCompactCard, let onCompareWithModel = actions.onCompareWithModel, !availableCompareTargets.isEmpty {
+                            let others = availableCompareTargets.filter {
+                                $0.modelID != message.modelID || $0.providerID != message.providerID
+                            }
+                            if !others.isEmpty {
+                                Menu("与另一模型并排对比") {
+                                    ForEach(others) { target in
+                                        Button("\(target.providerName) · \(target.modelDisplayName)") {
+                                            onCompareWithModel(target)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     } label: {
-                        Label(
-                            blindLabel != nil
-                                ? String(localized: "使用原模型重答")
-                                : String(localized: "使用原模型重答 (\(message.modelDisplayName))"),
-                            systemImage: "arrow.clockwise"
-                        )
+                        replyActionLabel("重答", icon: "arrow.clockwise")
                     }
-                    if let onRegenerateWithCurrentModel = actions.onRegenerateWithCurrentModel {
-                        Button {
-                            onRegenerateWithCurrentModel()
-                        } label: {
-                            Label("使用当前顶部所选模型重答", systemImage: "arrow.triangle.2.circlepath")
-                        }
-                    }
-                    if let onRegenerateWithOverride = actions.onRegenerateWithOverride, groupPersona != nil, !availableCompareTargets.isEmpty {
-                        let others = availableCompareTargets.filter {
-                            $0.modelID != message.modelID || $0.providerID != message.providerID
-                        }
-                        if !others.isEmpty {
-                            Menu("换用其他模型重答此条") {
-                                ForEach(others) { target in
-                                    Button("\(target.providerName) · \(target.modelDisplayName)") {
-                                        onRegenerateWithOverride(target)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if !isCompactCard, let onCompareWithModel = actions.onCompareWithModel, !availableCompareTargets.isEmpty {
-                        let others = availableCompareTargets.filter {
-                            $0.modelID != message.modelID || $0.providerID != message.providerID
-                        }
-                        if !others.isEmpty {
-                            Menu("与另一模型并排对比") {
-                                ForEach(others) { target in
-                                    Button("\(target.providerName) · \(target.modelDisplayName)") {
-                                        onCompareWithModel(target)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    Label("重答", systemImage: "arrow.clockwise")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("reply.regenerate")
                 }
-            }
 
-            if totalRevisions > 1, let onSelectRevision = actions.onSelectRevision {
-                branchPager(
-                    current: currentRevision,
-                    total: totalRevisions,
-                    onPrev: {
-                        if currentRevision > 0 {
-                            onSelectRevision(currentRevision - 1)
-                        }
-                    },
-                    onNext: {
-                        if currentRevision + 1 < totalRevisions {
-                            onSelectRevision(currentRevision + 1)
-                        }
-                    }
-                )
-            }
-
-            let canStudy = !isCompactCard && !message.content.isEmpty && !message.isStreaming && (actions.onGenerateFlashcards != nil || actions.onGenerateQuiz != nil || actions.onExtractSchedule != nil)
-            let hasSecondaryActions = !message.content.isEmpty || canStudy || actions.onQuote != nil || actions.onToggleBookmark != nil || actions.onForkConversation != nil || actions.onToggleExcludeFromContext != nil || actions.onDeleteMessage != nil
-            if hasSecondaryActions {
-                Menu {
-                    if !message.content.isEmpty {
-                        Button {
-                            UIPasteboard.general.string = message.content
-                            triggerCopiedToast(String(localized: "已复制 Markdown"))
-                        } label: {
-                            Label("复制 Markdown 原文", systemImage: "doc.on.doc")
-                        }
-
-                        if !isCompactCard {
-                            Menu {
-                                Button {
-                                    exportSinglePDF(speaker: exportSpeaker)
-                                } label: {
-                                    Label("导出 PDF 文档", systemImage: "doc.richtext")
-                                }
-                                Button {
-                                    exportSingleShareCard(speaker: exportSpeaker)
-                                } label: {
-                                    Label("导出分享长图", systemImage: "photo")
+                let canStudy = !isCompactCard && !message.content.isEmpty && !message.isStreaming && (actions.onGenerateFlashcards != nil || actions.onGenerateQuiz != nil)
+                let hasSecondaryActions = !message.content.isEmpty || canStudy || actions.onQuote != nil || actions.onToggleBookmark != nil || actions.onForkConversation != nil || actions.onToggleExcludeFromContext != nil || actions.onDeleteMessage != nil
+                if hasSecondaryActions {
+                    Menu {
+                        if !message.content.isEmpty {
+                            Button {
+                                if let onToggleSpeak = actions.onToggleSpeak {
+                                    onToggleSpeak()
+                                } else {
+                                    speech.toggleSpeaking(messageID: message.id, text: message.content, personaID: meta.groupMemberID)
                                 }
                             } label: {
-                                Label("导出此回复", systemImage: "square.and.arrow.up")
+                                Label(isSpeaking ? String(localized: "停止朗读") : String(localized: "朗读回复"),
+                                      systemImage: isSpeaking ? "stop.fill" : "speaker.wave.2")
                             }
-                        }
-                    }
+                            if !isCompactCard, !message.isStreaming, let onExtractSchedule = actions.onExtractSchedule {
+                                Button(action: onExtractSchedule) { Label("提取待办与日程", systemImage: "calendar.badge.plus") }
+                                    .disabled(isGeneratingStudy)
+                            }
+                            Button {
+                                UIPasteboard.general.string = message.content
+                                triggerCopiedToast(String(localized: "已复制 Markdown"))
+                            } label: {
+                                Label("复制 Markdown 原文", systemImage: "doc.on.doc")
+                            }
 
-                    if canStudy {
-                        Menu {
-                            if let onGenerateFlashcards = actions.onGenerateFlashcards {
-                                Button {
-                                    onGenerateFlashcards()
+                            if !isCompactCard {
+                                Menu {
+                                    Button {
+                                        exportSinglePDF(speaker: exportSpeaker)
+                                    } label: {
+                                        Label("导出 PDF 文档", systemImage: "doc.richtext")
+                                    }
+                                    Button {
+                                        exportSingleShareCard(speaker: exportSpeaker)
+                                    } label: {
+                                        Label("导出分享长图", systemImage: "photo")
+                                    }
                                 } label: {
-                                    Label("生成记忆闪卡", systemImage: "rectangle.stack.badge.plus")
+                                    Label("导出此回复", systemImage: "square.and.arrow.up")
                                 }
                             }
-                            if let onGenerateQuiz = actions.onGenerateQuiz {
-                                Button {
-                                    onGenerateQuiz()
-                                } label: {
-                                    Label("生成随堂测验", systemImage: "checklist")
-                                }
-                            }
-                            if let onExtractSchedule = actions.onExtractSchedule {
-                                Divider()
-                                Button {
-                                    onExtractSchedule()
-                                } label: {
-                                    Label("提取待办与日程", systemImage: "calendar.badge.plus")
-                                }
-                            }
-                        } label: {
-                            Label("助学", systemImage: "graduationcap")
                         }
-                        .disabled(isGeneratingStudy)
-                    }
 
-                    if !message.content.isEmpty {
-                        Divider()
-                        Button {
-                            showTextSelectionSheet = true
-                        } label: {
-                            Label("选择文本", systemImage: "selection.pin.in.out")
+                        if canStudy {
+                            Menu {
+                                if let onGenerateFlashcards = actions.onGenerateFlashcards {
+                                    Button {
+                                        onGenerateFlashcards()
+                                    } label: {
+                                        Label("生成记忆闪卡", systemImage: "rectangle.stack.badge.plus")
+                                    }
+                                }
+                                if let onGenerateQuiz = actions.onGenerateQuiz {
+                                    Button {
+                                        onGenerateQuiz()
+                                    } label: {
+                                        Label("生成随堂测验", systemImage: "checklist")
+                                    }
+                                }
+                            } label: {
+                                Label("助学", systemImage: "graduationcap")
+                            }
+                            .disabled(isGeneratingStudy)
                         }
-                    }
 
-                    if let onQuote = actions.onQuote, !message.content.isEmpty {
-                        Button {
-                            onQuote(message.content)
-                        } label: {
-                            Label("引用追问", systemImage: "quote.opening")
+                        if !message.content.isEmpty {
+                            Divider()
+                            Button {
+                                showTextSelectionSheet = true
+                            } label: {
+                                Label("选择文本", systemImage: "selection.pin.in.out")
+                            }
                         }
-                    }
-                    if let onToggleBookmark = actions.onToggleBookmark {
-                        Button {
-                            onToggleBookmark()
-                        } label: {
-                            Label(
-                                meta.isBookmarked ? String(localized: "取消收藏") : String(localized: "收藏消息"),
-                                systemImage: meta.isBookmarked ? "bookmark.slash" : "bookmark"
-                            )
+
+                        if let onQuote = actions.onQuote, !message.content.isEmpty {
+                            Button {
+                                onQuote(message.content)
+                            } label: {
+                                Label("引用追问", systemImage: "quote.opening")
+                            }
                         }
-                    }
-                    if let onForkConversation = actions.onForkConversation {
-                        Button {
-                            onForkConversation()
-                        } label: {
-                            Label("从此处分叉新对话", systemImage: "arrow.triangle.branch")
+                        if let onToggleBookmark = actions.onToggleBookmark {
+                            Button {
+                                onToggleBookmark()
+                            } label: {
+                                Label(
+                                    meta.isBookmarked ? String(localized: "取消收藏") : String(localized: "收藏消息"),
+                                    systemImage: meta.isBookmarked ? "bookmark.slash" : "bookmark"
+                                )
+                            }
                         }
-                    }
-                    if let onToggleExcludeFromContext = actions.onToggleExcludeFromContext {
-                        Button {
-                            onToggleExcludeFromContext()
-                        } label: {
-                            Label(
-                                meta.isExcludedFromContext ? String(localized: "恢复携带上下文") : String(localized: "移出上下文"),
-                                systemImage: meta.isExcludedFromContext ? "eye" : "eye.slash"
-                            )
+                        if let onForkConversation = actions.onForkConversation {
+                            Button {
+                                onForkConversation()
+                            } label: {
+                                Label("从此处分叉新对话", systemImage: "arrow.triangle.branch")
+                            }
                         }
-                    }
-                    if let onDeleteMessage = actions.onDeleteMessage {
-                        Divider()
-                        Button(role: .destructive) {
-                            onDeleteMessage()
-                        } label: {
-                            Label("删除此条消息", systemImage: "trash")
+                        if let onToggleExcludeFromContext = actions.onToggleExcludeFromContext {
+                            Button {
+                                onToggleExcludeFromContext()
+                            } label: {
+                                Label(
+                                    meta.isExcludedFromContext ? String(localized: "恢复携带上下文") : String(localized: "移出上下文"),
+                                    systemImage: meta.isExcludedFromContext ? "eye" : "eye.slash"
+                                )
+                            }
                         }
+                        if let onDeleteMessage = actions.onDeleteMessage {
+                            Divider()
+                            Button(role: .destructive) {
+                                onDeleteMessage()
+                            } label: {
+                                Label("删除此条消息", systemImage: "trash")
+                            }
+                        }
+                    } label: {
+                        replyActionLabel("更多", icon: "ellipsis")
                     }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
+                    .accessibilityLabel("更多消息操作")
+                    .accessibilityIdentifier("reply.more")
                 }
-                .accessibilityLabel("更多消息操作")
             }
+            .foregroundStyle(.secondary)
 
-            Spacer(minLength: 4)
-
-            metricsBadge
+            if totalRevisions > 1 || message.completionTokens != nil || (message.latencyMs ?? 0) > 0
+                || (message.latestRequest?.firstOutputMs ?? 0) > 0 || (message.cachedTokens ?? 0) > 0 {
+                HStack {
+                    if totalRevisions > 1, let onSelectRevision = actions.onSelectRevision {
+                        branchPager(
+                            current: currentRevision,
+                            total: totalRevisions,
+                            onPrev: {
+                                if currentRevision > 0 {
+                                    onSelectRevision(currentRevision - 1)
+                                }
+                            },
+                            onNext: {
+                                if currentRevision + 1 < totalRevisions {
+                                    onSelectRevision(currentRevision + 1)
+                                }
+                            }
+                        )
+                    }
+                    Spacer(minLength: 4)
+                    metricsBadge
+                }
+            }
         }
         .padding(.top, 2)
+    }
+
+    private func replyActionLabel(_ title: LocalizedStringKey, icon: String) -> some View {
+        ViewThatFits(in: .horizontal) {
+            Label(title, systemImage: icon).fixedSize()
+            Text(title).fixedSize()
+            Image(systemName: icon).accessibilityLabel(Text(title))
+        }
+        .font(.footnote.weight(.medium))
+        .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
+        .contentShape(Rectangle())
     }
 
     @ViewBuilder

@@ -140,8 +140,14 @@ enum PersistenceController {
             logger.warning("Protected data unavailable during container init; entering non-destructive recovery container.")
             return fallbackRecoveryResult(
                 schema: schema,
-                notice: String(localized: "设备尚未完成解锁保护验证，暂时进入只读保护模式，原有本地数据库完好保留。解锁后重新打开 App 即可恢复。")
+                notice: String(localized: "请解锁设备。受保护的数据可用后，将自动重新打开本地数据库。")
             )
+        }
+
+        do {
+            try restoreInterruptedArchive(at: configuration.url)
+        } catch {
+            return fallbackRecoveryResult(schema: schema, notice: error.localizedDescription)
         }
 
         let initialError: Error
@@ -157,13 +163,18 @@ enum PersistenceController {
             logger.warning("Transient/environmental store open failure; preserving on-disk store without rebuild.")
             return fallbackRecoveryResult(
                 schema: schema,
-                notice: String(localized: "本地数据库当前正被占用、权限受限或存储空间不足，已进入临时保护模式且未改动原有数据。请检查存储空间并重启 App。")
+                notice: String(localized: "数据库可能正被占用、权限受限或存储空间不足。请检查设备存储空间后重试。")
             )
         }
 
         // Confirmed corruption / incompatible migration: atomically archive all store files first.
         // If backup fails, never overwrite the unarchived user database.
-        guard let backupFolder = backupStoreFiles(at: configuration.url) else {
+        let backupFolder: URL
+        do {
+            backupFolder = try backupStoreFiles(at: configuration.url)
+        } catch let partial as IncompleteArchive {
+            return fallbackRecoveryResult(schema: schema, notice: partial.localizedDescription)
+        } catch {
             return fallbackRecoveryResult(
                 schema: schema,
                 notice: String(localized: "本地数据库异常且自动归档备份未成功（可能存储空间不足），为保护原有文件未覆盖数据库。请清理设备空间后重试。")
@@ -183,7 +194,7 @@ enum PersistenceController {
 
         return fallbackRecoveryResult(
             schema: schema,
-            notice: String(localized: "本地数据库无法创建，本次运行的数据不会被保存。请检查设备存储空间后重启 App。")
+            notice: String(localized: "无法打开本地数据库。请检查设备存储空间后重试。")
         )
     }
 
@@ -207,36 +218,69 @@ enum PersistenceController {
         return container
     }
 
-    /// Atomically moves `default.store` and its `-wal` / `-shm` / `_SUPPORT` siblings into
-    /// `Application Support/StoreBackup-<timestamp>/`. Rolls back any partial moves on error
-    /// so the store and its WAL are never split across directories.
-    static func backupStoreFiles(at storeURL: URL) -> URL? {
+    struct IncompleteArchive: LocalizedError {
+        let folder: URL
+        var errorDescription: String? {
+            String(localized: "数据库归档尚未复原。可恢复的文件保存在 Application Support/\(folder.lastPathComponent)，请检查可用空间和文件权限后重试。")
+        }
+    }
+
+    private static func archiveMarker(for store: URL) -> URL {
+        store.deletingLastPathComponent().appendingPathComponent(".\(store.lastPathComponent).archive-in-progress")
+    }
+
+    /// A marker is written before moving anything so a restart cannot create a blank database
+    /// alongside a WAL or external storage left behind by an interrupted rollback.
+    static func restoreInterruptedArchive(at store: URL, move: (URL, URL) throws -> Void = FileManager.default.moveItem(at:to:)) throws {
         let fm = FileManager.default
+        let marker = archiveMarker(for: store)
+        let name: String
+        do {
+            name = try String(contentsOf: marker, encoding: .utf8)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return
+        }
+        guard name.hasPrefix("StoreBackup-"), !name.contains("/") else { throw CocoaError(.fileReadCorruptFile) }
+        let folder = store.deletingLastPathComponent().appendingPathComponent(name, isDirectory: true)
+        do {
+            let files = try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            for file in files {
+                try move(file, store.deletingLastPathComponent().appendingPathComponent(file.lastPathComponent))
+            }
+            try fm.removeItem(at: marker)
+            try? fm.removeItem(at: folder) // All archived files have been restored.
+        } catch {
+            throw IncompleteArchive(folder: folder)
+        }
+    }
+
+    static func backupStoreFiles(at storeURL: URL, move: (URL, URL) throws -> Void = FileManager.default.moveItem(at:to:)) throws -> URL {
+        let fm = FileManager.default
+        try restoreInterruptedArchive(at: storeURL, move: move)
         let directory = storeURL.deletingLastPathComponent()
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let backupFolder = directory.appendingPathComponent("StoreBackup-\(stamp)-\(UUID().uuidString.prefix(6))", isDirectory: true)
-        let storeName = storeURL.lastPathComponent
-        let externalSupport = ".\(storeURL.deletingPathExtension().lastPathComponent)_SUPPORT"
-        let candidates = [storeName, storeName + "-wal", storeName + "-shm", externalSupport]
-
-        var movedPairs: [(source: URL, destination: URL)] = []
+        let folder = directory.appendingPathComponent("StoreBackup-\(stamp)-\(UUID().uuidString)", isDirectory: true)
+        let name = storeURL.lastPathComponent
+        let candidates = [name, name + "-wal", name + "-shm", ".\(storeURL.deletingPathExtension().lastPathComponent)_SUPPORT"]
+        let present = Set(try fm.contentsOfDirectory(atPath: directory.path))
+        guard present.contains(name) else { throw CocoaError(.fileReadNoSuchFile) }
+        try fm.createDirectory(at: folder, withIntermediateDirectories: false)
+        let marker = archiveMarker(for: storeURL)
         do {
-            try fm.createDirectory(at: backupFolder, withIntermediateDirectories: true)
-            for name in candidates {
-                let source = directory.appendingPathComponent(name)
-                guard fm.fileExists(atPath: source.path) else { continue }
-                let destination = backupFolder.appendingPathComponent(name)
-                try fm.moveItem(at: source, to: destination)
-                movedPairs.append((source: source, destination: destination))
-            }
-            return backupFolder
+            try Data(folder.lastPathComponent.utf8).write(to: marker, options: .withoutOverwriting)
         } catch {
-            logger.error("Store backup failed, rolling back partial moves: \(String(describing: error), privacy: .public)")
-            for pair in movedPairs.reversed() {
-                try? fm.moveItem(at: pair.destination, to: pair.source)
+            try? fm.removeItem(at: folder) // No files have been moved yet.
+            throw error
+        }
+        do {
+            for candidate in candidates where present.contains(candidate) {
+                try move(directory.appendingPathComponent(candidate), folder.appendingPathComponent(candidate))
             }
-            try? fm.removeItem(at: backupFolder)
-            return nil
+            try fm.removeItem(at: marker)
+            return folder
+        } catch {
+            try restoreInterruptedArchive(at: storeURL, move: move)
+            throw error
         }
     }
 }

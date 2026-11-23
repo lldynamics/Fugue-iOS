@@ -19,10 +19,11 @@ enum SendOutcome: Equatable {
 final class ChatEngine {
     static let shared = ChatEngine()
 
-    struct PendingWebpageApproval: Identifiable, Equatable {
-        let id = UUID()
+    struct PendingWebpageApproval: Identifiable {
+        let id: UUID
         let conversationID: UUID
         let url: URL
+        let continuation: CheckedContinuation<WebpageApprovalDecision, Never>
         var host: String { url.host ?? url.absoluteString }
     }
 
@@ -59,6 +60,8 @@ final class ChatEngine {
         var tools: [LLMToolDefinition] = []
         var groupSanitizer: GroupStreamSanitizer? = nil
         var bookTurn: BookTurn? = nil
+        var knowledgeChapterLimits: [UUID: Int]?
+        var userProvidedURLs: Set<String> = []
     }
 
     @ObservationIgnored var activeGenerations: [UUID: ActiveGeneration] = [:]
@@ -66,11 +69,10 @@ final class ChatEngine {
     @ObservationIgnored var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored let search: @Sendable (String) async throws -> SearchEvidence
     @ObservationIgnored let stream: @Sendable (LLMChatRequest) -> AsyncThrowingStream<LLMStreamEvent, Error>
-    @ObservationIgnored let webpageReader: @Sendable (URL) async throws -> ReadablePage
+    @ObservationIgnored let webpageReader: (@Sendable (URL) async throws -> ReadablePage)?
     @ObservationIgnored let persistNewTurn: (ModelContext) throws -> Void
     @ObservationIgnored var customWebpageApprovalHandler: (@MainActor (URL, UUID) async -> WebpageApprovalDecision)?
     @ObservationIgnored var approvedWebpageHostsByConversation: [UUID: Set<String>] = [:]
-    @ObservationIgnored var pendingWebpageContinuations: [UUID: CheckedContinuation<WebpageApprovalDecision, Never>] = [:]
 
     /// Conversations whose generation has not fully unwound yet (including while stopping).
     var activeConversationIDs: Set<UUID> = []
@@ -78,23 +80,19 @@ final class ChatEngine {
     var activeGroupSpeakers: [UUID: String] = [:]
     /// Assistant messages currently generating inline flashcards or quizzes.
     var generatingStudyMessageIDs: Set<UUID> = []
-    /// Active prompt asking the user to approve an unrequested external `read_webpage` call.
-    var pendingWebpageApproval: PendingWebpageApproval?
+    var pendingWebpageApprovals: [PendingWebpageApproval] = []
 
     convenience init(
         stream: @escaping @Sendable (LLMChatRequest) -> AsyncThrowingStream<LLMStreamEvent, Error> = { LLMClient.streamChat($0) }
     ) {
-        self.init(search: { try await Self.defaultSearch($0) }, stream: stream, webpageReader: { url in
-            try AppCompliance.requireConsent()
-            return try await URLReader.read(url)
-        })
+        self.init(search: { try await Self.defaultSearch($0) }, stream: stream)
     }
 
     init(
         search: @escaping @Sendable (String) async throws -> SearchEvidence,
         persistNewTurn: @escaping (ModelContext) throws -> Void = { try $0.save() },
         stream: @escaping @Sendable (LLMChatRequest) -> AsyncThrowingStream<LLMStreamEvent, Error> = { LLMClient.streamChat($0) },
-        webpageReader: @escaping @Sendable (URL) async throws -> ReadablePage = { url in try await URLReader.read(url) },
+        webpageReader: (@Sendable (URL) async throws -> ReadablePage)? = nil,
         webpageApprovalHandler: (@MainActor (URL, UUID) async -> WebpageApprovalDecision)? = nil
     ) {
         self.persistNewTurn = persistNewTurn
@@ -119,17 +117,13 @@ final class ChatEngine {
     }
 
     func stopGeneration(for conversationID: UUID) {
-        if let pending = pendingWebpageApproval, pending.conversationID == conversationID {
-            resolvePendingWebpageApproval(id: pending.id, decision: .deny, rememberHost: false)
-        }
+        cancelWebpageApprovals(in: conversationID)
         activeGenerations[conversationID]?.task.cancel()
         activeTitleTasks[conversationID]?.cancel()
     }
 
     func stopGenerationAndWait(for conversationID: UUID) async {
-        if let pending = pendingWebpageApproval, pending.conversationID == conversationID {
-            resolvePendingWebpageApproval(id: pending.id, decision: .deny, rememberHost: false)
-        }
+        cancelWebpageApprovals(in: conversationID)
         if let generation = activeGenerations[conversationID] {
             generation.task.cancel()
             await generation.task.value
@@ -147,19 +141,33 @@ final class ChatEngine {
     struct SendTargets {
         let candidates: [[ResolvedModelTarget]]
         let routeNotice: String?
+        let groupMentions: GroupDiscussionCoordinator.MentionParseResult?
+        let mentionOnly: Bool
     }
 
     /// Used by both the disclosure and the send path, including routing and fallback.
     func sendTargets(text: String, attachments: [MessageAttachment], in conversation: Conversation,
-                     providers: [ProviderConfig], kind: RequestKind = .answer, override: ResolvedModelTarget? = nil) -> SendTargets? {
+                     providers: [ProviderConfig], kind: RequestKind = .answer, override: ResolvedModelTarget? = nil,
+                     pickedMentions: [PickedGroupMention] = [], forGroupAction: Bool = false) -> SendTargets? {
         let requiresVision = attachments.contains { $0.kind == .image }
         var routeNotice: String?
+        var groupMentions: GroupDiscussionCoordinator.MentionParseResult?
+        var mentionOnly = false
         let slotsTargets: [[ResolvedModelTarget]]
 
         if conversation.isGroupMode {
-            let groupResolved = conversation.activeGroupMembers.compactMap { member in
-                AssistancePolicy.resolve(member.target, providers: providers)
+            let activeMembers = conversation.activeGroupMembers
+            var members = activeMembers
+            if !forGroupAction {
+                let mentions = GroupDiscussionCoordinator.extractMentions(in: text, activeMembers: conversation.groupMembers,
+                                                                          pickedMentions: pickedMentions)
+                groupMentions = .init(mentionsAll: mentions.mentionsAll, members: mentions.members.filter {
+                    !$0.isMuted && AssistancePolicy.resolve($0.target, providers: providers) != nil
+                })
+                mentionOnly = conversation.assistanceSettings.groupSpeakingMode == .mentionOnly
+                if mentionOnly { members = groupMentions?.members ?? [] }
             }
+            let groupResolved = members.compactMap { AssistancePolicy.resolve($0.target, providers: providers) }
             guard !groupResolved.isEmpty else { return nil }
             var unique: [ResolvedModelTarget] = []
             var seen = Set<String>()
@@ -222,7 +230,7 @@ final class ChatEngine {
             )
             slotsTargets = [[chosenPrimary] + backups]
         }
-        return SendTargets(candidates: slotsTargets, routeNotice: routeNotice)
+        return SendTargets(candidates: slotsTargets, routeNotice: routeNotice, groupMentions: groupMentions, mentionOnly: mentionOnly)
     }
 
     @discardableResult
@@ -270,8 +278,9 @@ final class ChatEngine {
             validatedSearchQuery = sq
         }
 
-        guard let plan = sendTargets(text: trimmed, attachments: attachments, in: conversation,
-                                     providers: providers, kind: kind, override: options.overrideTarget) else {
+        guard let plan = sendTargets(text: text, attachments: attachments, in: conversation, providers: providers,
+                                     kind: kind, override: options.overrideTarget, pickedMentions: options.pickedMentions),
+              options.authorizedGroupMentions == nil || (plan.mentionOnly && options.authorizedGroupMentions == plan.groupMentions) else {
             return .noAvailableModel
         }
         guard PersistenceController.canCommitUserData(in: context) else { return .saveFailed }
@@ -339,7 +348,7 @@ final class ChatEngine {
             priorBranchMessages = ConversationTree.activeMessages(in: conversation)
         }
 
-        let nextSort = (conversation.sortedMessages.last?.sortIndex ?? 0) + 1
+        let nextSort = conversation.nextMessageSortIndex()
         let userMsg = ChatMessage(
             role: .user,
             content: trimmed,
@@ -351,6 +360,7 @@ final class ChatEngine {
             userMeta.quotedExcerpt = String(quote.prefix(1200))
             userMsg.assistanceMetadata = userMeta
         }
+        if options.omitKnowledge { userMsg.assistanceMetadata.omittedKnowledge = true }
         userMsg.parentMessageID = resolvedParentID
         userMsg.conversation = conversation
         conversation.messages.append(userMsg)
@@ -379,7 +389,7 @@ final class ChatEngine {
                 conversation.activeLeafMessageID = userMsg.id
             }
             guard saveNewTurn(in: context) else { return .saveFailed }
-            let shouldAutoTitle = kind == .answer
+            let shouldAutoTitle = kind == .answer && !plan.mentionOnly
                 && conversation.assistanceSettings.autoGenerateTitle
                 && isFirstUserTurnOnBranch
             launchGroupRelaySession(
@@ -389,7 +399,9 @@ final class ChatEngine {
                     searchQuery: validatedSearchQuery,
                     omitMemory: options.omitMemory,
                     memoryInfo: memoryInfo,
-                    expectedTitleForAutoGenerate: shouldAutoTitle ? titleSnapshotForAutoGen : nil
+                    expectedTitleForAutoGenerate: shouldAutoTitle ? titleSnapshotForAutoGen : nil,
+                    mentions: plan.groupMentions,
+                    mentionOnly: plan.mentionOnly
                 ),
                 in: conversation,
                 providers: providers,
@@ -400,8 +412,9 @@ final class ChatEngine {
 
         let toolsToAttach: [LLMToolDefinition]
         if !isArena && kind == .answer && conversation.assistanceSettings.enableAgentTools {
+            let omitKnowledge = options.omitKnowledge
             let hasTavilyKey = !KeychainService.shared.loadSecret(account: TavilySearchClient.keychainAccount).isEmpty
-            let hasKB = !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty
+            let hasKB = !omitKnowledge && !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty
             toolsToAttach = AgentToolRunner.definitions(hasTavilyKey: hasTavilyKey, hasKnowledgeBase: hasKB)
         } else {
             toolsToAttach = []
@@ -424,6 +437,7 @@ final class ChatEngine {
                 replyMsg.parentMessageID = userMsg.id
             }
             var meta = AssistanceMetadata()
+            meta.omittedKnowledge = options.omitKnowledge
             meta.omittedMemory = options.omitMemory && conversation.assistanceSettings.usePersonalMemory
             meta.memoryCount = memoryInfo.count
             meta.routeNotice = routeNotice
@@ -441,7 +455,9 @@ final class ChatEngine {
                 systemPromptOverride: memoryInfo.systemPrompt,
                 appendToExisting: false,
                 tools: toolsToAttach,
-                bookTurn: conversation.activeBookFriend.map { BookTurn(friend: $0, question: Self.promptContent(trimmed, quotedExcerpt: options.quotedExcerpt)) }
+                bookTurn: conversation.activeBookFriend.map { BookTurn(friend: $0, question: Self.promptContent(trimmed, quotedExcerpt: options.quotedExcerpt)) },
+                userProvidedURLs: kind == .answer && original == nil
+                    ? AgentToolRunner.extractUserProvidedURLs(from: [trimmed]) : []
             ))
         }
 
@@ -484,7 +500,7 @@ final class ChatEngine {
         let parentID = useTree
             ? (ConversationTree.currentAnchorID(in: conversation) ?? ConversationTree.virtualRootID)
             : nil
-        let nextSort = (conversation.sortedMessages.last?.sortIndex ?? 0) + 1
+        let nextSort = conversation.nextMessageSortIndex()
         let divider = ChatMessage(
             role: .system,
             content: String(localized: "已清除上文，以下开启新话题"),
@@ -541,7 +557,8 @@ final class ChatEngine {
         in conversation: Conversation,
         providers: [ProviderConfig],
         context: ModelContext,
-        keepBranch: Bool = false
+        keepBranch: Bool = false,
+        authorizedGroupMentions: GroupDiscussionCoordinator.MentionParseResult? = nil
     ) async -> SendOutcome {
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !userMessage.attachments.isEmpty else { return .emptyInput }
@@ -554,8 +571,10 @@ final class ChatEngine {
         let nextAssistantMeta = active[(idx + 1)...].first(where: { $0.role == .assistant })?.assistanceMetadata
         let preservedOptions = GenerationOptions(
             omitMemory: nextAssistantMeta?.omittedMemory ?? false,
+            omitKnowledge: userMessage.assistanceMetadata.omittedKnowledge || nextAssistantMeta?.omittedKnowledge == true,
             searchQuery: nextAssistantMeta?.requestedSearchQuery,
-            quotedExcerpt: userMessage.assistanceMetadata.quotedExcerpt
+            quotedExcerpt: userMessage.assistanceMetadata.quotedExcerpt,
+            authorizedGroupMentions: authorizedGroupMentions
         )
 
         return sendUserMessageInternal(
@@ -585,8 +604,10 @@ final class ChatEngine {
         conversation.messages.removeAll { $0.id == deletedID }
         context.delete(message)
         conversation.updatedAt = Date()
-        try? context.save()
-        SpotlightIndexService.shared.removeMessage(conversationID: convID, messageID: deletedID)
+        guard (try? context.save()) != nil else { return }
+        let spotlight = SpotlightIndexService.shared
+        spotlight.removeMessage(conversationID: convID, messageID: deletedID)
+        spotlight.indexConversation(conversation)
     }
 
     func selectRevision(
@@ -603,23 +624,7 @@ final class ChatEngine {
         guard meta.revisions.indices.contains(targetIndex) else { return }
 
         let chosen = meta.revisions[targetIndex]
-        meta.isPersonaSimulation = chosen.isPersonaSimulation
-        meta.bookReply = chosen.bookReply
-        assistantMessage.content = chosen.content
-        assistantMessage.reasoningContent = chosen.reasoningContent
-        assistantMessage.attachments = chosen.attachments
-        assistantMessage.providerID = chosen.providerID
-        assistantMessage.providerName = chosen.providerName
-        assistantMessage.modelID = chosen.modelID
-        assistantMessage.modelDisplayName = chosen.modelDisplayName
-        assistantMessage.accentHex = chosen.accentHex
-        assistantMessage.promptTokens = chosen.promptTokens
-        assistantMessage.completionTokens = chosen.completionTokens
-        assistantMessage.cachedTokens = chosen.cachedTokens
-        assistantMessage.latencyMs = chosen.latencyMs
-        assistantMessage.thinkingDurationMs = chosen.thinkingDurationMs
-        assistantMessage.finishReason = chosen.finishReason
-        assistantMessage.errorMessage = nil
+        assistantMessage.applyRevision(chosen, metadata: &meta)
 
         if targetIndex == meta.revisions.count - 1 {
             meta.revisions.removeLast()
@@ -694,13 +699,15 @@ final class ChatEngine {
 
         let prevMeta = assistantMessage.assistanceMetadata
         let groupPersona = replyPersona(for: assistantMessage, in: conversation, target: resolvedTarget)
+        var personaExcerpts: [PersonaExcerpt]?
 
         let historySnapshot: [LLMPromptMessage]
         if let groupPersona {
             historySnapshot = GroupDiscussionCoordinator.buildPromptHistory(
                 messages: cutoffMessages,
                 for: groupPersona,
-                limit: conversation.contextMessageLimit
+                limit: conversation.contextMessageLimit,
+                recordReferences: { personaExcerpts = $0 }
             )
         } else {
             historySnapshot = buildPromptHistory(
@@ -733,8 +740,9 @@ final class ChatEngine {
 
         let toolsToAttach: [LLMToolDefinition]
         if !isInArena && groupPersona == nil && conversation.assistanceSettings.enableAgentTools {
+            let omitKnowledge = prevMeta.omittedKnowledge
             let hasTavilyKey = !KeychainService.shared.loadSecret(account: TavilySearchClient.keychainAccount).isEmpty
-            let hasKB = !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty
+            let hasKB = !omitKnowledge && !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty
             toolsToAttach = AgentToolRunner.definitions(hasTavilyKey: hasTavilyKey, hasKnowledgeBase: hasKB)
         } else {
             toolsToAttach = []
@@ -759,6 +767,7 @@ final class ChatEngine {
 
         var freshMeta = AssistanceMetadata()
         freshMeta.omittedMemory = prevMeta.omittedMemory
+        freshMeta.omittedKnowledge = prevMeta.omittedKnowledge
         freshMeta.memoryCount = memoryInfo.count
         freshMeta.requestedSearchQuery = prevMeta.requestedSearchQuery
         freshMeta.isBookmarked = prevMeta.isBookmarked
@@ -767,6 +776,7 @@ final class ChatEngine {
         freshMeta.isExcludedFromContext = prevMeta.isExcludedFromContext
         freshMeta.revisions = preservedRevisions
         freshMeta.activeRevisionIndex = nil
+        freshMeta.personaExcerpts = personaExcerpts
         freshMeta.groupMemberID = prevMeta.groupMemberID
         freshMeta.groupMemberName = prevMeta.groupMemberName
         freshMeta.groupMemberTitle = prevMeta.groupMemberTitle
@@ -859,6 +869,7 @@ final class ChatEngine {
 
         let prevMeta = assistantMessage.assistanceMetadata
         let groupPersona = replyPersona(for: assistantMessage, in: conversation, target: resolvedTarget)
+        var personaExcerpts: [PersonaExcerpt]?
 
         let continuationCue = "Continue writing directly from the exact point where your previous message stopped. Do not repeat any text already written or add introductory remarks."
         let historySnapshot: [LLMPromptMessage]
@@ -867,7 +878,8 @@ final class ChatEngine {
                 messages: upToMessage,
                 for: groupPersona,
                 limit: conversation.contextMessageLimit,
-                trailingCueIfNeeded: continuationCue
+                trailingCueIfNeeded: continuationCue,
+                recordReferences: { personaExcerpts = $0 }
             )
         } else {
             var built = buildPromptHistory(
@@ -891,6 +903,7 @@ final class ChatEngine {
         )
 
         assistantMessage.errorMessage = nil
+        if let personaExcerpts { assistantMessage.assistanceMetadata.appendPersonaExcerpts(personaExcerpts) }
         if groupPersona?.isSimulatedPersona == true { assistantMessage.assistanceMetadata.isPersonaSimulation = true }
         assistantMessage.finishReason = nil
         assistantMessage.isStreaming = true
@@ -1030,12 +1043,19 @@ final class ChatEngine {
 
     // MARK: - Lifecycle & Helpers
 
-    func finishGeneration(conversationID: UUID, token: UUID) {
+    static func outcomeStatus(of message: ChatMessage) -> RequestStatus {
+        guard isAlive(message) else { return .interrupted }
+        if let status = message.latestRequest?.status, status != .succeeded { return status }
+        guard message.errorMessage == nil else { return .failed }
+        return message.latestRequest?.status == .succeeded || !message.content.isEmpty || !message.attachments.isEmpty ? .succeeded : .failed
+    }
+
+    func finishGeneration(conversationID: UUID, token: UUID, statuses: [RequestStatus]) {
         guard activeGenerations[conversationID]?.token == token else { return }
         activeGenerations.removeValue(forKey: conversationID)
         activeConversationIDs.remove(conversationID)
         activeGroupSpeakers.removeValue(forKey: conversationID)
-        LiveActivityCoordinator.shared.end(conversationID: conversationID, finalPhase: String(localized: "已完成"))
+        LiveActivityCoordinator.shared.end(conversationID: conversationID, outcome: GenerationOutcome(statuses: statuses, stopped: Task.isCancelled))
         updateBackgroundExecution()
     }
 
@@ -1086,6 +1106,9 @@ final class ChatEngine {
             finishReason: message.finishReason,
             isPersonaSimulation: message.assistanceMetadata.isPersonaSimulation,
             bookReply: message.assistanceMetadata.bookReply,
+            personaExcerpts: message.assistanceMetadata.personaExcerpts,
+            privateSpeaker: message.assistanceMetadata.privateSpeaker,
+            knowledgeEvidence: message.assistanceMetadata.knowledgeEvidence,
             createdAt: Date()
         )
     }
@@ -1129,7 +1152,7 @@ final class ChatEngine {
         return content.isEmpty ? quotedBlock : quotedBlock + separator + content
     }
 
-    func buildPromptHistory(messages: [ChatMessage], limit: Int) -> [LLMPromptMessage] {
+    func eligiblePromptContext(_ messages: [ChatMessage]) -> [ChatMessage] {
         let afterDivider: ArraySlice<ChatMessage>
         if let lastDividerIdx = messages.lastIndex(where: { $0.assistanceMetadata.isContextDivider }) {
             afterDivider = messages[messages.index(after: lastDividerIdx)...]
@@ -1139,6 +1162,8 @@ final class ChatEngine {
 
         var collapsed: [ChatMessage] = []
         var processedGroups = Set<UUID>()
+        let groups = Dictionary(grouping: afterDivider.filter { $0.comparisonGroupID != nil }, by: \.comparisonGroupID)
+        let synthesisSources = Dictionary(grouping: messages.filter { $0.comparisonGroupID != nil }, by: \.comparisonGroupID)
 
         for msg in afterDivider {
             if msg.role == .system || msg.assistanceMetadata.isExcludedFromContext {
@@ -1147,12 +1172,12 @@ final class ChatEngine {
             if let gid = msg.comparisonGroupID {
                 guard !processedGroups.contains(gid) else { continue }
                 processedGroups.insert(gid)
-                let candidates = afterDivider.filter { candidate in
-                    guard candidate.comparisonGroupID == gid,
+                let candidates = (groups[gid] ?? []).filter { candidate in
+                    guard candidate.role != .system,
                           !candidate.assistanceMetadata.isExcludedFromContext,
                           (!candidate.content.isEmpty || !candidate.attachments.isEmpty) else { return false }
                     if candidate.isSynthesis {
-                        return ArenaSynthesis.isCurrent(candidate, in: messages)
+                        return ArenaSynthesis.isCurrent(candidate, in: synthesisSources[gid] ?? [])
                     }
                     return true
                 }
@@ -1166,7 +1191,11 @@ final class ChatEngine {
                 collapsed.append(msg)
             }
         }
+        return collapsed
+    }
 
+    func buildPromptHistory(messages: [ChatMessage], limit: Int) -> [LLMPromptMessage] {
+        let collapsed = eligiblePromptContext(messages)
         let sliced: ArraySlice<ChatMessage>
         if limit > 0 && collapsed.count > limit {
             sliced = collapsed.suffix(limit)

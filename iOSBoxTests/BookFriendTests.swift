@@ -259,6 +259,29 @@ final class BookFriendTests: XCTestCase {
         XCTAssertEqual(try dest.mainContext.fetchCount(FetchDescriptor<BookVolume>()), 1)
     }
 
+    func testGroupKnowledgeAndOriginalShareChapterLimitsAcrossColdAndWarmCaches() async throws {
+        let db = try container(), ctx = db.mainContext, book = try stored(in: ctx)
+        let reference = try BookLibrary.store(PreparedBook(.init(title: "参考", chapters: [.init(title: "索引", text: "灯塔索引")])), in: ctx)
+        let provider = ProviderConfig(name: "Local", protocolType: .openAICompatible, baseURL: "http://127.0.0.1", models: [.init(id: "ok")])
+        var member = GroupMember(name: "读者", rolePrompt: "", target: provider.makeTarget(for: provider.models[0]))
+        member.bookFriend = try character(book, cutoff: 0)
+        let chat = Conversation()
+        chat.assistanceSettings = AssistanceSettings(isGroupMode: true, groupMembers: [member])
+        let cache = ProjectKnowledgeSearch(), volumes = [book.id, reference.id]
+        for _ in 0..<2 {
+            let scoped = try await ProjectKnowledgeSearch.retrieve(volumeIDs: volumes, in: ctx, query: "灯塔", chapterLimits: chat.readingChapterLimits, search: cache)
+            XCTAssertFalse(scoped.passages.contains { $0.volumeID == book.id && $0.chapterIndex != 0 })
+            XCTAssertTrue(scoped.passages.contains { $0.volumeID == reference.id })
+        }
+        let full = try await ProjectKnowledgeSearch.retrieve(volumeIDs: volumes, in: ctx, query: "灯塔", search: cache)
+        let future = try XCTUnwrap(full.passages.first { $0.volumeID == book.id && $0.chapterIndex == 2 })
+        let chapters = try BookReadingPage.chapters(from: book.manuscript, through: chat.readingChapterLimits[book.id])
+        XCTAssertEqual(chapters.count, 1)
+        let page = try BookReadingPage.make(chapters: chapters, preferred: 2, citation: ReadingCitation(future))
+        XCTAssertEqual(page.chapterIndex, 0)
+        XCTAssertFalse(page.located)
+    }
+
     func testGroupCharacterReadsOnlyGroupScopeOnSendRetryAndContinuation() async throws {
         let db = try container(), ctx = db.mainContext, book = try stored(in: ctx)
         let provider = ProviderConfig(name: "本地", protocolType: .openAICompatible, baseURL: "http://127.0.0.1", models: [ModelSpec(id: "ok")])
@@ -271,15 +294,22 @@ final class BookFriendTests: XCTestCase {
         group.assistanceSettings = AssistanceSettings(isGroupMode: true, groupSpeakingMode: .roundRobin)
         ctx.insert(group)
         try BookLibrary.invite(character(book, cutoff: 0), to: group, providers: [provider], in: ctx)
+        // The same full manuscript is also attached as general group knowledge.
+        group.assistanceSettings.knowledgeVolumeIDs = [book.id]
+        let warm = try await ProjectKnowledgeSearch.retrieve(volumeIDs: [book.id], in: ctx, query: "灯塔")
+        XCTAssertTrue(warm.passages.contains { $0.chapterIndex == 2 })
         let requests = OSAllocatedUnfairLock(initialState: [LLMChatRequest]())
         let engine = ChatEngine(stream: { request in
             requests.withLock { $0.append(request) }
             return AsyncThrowingStream { stream in stream.yield(.contentDelta("我们等雨停。")); stream.yield(.done); stream.finish() }
         })
-        XCTAssertEqual(engine.sendUserMessage(text: "什么时候出门？", attachments: [], in: group, providers: [provider], context: ctx), .sent)
+        XCTAssertEqual(engine.sendUserMessage(text: "什么时候出门？渡口与灯塔在哪里？", attachments: [], in: group, providers: [provider], context: ctx), .sent)
         await idle(engine, group.id)
         let reply = try XCTUnwrap(group.sortedMessages.last)
         XCTAssertEqual(reply.assistanceMetadata.bookReply?.excerpts.first?.chapter, "第一章 初见")
+        let knowledge = try XCTUnwrap(reply.assistanceMetadata.knowledgeEvidence)
+        XCTAssertFalse(knowledge.passages.isEmpty)
+        XCTAssertTrue(knowledge.passages.allSatisfy { $0.chapterIndex == 0 })
         engine.regenerate(assistantMessage: reply, in: group, providers: [provider], context: ctx)
         await idle(engine, group.id)
         engine.continueGeneration(assistantMessage: reply, in: group, providers: [provider], context: ctx)
@@ -290,7 +320,8 @@ final class BookFriendTests: XCTestCase {
             XCTAssertTrue(req.systemPrompt.contains("渡河记"))
             let body = req.messages.map(\.content).joined()
             XCTAssertTrue(body.contains("雨停后再出门"))
-            XCTAssertFalse(body.contains("灯塔"))
+            XCTAssertFalse(body.contains("晚霞染红的灯塔"))
+            XCTAssertFalse(body.contains("铜钟搬到鹭洲"))
             XCTAssertFalse(body.contains("仅出现在私聊的暗号"))
         }
         var members = group.groupMembers

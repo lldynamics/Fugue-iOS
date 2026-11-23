@@ -19,6 +19,10 @@ struct AssistantEditorSheet: View {
     @State private var thinkingBudgetTokens: Int = 4096
     @State private var maxOutputTokens: Int = 0
     @State private var knowledgeVolumeIDs: [UUID] = []
+    @State private var savedNewPreset: AssistantPreset?
+    @State private var bindingError: String?
+    @State private var needsBindingReload = false
+    @State private var damagedBindings = false
     @State private var showKnowledgePicker = false
 
     private let emojiChoices = ["🤖", "✨", "💻", "🧠", "🌐", "✍️", "📊", "🎨", "📚", "🔍", "🧪", "⚖️"]
@@ -175,19 +179,45 @@ struct AssistantEditorSheet: View {
                     enableThinking = p.enableThinking
                     thinkingBudgetTokens = p.thinkingBudgetTokens
                     maxOutputTokens = p.maxOutputTokens
-                    knowledgeVolumeIDs = p.knowledgeVolumeIDs
                 }
+                loadBindings()
+            }
+            .alert("助手资料存储提示", isPresented: Binding(get: { bindingError != nil }, set: { if !$0 { bindingError = nil } })) {
+                if damagedBindings {
+                    Button("归档损坏的绑定文件并重建", role: .destructive) {
+                        do { try PresetKnowledgeStore.shared.preserveDamagedLibrary(); loadBindings() }
+                        catch { bindingError = error.localizedDescription }
+                    }
+                }
+                Button("好", role: .cancel) { }
+            } message: {
+                Text(verbatim: bindingError ?? "")
             }
         }
     }
 
+    private func loadBindings() {
+        do {
+            let bindings = try PresetKnowledgeStore.shared.readableBindings()
+            if let preset { knowledgeVolumeIDs = bindings[preset.id.uuidString] ?? [] }
+            needsBindingReload = false
+            damagedBindings = false
+        } catch {
+            needsBindingReload = true
+            damagedBindings = error is DecodingError
+            bindingError = error.localizedDescription
+        }
+    }
+
     private func savePreset() {
+        if needsBindingReload { loadBindings(); return }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return }
 
         let sanitizedMaxTokens = max(0, maxOutputTokens)
 
-        if let existing = preset {
+        let record: AssistantPreset
+        if let existing = preset ?? savedNewPreset {
             existing.name = trimmedName
             existing.iconEmoji = iconEmoji
             existing.subtitle = subtitle
@@ -199,7 +229,7 @@ struct AssistantEditorSheet: View {
             existing.enableThinking = enableThinking
             existing.thinkingBudgetTokens = thinkingBudgetTokens
             existing.maxOutputTokens = sanitizedMaxTokens
-            existing.knowledgeVolumeIDs = knowledgeVolumeIDs
+            record = existing
         } else {
             let created = AssistantPreset(
                 name: trimmedName,
@@ -216,9 +246,16 @@ struct AssistantEditorSheet: View {
                 sortOrder: Int(Date().timeIntervalSince1970)
             )
             modelContext.insert(created)
-            created.knowledgeVolumeIDs = knowledgeVolumeIDs
+            savedNewPreset = created
+            record = created
         }
-        try? modelContext.save()
-        dismiss()
+        do {
+            try modelContext.save()
+            try PresetKnowledgeStore.shared.setVolumeIDs(knowledgeVolumeIDs, for: record.id)
+            dismiss()
+        } catch {
+            damagedBindings = error is DecodingError
+            bindingError = error.localizedDescription
+        }
     }
 }

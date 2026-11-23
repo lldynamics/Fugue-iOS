@@ -135,6 +135,43 @@ enum GroupSpeechIntent: String, Codable, CaseIterable, Sendable {
     }
 }
 
+struct PickedGroupMention: Codable, Equatable, Sendable {
+    var offset: Int
+    let token: String
+    let memberID: UUID?
+
+    static func updating(_ mentions: [Self], from oldText: String, to newText: String) -> [Self] {
+        guard !mentions.isEmpty else { return mentions }
+        let old = Array(oldText.utf16)
+        let new = Array(newText.utf16)
+        var prefix = 0
+        while prefix < min(old.count, new.count), old[prefix] == new[prefix] { prefix += 1 }
+        var suffix = 0
+        while suffix < min(old.count, new.count) - prefix,
+              old[old.count - suffix - 1] == new[new.count - suffix - 1] { suffix += 1 }
+        func uniqueOffset(of token: String, in text: NSString) -> Int? {
+            let first = text.range(of: token, options: .literal)
+            guard first.location != NSNotFound else { return nil }
+            let remaining = NSRange(location: first.location + 1, length: text.length - first.location - 1)
+            return text.range(of: token, options: .literal, range: remaining).location == NSNotFound ? first.location : nil
+        }
+        return mentions.compactMap { mention in
+            guard !mention.token.isEmpty, mention.offset >= 0, mention.offset <= old.count,
+                  mention.token.utf16.count <= old.count - mention.offset else { return nil }
+            if mention.offset + mention.token.utf16.count <= prefix { return mention }
+            var updated = mention
+            if mention.offset >= old.count - suffix {
+                updated.offset += new.count - old.count
+            } else {
+                guard uniqueOffset(of: mention.token, in: oldText as NSString) == mention.offset,
+                      let offset = uniqueOffset(of: mention.token, in: newText as NSString) else { return nil }
+                updated.offset = offset
+            }
+            return updated
+        }
+    }
+}
+
 struct GroupMember: Codable, Equatable, Sendable, Identifiable {
     var id: UUID
     var name: String
@@ -145,10 +182,11 @@ struct GroupMember: Codable, Equatable, Sendable, Identifiable {
     var target: ResolvedModelTarget
     var temperature: Double
     var isMuted: Bool
+    var profileID: UUID?
     var persona: GroupPersona?
     var bookFriend: BookFriend?
 
-    var isSimulatedPersona: Bool { persona != nil || bookFriend != nil }
+    var isSimulatedPersona: Bool { profileID != nil || persona != nil || bookFriend != nil }
 
     init(
         id: UUID = UUID(),
@@ -183,6 +221,7 @@ struct GroupMember: Codable, Equatable, Sendable, Identifiable {
         target = try c.decode(ResolvedModelTarget.self, forKey: .target)
         temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? 0.75
         isMuted = try c.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+        profileID = try c.decodeIfPresent(UUID.self, forKey: .profileID)
         persona = try c.decodeIfPresent(GroupPersona.self, forKey: .persona)
         bookFriend = try c.decodeIfPresent(BookFriend.self, forKey: .bookFriend)
     }
@@ -226,6 +265,7 @@ struct GroupRoomTemplate: Codable, Equatable, Identifiable, Sendable {
         var accentHex: String
         var rolePrompt: String
         var temperature: Double
+        var boundMember: GroupMember? = nil
     }
 
     var id: String
@@ -263,16 +303,21 @@ struct GroupRoomTemplate: Codable, Equatable, Identifiable, Sendable {
                     emoji: $0.avatarEmoji,
                     accentHex: $0.accentHex,
                     rolePrompt: $0.rolePrompt,
-                    temperature: $0.temperature
+                    temperature: $0.temperature,
+                    boundMember: $0.profileID != nil || $0.persona != nil ? $0.copyForNewRoom : nil
                 )
             },
             isCustom: true
         )
     }
 
-    func instantiate(using targets: [ResolvedModelTarget]) -> [GroupMember] {
+    func instantiate(using targets: [ResolvedModelTarget], profiles: [GroupMember] = []) -> [GroupMember] {
         guard !targets.isEmpty else { return [] }
         return seats.enumerated().map { idx, seat in
+            if let saved = seat.boundMember {
+                let member = saved.profileID.flatMap { id in profiles.first { $0.profileID == id } } ?? saved
+                return member.copyForNewRoom
+            }
             let assigned = targets[idx % targets.count]
             return GroupMember(
                 name: seat.name,

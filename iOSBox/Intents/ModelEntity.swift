@@ -15,7 +15,11 @@ struct ModelEntity: AppEntity {
 
 struct ModelEntityQuery: EntityStringQuery {
     func entities(for identifiers: [String]) async throws -> [ModelEntity] {
-        try await all().filter { identifiers.contains($0.id) }
+        let ready = try await all()
+        return identifiers.map { id in
+            ready.first { $0.id == id }
+                ?? ModelEntity(id: id, name: String(localized: "模型暂不可用"), provider: "", supportsVision: false)
+        }
     }
     func entities(matching string: String) async throws -> [ModelEntity] {
         try await all().filter { ($0.name + " " + $0.provider).localizedCaseInsensitiveContains(string) }

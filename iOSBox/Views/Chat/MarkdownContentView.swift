@@ -1,16 +1,31 @@
 import SwiftUI
 import UIKit
 
+private struct ReadingReferencesKey: EnvironmentKey {
+    static let defaultValue = ReadingReferences()
+}
+
+private extension EnvironmentValues {
+    var readingReferences: ReadingReferences {
+        get { self[ReadingReferencesKey.self] }
+        set { self[ReadingReferencesKey.self] = newValue }
+    }
+}
+
 struct MarkdownContentView: View {
     let text: String
     var isStreaming: Bool = false
+    var textScale: CGFloat = 1
+    var references = ReadingReferences()
+    var onOpenCitation: ((ReadingCitation) -> Void)?
+    @Environment(\.openURL) private var openURL
     @State private var preferences = AppPreferences.shared
     @ScaledMetric(relativeTo: .body) private var baseBodySize: CGFloat = 17
 
     var body: some View {
         let blocks = isStreaming ? MarkdownBlockParser.parse(text) : MarkdownBlockParser.parseCached(text)
         let lastIndex = blocks.count - 1
-        let effectiveBodySize = baseBodySize * preferences.fontScale
+        let effectiveBodySize = baseBodySize * preferences.fontScale * textScale
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 MarkdownBlockView(block: block, isStreaming: isStreaming && index == lastIndex, bodySize: effectiveBodySize)
@@ -18,6 +33,15 @@ struct MarkdownContentView: View {
             }
         }
         .textSelection(.enabled)
+        .environment(\.readingReferences, references)
+        .environment(\.openURL, onOpenCitation.map { open in
+            OpenURLAction { url in
+                guard url.scheme == ReadingReferences.linkScheme else { openURL(url); return .handled }
+                guard let source = references.source(for: url) else { return .discarded }
+                open(source)
+                return .handled
+            }
+        } ?? openURL)
     }
 }
 
@@ -92,13 +116,14 @@ private struct MarkdownBlockView: View, Equatable {
 
 private struct InlineMarkdownText: View {
     let raw: String
+    @Environment(\.readingReferences) private var references
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let segments = InlineMathParser.split(raw)
         if segments.count == 1, case .text(let only) = segments[0] {
-            Self.markdownText(only)
+            markdownText(only)
         } else {
             composedText(segments)
         }
@@ -113,7 +138,7 @@ private struct InlineMarkdownText: View {
         return segments.reduce(Text(verbatim: "")) { partial, segment in
             switch segment {
             case .text(let text):
-                return partial + Self.markdownText(text)
+                return partial + markdownText(text)
             case .math(let tex, let display):
                 if let rendered = MathRenderer.render(latex: tex, fontSize: fontSize, colorScheme: colorScheme, displayStyle: display) {
                     return partial + Text(Image(uiImage: rendered.image)).baselineOffset(-rendered.descent)
@@ -123,12 +148,12 @@ private struct InlineMarkdownText: View {
         }
     }
 
-    static func markdownText(_ raw: String) -> Text {
+    private func markdownText(_ raw: String) -> Text {
         if let attributed = try? AttributedString(
             markdown: raw,
             options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
-            return Text(attributed)
+            return Text(references.linkingMarkers(in: attributed))
         }
         return Text(verbatim: raw)
     }
@@ -561,6 +586,7 @@ enum MarkdownBlockParser {
         var blocks: [MarkdownBlock] = []
         var paragraphBuffer: [String] = []
         var index = 0
+        var remainingTableCells = 2_048
 
         func flushParagraph() {
             guard !paragraphBuffer.isEmpty else { return }
@@ -593,9 +619,10 @@ enum MarkdownBlockParser {
                 continue
             }
 
-            if let table = parseTable(lines: lines, from: index) {
+            if let table = parseTable(lines: lines, from: index, remainingCells: remainingTableCells) {
                 flushParagraph()
-                blocks.append(.table(table.table))
+                blocks.append(table.block)
+                remainingTableCells -= table.cellCount
                 index = table.nextIndex
                 continue
             }
@@ -726,7 +753,10 @@ enum MarkdownBlockParser {
 
     // MARK: Tables
 
-    private static func parseTable(lines: [String], from start: Int) -> (table: MarkdownTable, nextIndex: Int)? {
+    private static let maximumTableColumns = 24
+
+    private static func parseTable(lines: [String], from start: Int, remainingCells: Int)
+        -> (block: MarkdownBlock, nextIndex: Int, cellCount: Int)? {
         guard start + 1 < lines.count else { return nil }
         let headerLine = lines[start].trimmingCharacters(in: .whitespaces)
         guard headerLine.contains("|"),
@@ -737,14 +767,30 @@ enum MarkdownBlockParser {
         guard header.count == alignments.count, header.count >= 1 else { return nil }
 
         var rows: [[String]] = []
+        var columns = header.count
+        var oversized = columns > maximumTableColumns || columns > remainingCells
         var index = start + 2
         while index < lines.count {
             let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty, trimmed.contains("|") else { break }
-            rows.append(splitRow(trimmed))
+            if !oversized {
+                let row = splitRow(trimmed)
+                columns = max(columns, row.count)
+                oversized = columns > maximumTableColumns || rows.count >= 128 || columns * (rows.count + 2) > remainingCells
+                if !oversized { rows.append(row) }
+            }
             index += 1
         }
-        return (MarkdownTable(header: header, alignments: alignments, rows: rows), index)
+        if oversized {
+            var preview = ""
+            for line in lines[start..<index] {
+                let remaining = 16_000 - preview.utf8.count
+                guard remaining > 1 else { break }
+                preview += String(decoding: line.utf8.prefix(remaining - 1), as: UTF8.self) + "\n"
+            }
+            return (.codeBlock(language: "", code: preview), index, 0)
+        }
+        return (.table(MarkdownTable(header: header, alignments: alignments, rows: rows)), index, columns * (rows.count + 1))
     }
 
     private static func parseDelimiterRow(_ line: String) -> [MarkdownTable.Alignment]? {
@@ -778,6 +824,7 @@ enum MarkdownBlockParser {
                 escaping = true
             } else if char == "|" {
                 cells.append(current.trimmingCharacters(in: .whitespaces))
+                if cells.count > maximumTableColumns { return cells }
                 current = ""
             } else {
                 current.append(char)

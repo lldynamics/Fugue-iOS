@@ -129,10 +129,16 @@ final class GroupPersonaTests: XCTestCase {
         XCTAssertTrue(replies.filter { $0.modelID == "two" }.allSatisfy { !$0.assistanceMetadata.isPersonaSimulation })
         let first = try XCTUnwrap(marked.first)
         XCTAssertTrue(try XCTUnwrap(first.assistanceMetadata.groupSpeakerDisplayTitle).contains("AI"))
+        let samples = try XCTUnwrap(first.assistanceMetadata.personaExcerpts)
+        XCTAssertEqual(samples, [PersonaExcerpt(source: "园艺随笔", excerpt: "雨后的苔藓像一封绿信。")])
+        XCTAssertTrue(marked.allSatisfy { $0.assistanceMetadata.personaExcerpts == samples })
+        XCTAssertTrue(replies.filter { $0.modelID == "two" }.allSatisfy { $0.assistanceMetadata.personaExcerpts == nil })
         let override = try XCTUnwrap(chat.groupMembers.last?.target)
         engine.regenerate(assistantMessage: first, overrideTarget: override, in: chat, providers: [provider], context: context)
         await waitForIdle(engine, id: chat.id)
         let last = try XCTUnwrap(capture.withLock { $0.last })
+        XCTAssertNil(first.assistanceMetadata.personaExcerpts)
+        XCTAssertEqual(first.assistanceMetadata.revisions.first?.personaExcerpts, samples)
         XCTAssertEqual(last.modelID, "two")
         XCTAssertTrue(last.systemPrompt.contains("AI 模拟"))
         XCTAssertFalse(last.messages.map(\.content).joined().contains("雨后的苔藓像一封绿信"))
@@ -261,11 +267,12 @@ final class GroupPersonaTests: XCTestCase {
         XCTAssertTrue(first.items.isEmpty)
         feed.checkpoint = first.checkpoint
         let next = try await reader.read(feed)
-        XCTAssertEqual(next.items.first?.url.absoluteString, "https://x.com/i/web/status/13")
+        XCTAssertTrue(next.items.isEmpty)
         XCTAssertEqual(next.checkpoint.sinceID, "10")
         feed.checkpoint = next.checkpoint
         let last = try await reader.read(feed)
-        XCTAssertEqual(last.items.first?.id, "12")
+        XCTAssertEqual(last.items.map(\.id), ["12", "13"])
+        XCTAssertEqual(last.items.last?.url.absoluteString, "https://x.com/i/web/status/13")
         XCTAssertNil(last.checkpoint.nextPage)
         XCTAssertEqual(last.checkpoint.sinceID, "13")
         let sent = await fixture.sent
@@ -278,6 +285,34 @@ final class GroupPersonaTests: XCTestCase {
         catch PersonaError.missingToken { }
         XCTAssertThrowsError(try PersonaFeedReader.source("https://example.org/gardener", kind: .x))
         XCTAssertThrowsError(try PersonaFeedReader.source("http://blog.example.org", kind: .blog))
+    }
+
+    func testXPublishesTheWholeBatchInOrderAfterInterruptionAndRelaunch() async throws {
+        let db = try container()
+        var feed = try PersonaFeedReader.source("@gardener", kind: .x)
+        feed.checkpoint = .init(userID: "42", sinceID: "100")
+        let (chat, _) = try makeChat(db.mainContext, feed: feed)
+        let fixture = FeedFixture([
+            #"{"data":[{"id":"104","text":"four"},{"id":"103","text":"three"}],"meta":{"newest_id":"104","result_count":2,"next_token":"older"}}"#,
+            "OFFLINE",
+            #"{"data":[{"id":"103","text":"three"},{"id":"102","text":"two"},{"id":"101","text":"one"}],"meta":{"newest_id":"103","result_count":3}}"#,
+            #"{"meta":{"result_count":0}}"#
+        ])
+        let reader = PersonaFeedReader(fetch: { try await fixture.fetch($0) }, token: { "fixture" })
+        let service = PersonaFeedService(reader: reader)
+        let first = await service.refresh(in: db.mainContext, chatID: chat.id, force: true)
+        XCTAssertEqual(first.added, 0)
+        let offline = await service.refresh(in: db.mainContext, chatID: chat.id, force: true)
+        XCTAssertFalse(offline.errors.isEmpty)
+        XCTAssertEqual(chat.groupMembers.first?.persona?.feeds.first?.checkpoint?.sinceID, "100")
+        let fresh = ModelContext(db), restarted = PersonaFeedService(reader: reader)
+        let published = await restarted.refresh(in: fresh, chatID: chat.id, force: true)
+        XCTAssertEqual(published.added, 4)
+        let reopened = try XCTUnwrap(fresh.fetch(FetchDescriptor<Conversation>()).first)
+        XCTAssertEqual(reopened.sortedMessages.compactMap { $0.assistanceMetadata.sourceNotice?.url.lastPathComponent }, ["101", "102", "103", "104"])
+        XCTAssertEqual(reopened.groupMembers.first?.persona?.feeds.first?.checkpoint?.sinceID, "104")
+        let again = await restarted.refresh(in: fresh, chatID: chat.id, force: true)
+        XCTAssertEqual(again.added, 0)
     }
 
     func testEmptyXBaselineAndExpiredPageCursorDoNotSkipPosts() async throws {
@@ -294,7 +329,7 @@ final class GroupPersonaTests: XCTestCase {
         XCTAssertNil(baseline.checkpoint.sinceID)
         feed.checkpoint = baseline.checkpoint
         let first = try await reader.read(feed, now: start.addingTimeInterval(60))
-        XCTAssertEqual(first.items.map(\.id), ["21"])
+        XCTAssertTrue(first.items.isEmpty)
         feed.checkpoint = first.checkpoint
         let retried = try await reader.read(feed, now: start.addingTimeInterval(120))
         XCTAssertEqual(retried.checkpoint.sinceID, "23")

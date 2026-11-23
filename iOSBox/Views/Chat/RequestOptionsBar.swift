@@ -97,7 +97,7 @@ struct RequestOptionsBar: View {
                         attachments: attachments,
                         quotedText: quotedText,
                         target: effectiveTarget,
-                        omitMemory: skippingMemory
+                        omitMemory: skippingMemory, omitKnowledge: options.omitKnowledge
                     )
                     HStack(spacing: 4) {
                         Text("预估输入 ~\(estimate.inputTokens) tok")
@@ -126,6 +126,47 @@ struct RequestOptionsBar: View {
     }
 }
 
+struct BoundKnowledgeMenu: View {
+    let ids: [UUID]
+    @Binding var omitted: Bool
+    let compact: Bool
+    let canManage: Bool
+    let onManage: (() -> Void)?
+    @Query private var books: [BookVolume]
+
+    var body: some View {
+        let titles = ids.map { id in books.first { $0.id == id }?.title ?? String(localized: "书籍不可用") }
+        Menu {
+            ForEach(Array(titles.enumerated()), id: \.offset) { _, title in Text(verbatim: title) }
+            Divider()
+            Toggle("本次不使用知识库", isOn: $omitted)
+            if let onManage {
+                Button(action: onManage) { Label("管理参考资料", systemImage: "books.vertical") }
+                    .disabled(!canManage)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: omitted ? "books.vertical" : "books.vertical.fill")
+                if compact {
+                    if omitted { Image(systemName: "minus.circle") }
+                    else { Text(ids.count, format: .number) }
+                } else {
+                    Text(verbatim: omitted ? String(localized: "本次已关闭知识库") : titles.first ?? "")
+                        .lineLimit(1).truncationMode(.tail)
+                    if !omitted, titles.count > 1 { Text(verbatim: "+\(titles.count - 1)").fixedSize() }
+                    Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                }
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(omitted ? Color.secondary : AppPreferences.shared.accentTheme.readableText)
+            .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel(omitted ? String(localized: "本次已关闭知识库") : String(localized: "本次知识库：\(titles.joined(separator: "、"))"))
+        .accessibilityIdentifier("composer.knowledge")
+    }
+}
+
 struct ComposerOptionsSheet: View {
     @Bindable var conversation: Conversation
     @Binding var options: ComposerRequestOptions
@@ -146,6 +187,9 @@ struct ComposerOptionsSheet: View {
                         TextField("搜索词（仅发送此内容给 Tavily）", text: $options.searchQuery, axis: .vertical)
                         Text("搜索词将发送给 Tavily；来源摘要将发送给回答模型。")
                             .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    if !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty {
+                        Toggle("本次不使用知识库", isOn: $options.omitKnowledge)
                     }
                     if conversation.assistanceSettings.usePersonalMemory {
                         Toggle("本次不使用记忆", isOn: $options.omitMemory)
@@ -200,6 +244,7 @@ struct ComposerOptionsSheet: View {
 struct AssistanceEvidenceView: View {
     let metadata: AssistanceMetadata
     var message: ChatMessage? = nil
+    var showsKnowledge = true
     @Environment(\.modelContext) private var modelContext
     @State private var scheduleError: String?
     @State private var memoryLimitError: String?
@@ -273,7 +318,7 @@ struct AssistanceEvidenceView: View {
                 }
             }
 
-            if let kb = metadata.knowledgeEvidence, !kb.passages.isEmpty {
+            if showsKnowledge, let kb = metadata.knowledgeEvidence, !kb.passages.isEmpty {
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(kb.passages) { passage in
@@ -291,10 +336,13 @@ struct AssistanceEvidenceView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 4)
                 } label: {
-                    Label("知识库引用 · \(kb.passages.count) 处", systemImage: "books.vertical.fill")
+                    Label("找到 \(kb.passages.count) 段相关原文", systemImage: "books.vertical.fill")
                         .font(.caption)
                         .foregroundStyle(.teal)
                 }
+            } else if metadata.knowledgeEvidence?.passages.isEmpty == true {
+                Label("未找到相关原文", systemImage: "books.vertical")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             if let savedScheduleToast {

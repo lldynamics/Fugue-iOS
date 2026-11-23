@@ -35,6 +35,8 @@ struct PersonaFeed: Codable, Equatable, Identifiable, Sendable {
         var sinceID: String?
         var nextPage: String?
         var pendingNewestID: String?
+        var pendingItems: [PersonaFeedItem]?
+        var truncatedBatch: Bool?
         var startedAt: Date?
     }
 
@@ -93,6 +95,7 @@ extension AssistanceSettings {
     /// Imported subscriptions require local opt-in. Credentials and device polling state are never portable.
     var forPersonaBackup: Self {
         var copy = self
+        copy.privatePersona = copy.privatePersona?.portableProfile
         for index in copy.groupMembers.indices {
             guard var persona = copy.groupMembers[index].persona else { continue }
             persona.feeds = persona.feeds.map { PersonaFeed(id: $0.id, kind: $0.kind, address: $0.address, enabled: false) }

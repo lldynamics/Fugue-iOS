@@ -124,6 +124,7 @@ enum ConversationExporter {
     private static func exportDirectory() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent(exportsSubdirectoryName, isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

@@ -142,14 +142,14 @@ enum OpenAICompatibleAdapter {
             }
 
             if let usage = obj["usage"] as? [String: Any] {
-                let prompt = usage["prompt_tokens"] as? Int
-                let completion = usage["completion_tokens"] as? Int
+                let prompt = LLMUsage.valid(usage["prompt_tokens"] as? Int)
+                let completion = LLMUsage.valid(usage["completion_tokens"] as? Int)
                 if prompt != nil || completion != nil {
                     continuation.yield(.usage(promptTokens: prompt, completionTokens: completion))
                 }
                 let cached = ((usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int)
                     ?? (usage["prompt_cache_hit_tokens"] as? Int)
-                if let cached, cached > 0 {
+                if let cached = LLMUsage.valid(cached), cached > 0 {
                     continuation.yield(.cacheUsage(cachedTokens: cached, cacheWriteTokens: nil))
                 }
             }
@@ -203,6 +203,7 @@ enum OpenAICompatibleAdapter {
                     } else {
                         index = pendingToolCalls.keys.max() ?? 0
                     }
+                    guard (0..<64).contains(index) else { throw LLMError.unavailableTool }
                     var entry = pendingToolCalls[index] ?? (id: "", name: "", args: "")
                     if let tcID = tc["id"] as? String, !tcID.isEmpty {
                         entry.id = tcID
@@ -211,6 +212,8 @@ enum OpenAICompatibleAdapter {
                         if let name = fn["name"] as? String { entry.name += name }
                         if let args = fn["arguments"] as? String { entry.args += args }
                     }
+                    guard entry.id.utf8.count <= 256, entry.name.utf8.count <= 128,
+                          entry.args.utf8.count <= 64 * 1024 else { throw LLMError.unavailableTool }
                     pendingToolCalls[index] = entry
                 }
             }
@@ -527,12 +530,12 @@ enum OpenAICompatibleAdapter {
         }
         if let usage = obj["usage"] as? [String: Any] {
             continuation.yield(.usage(
-                promptTokens: usage["prompt_tokens"] as? Int,
-                completionTokens: usage["completion_tokens"] as? Int
+                promptTokens: LLMUsage.valid(usage["prompt_tokens"] as? Int),
+                completionTokens: LLMUsage.valid(usage["completion_tokens"] as? Int)
             ))
             let cached = ((usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int)
                 ?? (usage["prompt_cache_hit_tokens"] as? Int)
-            if let cached, cached > 0 {
+            if let cached = LLMUsage.valid(cached), cached > 0 {
                 continuation.yield(.cacheUsage(cachedTokens: cached, cacheWriteTokens: nil))
             }
         }
@@ -574,6 +577,7 @@ enum OpenAICompatibleAdapter {
         } else {
             throw URLError(.cannotParseResponse)
         }
+        guard items.count <= ModelListTransport.maximumEntries else { throw URLError(.dataLengthExceedsMaximum) }
 
         var ranked: [(model: ModelSpec, created: Double, position: Int)] = []
         var seen = Set<String>()

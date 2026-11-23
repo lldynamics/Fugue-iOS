@@ -41,7 +41,7 @@ final class RecoveryAndConsentTests: XCTestCase {
         let chat = Conversation(title: "Before", primaryTarget: p.makeTarget(for: p.models[0]))
         context.insert(chat)
         let root = add("Question", to: chat, parent: ConversationTree.virtualRootID)
-        let image = MessageAttachment(kind: .image, fileName: "example.png", mimeType: "image/png", dataBase64: "AQID", byteSize: 3)
+        let image = MessageAttachment(kind: .image, fileName: "example.png", mimeType: "image/png", dataBase64: onePixelPNGFixture, byteSize: 70)
         root.attachments = [image]
         let a = add("A", to: chat, parent: root.id, role: .assistant)
         let b = add("B", to: chat, parent: root.id, role: .assistant)

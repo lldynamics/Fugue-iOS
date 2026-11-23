@@ -120,7 +120,7 @@ enum SchemaV7: VersionedSchema {
     static let versionIdentifier = Schema.Version(7, 0, 0)
     static var models: [any PersistentModel.Type] {
         [
-            ProviderConfig.self,
+            SchemaV6.ProviderConfig.self,
             AssistantPreset.self,
             Conversation.self,
             ChatMessage.self,
@@ -131,15 +131,30 @@ enum SchemaV7: VersionedSchema {
     }
 }
 
-typealias CurrentSchema = SchemaV7
+/// V8 adds independent saved people and personal bookshelf positions. V7 entities are unchanged.
+enum SchemaV8: VersionedSchema {
+    static let versionIdentifier = Schema.Version(8, 0, 0)
+    static var models: [any PersistentModel.Type] { SchemaV7.models + [PersonaProfile.self, ShelfReadingState.self] }
+}
+
+/// V9 isolates the Keychain accounts of providers recreated from backups.
+enum SchemaV9: VersionedSchema {
+    static let versionIdentifier = Schema.Version(9, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        [ProviderConfig.self, AssistantPreset.self, Conversation.self, ChatMessage.self,
+         RequestRecord.self, PersonalMemory.self, BookVolume.self, PersonaProfile.self, ShelfReadingState.self]
+    }
+}
+
+typealias CurrentSchema = SchemaV9
 
 enum IOSBoxMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9]
     }
 
     /// Additive optional column + external-storage flag: no data transformation needed.
@@ -161,5 +176,7 @@ enum IOSBoxMigrationPlan: SchemaMigrationPlan {
         toVersion: SchemaV5.self
     )
     static let migrateV5toV6 = MigrationStage.lightweight(fromVersion: SchemaV5.self, toVersion: SchemaV6.self)
+    static let migrateV7toV8 = MigrationStage.lightweight(fromVersion: SchemaV7.self, toVersion: SchemaV8.self)
+    static let migrateV8toV9 = MigrationStage.lightweight(fromVersion: SchemaV8.self, toVersion: SchemaV9.self)
     static let migrateV6toV7 = MigrationStage.lightweight(fromVersion: SchemaV6.self, toVersion: SchemaV7.self)
 }

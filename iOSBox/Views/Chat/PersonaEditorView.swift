@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct PersonaEditorView: View {
     @Binding var member: GroupMember
+    var isProfile = false
     @State private var importing = false
     @State private var editing: PersonaMaterial?
     @State private var kind: PersonaFeed.Kind = .blog
@@ -30,11 +31,14 @@ struct PersonaEditorView: View {
             } header: {
                 Text("发言参考")
             } footer: {
-                Text("最多 6 份。发言时，相关片段会发送给这位成员绑定的模型。群内发言标注为 AI 模拟，资料随对话备份导出。")
+                if isProfile { Text("最多 6 份。人物私聊和群内发言会选取相关片段，发送到这个人物绑定的模型。回复可展开查看所用片段。") }
+                else { Text("最多 6 份。发言时，相关片段会发送给这位成员绑定的模型。群内发言标注为 AI 模拟，资料随对话备份导出。") }
             }
             Section {
                 ForEach(persona.feeds) { feed in
-                    Toggle(isOn: Binding(get: { feed.enabled }, set: { enabled in
+                    if isProfile {
+                        Label(feed.displayName, systemImage: "link")
+                    } else { Toggle(isOn: Binding(get: { feed.enabled }, set: { enabled in
                         update { value in
                             if let i = value.feeds.firstIndex(where: { $0.id == feed.id }) { value.feeds[i].enabled = enabled }
                         }
@@ -50,7 +54,7 @@ struct PersonaEditorView: View {
                                 Text("等待首次检查").font(.caption).foregroundStyle(.secondary)
                             }
                         }
-                    }
+                    } }
                 }
                 .onDelete { offsets in update { $0.feeds.remove(atOffsets: offsets) } }
                 Picker("订阅类型", selection: $kind) {
@@ -62,9 +66,10 @@ struct PersonaEditorView: View {
                 Button { addFeed() } label: { Label("添加订阅", systemImage: "plus") }
                     .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || persona.feeds.count >= 4)
             } header: {
-                Text("自动分享到本群")
+                Text(isProfile ? "可供群聊订阅的来源" : "自动分享到本群")
             } footer: {
-                Text("首次检查只记录现有内容。之后的新动态会附原文链接发进本群。iOS 决定后台检查时间，也可从群聊菜单手动检查。")
+                if isProfile { Text("邀请进群后，可在各群分别开启订阅。") }
+                else { Text("首次检查只记录现有内容。之后的新动态会附原文链接发进本群。iOS 决定后台检查时间，也可从群聊菜单手动检查。") }
             }
             if kind == .x || persona.feeds.contains(where: { $0.kind == .x }) {
                 Section {

@@ -98,7 +98,7 @@ final class AuditFixesTests: XCTestCase {
 
         let preset = AssistantPreset(name: "知识助手", systemPrompt: "回答基于文档")
         let boundBookID = UUID()
-        srcKnowledge.setVolumeIDs([boundBookID], for: preset.id)
+        try srcKnowledge.setVolumeIDs([boundBookID], for: preset.id)
         srcCtx.insert(preset)
 
         let card = try XCTUnwrap(srcFlashcards.addCard(
@@ -125,6 +125,10 @@ final class AuditFixesTests: XCTestCase {
             primaryTarget: targetB, arenaTargets: [targetA, targetB]
         )
         newerConv.updatedAt = Date(timeIntervalSince1970: 2_000_000)
+        newerConv.assistanceSettings = AssistanceSettings(usePersonalMemory: true, automaticRouting: true,
+                                                         codeTarget: targetB, fallbackEnabled: true,
+                                                         fallbackTargets: [targetB], enablePromptCaching: false,
+                                                         autoGenerateTitle: true)
         srcCtx.insert(newerConv)
         try srcCtx.save()
 
@@ -174,7 +178,7 @@ final class AuditFixesTests: XCTestCase {
         XCTAssertEqual(dstKnowledge.volumeIDs(for: preset.id), [boundBookID])
         XCTAssertEqual(KeychainService.shared.loadSecret(account: PersonaFeedReader.xTokenAccount), "x-bearer-secret-999")
 
-        // Verify newer conversation parameters merged onto existing conversation
+        // Merge newer parameters without changing the locally selected recipients.
         XCTAssertEqual(olderConv.title, "新版标题")
         XCTAssertEqual(olderConv.temperature, 0.25, accuracy: 0.001)
         XCTAssertFalse(olderConv.useCustomTemperature)
@@ -183,8 +187,14 @@ final class AuditFixesTests: XCTestCase {
         XCTAssertEqual(olderConv.contextMessageLimit, 40)
         XCTAssertFalse(olderConv.enableThinking)
         XCTAssertEqual(olderConv.thinkingBudgetTokens, 8192)
-        XCTAssertEqual(olderConv.primaryTarget?.modelID, "m-new")
-        XCTAssertEqual(olderConv.arenaTargets.count, 2)
+        XCTAssertEqual(olderConv.primaryTarget, targetA)
+        XCTAssertTrue(olderConv.arenaTargets.isEmpty)
+        XCTAssertFalse(olderConv.assistanceSettings.usePersonalMemory)
+        XCTAssertFalse(olderConv.assistanceSettings.automaticRouting)
+        XCTAssertFalse(olderConv.assistanceSettings.fallbackEnabled)
+        XCTAssertTrue(olderConv.assistanceSettings.fallbackTargets.isEmpty)
+        XCTAssertFalse(olderConv.assistanceSettings.autoGenerateTitle)
+        XCTAssertFalse(olderConv.assistanceSettings.enablePromptCaching)
     }
 
     func testGroupWebSearchFailureIsFailClosed() async throws {
@@ -484,8 +494,18 @@ final class AuditFixesTests: XCTestCase {
         try Data("# chat".utf8).write(to: oldChatExport)
         try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: oldChatExport.path)
 
+        let expiredShare = exportsDir.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let activeShare = exportsDir.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        for dir in [expiredShare, activeShare] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("# chat".utf8).write(to: dir.appendingPathComponent("chat.md"))
+        }
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: expiredShare.path)
+
         iOSBoxApp.cleanupExpiredTemporaryExports(in: dir, maxAge: 2 * 3600, now: now)
 
+        XCTAssertFalse(FileManager.default.fileExists(atPath: expiredShare.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: activeShare.appendingPathComponent("chat.md").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: oldBackup.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: oldLegacyBackup.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: oldChatExport.path))
@@ -498,7 +518,7 @@ final class AuditFixesTests: XCTestCase {
         let chat = Conversation(title: "...hidden-title")
         let mdURL = try ConversationExporter.writeMarkdownFile(for: chat)
         defer { try? FileManager.default.removeItem(at: mdURL) }
-        XCTAssertEqual(mdURL.deletingLastPathComponent().lastPathComponent, ConversationExporter.exportsSubdirectoryName)
+        XCTAssertEqual(mdURL.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent, ConversationExporter.exportsSubdirectoryName)
         XCTAssertEqual(mdURL.lastPathComponent, "hidden-title.md")
 
         // 2. ProjectKnowledgeSearch recovers gracefully when a cached volume is invalidated in flight

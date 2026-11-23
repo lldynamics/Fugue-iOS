@@ -325,7 +325,10 @@ final class PhaseThreeTests: XCTestCase {
         let summary=try BackupService.apply(BackupService.decode(data),to:other.mainContext)
         XCTAssertEqual(summary.memories,1)
         let restored=try XCTUnwrap(other.mainContext.fetch(FetchDescriptor<Conversation>()).first)
-        XCTAssertEqual(restored.assistanceSettings,c.assistanceSettings)
+        var expected = c.assistanceSettings
+        expected.usePersonalMemory = false
+        expected.fallbackEnabled = false
+        XCTAssertEqual(restored.assistanceSettings, expected)
         XCTAssertEqual(restored.sortedMessages.first?.assistanceMetadata.search?.sources.first?.url.absoluteString,"https://example.com/source")
         XCTAssertEqual(try BackupService.apply(BackupService.decode(data),to:other.mainContext).memories,0)
         var json=try XCTUnwrap(JSONSerialization.jsonObject(with:data) as? [String:Any])

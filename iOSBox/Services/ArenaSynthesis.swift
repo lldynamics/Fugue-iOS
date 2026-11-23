@@ -31,7 +31,7 @@ enum ArenaSynthesis {
     }
 
     static func eligibleSources(in messages: [ChatMessage], groupID: UUID) -> [ChatMessage] {
-        sources(in: messages, groupID: groupID).filter(isComplete)
+        sources(in: messages, groupID: groupID).filter { isComplete($0) && !$0.assistanceMetadata.isExcludedFromContext }
     }
 
     static func digest(of sources: [ChatMessage], errorDescription: (ChatMessage) -> String? = { $0.errorMessage }) -> String {
@@ -40,6 +40,7 @@ enum ArenaSynthesis {
             [$0.id.uuidString, $0.providerID?.uuidString ?? "", $0.modelID, $0.content,
              errorDescription($0) ?? "", $0.finishReason ?? "", String($0.isStreaming),
              $0.latestRequest?.id.uuidString ?? "", $0.latestRequest?.statusRaw ?? ""]
+                + ($0.assistanceMetadata.isExcludedFromContext ? ["excluded"] : [])
         }
         let data = (try? JSONEncoder().encode(snapshot)) ?? Data()
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()

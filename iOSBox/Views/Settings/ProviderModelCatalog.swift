@@ -10,7 +10,7 @@ struct ModelCatalogRequest: Equatable {
 
     static func saved(for provider: ProviderConfig) -> Self {
         Self(protocolType: provider.protocolType, baseURL: provider.baseURL,
-             apiKey: KeychainService.shared.loadAPIKey(for: provider.id),
+             apiKey: provider.apiKey,
              extraKeys: provider.extraAPIKeys, headers: provider.resolvedCustomHeaders)
     }
 
@@ -124,9 +124,10 @@ final class ChatModelDirectory {
     private(set) var catalogs: [UUID: ProviderModelCatalog] = [:]
 
     func update(configured providers: [ProviderConfig], automaticIDs: Set<UUID>? = nil, in context: ModelContext) {
-        let ids = Set(providers.map(\.id))
+        let available = providers.filter(\.hasConfiguredChatAPI)
+        let ids = Set(available.map(\.id))
         for id in Array(catalogs.keys) where !ids.contains(id) { catalogs.removeValue(forKey: id)?.reset() }
-        for provider in providers {
+        for provider in available {
             let request = ModelCatalogRequest.saved(for: provider)
             guard catalogs[provider.id]?.lastRequest != request else { continue }
             catalogs.removeValue(forKey: provider.id)?.reset()

@@ -109,12 +109,10 @@ enum AnthropicAdapter {
             case "message_start":
                 if let msg = obj["message"] as? [String: Any],
                    let usage = msg["usage"] as? [String: Any] {
-                    let baseIn = usage["input_tokens"] as? Int
-                    let cacheRead = usage["cache_read_input_tokens"] as? Int
-                    let cacheWrite = usage["cache_creation_input_tokens"] as? Int
-                    if baseIn != nil || cacheRead != nil || cacheWrite != nil {
-                        inputTokens = (baseIn ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0)
-                    }
+                    let baseIn = LLMUsage.valid(usage["input_tokens"] as? Int)
+                    let cacheRead = LLMUsage.valid(usage["cache_read_input_tokens"] as? Int)
+                    let cacheWrite = LLMUsage.valid(usage["cache_creation_input_tokens"] as? Int)
+                    inputTokens = LLMUsage.combined(baseIn, cacheRead, cacheWrite)
                     if let cacheRead, cacheRead > 0 { cachedTokens = cacheRead }
                     if let cacheWrite, cacheWrite > 0 { cacheWriteTokens = cacheWrite }
                 }
@@ -196,7 +194,7 @@ enum AnthropicAdapter {
                 }
                 if let usage = obj["usage"] as? [String: Any],
                    let outTok = usage["output_tokens"] as? Int {
-                    outputTokens = outTok
+                    outputTokens = LLMUsage.valid(outTok)
                     continuation.yield(.usage(promptTokens: inputTokens, completionTokens: outTok))
                 }
 
@@ -520,8 +518,7 @@ enum AnthropicAdapter {
         }
         LLMClient.applyCustomHeaders(customHeaders, to: &req)
 
-        return try await ModelListTransport.pages(request: req, session: session, cursorName: "after_id") { page in
-            guard let items = page["data"] as? [[String: Any]] else { throw URLError(.cannotParseResponse) }
+        return try await ModelListTransport.pages(request: req, session: session, itemsKey: "data", cursorName: "after_id") { page, items in
             let models = try items.map { item -> ModelSpec in
                 guard let id = item["id"] as? String, !id.isEmpty else { throw URLError(.cannotParseResponse) }
                 return ModelSpec(id: id, displayName: item["display_name"] as? String)

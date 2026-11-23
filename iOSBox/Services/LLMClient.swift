@@ -33,6 +33,27 @@ enum LLMError: LocalizedError {
     }
 }
 
+enum LLMUsage {
+    // A billion tokens or milliseconds is far beyond any individual supported request.
+    static let maximum = 1_000_000_000
+
+    static func valid(_ value: Int?) -> Int? {
+        guard let value, (0...maximum).contains(value) else { return nil }
+        return value
+    }
+
+    static func combined(_ values: Int?...) -> Int? {
+        let validValues = values.compactMap(valid)
+        guard !validValues.isEmpty else { return nil }
+        return valid(validValues.reduce(0, saturatedSum))
+    }
+
+    static func saturatedSum(_ lhs: Int, _ rhs: Int) -> Int {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? Int.max : sum
+    }
+}
+
 struct LLMToolDefinition: Sendable, Codable, Equatable {
     let name: String
     let description: String
@@ -1273,28 +1294,80 @@ final class SameOriginRedirectDelegate: NSObject, URLSessionTaskDelegate, Sendab
 }
 
 enum ModelListTransport {
+    static let maximumEntries = 10_000
+
     static func json(for request: URLRequest, session: URLSession) async throws -> Any {
+        try await readJSON(for: request, session: session, maximumBytes: 4 * 1024 * 1024).value
+    }
+
+    private static func readJSON(for request: URLRequest, session: URLSession,
+                                 maximumBytes: Int) async throws -> (value: Any, byteCount: Int) {
         try Task.checkCancellation()
+        guard maximumBytes > 0 else { throw URLError(.dataLengthExceedsMaximum) }
         var fresh = request
         fresh.cachePolicy = .reloadIgnoringLocalCacheData
         fresh.timeoutInterval = 30
-        let (data, response) = try await session.data(for: fresh, delegate: SameOriginRedirectDelegate.shared)
-        try LLMClient.validateDataResponse(response, data: data)
-        return try JSONSerialization.jsonObject(with: data)
+        let (bytes, response) = try await session.bytes(for: fresh, delegate: SameOriginRedirectDelegate.shared)
+        defer { bytes.task.cancel() }
+        try await LLMClient.validateHTTPResponse(response, bytes: bytes)
+        guard response.expectedContentLength <= Int64(maximumBytes) else { throw URLError(.dataLengthExceedsMaximum) }
+        var data = Data()
+        for try await byte in bytes {
+            guard data.count < maximumBytes else { throw URLError(.dataLengthExceedsMaximum) }
+            data.append(byte)
+        }
+        try validateStructure(data)
+        return (try JSONSerialization.jsonObject(with: data), data.count)
     }
 
-    static func pages(request: URLRequest, session: URLSession, cursorName: String,
-                      parse: ([String: Any]) throws -> (models: [ModelSpec], next: String?)) async throws -> [ModelSpec] {
+    private static func validateStructure(_ data: Data) throws {
+        var depth = 0
+        var separators = 0
+        var inString = false
+        var escaped = false
+        for (index, byte) in data.enumerated() {
+            if index & 16_383 == 0 { try Task.checkCancellation() }
+            if inString {
+                if escaped { escaped = false }
+                else if byte == 92 { escaped = true }
+                else if byte == 34 { inString = false }
+                continue
+            }
+            switch byte {
+            case 34: inString = true
+            case 91, 123:
+                depth += 1
+                separators += 1
+            case 93, 125:
+                depth -= 1
+                guard depth >= 0 else { throw URLError(.cannotParseResponse) }
+            case 44, 58: separators += 1
+            default: break
+            }
+            guard depth <= 64, separators <= 100_000 else { throw URLError(.dataLengthExceedsMaximum) }
+        }
+    }
+
+    static func pages(request: URLRequest, session: URLSession, itemsKey: String, cursorName: String,
+                      parse: ([String: Any], [[String: Any]]) throws -> (models: [ModelSpec], next: String?)) async throws -> [ModelSpec] {
         guard let url = request.url else { throw URLError(.badURL) }
         var pageRequest = request
         var models: [ModelSpec] = []
         var ids = Set<String>()
         var cursors = Set<String>()
+        var remainingBytes = 12 * 1024 * 1024
+        var remainingEntries = maximumEntries
         while true {
-            guard let object = try await json(for: pageRequest, session: session) as? [String: Any] else {
+            let result = try await readJSON(for: pageRequest, session: session,
+                                            maximumBytes: min(remainingBytes, 4 * 1024 * 1024))
+            remainingBytes -= result.byteCount
+            guard let object = result.value as? [String: Any], let rows = object[itemsKey] as? [Any] else {
                 throw URLError(.cannotParseResponse)
             }
-            let page = try parse(object)
+            guard rows.count <= remainingEntries else { throw URLError(.dataLengthExceedsMaximum) }
+            remainingEntries -= rows.count
+            guard let modelRows = rows as? [[String: Any]] else { throw URLError(.cannotParseResponse) }
+            let page = try parse(object, modelRows)
             models.append(contentsOf: page.models.filter { ids.insert($0.id).inserted })
             guard let cursor = page.next, !cursor.isEmpty else { return models }
             guard cursors.count < 100, cursors.insert(cursor).inserted,

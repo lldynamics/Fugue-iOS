@@ -11,11 +11,13 @@ extension ChatEngine {
             searchQuery: String?,
             omitMemory: Bool,
             memoryInfo: (systemPrompt: String, count: Int),
-            expectedTitleForAutoGenerate: String?
+            expectedTitleForAutoGenerate: String?,
+            mentions: GroupDiscussionCoordinator.MentionParseResult?,
+            mentionOnly: Bool
         )
         case continueDiscussion
         case groupVote
-        case summarize(by: GroupMember?)
+        case summarize(by: GroupMember)
     }
 
     /// Interrupts any ongoing group discussion immediately, keeps already-spoken bubbles clean,
@@ -38,7 +40,7 @@ extension ChatEngine {
         }
 
         return sendUserMessageInternal(
-            text: trimmed,
+            text: text,
             attachments: attachments,
             in: conversation,
             providers: providers,
@@ -71,7 +73,7 @@ extension ChatEngine {
     ) -> SendOutcome {
         guard conversation.isGroupMode else { return .noAvailableModel }
         guard !isGenerating(in: conversation.id) else { return .busy }
-        guard sendTargets(text: "", attachments: [], in: conversation, providers: providers) != nil else {
+        guard sendTargets(text: "", attachments: [], in: conversation, providers: providers, forGroupAction: true) != nil else {
             return .noAvailableModel
         }
         launchGroupRelaySession(mode: .continueDiscussion, in: conversation, providers: providers, context: context)
@@ -86,7 +88,7 @@ extension ChatEngine {
     ) -> SendOutcome {
         guard conversation.isGroupMode else { return .noAvailableModel }
         guard !isGenerating(in: conversation.id) else { return .busy }
-        guard sendTargets(text: "", attachments: [], in: conversation, providers: providers) != nil else {
+        guard sendTargets(text: "", attachments: [], in: conversation, providers: providers, forGroupAction: true) != nil else {
             return .noAvailableModel
         }
         appendHostGroupActionMessage(
@@ -107,11 +109,10 @@ extension ChatEngine {
     ) -> SendOutcome {
         guard conversation.isGroupMode else { return .noAvailableModel }
         guard !isGenerating(in: conversation.id) else { return .busy }
-        guard sendTargets(text: "", attachments: [], in: conversation, providers: providers) != nil else {
+        guard let chosen = groupSummarizer(member, in: conversation, providers: providers)?.member else {
             return .noAvailableModel
         }
-        let chosen = member ?? conversation.activeGroupMembers.last ?? conversation.activeGroupMembers.first
-        let mentionPrefix = chosen.map { "@\($0.mentionToken) " } ?? ""
+        let mentionPrefix = "@\(chosen.mentionToken) "
         appendHostGroupActionMessage(
             String(localized: "📋 \(mentionPrefix)请帮大家梳理总结目前讨论的核心共识、关键分歧与下一步行动建议。"),
             in: conversation,
@@ -119,6 +120,19 @@ extension ChatEngine {
         )
         launchGroupRelaySession(mode: .summarize(by: chosen), in: conversation, providers: providers, context: context)
         return .sent
+    }
+
+    func groupSummarizer(_ preferred: GroupMember?, in conversation: Conversation,
+                         providers: [ProviderConfig]) -> (member: GroupMember, target: ResolvedModelTarget)? {
+        let candidates = conversation.activeGroupMembers.reversed()
+        for member in candidates {
+            if let preferred, preferred.id != member.id || preferred.target.id != member.target.id { continue }
+            if let target = AssistancePolicy.resolve(member.target, providers: providers),
+               providers.contains(where: { $0.id == target.providerID && $0.hasConfiguredChatAPI }) {
+                return (member, target)
+            }
+        }
+        return nil
     }
 
     private func appendHostGroupActionMessage(
@@ -130,7 +144,7 @@ extension ChatEngine {
         let parentID = shouldUseTree
             ? (ConversationTree.currentAnchorID(in: conversation) ?? ConversationTree.virtualRootID)
             : nil
-        let nextSort = (conversation.sortedMessages.last?.sortIndex ?? 0) + 1
+        let nextSort = conversation.nextMessageSortIndex()
         let msg = ChatMessage(role: .user, content: content, sortIndex: nextSort)
         msg.parentMessageID = parentID
         msg.conversation = conversation
@@ -155,17 +169,34 @@ extension ChatEngine {
 
         let masterTask = Task { @MainActor in
             let settings = conversation.assistanceSettings
+            var speakingMode = settings.groupSpeakingMode
+            let capturedMentions: GroupDiscussionCoordinator.MentionParseResult?
+            if case .afterUserMessage(_, _, _, _, _, _, let mentions, let only) = mode {
+                if only { speakingMode = .mentionOnly }
+                capturedMentions = mentions
+            } else {
+                capturedMentions = nil
+            }
             let resolvedRoster: [(member: GroupMember, target: ResolvedModelTarget)] = conversation.activeGroupMembers.compactMap { m in
+                if speakingMode == .mentionOnly, let capturedMentions,
+                   !capturedMentions.members.contains(where: { $0.id == m.id && $0.target.id == m.target.id }) {
+                    return nil
+                }
                 guard let resolved = AssistancePolicy.resolve(m.target, providers: providers) else { return nil }
                 var copy = m
                 copy.target = resolved
                 return (copy, resolved)
             }
             let activeMembers = resolvedRoster.map(\.member)
-            let targetByMemberID = Dictionary(uniqueKeysWithValues: resolvedRoster.map { ($0.member.id, $0.target) })
+            let targetByMemberID = Dictionary(resolvedRoster.map { ($0.member.id, $0.target) }, uniquingKeysWith: { first, _ in first })
+            let resolvedMentions = capturedMentions.map { mentions in
+                GroupDiscussionCoordinator.MentionParseResult(mentionsAll: mentions.mentionsAll, members: mentions.members.compactMap { selected in
+                    activeMembers.first { $0.id == selected.id && $0.target.id == selected.target.id }
+                })
+            }
 
             guard !activeMembers.isEmpty else {
-                self.finishGeneration(conversationID: convID, token: token)
+                self.finishGeneration(conversationID: convID, token: token, statuses: [.blocked])
                 return
             }
 
@@ -176,13 +207,16 @@ extension ChatEngine {
             var requestedSearchQuery: String?
             var expectedTitleForAutoGenerate: String?
 
-            let kbVolumeIDs = conversation.assistanceSettings.knowledgeVolumeIDs
+            let limits = conversation.readingChapterLimits
+            let omitKnowledge: Bool
+            switch mode {
+            case .afterUserMessage(let question, _, _, _, _, _, _, _): omitKnowledge = question.assistanceMetadata.omittedKnowledge
+            default: omitKnowledge = false
+            }
+            let kbVolumeIDs = omitKnowledge ? [] : conversation.assistanceSettings.knowledgeVolumeIDs
             if !kbVolumeIDs.isEmpty {
                 let q = self.bookQuestion(in: ConversationTree.activeMessages(in: conversation))
-                if let ev = try? await ProjectKnowledgeSearch.retrieve(volumeIDs: kbVolumeIDs, in: context, query: q, maxPassages: 4),
-                   !ev.passages.isEmpty {
-                    knowledgeEvidence = ev
-                }
+                knowledgeEvidence = try? await ProjectKnowledgeSearch.retrieve(volumeIDs: kbVolumeIDs, in: context, query: q, maxPassages: 4, chapterLimits: limits)
             }
 
             LiveActivityCoordinator.shared.start(
@@ -195,11 +229,11 @@ extension ChatEngine {
             )
 
             switch mode {
-            case .afterUserMessage(let userMsg, _, let sq, let omit, let mem, let expectedTitle):
+            case .afterUserMessage(let userMsg, _, let sq, let omit, let mem, let expectedTitle, _, _):
                 omitMemory = omit
                 memoryInfo = mem
                 requestedSearchQuery = sq
-                expectedTitleForAutoGenerate = expectedTitle
+                expectedTitleForAutoGenerate = speakingMode == .mentionOnly ? nil : expectedTitle
 
                 if let sq {
                     let searchStart = ContinuousClock.now
@@ -231,7 +265,7 @@ extension ChatEngine {
                         }
                         if Self.isAlive(conversation), let leadMember = activeMembers.first, let leadTarget = targetByMemberID[leadMember.id] {
                             let useTree = ConversationTree.usesTree(conversation)
-                            let nextSort = (conversation.sortedMessages.last?.sortIndex ?? 0) + 1
+                            let nextSort = conversation.nextMessageSortIndex()
                             let errMsg = ChatMessage(
                                 role: .assistant,
                                 target: leadTarget,
@@ -261,7 +295,7 @@ extension ChatEngine {
                         } else {
                             try? context.save()
                         }
-                        self.finishGeneration(conversationID: convID, token: token)
+                        self.finishGeneration(conversationID: convID, token: token, statuses: [searchRecord.status])
                         return
                     }
                 }
@@ -272,7 +306,7 @@ extension ChatEngine {
             }
 
             if Task.isCancelled || !Self.isAlive(conversation) {
-                self.finishGeneration(conversationID: convID, token: token)
+                self.finishGeneration(conversationID: convID, token: token, statuses: [.cancelled])
                 return
             }
 
@@ -281,24 +315,25 @@ extension ChatEngine {
             let dynamicSmartRelay: Bool
 
             switch mode {
-            case .afterUserMessage(let userMsg, let priorMessages, _, _, _, _):
+            case .afterUserMessage(let userMsg, let priorMessages, _, _, _, _, _, _):
                 let planned = GroupDiscussionCoordinator.selectInitialPlan(
                     userText: userMsg.content,
                     activeMembers: activeMembers,
-                    speakingMode: settings.groupSpeakingMode,
+                    speakingMode: speakingMode,
                     maxRelayTurns: settings.groupMaxRelayTurns,
-                    priorMessages: priorMessages
+                    priorMessages: priorMessages,
+                    resolvedMentions: resolvedMentions
                 )
                 if planned.isEmpty {
-                    self.finishGeneration(conversationID: convID, token: token)
+                    self.finishGeneration(conversationID: convID, token: token, statuses: [.blocked])
                     return
                 }
                 let hasExplicitMentions = planned.contains(where: \.explicitMention)
-                if settings.groupSpeakingMode == .smartRelay && !hasExplicitMentions {
+                if speakingMode == .smartRelay && !hasExplicitMentions {
                     explicitQueue = [(planned[0].member, planned[0].intent, false)]
                     maxRelayTurns = min(max(settings.groupMaxRelayTurns, 1), max(activeMembers.count + 1, 2))
                     dynamicSmartRelay = true
-                } else if settings.groupSpeakingMode == .smartRelay && hasExplicitMentions {
+                } else if speakingMode == .smartRelay && hasExplicitMentions {
                     explicitQueue = planned.map { ($0.member, $0.intent, false) }
                     maxRelayTurns = max(planned.count, settings.groupMaxRelayTurns)
                     dynamicSmartRelay = true
@@ -319,8 +354,8 @@ extension ChatEngine {
                 }
                 let starter = activeMembers[startIdx]
                 explicitQueue = [(starter, .rebuttal, false)]
-                maxRelayTurns = min(max(settings.groupMaxRelayTurns, 2), max(activeMembers.count, 2))
-                dynamicSmartRelay = true
+                dynamicSmartRelay = speakingMode != .mentionOnly
+                maxRelayTurns = dynamicSmartRelay ? min(max(settings.groupMaxRelayTurns, 2), max(activeMembers.count, 2)) : 1
 
             case .groupVote:
                 explicitQueue = activeMembers.map { ($0, .vote, false) }
@@ -328,16 +363,17 @@ extension ChatEngine {
                 dynamicSmartRelay = false
 
             case .summarize(let preferred):
-                let summarizer = preferred
-                    .flatMap { p in activeMembers.first(where: { $0.id == p.id }) }
-                    ?? activeMembers.last
-                    ?? activeMembers[0]
+                guard let summarizer = activeMembers.first(where: { $0.id == preferred.id && $0.target.id == preferred.target.id }) else {
+                    self.finishGeneration(conversationID: convID, token: token, statuses: [.blocked])
+                    return
+                }
                 explicitQueue = [(summarizer, .summarize, false)]
                 maxRelayTurns = 1
                 dynamicSmartRelay = false
             }
 
             var turnsCompleted = 0
+            var turnOutcomes: [RequestStatus] = []
             var spokenMemberIDs = Set<UUID>()
             var roundMessages: [ChatMessage] = []
             var nextStep: (member: GroupMember, intent: GroupSpeechIntent, allowPass: Bool)? = explicitQueue.isEmpty ? nil : explicitQueue.removeFirst()
@@ -357,7 +393,7 @@ extension ChatEngine {
                     conversationID: convID,
                     speakerOrModel: "\(step.member.avatarEmoji) \(step.member.displayLabel)",
                     phaseText: String(localized: "正在发言…"),
-                    completedTurns: turnsCompleted,
+                    completedTurns: turnOutcomes.filter { $0 == .succeeded }.count,
                     totalTurns: maxRelayTurns,
                     force: true
                 )
@@ -368,7 +404,7 @@ extension ChatEngine {
                     : nil
                 let priorActive = ConversationTree.activeMessages(in: conversation)
 
-                let nextSort = (conversation.sortedMessages.last?.sortIndex ?? 0) + 1
+                let nextSort = conversation.nextMessageSortIndex()
                 let replyMsg = ChatMessage(
                     role: .assistant,
                     target: target,
@@ -387,6 +423,7 @@ extension ChatEngine {
                 meta.groupMemberTitle = step.member.title
                 meta.groupMemberEmoji = step.member.avatarEmoji
                 meta.groupSpeechIntent = step.intent
+                meta.omittedKnowledge = omitKnowledge
                 meta.omittedMemory = omitMemory && settings.usePersonalMemory
                 meta.memoryCount = memoryInfo.count
                 if turnsCompleted == 0 {
@@ -422,7 +459,8 @@ extension ChatEngine {
                     for: step.member,
                     limit: conversation.contextMessageLimit,
                     trailingCueIfNeeded: trailingCue,
-                    preferEnglish: englishPreferred
+                    preferEnglish: englishPreferred,
+                    recordReferences: { replyMsg.assistanceMetadata.personaExcerpts = $0 }
                 )
                 if let searchEvidence, let lastIdx = memberHistory.indices.last {
                     let oldLast = memberHistory[lastIdx]
@@ -432,7 +470,7 @@ extension ChatEngine {
                         attachments: oldLast.attachments
                     )
                 }
-                if let knowledgeEvidence, let lastIdx = memberHistory.indices.last {
+                if let knowledgeEvidence, !knowledgeEvidence.passages.isEmpty, let lastIdx = memberHistory.indices.last {
                     let oldLast = memberHistory[lastIdx]
                     memberHistory[lastIdx] = LLMPromptMessage(
                         role: oldLast.role,
@@ -461,7 +499,8 @@ extension ChatEngine {
                         speakerName: step.member.name,
                         speakerDisplayLabel: step.member.displayLabel
                     ),
-                    bookTurn: step.member.bookFriend.map { BookTurn(friend: $0, question: self.bookQuestion(in: priorActive), memberID: step.member.id) }
+                    bookTurn: step.member.bookFriend.map { BookTurn(friend: $0, question: self.bookQuestion(in: priorActive), memberID: step.member.id) },
+                    knowledgeChapterLimits: kbVolumeIDs.isEmpty ? nil : limits
                 )
 
                 let directive = await self.runSlotWithFallback(
@@ -499,6 +538,7 @@ extension ChatEngine {
 
                 guard Self.isAlive(replyMsg) else { break }
 
+                turnOutcomes.append(Self.outcomeStatus(of: replyMsg))
                 var updatedMeta = replyMsg.assistanceMetadata
                 if finalizedDirective.asksHost {
                     updatedMeta.groupAskedHost = true
@@ -545,7 +585,7 @@ extension ChatEngine {
                     try? context.save()
                     try? await Task.sleep(for: .milliseconds(200))
                     if !Task.isCancelled && Self.isAlive(conversation) {
-                        let burstSort = (conversation.sortedMessages.last?.sortIndex ?? 0) + 1
+                        let burstSort = conversation.nextMessageSortIndex()
                         let secondBubble = ChatMessage(
                             role: .assistant,
                             content: burstParts[1],
@@ -563,7 +603,9 @@ extension ChatEngine {
                         secondMeta.isPersonaSimulation = step.member.isSimulatedPersona
                         secondMeta.groupMemberTitle = step.member.title
                         secondMeta.groupMemberEmoji = step.member.avatarEmoji
+                        secondMeta.omittedKnowledge = replyMsg.assistanceMetadata.omittedKnowledge
                         secondMeta.bookReply = replyMsg.assistanceMetadata.bookReply
+                        secondMeta.personaExcerpts = replyMsg.assistanceMetadata.personaExcerpts
                         if finalizedDirective.asksHost {
                             secondMeta.groupAskedHost = true
                             var firstMeta = replyMsg.assistanceMetadata
@@ -634,7 +676,7 @@ extension ChatEngine {
                 try? context.save()
                 SpotlightIndexService.shared.indexConversation(conversation)
             }
-            self.finishGeneration(conversationID: convID, token: token)
+            self.finishGeneration(conversationID: convID, token: token, statuses: turnOutcomes)
 
             if let expectedTitle = expectedTitleForAutoGenerate, Self.isAlive(conversation) {
                 self.scheduleAutoTitleGeneration(

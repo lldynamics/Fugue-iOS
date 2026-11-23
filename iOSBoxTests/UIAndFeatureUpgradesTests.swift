@@ -20,11 +20,13 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
 
         let prefs = AppPreferences(defaults: defaults)
         XCTAssertEqual(prefs.fontScale, 1.0, accuracy: 0.001)
+        XCTAssertEqual(prefs.accentTheme, .cobalt)
         XCTAssertFalse(prefs.codeDefaultLineNumbers)
         XCTAssertTrue(prefs.hapticFeedbackEnabled)
         XCTAssertTrue(prefs.autoCollapseReasoning)
 
         prefs.fontScale = AppPreferences.FontScaleOption.comfortable.rawValue
+        prefs.accentTheme = .graphite
         prefs.codeDefaultLineNumbers = true
         prefs.autoCollapseReasoning = false
 
@@ -73,6 +75,7 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
         // Re-load from same UserDefaults suite to verify persistence
         let reloaded = AppPreferences(defaults: defaults)
         XCTAssertEqual(reloaded.fontScale, 1.08, accuracy: 0.001)
+        XCTAssertEqual(reloaded.accentTheme, .graphite)
         XCTAssertTrue(reloaded.codeDefaultLineNumbers)
         XCTAssertFalse(reloaded.autoCollapseReasoning)
         XCTAssertEqual(reloaded.customGroupTemplates.count, 1)
@@ -212,10 +215,13 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
 
         let restoredProviders = try destCtx.fetch(FetchDescriptor<ProviderConfig>())
         let restored = try XCTUnwrap(restoredProviders.first { $0.id == providerID })
+        defer { restored.deleteAllSecrets() }
         XCTAssertEqual(restored.baseURL, "https://gateway.example.com/team-a/v1")
-        XCTAssertTrue(restored.isEnabled)
-        XCTAssertEqual(KeychainService.shared.loadAPIKey(for: providerID), "sk-enc-test-987654")
-        XCTAssertEqual(KeychainService.shared.loadSecret(account: headerAccount), "hdr-enc-secret-42")
+        XCTAssertFalse(restored.isEnabled)
+        XCTAssertEqual(restored.apiKey, "sk-enc-test-987654")
+        XCTAssertEqual(restored.resolvedCustomHeaders.first { $0.id == secretHeader.id }?.value, "hdr-enc-secret-42")
+        XCTAssertTrue(KeychainService.shared.loadAPIKey(for: providerID).isEmpty)
+        XCTAssertTrue(KeychainService.shared.loadSecret(account: headerAccount).isEmpty)
         XCTAssertEqual(KeychainService.shared.loadSecret(account: TavilySearchClient.keychainAccount), "tvly-enc-key-777")
     }
 
@@ -518,7 +524,7 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempPresetStoreURL) }
         let isolatedPresetKB = PresetKnowledgeStore(fileURL: tempPresetStoreURL)
         let presetID = UUID()
-        isolatedPresetKB.setVolumeIDs([vol1.id, vol2.id], for: presetID)
+        try isolatedPresetKB.setVolumeIDs([vol1.id, vol2.id], for: presetID)
         XCTAssertEqual(isolatedPresetKB.volumeIDs(for: presetID), [vol1.id, vol2.id])
 
         let snapshots = ProjectKnowledgeSearch.snapshots(for: [vol1.id, vol2.id], in: ctx)
@@ -656,6 +662,7 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
         let convKey = SpotlightIndexService.makeIdentifier(conversationID: conv.id, messageID: nil)
         let msgKey = SpotlightIndexService.makeIdentifier(conversationID: conv.id, messageID: assistantReply.id)
         XCTAssertNotNil(SpotlightIndexService.shared.recentIndexedEntries[convKey])
+        XCTAssertEqual(SpotlightIndexService.shared.recentIndexedEntries[convKey]?.contentDescription, "")
         XCTAssertNotNil(SpotlightIndexService.shared.recentIndexedEntries[msgKey])
 
         let parsedMsgRoute = try XCTUnwrap(SpotlightIndexService.parseIdentifier(msgKey))
@@ -667,8 +674,13 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
         XCTAssertNil(SpotlightIndexService.shared.recentIndexedEntries[msgKey])
 
         // LiveActivityCoordinator state machine lifecycle
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let live = LiveActivityCoordinator(defaults: defaults)
+        live.setShowsPreviews(true)
         let liveID = UUID()
-        LiveActivityCoordinator.shared.start(
+        live.start(
             conversationID: liveID,
             chatTitle: "多角色架构圆桌",
             modeBadge: "圆桌群聊",
@@ -676,18 +688,20 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
             phaseText: "正在发言…",
             totalTurns: 3
         )
-        XCTAssertEqual(LiveActivityCoordinator.shared.activeStates[liveID]?.speakerOrModel, "🧑‍💻 老王")
-        LiveActivityCoordinator.shared.update(
+        XCTAssertEqual(live.activeStates[liveID]?.speakerOrModel, "🧑‍💻 老王")
+        live.update(
             conversationID: liveID,
             speakerOrModel: "🕵️ 沈总",
             completedTurns: 1,
             previewSnippet: "先看商业闭环",
             force: true
         )
-        XCTAssertEqual(LiveActivityCoordinator.shared.activeStates[liveID]?.speakerOrModel, "🕵️ 沈总")
-        XCTAssertEqual(LiveActivityCoordinator.shared.activeStates[liveID]?.completedTurns, 1)
-        LiveActivityCoordinator.shared.end(conversationID: liveID, finalPhase: "已完成")
-        XCTAssertNil(LiveActivityCoordinator.shared.activeStates[liveID])
+        XCTAssertEqual(live.activeStates[liveID]?.speakerOrModel, "🕵️ 沈总")
+        XCTAssertEqual(live.activeStates[liveID]?.completedTurns, 1)
+        let ended = live.end(conversationID: liveID, outcome: GenerationOutcome(statuses: [.succeeded, .failed], stopped: false))
+        XCTAssertEqual(ended?.completedTurns, 1)
+        XCTAssertEqual(ended?.phaseText, String(localized: "部分完成"))
+        XCTAssertNil(live.activeStates[liveID])
     }
 }
 

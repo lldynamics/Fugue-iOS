@@ -6,11 +6,14 @@ struct ChatDraft: Codable {
     var text = ""
     var attachments: [MessageAttachment] = []
     var quotedText: String?
+    var pickedMentions: [PickedGroupMention] = []
 
-    init(text: String = "", attachments: [MessageAttachment] = [], quotedText: String? = nil) {
+    init(text: String = "", attachments: [MessageAttachment] = [], quotedText: String? = nil,
+         pickedMentions: [PickedGroupMention] = []) {
         self.text = text
         self.attachments = attachments
         self.quotedText = quotedText
+        self.pickedMentions = pickedMentions
     }
 
     init(from decoder: Decoder) throws {
@@ -18,19 +21,82 @@ struct ChatDraft: Codable {
         text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
         attachments = try c.decodeIfPresent([MessageAttachment].self, forKey: .attachments) ?? []
         quotedText = try c.decodeIfPresent(String.self, forKey: .quotedText)
+        pickedMentions = try c.decodeIfPresent([PickedGroupMention].self, forKey: .pickedMentions) ?? []
     }
 }
 
-@MainActor
+/// A list row only needs the first line and attachment count, even for older drafts with embedded files.
+enum ChatDraftPreview: Equatable, Decodable, Sendable {
+    case empty, text(String), attachments(Int), quotation(String)
+
+    private enum CodingKeys: String, CodingKey { case text, attachments, quotedText }
+
+    init(text: String, attachmentCount: Int, quotedText: String?) {
+        func firstLine(_ value: String) -> String? {
+            let trimmed = value.drop(while: \.isWhitespace)
+            let line = trimmed.prefix(while: { !$0.isNewline }).prefix(140)
+            return line.isEmpty ? nil : String(line).trimmingCharacters(in: .whitespaces)
+        }
+        if let line = firstLine(text) { self = .text(line) }
+        else if attachmentCount > 0 { self = .attachments(attachmentCount) }
+        else if let quotedText, let line = firstLine(quotedText) { self = .quotation(line) }
+        else { self = .empty }
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let count: Int
+        if values.contains(.attachments), try !values.decodeNil(forKey: .attachments) {
+            count = try values.nestedUnkeyedContainer(forKey: .attachments).count ?? 0
+        } else { count = 0 }
+        self.init(text: try values.decodeIfPresent(String.self, forKey: .text) ?? "", attachmentCount: count,
+                  quotedText: try values.decodeIfPresent(String.self, forKey: .quotedText))
+    }
+
+    var summary: String? {
+        switch self {
+        case .empty: nil
+        case .text(let line): line
+        case .attachments(1): String(localized: "1 个附件")
+        case .attachments(let count): String(localized: "\(count) 个附件")
+        case .quotation(let line): String(localized: "引用：\(line)")
+        }
+    }
+}
+
+@Observable @MainActor
 final class ChatDraftStore {
-    static let shared = ChatDraftStore(directory: URL.applicationSupportDirectory.appendingPathComponent("Drafts"))
+    static let shared: ChatDraftStore = {
+        #if DEBUG && targetEnvironment(simulator)
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-ui-test-workspaces") || arguments.contains("-ui-test-model-picker") {
+            return ChatDraftStore(directory: URL.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        }
+        #endif
+        return ChatDraftStore(directory: URL.applicationSupportDirectory.appendingPathComponent("Drafts"))
+    }()
     private let directory: URL
     // Keep failed writes in memory for retry, but do not retain every saved attachment forever.
-    private var unsaved: [UUID: ChatDraft] = [:]
+    @ObservationIgnored private var unsaved: [UUID: ChatDraft] = [:]
     private class WeakState { weak var value: ChatDraftState?; init(_ value: ChatDraftState) { self.value = value } }
-    private var states: [UUID: WeakState] = [:]
+    @ObservationIgnored private var states: [UUID: WeakState] = [:]
+    private(set) var previews: [UUID: ChatDraftPreview] = [:]
 
     init(directory: URL) { self.directory = directory }
+
+    func loadPreview(for id: UUID) async {
+        guard previews[id] == nil else { return }
+        let url = fileURL(id)
+        let preview = await Task.detached(priority: .utility) { () -> ChatDraftPreview? in
+            do {
+                return try JSONDecoder().decode(ChatDraftPreview.self, from: Data(contentsOf: url, options: .mappedIfSafe))
+            } catch CocoaError.fileReadNoSuchFile {
+                return .empty
+            } catch { return nil }
+        }.value
+        // A save or deletion on the main actor takes precedence over an older disk read.
+        if !Task.isCancelled, previews[id] == nil, let preview { previews[id] = preview }
+    }
 
     func state(for id: UUID) -> ChatDraftState {
         if let state = states[id]?.value {
@@ -54,6 +120,8 @@ final class ChatDraftStore {
     }
 
     func save(_ draft: ChatDraft, for id: UUID) throws {
+        let preview = ChatDraftPreview(text: draft.text, attachmentCount: draft.attachments.count, quotedText: draft.quotedText)
+        if previews[id] != preview { previews[id] = preview }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let url = fileURL(id)
@@ -75,12 +143,14 @@ final class ChatDraftStore {
     /// Quarantines a damaged draft file alongside `Drafts/` without silent data loss, allowing
     /// the user to unblock sending in the conversation.
     func quarantineAndReset(_ id: UUID) throws {
-        unsaved[id] = nil
         let url = fileURL(id)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        let stamp = Int(Date().timeIntervalSince1970)
-        let archived = directory.appendingPathComponent("\(id.uuidString).corrupt-\(stamp).json")
-        try FileManager.default.moveItem(at: url, to: archived)
+        if FileManager.default.fileExists(atPath: url.path) {
+            let stamp = Int(Date().timeIntervalSince1970)
+            let archived = directory.appendingPathComponent("\(id.uuidString).corrupt-\(stamp).json")
+            try FileManager.default.moveItem(at: url, to: archived)
+        }
+        unsaved[id] = nil
+        previews[id] = .empty
     }
 
     func remove(_ id: UUID) throws {
@@ -90,6 +160,7 @@ final class ChatDraftStore {
         unsaved[id] = nil
         let url = fileURL(id)
         if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+        previews[id] = .empty
     }
 
     private func fileURL(_ id: UUID) -> URL { directory.appendingPathComponent(id.uuidString + ".json") }
@@ -98,12 +169,16 @@ final class ChatDraftStore {
 /// Shared by every presentation and in-flight attachment task for one conversation.
 @Observable @MainActor
 final class ChatDraftState {
-    var text = ""
+    var text = "" {
+        didSet { pickedMentions = PickedGroupMention.updating(pickedMentions, from: oldValue, to: text) }
+    }
+    private(set) var pickedMentions: [PickedGroupMention] = []
     var attachments: [MessageAttachment] = []
     var quotedText: String?
     var processingAttachments = 0
     var attachmentError: String?
     var persistenceError: String?
+    private(set) var savedText = ""
     private(set) var isLoaded = false
     private(set) var isDeleted = false
     private let id: UUID
@@ -141,6 +216,8 @@ final class ChatDraftState {
         do {
             let draft = try store.load(id)
             text = draft.text
+            pickedMentions = draft.pickedMentions
+            savedText = draft.text
             attachments = draft.attachments
             quotedText = draft.quotedText
             isLoaded = true
@@ -170,9 +247,24 @@ final class ChatDraftState {
         autosaveTask = nil
         guard isLoaded, !isDeleted else { return }
         do {
-            try store.save(.init(text: text, attachments: attachments, quotedText: quotedText), for: id)
+            try store.save(.init(text: text, attachments: attachments, quotedText: quotedText,
+                                 pickedMentions: pickedMentions), for: id)
+            savedText = text
             persistenceError = nil
         } catch { persistenceError = error.localizedDescription }
+    }
+
+    func insertGroupMention(_ token: String, memberID: UUID? = nil) {
+        var prefix = text
+        if prefix.hasSuffix("@") {
+            prefix.removeLast()
+        }
+        if let last = prefix.last, !last.isWhitespace {
+            prefix.append(" ")
+        }
+        text = prefix + token + " "
+        pickedMentions.append(.init(offset: prefix.utf16.count, token: token, memberID: memberID))
+        save()
     }
 
     func scheduleAutosave(delayMilliseconds: Int = 450) {

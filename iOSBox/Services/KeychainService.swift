@@ -14,7 +14,7 @@ final class KeychainService: @unchecked Sendable {
 
     private init() {}
 
-    // MARK: - Provider API keys (account = provider UUID, unchanged for existing installs)
+    // MARK: - Provider API keys (account = local credential UUID)
 
     static func extraKeysAccount(providerID: UUID) -> String {
         "\(providerID.uuidString)/extra-keys"

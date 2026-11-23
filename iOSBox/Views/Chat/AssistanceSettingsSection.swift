@@ -79,7 +79,10 @@ struct AssistanceSettingsSection: View {
             }
             Toggle("首轮对话后自动生成标题", isOn: binding(\.autoGenerateTitle))
             if !conversation.isGroupMode {
-                Toggle("Arena 双盲对比模式", isOn: binding(\.blindArenaMode))
+                Toggle("Arena 双盲对比模式", isOn: Binding(
+                    get: { conversation.assistanceSettings.blindArenaMode },
+                    set: { ChatEngine.setBlindArenaMode($0, in: conversation) }
+                ))
             }
         } header: { Text("智能增强") } footer: {
             Text("提示词缓存可显著降低 Anthropic 长上下文与系统提示词成本；智能工具仅在单聊生效，记忆建议需经你手动确认后才会保存。")

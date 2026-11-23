@@ -4,7 +4,7 @@ import SwiftData
 @MainActor @Observable
 final class WorkspaceNavigation {
     var tab = 0
-    var assistantSection: AssistantListView.WorkshopSection = .presets
+    var assistantSection: AssistantListView.WorkshopSection = .friends
 
     func openBookshelf() {
         assistantSection = .books
@@ -47,7 +47,7 @@ struct MainTabView: View {
                 startChat(with: preset)
             }
             .tabItem {
-                Label("助手", systemImage: "sparkles.rectangle.stack.fill")
+                Label("好友", systemImage: "person.2.fill")
             }
             .tag(1)
 

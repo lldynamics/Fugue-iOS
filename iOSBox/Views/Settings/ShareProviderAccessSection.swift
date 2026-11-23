@@ -18,14 +18,17 @@ struct ShareProviderAccessSection: View {
         } header: { Text("系统分享") } footer: {
             Text("启用后，分享扩展可读取此服务商的模型配置与共享钥匙串中的凭据。关闭后新的分享请求将无法使用它，已发出的请求不受影响。")
         }
-        .onAppear { isEnabled = SystemIntegration.shared.isEnabled(provider.id) }
+        .onAppear { isEnabled = SystemIntegration.shared.isEnabled(provider) }
+        .onChange(of: SystemIntegration.destinationDigest(for: provider)) {
+            isEnabled = SystemIntegration.shared.isEnabled(provider)
+        }
     }
 
     private func updateAccess(_ enabled: Bool) {
         onBeforeToggle?()
         isEnabled = enabled
         do {
-            try SystemIntegration.shared.setEnabled(enabled, providerID: provider.id, context: context)
+            try SystemIntegration.shared.setEnabled(enabled, provider: provider, context: context)
             error = nil
         } catch { self.error = error.localizedDescription }
     }

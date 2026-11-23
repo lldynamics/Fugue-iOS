@@ -137,15 +137,17 @@ enum GeminiAdapter {
                                 let ext = mime.lowercased().contains("jpeg") || mime.lowercased().contains("jpg")
                                     ? "jpg"
                                     : (mime.lowercased().contains("webp") ? "webp" : "png")
-                                let byteCount = Data(base64Encoded: dataB64)?.count ?? dataB64.utf8.count
-                                continuation.yield(.attachmentDelta(MessageAttachment(
+                                let padding = dataB64.hasSuffix("==") ? 2 : (dataB64.hasSuffix("=") ? 1 : 0)
+                                let byteCount = max(0, dataB64.utf8.count / 4 * 3 - padding)
+                                let attachment = MessageAttachment(
                                     kind: .image,
                                     fileName: "generated.\(ext)",
                                     mimeType: mime,
                                     dataBase64: dataB64,
                                     extractedText: nil,
                                     byteSize: byteCount
-                                )))
+                                ).withBoundedImagePayload
+                                if attachment.dataBase64 != nil { continuation.yield(.attachmentDelta(attachment)) }
                                 continue
                             }
                         }
@@ -197,16 +199,15 @@ enum GeminiAdapter {
             }
 
             if let usage = obj["usageMetadata"] as? [String: Any] {
-                let promptTok = usage["promptTokenCount"] as? Int
+                let promptTok = LLMUsage.valid(usage["promptTokenCount"] as? Int)
                 let candTok = usage["candidatesTokenCount"] as? Int
                 let thoughtTok = usage["thoughtsTokenCount"] as? Int
                 // Thinking tokens are billed as output, so include them.
-                let completionTok = (candTok != nil || thoughtTok != nil)
-                    ? (candTok ?? 0) + (thoughtTok ?? 0) : nil
+                let completionTok = LLMUsage.combined(candTok, thoughtTok)
                 if promptTok != nil || completionTok != nil {
                     continuation.yield(.usage(promptTokens: promptTok, completionTokens: completionTok))
                 }
-                if let cachedTok = usage["cachedContentTokenCount"] as? Int, cachedTok > 0 {
+                if let cachedTok = LLMUsage.valid(usage["cachedContentTokenCount"] as? Int), cachedTok > 0 {
                     continuation.yield(.cacheUsage(cachedTokens: cachedTok, cacheWriteTokens: nil))
                 }
             }
@@ -393,8 +394,7 @@ enum GeminiAdapter {
         }
         LLMClient.applyCustomHeaders(customHeaders, to: &req)
 
-        return try await ModelListTransport.pages(request: req, session: session, cursorName: "pageToken") { page in
-            guard let items = page["models"] as? [[String: Any]] else { throw URLError(.cannotParseResponse) }
+        return try await ModelListTransport.pages(request: req, session: session, itemsKey: "models", cursorName: "pageToken") { page, items in
             let models = try items.compactMap { item -> ModelSpec? in
                 guard let name = item["name"] as? String else { throw URLError(.cannotParseResponse) }
                 if let methods = item["supportedGenerationMethods"] as? [String], !methods.contains("generateContent") { return nil }

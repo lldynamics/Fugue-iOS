@@ -28,7 +28,7 @@ struct ReasoningCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             Button {
                 withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
                     let current = effectiveExpanded
@@ -36,38 +36,44 @@ struct ReasoningCardView: View {
                     isExpanded = !current
                 }
             } label: {
-                HStack(spacing: 7) {
+                HStack(spacing: DS.Spacing.xs) {
                     if isActivelyThinking {
                         ProgressView()
                             .controlSize(.mini)
                     } else {
-                        Image(systemName: "brain")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.purple)
+                        Circle()
+                            .fill(preferences.accentTheme.readableText.opacity(0.75))
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
                     }
 
                     Text(headerTitle)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary.opacity(0.82))
-
-                    Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.bold))
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(effectiveExpanded ? 90 : 0))
 
                     Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(effectiveExpanded ? 90 : 0))
+                        .accessibilityHidden(true)
                 }
-                .padding(.horizontal, 11)
-                .padding(.vertical, 7)
-                .background(Color.purple.opacity(0.09), in: Capsule())
+                .padding(.horizontal, DS.Spacing.md)
+                .padding(.vertical, 8)
+                .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                        .strokeBorder(DS.Surface.hairline, lineWidth: 1)
+                )
             }
             .buttonStyle(.plain)
 
             if effectiveExpanded {
-                HStack(alignment: .top, spacing: 10) {
-                    RoundedRectangle(cornerRadius: 1.5)
-                        .fill(Color.purple.opacity(0.38))
-                        .frame(width: 2.5)
+                HStack(alignment: .top, spacing: DS.Spacing.sm) {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(Color.secondary.opacity(0.32))
+                        .frame(width: 2)
 
                     if isActivelyThinking && !hasUserToggled {
                         ScrollViewReader { proxy in
@@ -75,7 +81,7 @@ struct ReasoningCardView: View {
                                 Text(reasoning)
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
-                                    .lineSpacing(3.5)
+                                    .lineSpacing(4)
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Color.clear
@@ -91,12 +97,12 @@ struct ReasoningCardView: View {
                         Text(reasoning)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                            .lineSpacing(3.5)
+                            .lineSpacing(4)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                .padding(.leading, 8)
+                .padding(.leading, DS.Spacing.sm)
                 .padding(.vertical, 2)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }

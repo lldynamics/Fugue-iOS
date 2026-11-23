@@ -114,7 +114,7 @@ private final class EnhancementFixtureURLProtocol: URLProtocol {
             """
         } else if path.contains("gemini-image-tool-cache") {
             payload = """
-            data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"propose_memory","args":{"fact":"Uses Swift"}},"thoughtSignature":"sig-123"},{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":30,"candidatesTokenCount":10,"cachedContentTokenCount":20}}
+            data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"propose_memory","args":{"fact":"Uses Swift"}},"thoughtSignature":"sig-123"},{"inlineData":{"mimeType":"image/png","data":"\(onePixelPNGFixture)"}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":30,"candidatesTokenCount":10,"cachedContentTokenCount":20}}
 
 
             """
@@ -506,6 +506,88 @@ final class ChatEnhancementsTests: XCTestCase {
 
     // MARK: - Arena Compare Promotion, Cross Critique & Blind Mode
 
+    func testOptedInLiveActivityStreamsTheAnswerAndKeepsReasoningPrivate() async throws {
+        let provider = makeProvider()
+        let chat = Conversation(title: "Private chat", primaryTarget: provider.makeTarget(for: provider.models[0]))
+        context.insert(chat)
+        let live = LiveActivityCoordinator.shared
+        let originalPreference = live.showsPreviews
+        live.setShowsPreviews(true)
+        defer { live.setShowsPreviews(originalPreference) }
+        let started = expectation(description: "Stream started")
+        let (events, output) = AsyncThrowingStream<LLMStreamEvent, Error>.makeStream()
+        let engine = ChatEngine { _ in started.fulfill(); return events }
+        defer { output.finish(); engine.stopGeneration(for: chat.id) }
+        XCTAssertEqual(engine.sendUserMessage(text: "Question", attachments: [], in: chat,
+                                              providers: [provider], context: context), .sent)
+        await fulfillment(of: [started], timeout: 5)
+        let reply = try XCTUnwrap(chat.sortedMessages.last)
+        // Allow the activity's throttled update window to open before each distinct phase.
+        try await Task.sleep(for: .milliseconds(1250))
+        output.yield(.reasoningDelta("Private reasoning"))
+        for _ in 0..<100 where reply.reasoningContent.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(reply.reasoningContent, "Private reasoning")
+        let thinking = try XCTUnwrap(live.activeStates[chat.id])
+        XCTAssertEqual(thinking.phaseText, String(localized: "深度思考中…"))
+        XCTAssertNil(thinking.visibleSnippet)
+        try await Task.sleep(for: .milliseconds(1250))
+        output.yield(.contentDelta("Visible reply"))
+        for _ in 0..<100 where reply.content.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(live.activeStates[chat.id]?.visibleSnippet, "Visible reply")
+        output.yield(.done)
+        output.finish()
+        try await wait(engine, chat)
+    }
+
+    func testBlindComparisonUsesAnonymousLiveActivityWhileBothModelsStream() async throws {
+        let left = makeProvider(name: "Left", modelID: "left-model")
+        let right = makeProvider(name: "Right", modelID: "right-model")
+        let targets = [left, right].map { $0.makeTarget(for: $0.models[0]) }
+        let live = LiveActivityCoordinator.shared
+        let originalPreference = live.showsPreviews
+        live.setShowsPreviews(true)
+        defer { live.setShowsPreviews(originalPreference) }
+        for initiallyBlind in [true, false] {
+            let chat = Conversation(title: "Private comparison", isArenaMode: true, arenaTargets: targets)
+            chat.assistanceSettings.blindArenaMode = initiallyBlind
+            context.insert(chat)
+            let started = expectation(description: "Both comparison models started")
+            started.expectedFulfillmentCount = 2
+            let first = AsyncThrowingStream<LLMStreamEvent, Error>.makeStream()
+            let second = AsyncThrowingStream<LLMStreamEvent, Error>.makeStream()
+            let engine = ChatEngine { request in
+                started.fulfill()
+                return request.modelID == "left-model" ? first.stream : second.stream
+            }
+            defer {
+                first.continuation.finish()
+                second.continuation.finish()
+                engine.stopGeneration(for: chat.id)
+            }
+            XCTAssertEqual(engine.sendUserMessage(text: "Compare", attachments: [], in: chat,
+                                                  providers: [left, right], context: context), .sent)
+            await fulfillment(of: [started], timeout: 5)
+            if !initiallyBlind {
+                let before = try XCTUnwrap(live.activeStates[chat.id])
+                XCTAssertEqual(before.presentation, .preview)
+                XCTAssertEqual(before.visibleTitle, "Private comparison")
+                ChatEngine.setBlindArenaMode(true, in: chat)
+            }
+            live.update(conversationID: chat.id, speakerOrModel: "left-model", previewSnippet: "Private answer", force: true)
+            let state = try XCTUnwrap(live.activeStates[chat.id])
+            XCTAssertEqual(state.presentation, .anonymous)
+            XCTAssertNil(state.visibleTitle)
+            XCTAssertNil(state.visibleSnippet)
+            XCTAssertFalse(state.speakerOrModel.lowercased().contains("-model"))
+            for output in [first.continuation, second.continuation] {
+                output.yield(.contentDelta("Comparison answer"))
+                output.yield(.done)
+                output.finish()
+            }
+            try await wait(engine, chat)
+        }
+    }
+
     func testCompareWithAnotherModelCrossCritiqueAndBlindReveal() async throws {
         let p1 = makeProvider(name: "P1", modelID: "m1")
         let p2 = makeProvider(name: "P2", modelID: "m2")
@@ -673,7 +755,7 @@ final class ChatEnhancementsTests: XCTestCase {
 
         let capture = EnhancementCapture()
         let runCounter = LockedCounter()
-        let img1 = MessageAttachment(kind: .image, fileName: "gen1.png", mimeType: "image/png", dataBase64: "AA==", byteSize: 1)
+        let img1 = MessageAttachment(kind: .image, fileName: "gen1.png", mimeType: "image/png", dataBase64: onePixelPNGFixture, byteSize: 70)
 
         let engine = ChatEngine { req in
             capture.append(req)
@@ -757,7 +839,7 @@ final class ChatEnhancementsTests: XCTestCase {
         }
 
         // Gemini multi-turn replays assistant-generated image inlineData
-        let genImg = MessageAttachment(kind: .image, fileName: "generated.png", mimeType: "image/png", dataBase64: "iVBORw==", byteSize: 6)
+        let genImg = MessageAttachment(kind: .image, fileName: "generated.png", mimeType: "image/png", dataBase64: onePixelPNGFixture, byteSize: 70)
         let geminiBody = GeminiAdapter.buildRequestBody(LLMChatRequest(
             providerName: "Gemini",
             protocolType: .gemini,

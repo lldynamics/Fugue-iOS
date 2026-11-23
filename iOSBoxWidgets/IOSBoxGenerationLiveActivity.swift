@@ -18,9 +18,10 @@ struct IOSBoxGenerationLiveActivity: Widget {
                     HStack(spacing: 6) {
                         Image(systemName: "sparkles")
                             .foregroundStyle(.cyan)
-                        Text(context.state.speakerOrModel)
+                        Text(context.state.visibleSpeaker)
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
+                            .privacySensitive(context.state.presentation == .preview)
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
@@ -41,21 +42,25 @@ struct IOSBoxGenerationLiveActivity: Widget {
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text(context.attributes.chatTitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            if let title = context.state.visibleTitle {
+                                Text(title)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .privacySensitive()
+                            }
                             Spacer(minLength: 8)
                             Text(context.state.phaseText)
                                 .font(.caption.weight(.medium))
                                 .foregroundStyle(.cyan)
                                 .lineLimit(1)
                         }
-                        if !context.state.previewSnippet.isEmpty {
-                            Text(context.state.previewSnippet)
+                        if let snippet = context.state.visibleSnippet {
+                            Text(snippet)
                                 .font(.caption2)
                                 .foregroundStyle(.primary.opacity(0.9))
                                 .lineLimit(2)
+                                .privacySensitive()
                         }
                         if context.state.totalTurns > 1 {
                             ProgressView(
@@ -100,10 +105,11 @@ private struct LockScreenLiveActivityView: View {
             HStack(spacing: 8) {
                 Image(systemName: "sparkles")
                     .foregroundStyle(.cyan)
-                Text(state.speakerOrModel)
+                Text(state.visibleSpeaker)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
+                    .privacySensitive(state.presentation == .preview)
                 Spacer(minLength: 6)
                 Text(attributes.modeBadge)
                     .font(.caption2.weight(.medium))
@@ -114,10 +120,13 @@ private struct LockScreenLiveActivityView: View {
             }
 
             HStack {
-                Text(attributes.chatTitle)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(1)
+                if let title = state.visibleTitle {
+                    Text(title)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.7))
+                        .lineLimit(1)
+                        .privacySensitive()
+                }
                 Spacer(minLength: 8)
                 Text(state.phaseText)
                     .font(.caption.weight(.medium))
@@ -125,11 +134,12 @@ private struct LockScreenLiveActivityView: View {
                     .lineLimit(1)
             }
 
-            if !state.previewSnippet.isEmpty {
-                Text(state.previewSnippet)
+            if let snippet = state.visibleSnippet {
+                Text(snippet)
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.92))
                     .lineLimit(2)
+                    .privacySensitive()
             }
 
             if state.totalTurns > 1 {

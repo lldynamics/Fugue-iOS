@@ -75,6 +75,29 @@ final class ChatMessage {
         }
     }
 
+    func applyRevision(_ chosen: MessageRevision, metadata meta: inout AssistanceMetadata) {
+        meta.isPersonaSimulation = chosen.isPersonaSimulation
+        meta.privateSpeaker = chosen.privateSpeaker
+        meta.knowledgeEvidence = chosen.knowledgeEvidence
+        meta.bookReply = chosen.bookReply
+        meta.personaExcerpts = chosen.personaExcerpts
+        self.content = chosen.content
+        self.reasoningContent = chosen.reasoningContent
+        self.attachments = chosen.attachments.map(\.withBoundedImagePayload)
+        self.providerID = chosen.providerID
+        self.providerName = chosen.providerName
+        self.modelID = chosen.modelID
+        self.modelDisplayName = chosen.modelDisplayName
+        self.accentHex = chosen.accentHex
+        self.promptTokens = LLMUsage.valid(chosen.promptTokens)
+        self.completionTokens = LLMUsage.valid(chosen.completionTokens)
+        self.cachedTokens = LLMUsage.valid(chosen.cachedTokens)
+        self.latencyMs = LLMUsage.valid(chosen.latencyMs)
+        self.thinkingDurationMs = LLMUsage.valid(chosen.thinkingDurationMs)
+        self.finishReason = chosen.finishReason
+        self.errorMessage = nil
+    }
+
     var role: MessageRole {
         get { MessageRole(rawValue: roleRaw) ?? .user }
         set { roleRaw = newValue.rawValue }

@@ -115,7 +115,12 @@ actor BookReferenceSearch {
             try Task.checkCancellation()
             let chapter = chapters[chapterIndex]
             let lines = chapter.text.split(whereSeparator: \.isNewline)
+            var previousStart = chapter.text.startIndex
+            var lineOffset = 0
             for i in lines.indices {
+                lineOffset += chapter.text[previousStart..<lines[i].startIndex].utf16.count
+                previousStart = lines[i].startIndex
+                var offset = lineOffset
                 var rest = lines[i][...]
                 while !rest.isEmpty {
                     try Task.checkCancellation()
@@ -129,11 +134,14 @@ actor BookReferenceSearch {
                             let next = lines[i + 1].trimmingCharacters(in: .whitespaces)
                             if let first = next.first, "“「『\"—".contains(first) { excerpt += "\n" + next.prefix(420 - body.count - 1) }
                         }
-                        scenes.append(Scene(excerpt: BookExcerpt(id: scenes.count, chapter: chapter.title, text: excerpt),
+                        scenes.append(Scene(excerpt: BookExcerpt(id: scenes.count, chapter: chapter.title, text: excerpt, chapterIndex: chapterIndex,
+                                                                utf16Offset: offset + chunk.prefix(while: \.isWhitespace).utf16.count),
                                             voiced: speech.firstMatch(in: body, range: range) != nil, chapterIndex: chapterIndex))
                     }
                     if complete { break }
-                    rest = rest[chunk.index(chunk.endIndex, offsetBy: -62)...]
+                    let next = chunk.index(chunk.endIndex, offsetBy: -62)
+                    offset += rest[..<next].utf16.count
+                    rest = rest[next...]
                 }
             }
         }

@@ -288,35 +288,79 @@ enum GroupDiscussionCoordinator {
         return cjkCount == 0 && latinLetterCount >= 4
     }
 
-    static func extractMentions(in text: String, activeMembers: [GroupMember]) -> MentionParseResult {
-        let lowered = text.lowercased()
-        if lowered.contains("@所有人") || lowered.contains("@全体") || lowered.contains("@all") || lowered.contains("@everyone") {
-            return MentionParseResult(mentionsAll: true, members: activeMembers)
-        }
-
-        var found: [(offset: Int, member: GroupMember)] = []
+    static func extractMentions(in text: String, activeMembers: [GroupMember],
+                                pickedMentions: [PickedGroupMention] = []) -> MentionParseResult {
+        let broadcasts: Set<String> = ["@所有人", "@全体", "@all", "@everyone"]
+        var membersByAlias: [String: Set<UUID>] = [:]
         for member in activeMembers {
-            var tokens = ["@\(member.name)"]
-            if !member.title.isEmpty {
-                tokens.append("@\(member.displayLabel)")
-                tokens.append("@\(member.title)")
-            }
-            var earliestOffset: Int?
-            for token in tokens where token.count > 1 {
-                if let range = text.range(of: token, options: [.caseInsensitive]) {
-                    let pos = range.lowerBound.utf16Offset(in: text)
-                    if earliestOffset == nil || pos < earliestOffset! {
-                        earliestOffset = pos
-                    }
-                }
-            }
-            if let pos = earliestOffset {
-                found.append((pos, member))
+            for alias in [member.mentionToken, member.name, member.displayLabel, member.title] {
+                let name = alias.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if !name.isEmpty { membersByAlias["@" + name, default: []].insert(member.id) }
             }
         }
+        let aliases = broadcasts.union(membersByAlias.keys).sorted { $0.utf16.count > $1.utf16.count }
+        let membersByID = Dictionary(activeMembers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let picks = Dictionary(pickedMentions.map { ($0.offset, $0) }, uniquingKeysWith: { _, last in last })
+        let source = text as NSString
+        func matches(_ token: String, at offset: Int) -> Bool {
+            let count = token.utf16.count
+            return count > 1 && count <= source.length - offset
+                && source.compare(token, options: .caseInsensitive, range: NSRange(location: offset, length: count)) == .orderedSame
+        }
+        func isASCIIWord(_ unit: UInt16) -> Bool {
+            (48...57).contains(unit) || (65...90).contains(unit) || (97...122).contains(unit) || unit == 95 || unit == 45
+        }
+        let attachedPunctuation = Set("@/:.\\=+#%&?".utf16)
+        func endsAtBoundary(_ end: Int) -> Bool {
+            guard end < source.length else { return true }
+            let unit = source.character(at: end)
+            if unit == 46, end + 1 < source.length, isASCIIWord(source.character(at: end + 1)) { return false }
+            if let scalar = UnicodeScalar(unit) {
+                return !isASCIIWord(unit) && !CharacterSet.alphanumerics.contains(scalar)
+                    && !CharacterSet.nonBaseCharacters.contains(scalar)
+            }
+            return !(0xD800...0xDBFF).contains(unit)
+        }
 
-        found.sort { $0.offset < $1.offset }
-        return MentionParseResult(mentionsAll: false, members: found.map(\.member))
+        var found: [GroupMember] = []
+        var seen = Set<UUID>()
+        var offset = 0
+        while offset < source.length {
+            guard source.character(at: offset) == 64 else {
+                offset += 1
+                continue
+            }
+            let startsAtBoundary: Bool
+            if offset == 0 {
+                startsAtBoundary = true
+            } else {
+                let before = source.character(at: offset - 1)
+                startsAtBoundary = !isASCIIWord(before) && !attachedPunctuation.contains(before)
+            }
+            if let pick = picks[offset], matches(pick.token, at: offset) {
+                offset += pick.token.utf16.count
+                guard startsAtBoundary, endsAtBoundary(offset) else { continue }
+                guard let id = pick.memberID else { return MentionParseResult(mentionsAll: true, members: activeMembers) }
+                if let member = membersByID[id], seen.insert(member.id).inserted {
+                    found.append(member)
+                }
+                continue
+            }
+            guard startsAtBoundary,
+                  let alias = aliases.first(where: { matches($0, at: offset) && endsAtBoundary(offset + $0.utf16.count) }) else {
+                offset += 1
+                continue
+            }
+            offset += alias.utf16.count
+            if broadcasts.contains(alias), membersByAlias[alias] == nil {
+                return MentionParseResult(mentionsAll: true, members: activeMembers)
+            }
+            if let ids = membersByAlias[alias], ids.count == 1, let id = ids.first,
+               let member = membersByID[id], seen.insert(id).inserted {
+                found.append(member)
+            }
+        }
+        return MentionParseResult(mentionsAll: false, members: found)
     }
 
     /// Builds a perspective-flipped conversation history for `speaker`:
@@ -328,7 +372,8 @@ enum GroupDiscussionCoordinator {
         for speaker: GroupMember,
         limit: Int,
         trailingCueIfNeeded: String? = nil,
-        preferEnglish: Bool = false
+        preferEnglish: Bool = false,
+        recordReferences: (([PersonaExcerpt]) -> Void)? = nil
     ) -> [LLMPromptMessage] {
         let afterDivider: ArraySlice<ChatMessage>
         if let lastDividerIdx = messages.lastIndex(where: { $0.assistanceMetadata.isContextDivider }) {
@@ -450,7 +495,9 @@ enum GroupDiscussionCoordinator {
 
         if let materials = speaker.persona?.materials, !materials.isEmpty, let last = merged.last {
             let topic = sliced.last(where: { $0.role == .user })?.content ?? last.content
-            if let reference = PersonaMaterials.referenceBlock(materials, topic: topic) {
+            let excerpts = PersonaMaterials.excerpts(materials, topic: topic)
+            if let reference = PersonaMaterials.referenceBlock(excerpts) {
+                recordReferences?(excerpts)
                 merged[merged.count - 1] = LLMPromptMessage(role: .user, content: last.content + "\n\n" + reference, attachments: last.attachments)
             }
         }
@@ -654,13 +701,14 @@ enum GroupDiscussionCoordinator {
         activeMembers: [GroupMember],
         speakingMode: GroupSpeakingMode,
         maxRelayTurns: Int,
-        priorMessages: [ChatMessage]
+        priorMessages: [ChatMessage],
+        resolvedMentions: MentionParseResult? = nil
     ) -> [(member: GroupMember, intent: GroupSpeechIntent, explicitMention: Bool)] {
         guard !activeMembers.isEmpty else { return [] }
-        let mentions = extractMentions(in: userText, activeMembers: activeMembers)
+        let mentions = resolvedMentions ?? extractMentions(in: userText, activeMembers: activeMembers)
 
         if mentions.mentionsAll {
-            return activeMembers.enumerated().map { idx, m in
+            return mentions.members.enumerated().map { idx, m in
                 let intent: GroupSpeechIntent = idx == 0 ? .openPerspective : (idx % 2 == 1 ? .rebuttal : .alternative)
                 return (m, intent, true)
             }

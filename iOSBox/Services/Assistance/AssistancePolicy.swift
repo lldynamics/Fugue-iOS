@@ -16,6 +16,8 @@ struct AssistanceSettings: Codable, Equatable {
     var knowledgeVolumeIDs: [UUID] = []
     var isGroupMode = false
     var bookFriend: BookFriend?
+    var privatePersona: GroupMember?
+    var companionBookID: UUID?
     var groupMembers: [GroupMember] = []
     var groupSpeakingMode: GroupSpeakingMode = .smartRelay
     var groupSpeechStyle: GroupSpeechStyle = .naturalShort
@@ -75,6 +77,8 @@ struct AssistanceSettings: Codable, Equatable {
         knowledgeVolumeIDs = try c.decodeIfPresent([UUID].self, forKey: .knowledgeVolumeIDs) ?? []
         isGroupMode = try c.decodeIfPresent(Bool.self, forKey: .isGroupMode) ?? false
         bookFriend = try c.decodeIfPresent(BookFriend.self, forKey: .bookFriend)
+        privatePersona = try c.decodeIfPresent(GroupMember.self, forKey: .privatePersona)
+        companionBookID = try c.decodeIfPresent(UUID.self, forKey: .companionBookID)
         groupMembers = try c.decodeIfPresent([GroupMember].self, forKey: .groupMembers) ?? []
         groupSpeakingMode = try c.decodeIfPresent(GroupSpeakingMode.self, forKey: .groupSpeakingMode) ?? .smartRelay
         groupSpeechStyle = try c.decodeIfPresent(GroupSpeechStyle.self, forKey: .groupSpeechStyle) ?? .naturalShort
@@ -85,15 +89,19 @@ struct AssistanceSettings: Codable, Equatable {
 
 struct GenerationOptions: Equatable, Sendable {
     var omitMemory = false
+    var omitKnowledge = false
     var searchQuery: String?
     var quotedExcerpt: String?
     var overrideTarget: ResolvedModelTarget?
+    var pickedMentions: [PickedGroupMention] = []
+    var authorizedGroupMentions: GroupDiscussionCoordinator.MentionParseResult?
 }
 
 struct ComposerRequestOptions: Equatable {
     var useSearch = false
     var searchQuery = ""
     var omitMemory = false
+    var omitKnowledge = false
     var temporaryTarget: ResolvedModelTarget?
 
     mutating func setSearch(_ enabled: Bool, draft: String) {
@@ -103,6 +111,7 @@ struct ComposerRequestOptions: Equatable {
 
     func forSend(in chat: Conversation, quote: String?) -> GenerationOptions {
         GenerationOptions(omitMemory: omitMemory && chat.assistanceSettings.usePersonalMemory,
+                          omitKnowledge: omitKnowledge && !chat.assistanceSettings.knowledgeVolumeIDs.isEmpty,
                           searchQuery: useSearch ? searchQuery : nil, quotedExcerpt: quote,
                           overrideTarget: chat.isArenaMode || chat.isGroupMode ? nil : temporaryTarget)
     }
@@ -127,10 +136,24 @@ struct MessageRevision: Codable, Equatable, Sendable, Identifiable {
     var cachedTokens: Int?
     var latencyMs: Int?
     var thinkingDurationMs: Int?
+    var personaExcerpts: [PersonaExcerpt]?
+    var privateSpeaker: PersonaByline?
+    var knowledgeEvidence: KnowledgeEvidence?
     var bookReply: BookReplyEvidence?
     var isPersonaSimulation = false
     var finishReason: String?
     var createdAt: Date
+
+    var hasContent: Bool { !content.isEmpty || !reasoningContent.isEmpty || !attachments.isEmpty }
+
+    func representsSameReply(as other: Self) -> Bool {
+        content == other.content && reasoningContent == other.reasoningContent &&
+        attachments == other.attachments && (providerID == nil || other.providerID == nil || providerID == other.providerID) &&
+        (modelID.isEmpty || other.modelID.isEmpty || modelID == other.modelID) &&
+        (privateSpeaker == nil || other.privateSpeaker == nil || privateSpeaker == other.privateSpeaker) &&
+        (knowledgeEvidence == nil || other.knowledgeEvidence == nil || knowledgeEvidence == other.knowledgeEvidence) &&
+        bookReply == other.bookReply && personaExcerpts == other.personaExcerpts && isPersonaSimulation == other.isPersonaSimulation
+    }
 
     init(
         id: UUID = UUID(),
@@ -150,6 +173,9 @@ struct MessageRevision: Codable, Equatable, Sendable, Identifiable {
         finishReason: String? = nil,
         isPersonaSimulation: Bool = false,
         bookReply: BookReplyEvidence? = nil,
+        personaExcerpts: [PersonaExcerpt]? = nil,
+        privateSpeaker: PersonaByline? = nil,
+        knowledgeEvidence: KnowledgeEvidence? = nil,
         createdAt: Date
     ) {
         self.id = id
@@ -169,6 +195,9 @@ struct MessageRevision: Codable, Equatable, Sendable, Identifiable {
         self.finishReason = finishReason
         self.isPersonaSimulation = isPersonaSimulation
         self.bookReply = bookReply
+        self.personaExcerpts = personaExcerpts
+        self.privateSpeaker = privateSpeaker
+        self.knowledgeEvidence = knowledgeEvidence
         self.createdAt = createdAt
     }
 
@@ -188,6 +217,9 @@ struct MessageRevision: Codable, Equatable, Sendable, Identifiable {
         cachedTokens = try c.decodeIfPresent(Int.self, forKey: .cachedTokens)
         latencyMs = try c.decodeIfPresent(Int.self, forKey: .latencyMs)
         thinkingDurationMs = try c.decodeIfPresent(Int.self, forKey: .thinkingDurationMs)
+        privateSpeaker = try c.decodeIfPresent(PersonaByline.self, forKey: .privateSpeaker)
+        knowledgeEvidence = try c.decodeIfPresent(KnowledgeEvidence.self, forKey: .knowledgeEvidence)
+        personaExcerpts = try c.decodeIfPresent([PersonaExcerpt].self, forKey: .personaExcerpts)
         bookReply = try c.decodeIfPresent(BookReplyEvidence.self, forKey: .bookReply)
         isPersonaSimulation = try c.decodeIfPresent(Bool.self, forKey: .isPersonaSimulation) ?? false
         finishReason = try c.decodeIfPresent(String.self, forKey: .finishReason)
@@ -206,6 +238,7 @@ struct ToolCallRecord: Codable, Equatable, Sendable, Identifiable {
 struct AssistanceMetadata: Codable {
     var memoryCount = 0
     var omittedMemory = false
+    var omittedKnowledge = false
     var requestedSearchQuery: String?
     var search: SearchEvidence?
     var routeNotice: String?
@@ -225,7 +258,9 @@ struct AssistanceMetadata: Codable {
     var groupMemberName: String?
     var groupMemberTitle: String?
     var groupMemberEmoji: String?
+    var privateSpeaker: PersonaByline?
     var isPersonaSimulation = false
+    var personaExcerpts: [PersonaExcerpt]?
     var bookReply: BookReplyEvidence?
     var sourceNotice: GroupSourceNotice?
     var groupSpeechIntent: GroupSpeechIntent?
@@ -246,6 +281,7 @@ struct AssistanceMetadata: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         memoryCount = try c.decodeIfPresent(Int.self, forKey: .memoryCount) ?? 0
         omittedMemory = try c.decodeIfPresent(Bool.self, forKey: .omittedMemory) ?? false
+        omittedKnowledge = try c.decodeIfPresent(Bool.self, forKey: .omittedKnowledge) ?? false
         requestedSearchQuery = try c.decodeIfPresent(String.self, forKey: .requestedSearchQuery)
         search = try c.decodeIfPresent(SearchEvidence.self, forKey: .search)
         routeNotice = try c.decodeIfPresent(String.self, forKey: .routeNotice)
@@ -265,7 +301,9 @@ struct AssistanceMetadata: Codable {
         groupMemberName = try c.decodeIfPresent(String.self, forKey: .groupMemberName)
         groupMemberTitle = try c.decodeIfPresent(String.self, forKey: .groupMemberTitle)
         groupMemberEmoji = try c.decodeIfPresent(String.self, forKey: .groupMemberEmoji)
+        privateSpeaker = try c.decodeIfPresent(PersonaByline.self, forKey: .privateSpeaker)
         isPersonaSimulation = try c.decodeIfPresent(Bool.self, forKey: .isPersonaSimulation) ?? false
+        personaExcerpts = try c.decodeIfPresent([PersonaExcerpt].self, forKey: .personaExcerpts)
         bookReply = try c.decodeIfPresent(BookReplyEvidence.self, forKey: .bookReply)
         sourceNotice = try c.decodeIfPresent(GroupSourceNotice.self, forKey: .sourceNotice)
         groupSpeechIntent = try c.decodeIfPresent(GroupSpeechIntent.self, forKey: .groupSpeechIntent)
@@ -281,21 +319,37 @@ struct AssistanceMetadata: Codable {
         handledScheduleIDs = try c.decodeIfPresent([UUID].self, forKey: .handledScheduleIDs) ?? []
     }
 
-    var groupSpeakerDisplayTitle: String? {
+    var groupSpeakerName: String? {
         guard let name = groupMemberName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
             return nil
         }
         let title = groupMemberTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let label = title.isEmpty ? name : "\(title)·\(name)"
+        return title.isEmpty ? name : "\(title)·\(name)"
+    }
+
+    var groupSpeakerDisplayTitle: String? {
+        guard let label = groupSpeakerName else { return nil }
         return isPersonaSimulation ? String(localized: "\(label) · AI 模拟") : label
     }
 
+    func speakerByline(privateProfile: GroupMember?, accentHex: String) -> PersonaByline? {
+        if let label = groupSpeakerName { return PersonaByline(label: label, emoji: groupMemberEmoji, accentHex: accentHex) }
+        guard isPersonaSimulation, bookReply == nil else { return nil }
+        return privateSpeaker ?? privateProfile.map(PersonaByline.init)
+    }
+
+    mutating func appendPersonaExcerpts(_ excerpts: [PersonaExcerpt]) {
+        var used = personaExcerpts ?? []
+        for excerpt in excerpts where !used.contains(excerpt) { used.append(excerpt) }
+        personaExcerpts = used.isEmpty ? nil : used
+    }
+
     var hasPersistedContent: Bool {
-        memoryCount > 0 || omittedMemory || requestedSearchQuery != nil || search != nil ||
+        memoryCount > 0 || omittedMemory || omittedKnowledge || requestedSearchQuery != nil || search != nil ||
         routeNotice != nil || !fallbackNotices.isEmpty || isContextDivider || isExcludedFromContext ||
         isBookmarked || quotedExcerpt != nil || !revisions.isEmpty || activeRevisionIndex != nil ||
         !proposedMemories.isEmpty || !handledMemories.isEmpty || !toolCalls.isEmpty || blindArenaRevealed || blindArenaBallot != nil ||
-        isPersonaSimulation || bookReply != nil || sourceNotice != nil || groupMemberID != nil || groupMemberName != nil || groupReplyToExcerpt != nil ||
+        isPersonaSimulation || personaExcerpts?.isEmpty == false || bookReply != nil || sourceNotice != nil || groupMemberID != nil || groupMemberName != nil || groupReplyToExcerpt != nil ||
         !groupReactions.isEmpty || groupAskedHost || groupSpeechIntent != nil || !generatedFlashcards.isEmpty || generatedQuiz != nil ||
         knowledgeEvidence != nil || !proposedSchedules.isEmpty || !handledScheduleIDs.isEmpty
     }

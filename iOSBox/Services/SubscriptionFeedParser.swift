@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-struct PersonaFeedItem: Equatable, Sendable {
+struct PersonaFeedItem: Codable, Equatable, Sendable {
     let id: String
     let title: String
     let url: URL

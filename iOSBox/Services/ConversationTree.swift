@@ -21,6 +21,7 @@ enum ConversationTree {
 
         var currentParentID = virtualRootID
         var visitedGroups = Set<UUID>()
+        let groups = Dictionary(grouping: sorted.filter { $0.comparisonGroupID != nil }, by: \.comparisonGroupID)
         var index = 0
 
         while index < sorted.count {
@@ -31,7 +32,7 @@ enum ConversationTree {
                     continue
                 }
                 visitedGroups.insert(gid)
-                let group = sorted.filter { $0.comparisonGroupID == gid }
+                let group = groups[gid] ?? []
                 let groupParent = msg.parentMessageID ?? currentParentID
                 for member in group where member.parentMessageID == nil && !existing.contains(member.id) {
                     member.parentMessageID = groupParent
@@ -70,6 +71,16 @@ enum ConversationTree {
             }
         }
 
+        struct ComparisonBranch: Hashable {
+            let groupID: UUID
+            let parentID: UUID?
+        }
+        var comparisons: [ComparisonBranch: [ChatMessage]] = [:]
+        for message in sorted {
+            if let gid = message.comparisonGroupID {
+                comparisons[.init(groupID: gid, parentID: message.parentMessageID), default: []].append(message)
+            }
+        }
         let byID = Dictionary(uniqueKeysWithValues: sorted.map { ($0.id, $0) })
         let leaf: ChatMessage
         if let leafID = leafID ?? conversation.activeLeafMessageID, let found = byID[leafID] {
@@ -97,9 +108,7 @@ enum ConversationTree {
         for node in path {
             if let gid = node.comparisonGroupID {
                 guard emittedGroups.insert(gid).inserted else { continue }
-                let groupMembers = sorted.filter {
-                    $0.comparisonGroupID == gid && $0.parentMessageID == node.parentMessageID
-                }
+                let groupMembers = comparisons[.init(groupID: gid, parentID: node.parentMessageID)] ?? []
                 for member in groupMembers where emittedIDs.insert(member.id).inserted {
                     result.append(member)
                 }

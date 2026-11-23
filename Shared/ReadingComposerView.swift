@@ -143,7 +143,8 @@ struct ReadingComposerView: View {
     }
 
     private func readPage() {
-        guard let url = URL(string: urlText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        let enteredURL = urlText
+        guard let url = URL(string: enteredURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             error = URLReaderError.unsafeURL.localizedDescription; return
         }
         isReading = true
@@ -153,6 +154,7 @@ struct ReadingComposerView: View {
             do {
                 let page = try await URLReader.read(url)
                 try Task.checkCancellation()
+                guard urlText == enteredURL else { return }
                 input = ReadingInput(text: page.text, url: page.url, title: page.title, isTruncated: page.isTruncated)
                 urlText = page.url.absoluteString
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
@@ -166,30 +168,40 @@ struct ReadingComposerView: View {
             return
         }
         do {
-            let prompt = try input.prompt(action: action, language: language.isEmpty ? String(localized: "简体中文") : language, question: customQuestion)
+            let enteredURL = urlText
+            let selectedAction = action
+            let selectedLanguage = language
+            let question = customQuestion
+            var source = input
+            source.url = ReadingInput.sharedSourceURL(enteredURL)
+            let prompt = try source.prompt(action: selectedAction, language: selectedLanguage.isEmpty ? String(localized: "简体中文") : selectedLanguage, question: question)
+            let display = source.displayPrompt(action: selectedAction, language: selectedLanguage, question: question)
+            let fallbackTitle = source.text.isEmpty ? String(localized: "分析图片") : String(source.text.prefix(36))
+            let title = selectedAction.title + " · " + (source.title.isEmpty ? fallbackTitle : source.title)
+            let attachments = source.attachments
             let resolved = try connection(model)
             let recipient = AppCompliance.recipient(provider: model.target.providerName, model: model.target.modelDisplayName,
                                                      baseURL: resolved.baseURL)
-            consent.perform(recipients: [recipient], isCurrent: { (try? connection(model)) == resolved }) {
-                send(model, prompt: prompt, expected: resolved)
+            consent.perform(recipients: [recipient], isCurrent: {
+                urlText == enteredURL && selection == model.id && (try? connection(model)) == resolved
+            }) {
+                send(model, prompt: prompt, attachments: attachments, title: title, display: display, expected: resolved)
             }
         } catch { self.error = error.localizedDescription }
     }
 
-    private func send(_ model: SharedModelEntry, prompt: String, expected: SharedConnection) {
+    private func send(_ model: SharedModelEntry, prompt: String, attachments: [MessageAttachment],
+                      title: String, display: String, expected: SharedConnection) {
         do {
             let current = try connection(model)
             guard current == expected else {
                 throw LLMError.apiError(String(localized: "连接配置已更改，请重新验证。"))
             }
-            var request = try current.request(for: model, text: prompt, systemPrompt: ReadingInput.systemPrompt, attachments: input.attachments)
+            var request = try current.request(for: model, text: prompt, systemPrompt: ReadingInput.systemPrompt, attachments: attachments)
             request.validateBeforeSending = {
                 guard try connection(model) == expected else { throw AppCompliance.RequestChanged() }
             }
-            let fallbackTitle = input.text.isEmpty ? String(localized: "分析图片") : String(input.text.prefix(36))
-            let title = input.title.isEmpty ? fallbackTitle : input.title
-            session.start(entry: model, request: request, title: action.title + " · " + title,
-                          displayPrompt: input.displayPrompt(action: action, language: language, question: customQuestion), persist: persist)
+            session.start(entry: model, request: request, title: title, displayPrompt: display, persist: persist)
             error = nil
         } catch { self.error = error.localizedDescription }
     }

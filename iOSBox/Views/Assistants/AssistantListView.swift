@@ -4,19 +4,21 @@ import UniformTypeIdentifiers
 
 struct AssistantListView: View {
     enum WorkshopSection: String, CaseIterable, Identifiable {
+        case friends
+        case books
         case presets
         case roundtables
-        case books
         case study
 
         var id: String { rawValue }
 
         var title: String {
             switch self {
+            case .friends: return String(localized: "好友")
             case .presets: return String(localized: "助手预设")
-            case .roundtables: return String(localized: "圆桌阵容")
-            case .books: return String(localized: "好友与书架")
-            case .study: return String(localized: "助学闪卡")
+            case .roundtables: return String(localized: "圆桌")
+            case .books: return String(localized: "书架")
+            case .study: return String(localized: "闪卡")
             }
         }
     }
@@ -71,41 +73,46 @@ struct AssistantListView: View {
         NavigationStack {
             List {
                 Section {
-                    Picker("分类", selection: $activeSection) {
-                        ForEach(visibleSections) { sec in
-                            Text(sec.title).tag(sec)
+                    Group {
+                        if dynamicTypeSize.isAccessibilitySize {
+                            sectionPicker.pickerStyle(.menu)
+                        } else {
+                            ViewThatFits(in: .horizontal) {
+                                sectionPicker.pickerStyle(.segmented).fixedSize(horizontal: true, vertical: false)
+                                sectionPicker.pickerStyle(.menu)
+                            }
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .frame(maxWidth: .infinity)
                     .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                     .listRowBackground(Color.clear)
                 }
 
                 switch activeSection {
+                case .friends:
+                    PersonaDirectorySection { invitedProfile = $0 }
+                    bookFriendsSection
                 case .presets:
-                    if !preferences.simpleDailyMode {
-                        PersonaDirectorySection { invitedProfile = $0 }
-                    }
                     presetsSection
                 case .roundtables:
                     roundtablesSection
                 case .books:
-                    booksAndFriendsSection
+                    bookshelfSection
                 case .study:
                     studySection
                 }
             }
             .onAppear {
                 if preferences.simpleDailyMode && activeSection == .roundtables {
-                    activeSection = .presets
+                    activeSection = .friends
                 }
             }
             .onChange(of: preferences.simpleDailyMode) { _, isSimple in
                 if isSimple && activeSection == .roundtables {
-                    activeSection = .presets
+                    activeSection = .friends
                 }
             }
-            .navigationTitle("角色与书架")
+            .navigationTitle("好友与书架")
             .toolbar {
                 if activeSection == .presets {
                     ToolbarItem(placement: .topBarLeading) {
@@ -113,29 +120,17 @@ struct AssistantListView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        switch activeSection {
-                        case .presets:
-                            showCreateSheet = true
-                        case .roundtables:
-                            showGroupSetup = true
-                        case .books:
-                            preselectedBookID = books.first?.id
-                            showBookFriends = true
-                        case .study:
-                            showCreateFlashcard = true
-                        }
-                    } label: {
-                        switch activeSection {
-                        case .presets:
-                            Label("新建助手", systemImage: "plus")
-                        case .roundtables:
-                            Label("发起圆桌群聊", systemImage: "plus")
-                        case .books:
-                            Label("创建书中好友", systemImage: "plus")
-                        case .study:
-                            Label("新建闪卡", systemImage: "plus")
-                        }
+                    switch activeSection {
+                    case .friends: EmptyView()
+                    case .presets:
+                        Button { showCreateSheet = true } label: { Label("新建助手", systemImage: "plus") }
+                    case .roundtables:
+                        Button { showGroupSetup = true } label: { Label("发起圆桌群聊", systemImage: "plus") }
+                    case .books:
+                        Button { pickingBookFile = true } label: { Label("从文件导入书籍", systemImage: "plus") }
+                            .disabled(importingBook)
+                    case .study:
+                        Button { showCreateFlashcard = true } label: { Label("新建闪卡", systemImage: "plus") }
                     }
                 }
             }
@@ -212,6 +207,12 @@ struct AssistantListView: View {
             } message: {
                 Text(verbatim: bookError ?? "")
             }
+        }
+    }
+
+    private var sectionPicker: some View {
+        Picker("分类", selection: $activeSection) {
+            ForEach(visibleSections) { section in Text(section.title).tag(section) }
         }
     }
 
@@ -395,7 +396,7 @@ struct AssistantListView: View {
     // MARK: - Section 3: Book Friends & Local Bookshelf
 
     @ViewBuilder
-    private var booksAndFriendsSection: some View {
+    private var bookFriendsSection: some View {
         Section("书中好友") {
             Button {
                 preselectedBookID = books.first?.id
@@ -407,34 +408,55 @@ struct AssistantListView: View {
             ForEach(BookFriendHistory.grouped(conversations)) { history in
                 let chat = history.chats[0]
                 let friend = history.friend
-                HStack {
-                    Button { SystemEntryRouter.shared.conversationID = chat.id } label: {
-                        VStack(alignment: .leading) {
-                            Label(friend.name, systemImage: "person.crop.square")
-                            Text(verbatim: "\(friend.bookTitle) · \(friend.progressLabel(in: books.first { $0.id == friend.bookID }))")
-                                .font(.caption).foregroundStyle(.secondary)
+                let book = books.first { $0.id == friend.bookID }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Button { SystemEntryRouter.shared.conversationID = chat.id } label: {
+                            HStack {
+                                DSIconTile(systemImage: "book.pages", tint: theme.readableText, size: 38)
+                                VStack(alignment: .leading) {
+                                    Text(verbatim: friend.name).font(.headline)
+                                    Text("来自《\(friend.bookTitle)》 · \(friend.progressLabel(in: book))")
+                                        .font(.subheadline).foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
-                    }.buttonStyle(.plain)
-                    Spacer()
-                    Menu {
+                        .buttonStyle(.plain)
+                        .accessibilityHint("私聊")
                         if history.chats.count > 1 {
-                            Section("不同进度的对话") {
+                            Menu {
                                 ForEach(history.chats) { thread in
                                     if let scope = thread.activeBookFriend {
                                         Button { SystemEntryRouter.shared.conversationID = thread.id } label: {
-                                            Text(verbatim: "\(scope.progressLabel(in: books.first { $0.id == scope.bookID })) · \(thread.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                                            Text(verbatim: "\(scope.progressLabel(in: book)) · \(thread.updatedAt.formatted(date: .abbreviated, time: .shortened))")
                                         }
                                     }
                                 }
-                            }
+                            } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
+                            .accessibilityLabel("不同进度的对话")
                         }
-                        Button { inviting = chat } label: { Label("邀请进群", systemImage: "person.2.badge.plus") }
-                    } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
-                    .accessibilityLabel("好友操作")
+                    }
+                    let layout = dynamicTypeSize.isAccessibilitySize
+                        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                        : AnyLayout(HStackLayout(spacing: 8))
+                    layout {
+                        Button { SystemEntryRouter.shared.conversationID = chat.id } label: {
+                            FriendActionLabel(title: "私聊", icon: "bubble.left")
+                        }
+                        Button { inviting = chat } label: {
+                            FriendActionLabel(title: "邀请进群", icon: "person.2.badge.plus")
+                        }
+                        .accessibilityIdentifier("friend.invite.\(chat.id)")
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
+    }
 
+    private var bookshelfSection: some View {
         Section {
             Button {
                 pickingBookFile = true

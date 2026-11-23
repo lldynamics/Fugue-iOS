@@ -44,6 +44,8 @@ enum SSEDecoder {
             private var fields: [String] = []
             private var eventSize = 0
             private var bytesSinceTouch = 0
+            private var streamBytes = 0
+            private var emittedEvents = 0
             private var skipLF = false
             private var firstLine = true
             private var ended = false
@@ -59,12 +61,18 @@ enum SSEDecoder {
                 try Task.checkCancellation()
                 while let byte = try await bytes.next() {
                     try Task.checkCancellation()
+                    streamBytes += 1
+                    guard streamBytes <= 32 * 1024 * 1024 else { throw LLMError.interruptedStream }
                     if skipLF { skipLF = false; if byte == 10 { continue } }
                     if byte == 13 || byte == 10 {
                         bytesSinceTouch = 0
                         onActivity?()
                         skipLF = byte == 13
-                        if let event = try finishLine() { return event }
+                        if let event = try finishLine() {
+                            emittedEvents += 1
+                            guard emittedEvents <= 12_000 else { throw LLMError.interruptedStream }
+                            return event
+                        }
                     } else {
                         line.append(byte)
                         guard line.count <= maximumBytes else { throw LLMError.interruptedStream }

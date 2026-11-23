@@ -69,28 +69,10 @@ enum ShareInputLoader {
 
     private static func loadSharedImage(from provider: NSItemProvider) async throws -> MessageAttachment? {
         let maxDimension = 1280
-        // Prefer streaming downsample from file representation so 48MP photos never decode full RGBA
-        // bitmaps (~195 MB) inside the Share Extension's ~120 MB Jetsam ceiling.
-        let resized: UIImage?
-        if let fromFile = await downsampleViaFileRepresentation(provider, maxPixelSize: maxDimension) {
-            resized = fromFile
-        } else {
-            let loaded = try await item(provider, type: UTType.image.identifier)
-            if let url = loaded as? URL {
-                let values = try? url.resourceValues(forKeys: [.fileSizeKey])
-                if let size = values?.fileSize, size > maximumSharedImageFileBytes { return nil }
-                resized = downsampleImage(at: url, maxPixelSize: maxDimension)
-            } else if let data = loaded as? Data {
-                guard data.count <= maximumSharedImageFileBytes else { return nil }
-                resized = downsampleImage(data: data, maxPixelSize: maxDimension)
-            } else if let uiImg = loaded as? UIImage {
-                resized = resizeUIImage(uiImg, maxDimension: CGFloat(maxDimension))
-            } else {
-                resized = nil
-            }
-        }
-
-        guard let image = resized else { return nil }
+        guard let identifier = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true }),
+              let image = await downsampleViaFileRepresentation(provider, identifier: identifier, maxPixelSize: maxDimension)
+        else { return nil }
+        try Task.checkCancellation()
         // Keep each shared image compact so 2 attachments + text stay comfortably within receipt bounds.
         var quality: CGFloat = 0.78
         var jpeg = image.jpegData(compressionQuality: quality)
@@ -109,62 +91,43 @@ enum ShareInputLoader {
         )
     }
 
-    private static func downsampleViaFileRepresentation(_ provider: NSItemProvider, maxPixelSize: Int) async -> UIImage? {
+    private static func downsampleViaFileRepresentation(_ provider: NSItemProvider, identifier: String, maxPixelSize: Int) async -> UIImage? {
         await withCheckedContinuation { continuation in
-            _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, error in
+            _ = provider.loadFileRepresentation(forTypeIdentifier: identifier) { url, error in
                 guard error == nil, let url else {
                     continuation.resume(returning: nil)
                     return
                 }
-                let image: UIImage? = autoreleasepool {
-                    let values = try? url.resourceValues(forKeys: [.fileSizeKey])
-                    if let size = values?.fileSize, size > maximumSharedImageFileBytes {
-                        return nil
-                    }
-                    return downsampleImage(at: url, maxPixelSize: maxPixelSize)
-                }
+                let image = autoreleasepool { downsampleImage(at: url, maxPixelSize: maxPixelSize) }
                 continuation.resume(returning: image)
             }
         }
     }
 
-    private static func downsampleImage(at url: URL, maxPixelSize: Int) -> UIImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else {
-            return nil
-        }
-        return thumbnail(from: source, maxPixelSize: maxPixelSize)
-    }
+    static func downsampleImage(at url: URL, maxPixelSize: Int) -> UIImage? {
+        guard url.isFileURL, (1...1_280).contains(maxPixelSize),
+              let file = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
+              file.isRegularFile == true, file.isSymbolicLink == false,
+              let size = file.fileSize, (1...maximumSharedImageFileBytes).contains(size),
+              let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let type = CGImageSourceGetType(source), UTType(type as String)?.conforms(to: .image) == true,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, width <= 64_000_000 / height else { return nil }
 
-    private static func downsampleImage(data: Data, maxPixelSize: Int) -> UIImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else {
-            return nil
-        }
-        return thumbnail(from: source, maxPixelSize: maxPixelSize)
-    }
-
-    private static func thumbnail(from source: CGImageSource, maxPixelSize: Int) -> UIImage? {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
         ]
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              cgImage.width <= maxPixelSize, cgImage.height <= maxPixelSize,
+              cgImage.bytesPerRow <= (16 * 1024 * 1024) / max(1, cgImage.height) else {
             return nil
         }
         return UIImage(cgImage: cgImage)
-    }
-
-    private static func resizeUIImage(_ source: UIImage, maxDimension: CGFloat) -> UIImage {
-        let longest = max(source.size.width, source.size.height)
-        guard longest > maxDimension, longest > 0 else { return source }
-        let scale = maxDimension / longest
-        let target = CGSize(width: floor(source.size.width * scale), height: floor(source.size.height * scale))
-        let format = UIGraphicsImageRendererFormat.default()
-        format.scale = 1.0
-        return UIGraphicsImageRenderer(size: target, format: format).image { _ in
-            source.draw(in: CGRect(origin: .zero, size: target))
-        }
     }
 
     private static func item(_ provider: NSItemProvider, type: String) async throws -> NSSecureCoding {
