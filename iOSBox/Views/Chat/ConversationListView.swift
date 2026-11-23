@@ -309,13 +309,21 @@ struct ConversationListView: View {
 
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 if !pinned.isEmpty {
-                    Section("置顶对话") {
+                    Section {
                         ForEach(pinned) { conv in conversationRow(conv, useSplitSelection: useSplitSelection) }
+                    } header: {
+                        Text("置顶对话")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color(uiColor: .label))
                     }
                 }
                 ForEach(ConversationTimeBucket.group(regular, date: \.updatedAt), id: \.bucket) { group in
-                    Section(group.bucket.title) {
+                    Section {
                         ForEach(group.items) { conv in conversationRow(conv, useSplitSelection: useSplitSelection) }
+                    } header: {
+                        Text(group.bucket.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color(uiColor: .label))
                     }
                 }
             } else if useSplitSelection {

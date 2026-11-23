@@ -70,7 +70,7 @@ struct RequestLedgerView: View {
 
         return NavigationStack {
             List {
-                Section("月度预算监控") {
+                Section {
                     if budgetEval.level == .unconfigured {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
@@ -117,6 +117,8 @@ struct RequestLedgerView: View {
                         }
                         .padding(.vertical, 2)
                     }
+                } header: {
+                    Text("月度预算监控").foregroundStyle(Color(uiColor: .label))
                 }
 
                 Section {
