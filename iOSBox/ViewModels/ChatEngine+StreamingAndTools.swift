@@ -4,18 +4,24 @@ import SwiftData
 extension ChatEngine {
     // MARK: - External Webpage Approval Gate
 
+    func pendingWebpageApproval(in conversationID: UUID) -> PendingWebpageApproval? {
+        pendingWebpageApprovals.first { $0.conversationID == conversationID }
+    }
+
+    func cancelWebpageApprovals(in conversationID: UUID) {
+        for request in pendingWebpageApprovals where request.conversationID == conversationID {
+            resolvePendingWebpageApproval(id: request.id, decision: .deny, rememberHost: false)
+        }
+    }
+
     func resolvePendingWebpageApproval(id: UUID, decision: WebpageApprovalDecision, rememberHost: Bool) {
-        if rememberHost, decision == .allow,
-           let pending = pendingWebpageApproval, pending.id == id,
+        guard let index = pendingWebpageApprovals.firstIndex(where: { $0.id == id }) else { return }
+        let pending = pendingWebpageApprovals.remove(at: index)
+        if rememberHost, decision == .allow, pending.url.query == nil,
            let host = pending.url.host?.lowercased(), !host.isEmpty {
             approvedWebpageHostsByConversation[pending.conversationID, default: []].insert(host)
         }
-        if pendingWebpageApproval?.id == id {
-            pendingWebpageApproval = nil
-        }
-        if let cont = pendingWebpageContinuations.removeValue(forKey: id) {
-            cont.resume(returning: decision)
-        }
+        pending.continuation.resume(returning: decision)
     }
 
     func requestWebpageApproval(for url: URL, conversationID: UUID) async -> WebpageApprovalDecision {
@@ -30,20 +36,16 @@ extension ChatEngine {
             return .allow
         }
 
-        let prompt = PendingWebpageApproval(conversationID: conversationID, url: url)
-        let promptID = prompt.id
-        pendingWebpageApproval = prompt
-
+        let promptID = UUID()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 if Task.isCancelled {
-                    if self.pendingWebpageApproval?.id == promptID {
-                        self.pendingWebpageApproval = nil
-                    }
                     continuation.resume(returning: .deny)
                     return
                 }
-                self.pendingWebpageContinuations[promptID] = continuation
+                pendingWebpageApprovals.append(PendingWebpageApproval(
+                    id: promptID, conversationID: conversationID, url: url, continuation: continuation
+                ))
             }
         } onCancel: {
             Task { @MainActor in
@@ -79,30 +81,39 @@ extension ChatEngine {
             var workingHistory = historySnapshot
 
             let firstLabel = slots.first?.candidates.first?.modelDisplayName ?? "AI"
+            let groupIDs = Set(slots.compactMap { $0.message.comparisonGroupID })
+            let hideIdentity = conversation.assistanceSettings.blindArenaMode && !groupIDs.isEmpty
+                && conversation.messages.contains { message in
+                    guard let id = message.comparisonGroupID, groupIDs.contains(id), !message.isSynthesis else { return false }
+                    return !message.assistanceMetadata.blindArenaRevealed
+                }
             LiveActivityCoordinator.shared.start(
                 conversationID: convID,
                 chatTitle: conversation.title,
                 modeBadge: slots.count > 1 ? String(localized: "并发对比") : String(localized: "对话"),
                 speakerOrModel: firstLabel,
                 phaseText: String(localized: "正在生成…"),
-                totalTurns: slots.count
+                totalTurns: slots.count,
+                isBlind: hideIdentity
             )
 
+            let limits = conversation.readingChapterLimits
+            let usesKnowledge = !slots.contains { $0.message.assistanceMetadata.omittedKnowledge } && !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty
             let isSynthesisTurn = slots.allSatisfy { $0.kind == .synthesis }
-            if !isSynthesisTurn && !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty {
+            if !isSynthesisTurn && usesKnowledge {
                 let question = workingHistory.last(where: { $0.role == .user })?.content ?? ""
                 if let kbEv = try? await ProjectKnowledgeSearch.retrieve(
                     volumeIDs: conversation.assistanceSettings.knowledgeVolumeIDs,
                     in: context,
                     query: question,
-                    maxPassages: 4
-                ), !kbEv.passages.isEmpty {
+                    maxPassages: 4, chapterLimits: limits
+                ) {
                     for slot in slots where Self.isAlive(slot.message) {
                         var meta = slot.message.assistanceMetadata
                         meta.knowledgeEvidence = kbEv
                         slot.message.assistanceMetadata = meta
                     }
-                    if let lastIdx = workingHistory.indices.last {
+                    if !kbEv.passages.isEmpty, let lastIdx = workingHistory.indices.last {
                         let oldLast = workingHistory[lastIdx]
                         workingHistory[lastIdx] = LLMPromptMessage(
                             role: oldLast.role,
@@ -168,15 +179,16 @@ extension ChatEngine {
                         conversation.updatedAt = Date()
                         try? context.save()
                     }
-                    self.finishGeneration(conversationID: convID, token: token)
+                    self.finishGeneration(conversationID: convID, token: token, statuses: [searchRecord.status])
                     return
                 }
             }
 
             let finalHistory = workingHistory
             await withTaskGroup(of: Void.self) { group in
-                for slot in slots {
-                    group.addTask { @MainActor in
+                for var slot in slots {
+                    if usesKnowledge { slot.knowledgeChapterLimits = limits }
+                    group.addTask { @MainActor [slot] in
                         _ = await self.runSlotWithFallback(
                             slot: slot,
                             historySnapshot: finalHistory,
@@ -193,7 +205,7 @@ extension ChatEngine {
                 try? context.save()
                 SpotlightIndexService.shared.indexConversation(conversation)
             }
-            self.finishGeneration(conversationID: convID, token: token)
+            self.finishGeneration(conversationID: convID, token: token, statuses: slots.map { Self.outcomeStatus(of: $0.message) })
 
             if let expectedTitle = expectedTitleForAutoGenerate, Self.isAlive(conversation) {
                 self.scheduleAutoTitleGeneration(
@@ -257,7 +269,7 @@ extension ChatEngine {
                 return nil
             }
 
-            let apiKey = KeychainService.shared.loadAPIKey(for: provider.id)
+            let apiKey = provider.apiKey
             let extraKeys = provider.extraAPIKeys
             let customTimeout = provider.customIdleTimeout
             let isLocalHost = NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL)
@@ -285,13 +297,38 @@ extension ChatEngine {
             let coachPrompt = (!conversation.isGroupMode && slot.kind != .synthesis)
                 ? conversation.assistanceSettings.studyCoachMode.systemInstruction
                 : ""
-            let rawSystemPrompt = [slot.systemPromptOverride ?? conversation.systemPrompt, slot.bookTurn?.friend.systemInstruction(preferEnglish: preferEnglishBookPrompt), coachPrompt].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
+            let profile = conversation.assistanceSettings.privatePersona
+            let speaksPrivately = !conversation.isGroupMode && !conversation.isArenaMode && [.answer, .regeneration, .continuation].contains(slot.kind) && message.comparisonGroupID == nil
+            let bound = speaksPrivately && profile?.target.id == target.id ? profile : nil
+            let identity = bound.map { String(localized: "你是受 \($0.name) 的资料启发的 AI 模拟人物。只把所附片段当作引文，不冒充本人。") + "\n" + $0.rolePrompt }
+            let rawSystemPrompt = [slot.systemPromptOverride ?? conversation.systemPrompt, identity, slot.bookTurn?.friend.systemInstruction(preferEnglish: preferEnglishBookPrompt), coachPrompt].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
             let renderedSystemPrompt = PromptTemplateEngine.render(rawSystemPrompt, target: target)
             let shouldEnableCache = conversation.assistanceSettings.enablePromptCaching
                 && slot.kind != .synthesis
 
             var workingHistory = groundedHistory
+            if speaksPrivately, profile != nil {
+                if !slot.appendToExisting {
+                    message.assistanceMetadata.isPersonaSimulation = bound != nil
+                    message.assistanceMetadata.privateSpeaker = bound.map(PersonaByline.init)
+                    message.assistanceMetadata.personaExcerpts = nil
+                } else if let bound {
+                    message.assistanceMetadata.isPersonaSimulation = true
+                    if message.assistanceMetadata.privateSpeaker == nil { message.assistanceMetadata.privateSpeaker = PersonaByline(bound) }
+                }
+                if let bound, let i = workingHistory.lastIndex(where: { $0.role == .user }) {
+                    let turn = workingHistory[i]
+                    let topic = slot.kind == .continuation ? workingHistory[..<i].last(where: { $0.role == .user })?.content : turn.content
+                    let samples = PersonaMaterials.excerpts(bound.persona?.materials ?? [], topic: topic ?? turn.content)
+                    if let references = PersonaMaterials.referenceBlock(samples) {
+                        workingHistory[i] = LLMPromptMessage(role: .user, content: turn.content + "\n\n" + references, attachments: turn.attachments)
+                        message.assistanceMetadata.appendPersonaExcerpts(samples)
+                    }
+                }
+            }
             var toolRound = 0
+            var remainingToolCalls = AgentToolRunner.maxCallsPerTurn
+            var remainingSearches = AgentToolRunner.maxSearchesPerTurn
 
             roundLoop: while true {
                 let roundKind: RequestKind = toolRound == 0 ? slot.kind : .agentTool
@@ -328,6 +365,11 @@ extension ChatEngine {
                 let requiresTools = !request.tools.isEmpty || toolRound > 0
                 request.validateBeforeSending = { [weak conversation] in
                     try validateTarget()
+                    if let limits = slot.knowledgeChapterLimits {
+                        guard let conversation, Self.isAlive(conversation), conversation.readingChapterLimits == limits else {
+                            throw BookImportError.unavailable
+                        }
+                    }
                     if let turn = slot.bookTurn {
                         guard let conversation, Self.isAlive(conversation), turn.matches(conversation, target: target),
                               try BookLibrary.find(turn.friend.bookID, in: context) != nil else { throw BookImportError.unavailable }
@@ -363,6 +405,14 @@ extension ChatEngine {
                 switch outcome {
                 case .completed(let toolCalls, let roundText, let roundReasoning, let thinkingBlocks, let groupDirective):
                     if !toolCalls.isEmpty && toolRound < AgentToolRunner.maxToolRounds && Self.isAlive(message) {
+                        let searches = toolCalls.filter { $0.name == "web_search" }.count
+                        guard toolCalls.count <= remainingToolCalls, searches <= remainingSearches else {
+                            message.errorMessage = String(localized: "本轮工具调用已达上限。")
+                            message.isStreaming = false
+                            return groupDirective
+                        }
+                        remainingToolCalls -= toolCalls.count
+                        remainingSearches -= searches
                         workingHistory.append(LLMPromptMessage(
                             role: .assistant,
                             content: roundText,
@@ -391,7 +441,8 @@ extension ChatEngine {
                                 call,
                                 conversation: conversation,
                                 message: message,
-                                context: context
+                                context: context,
+                                userProvidedURLs: slot.userProvidedURLs
                             )
                             if Task.isCancelled {
                                 cancelledDuringTools = true
@@ -455,7 +506,8 @@ extension ChatEngine {
         _ call: LLMToolCall,
         conversation: Conversation,
         message: ChatMessage,
-        context: ModelContext
+        context: ModelContext,
+        userProvidedURLs: Set<String>
     ) async -> AgentToolRunner.ExecutionOutput {
         let conversationID = conversation.id
         let start = ContinuousClock.now
@@ -473,8 +525,9 @@ extension ChatEngine {
         }
 
         let knowledgeHandler: (@Sendable (String) async throws -> KnowledgeEvidence)?
-        if call.name == "search_documents" {
+        if call.name == "search_documents" && !message.assistanceMetadata.omittedKnowledge {
             let kbVolumeIDs = conversation.assistanceSettings.knowledgeVolumeIDs
+            let limits = conversation.readingChapterLimits
             if kbVolumeIDs.isEmpty {
                 knowledgeHandler = nil
             } else {
@@ -494,7 +547,7 @@ extension ChatEngine {
                         let firstPass = try await ProjectKnowledgeSearch.shared.retrieveCheckingCache(
                             from: initialSnapshots,
                             query: query,
-                            maxPassages: 5
+                            maxPassages: 5, chapterLimits: limits
                         )
                         guard !firstPass.missingVolumeIDs.isEmpty else {
                             return firstPass.evidence
@@ -517,7 +570,7 @@ extension ChatEngine {
                         return try await ProjectKnowledgeSearch.shared.retrieve(
                             from: merged,
                             query: query,
-                            maxPassages: 5
+                            maxPassages: 5, chapterLimits: limits
                         )
                     }
                 }
@@ -528,18 +581,8 @@ extension ChatEngine {
 
         let webpageApprovalGate: (@Sendable (URL) async -> WebpageApprovalDecision)?
         if call.name == "read_webpage" {
-            let activeUserTexts = ConversationTree.activeMessages(in: conversation)
-                .filter { $0.role == .user && !$0.assistanceMetadata.isExcludedFromContext }
-                .map { Self.promptContent($0.content, quotedExcerpt: $0.assistanceMetadata.quotedExcerpt) }
-            var preapprovedURLs = AgentToolRunner.extractUserProvidedURLs(from: activeUserTexts)
-            if let turnSearchSources = message.assistanceMetadata.search?.sources {
-                for source in turnSearchSources where source.url.scheme?.lowercased() == "https" {
-                    preapprovedURLs.insert(AgentToolRunner.canonicalURLKey(source.url))
-                }
-            }
-            let allowedSnapshot = preapprovedURLs
             webpageApprovalGate = { [weak self] url in
-                if allowedSnapshot.contains(AgentToolRunner.canonicalURLKey(url)) {
+                if userProvidedURLs.contains(AgentToolRunner.canonicalURLKey(url)) {
                     return .allow
                 }
                 guard let self else { return .deny }
@@ -635,14 +678,20 @@ extension ChatEngine {
         var thinkingStartTime: ContinuousClock.Instant?
         var recordedThinkingDuration = false
         var receivedOutput = false
-        let initialPromptTokens = appendToExisting ? (message.promptTokens ?? 0) : 0
-        let initialCompletionTokens = appendToExisting ? (message.completionTokens ?? 0) : 0
-        let initialCachedTokens = appendToExisting ? (message.cachedTokens ?? 0) : 0
+        let initialPromptTokens = appendToExisting ? (LLMUsage.valid(message.promptTokens) ?? 0) : 0
+        let initialCompletionTokens = appendToExisting ? (LLMUsage.valid(message.completionTokens) ?? 0) : 0
+        let initialCachedTokens = appendToExisting ? (LLMUsage.valid(message.cachedTokens) ?? 0) : 0
         let prefixBeforeContinuation = appendToExisting ? message.content : ""
         var roundContent = ""
         var roundReasoning = ""
         var collectedToolCalls: [LLMToolCall] = []
         var collectedThinkingBlocks: [LLMThinkingBlock] = []
+        var remainingText = max(0, 1_000_000 - message.content.utf8.count - message.reasoningContent.utf8.count)
+        var remainingMedia = 24 * 1024 * 1024
+        for attachment in message.attachments {
+            remainingMedia = max(0, remainingMedia - (attachment.dataBase64?.utf8.count ?? 0))
+        }
+        var auxiliaryBytes = 0
         var sanitizer = groupSanitizer
 
         var pendingContent = ""
@@ -658,7 +707,8 @@ extension ChatEngine {
             messageID: message.id,
             kind: kind,
             operationID: operationID,
-            attempt: attemptNumber
+            attempt: attemptNumber,
+            pricingMultiplier: AppPreferences.shared.pricingMultiplier(for: target.providerID)
         )
         context.insert(record)
         message.latestRequest = record
@@ -704,6 +754,8 @@ extension ChatEngine {
 
                 case .reasoningDelta(let delta):
                     guard !delta.isEmpty else { break }
+                    remainingText -= delta.utf8.count
+                    guard remainingText >= 0 else { throw LLMError.interruptedStream }
                     receivedOutput = true
                     roundReasoning.append(delta)
                     if thinkingStartTime == nil {
@@ -714,16 +766,19 @@ extension ChatEngine {
                         flushBuffers()
                         LiveActivityCoordinator.shared.update(
                             conversationID: conversationID,
-                            phaseText: String(localized: "深度思考中…"),
-                            previewSnippet: roundReasoning
+                            phaseText: String(localized: "深度思考中…")
                         )
                     }
 
                 case .thinkingBlock(let block):
+                    auxiliaryBytes += block.thinking.utf8.count + (block.signature?.utf8.count ?? 0) + (block.redactedData?.utf8.count ?? 0)
+                    guard auxiliaryBytes <= 512 * 1024, collectedThinkingBlocks.count < 64 else { throw LLMError.interruptedStream }
                     collectedThinkingBlocks.append(block)
 
                 case .contentDelta(let delta):
                     guard !delta.isEmpty else { break }
+                    remainingText -= delta.utf8.count
+                    guard remainingText >= 0 else { throw LLMError.interruptedStream }
                     receivedOutput = true
                     roundContent.append(delta)
                     if let tStart = thinkingStartTime, !recordedThinkingDuration, Self.isAlive(message) {
@@ -738,12 +793,14 @@ extension ChatEngine {
                             LiveActivityCoordinator.shared.update(
                                 conversationID: conversationID,
                                 phaseText: String(localized: "正在生成…"),
-                                previewSnippet: roundContent
+                                previewSnippet: Self.isAlive(message) ? message.content : nil
                             )
                         }
                     }
 
                 case .attachmentDelta(let attachment):
+                    remainingMedia -= attachment.dataBase64?.utf8.count ?? 0
+                    guard remainingMedia >= 0, message.attachments.count < 8 else { throw LLMError.interruptedStream }
                     receivedOutput = true
                     if Self.isAlive(message) {
                         var current = message.attachments
@@ -752,6 +809,9 @@ extension ChatEngine {
                     }
 
                 case .toolCall(let call):
+                    auxiliaryBytes += call.argumentsJSON.utf8.count
+                    guard auxiliaryBytes <= 512 * 1024,
+                          collectedToolCalls.count < AgentToolRunner.maxCallsPerTurn else { throw LLMError.unavailableTool }
                     guard request.tools.contains(where: { $0.name == call.name }) else {
                         throw LLMError.unavailableTool
                     }
@@ -777,16 +837,15 @@ extension ChatEngine {
 
                 case .usage(let prompt, let completion):
                     guard Self.isAlive(message) else { break }
-                    if let prompt {
-                        message.promptTokens = appendToExisting ? (initialPromptTokens + prompt) : prompt
+                    if let prompt = LLMUsage.valid(prompt) {
+                        message.promptTokens = LLMUsage.combined(initialPromptTokens, prompt)
                     }
-                    if let completion {
-                        message.completionTokens = appendToExisting ? (initialCompletionTokens + completion) : completion
+                    if let completion = LLMUsage.valid(completion) {
+                        message.completionTokens = LLMUsage.combined(initialCompletionTokens, completion)
                     }
 
                 case .cacheUsage(let cached, _):
-                    if let cached, cached >= 0, Self.isAlive(message) {
-                        let totalCached = initialCachedTokens + cached
+                    if let cached = LLMUsage.valid(cached), let totalCached = LLMUsage.combined(initialCachedTokens, cached), Self.isAlive(message) {
                         if let totalPrompt = message.promptTokens, totalPrompt < totalCached {
                             message.promptTokens = totalCached
                         }
@@ -827,7 +886,7 @@ extension ChatEngine {
                 )
             }
 
-            message.latencyMs = appendToExisting ? ((message.latencyMs ?? 0) + totalElapsed) : totalElapsed
+            message.latencyMs = LLMUsage.combined(appendToExisting ? message.latencyMs : nil, totalElapsed)
             if let tStart = thinkingStartTime, !recordedThinkingDuration {
                 message.thinkingDurationMs = Self.milliseconds(tStart.duration(to: ContinuousClock.now))
             }

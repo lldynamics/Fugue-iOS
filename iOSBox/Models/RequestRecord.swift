@@ -70,7 +70,8 @@ final class RequestRecord {
     var currency: String?
 
     init(target: ResolvedModelTarget, spec: ModelSpec?, conversationID: UUID, messageID: UUID,
-         kind: RequestKind, operationID: UUID = UUID(), attempt: Int = 1, now: Date = Date()) {
+         kind: RequestKind, operationID: UUID = UUID(), attempt: Int = 1, now: Date = Date(),
+         pricingMultiplier: Double = 1.0) {
         id = UUID()
         self.operationID = operationID
         self.attempt = attempt
@@ -86,13 +87,16 @@ final class RequestRecord {
         startedAt = now
         outputChunkCount = 0
         isStreamed = true
-        inputPricePerMillion = Self.validPrice(spec?.inputPricePerMillion)
-        outputPricePerMillion = Self.validPrice(spec?.outputPricePerMillion)
+        let scale = (pricingMultiplier.isFinite && pricingMultiplier > 0)
+            ? min(max(pricingMultiplier, 0.01), 100.0)
+            : 1.0
+        inputPricePerMillion = Self.validPrice(spec?.inputPricePerMillion).map { $0 * scale }
+        outputPricePerMillion = Self.validPrice(spec?.outputPricePerMillion).map { $0 * scale }
         currency = spec?.priceCurrency
-        if let readP = Self.validPrice(spec?.cacheReadPricePerMillion) {
-            CachePriceSnapshotStore.shared.set(read: readP, write: Self.validPrice(spec?.cacheWritePricePerMillion), for: id)
-        } else if let writeP = Self.validPrice(spec?.cacheWritePricePerMillion) {
-            CachePriceSnapshotStore.shared.set(read: nil, write: writeP, for: id)
+        let scaledRead = Self.validPrice(spec?.cacheReadPricePerMillion).map { $0 * scale }
+        let scaledWrite = Self.validPrice(spec?.cacheWritePricePerMillion).map { $0 * scale }
+        if scaledRead != nil || scaledWrite != nil {
+            CachePriceSnapshotStore.shared.set(read: scaledRead, write: scaledWrite, for: id)
         }
     }
 
@@ -104,15 +108,15 @@ final class RequestRecord {
     var kind: RequestKind { RequestKind(rawValue: kindRaw) ?? .answer }
 
     var firstOutputMs: Int? {
-        [firstReasoningMs, firstContentMs].compactMap { $0 }.min()
+        [firstReasoningMs, firstContentMs].compactMap(LLMUsage.valid).min()
     }
 
     /// Approximate API-reported output tokens/s, including reasoning where reported.
     /// Never infer token counts from characters, or a stream rate from a single JSON response.
     var tokensPerSecond: Double? {
         guard status == .succeeded, isStreamed, outputChunkCount >= 2,
-              let tokens = completionTokens, tokens > 0,
-              let first = firstOutputMs, let last = lastOutputMs, last > first else { return nil }
+              let tokens = LLMUsage.valid(completionTokens), tokens > 0,
+              let first = firstOutputMs, let last = LLMUsage.valid(lastOutputMs), last > first else { return nil }
         return Double(tokens) * 1000 / Double(last - first)
     }
 
@@ -125,7 +129,7 @@ final class RequestRecord {
     }
 
     var estimatedCost: Double? {
-        guard let input = promptTokens, input >= 0, let output = completionTokens, output >= 0,
+        guard let input = LLMUsage.valid(promptTokens), let output = LLMUsage.valid(completionTokens),
               let inPrice = Self.validPrice(inputPricePerMillion),
               let outPrice = Self.validPrice(outputPricePerMillion),
               let currency, Self.currencies.contains(currency) else { return nil }
@@ -148,10 +152,10 @@ final class RequestRecord {
 
     /// Positive amount saved by prompt caching relative to uncached input pricing.
     var estimatedCacheSavings: Double? {
-        guard let input = promptTokens, input >= 0,
+        guard let input = LLMUsage.valid(promptTokens),
               let inPrice = Self.validPrice(inputPricePerMillion),
               let readPrice = cacheReadPricePerMillion,
-              let cachedRead = cachedTokens, cachedRead > 0,
+              let cachedRead = LLMUsage.valid(cachedTokens), cachedRead > 0,
               inPrice > readPrice else { return nil }
         let effectiveCached = min(cachedRead, input)
         let saved = Double(effectiveCached) * (inPrice - readPrice) / 1_000_000
@@ -192,11 +196,11 @@ final class RequestRecord {
         case .attachmentDelta:
             observeOutput(reasoning: false, elapsedMs: elapsedMs)
         case .usage(let prompt, let completion):
-            if let prompt, prompt >= 0 { promptTokens = prompt }
-            if let completion, completion >= 0 { completionTokens = completion }
+            if let prompt = LLMUsage.valid(prompt) { promptTokens = prompt }
+            if let completion = LLMUsage.valid(completion) { completionTokens = completion }
         case .cacheUsage(let read, let write):
-            if let read, read >= 0 { cachedTokens = read }
-            if let write, write >= 0 { cacheWriteTokens = write }
+            if let read = LLMUsage.valid(read) { cachedTokens = read }
+            if let write = LLMUsage.valid(write) { cacheWriteTokens = write }
         default:
             break
         }
@@ -208,6 +212,14 @@ final class RequestRecord {
         finish(.failed, elapsedMs: elapsedMs)
         let next = RequestRecord(target: target, spec: spec, conversationID: conversationID,
                                  messageID: messageID, kind: kind, operationID: operationID, attempt: attempt + 1)
+        next.inputPricePerMillion = inputPricePerMillion
+        next.outputPricePerMillion = outputPricePerMillion
+        next.currency = currency
+        let existingRead = cacheReadPricePerMillion
+        let existingWrite = cacheWritePricePerMillion
+        if existingRead != nil || existingWrite != nil {
+            CachePriceSnapshotStore.shared.set(read: existingRead, write: existingWrite, for: next.id)
+        }
         context.insert(next)
         return next
     }
@@ -275,16 +287,17 @@ final class RequestRecord {
         kindRaw = s.kindRaw
         statusRaw = s.statusRaw == RequestStatus.running.rawValue ? RequestStatus.interrupted.rawValue : s.statusRaw
         endedAt = s.endedAt
-        firstReasoningMs = s.firstReasoningMs
-        firstContentMs = s.firstContentMs
-        lastOutputMs = s.lastOutputMs
-        durationMs = s.durationMs
-        outputChunkCount = s.outputChunkCount
+        firstReasoningMs = LLMUsage.valid(s.firstReasoningMs)
+        firstContentMs = LLMUsage.valid(s.firstContentMs)
+        lastOutputMs = LLMUsage.valid(s.lastOutputMs)
+        if let first = firstOutputMs, let last = lastOutputMs, last < first { lastOutputMs = nil }
+        durationMs = LLMUsage.valid(s.durationMs)
+        outputChunkCount = LLMUsage.valid(s.outputChunkCount) ?? 0
         isStreamed = s.isStreamed
-        promptTokens = s.promptTokens.flatMap { $0 >= 0 ? $0 : nil }
-        completionTokens = s.completionTokens.flatMap { $0 >= 0 ? $0 : nil }
-        cachedTokens = s.cachedTokens.flatMap { $0 >= 0 ? $0 : nil }
-        cacheWriteTokens = s.cacheWriteTokens.flatMap { $0 >= 0 ? $0 : nil }
+        promptTokens = LLMUsage.valid(s.promptTokens)
+        completionTokens = LLMUsage.valid(s.completionTokens)
+        cachedTokens = LLMUsage.valid(s.cachedTokens)
+        cacheWriteTokens = LLMUsage.valid(s.cacheWriteTokens)
         httpStatus = s.httpStatus
         inputPricePerMillion = Self.validPrice(s.inputPricePerMillion)
         outputPricePerMillion = Self.validPrice(s.outputPricePerMillion)

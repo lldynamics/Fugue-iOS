@@ -38,6 +38,9 @@ struct ProviderDetailView: View {
     @State private var showAddExtraKeySheet: Bool = false
     @State private var newExtraKeyInput: String = ""
     @State private var idleTimeoutSelection: Int = 0
+    @State private var preferences = AppPreferences.shared
+    @State private var customMultiplierInput: String = "1"
+    @State private var multiplierStatusMessage: String?
 
     private var activePoolKeyCount: Int {
         var seen = Set<String>()
@@ -324,6 +327,62 @@ struct ProviderDetailView: View {
             }
 
             Section {
+                let activeMultiplier = preferences.pricingMultiplier(for: provider.id)
+                HStack {
+                    Text("当前计价倍率")
+                    Spacer()
+                    Text(PricingMultiplierPolicy.formatted(activeMultiplier))
+                        .font(.subheadline.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(preferences.accentTheme.readableText)
+                }
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(PricingMultiplierPolicy.presets, id: \.self) { preset in
+                            let selected = abs(activeMultiplier - preset) < 0.001
+                            Button(PricingMultiplierPolicy.formatted(preset)) {
+                                applyPricingMultiplier(preset)
+                            }
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(selected ? .white : .primary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(selected ? preferences.accentTheme.tintColor : DS.Surface.subtle, in: Capsule())
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                HStack(spacing: DS.Spacing.sm) {
+                    TextField("自定义倍率（如 0.5 / 7.2）", text: $customMultiplierInput)
+                        .keyboardType(.decimalPad)
+                    Button("应用") {
+                        let normalized = customMultiplierInput
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .replacingOccurrences(of: ",", with: ".")
+                        if let parsed = Double(normalized), parsed.isFinite, parsed > 0 {
+                            applyPricingMultiplier(parsed)
+                        } else {
+                            multiplierStatusMessage = String(localized: "请输入大于 0 的有效倍率数值。")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+
+                if let multiplierStatusMessage {
+                    Text(multiplierStatusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("中转站计价倍率")
+            } footer: {
+                Text("适用于优惠中转站（如 0.2x、0.5x）或按美元折算人民币汇率计价（如 7.2x）。仅影响后续新请求估算与账本费用，不改写模型基础单价。")
+            }
+
+            Section {
                 if onVerifiedModel == nil {
                     ModelCatalogRefreshButton(catalog: catalog, request: catalogRequest, refresh: refreshModels)
                         .disabled(isPinging)
@@ -456,13 +515,15 @@ struct ProviderDetailView: View {
         .navigationTitle(provider.name)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            let loaded = KeychainService.shared.loadAPIKey(for: provider.id)
-            let loadedExtras = KeychainService.shared.loadExtraAPIKeys(for: provider.id)
+            let loaded = provider.apiKey
+            let loadedExtras = provider.extraAPIKeys
             ensureKeyCoordinator().resetInitial(loaded)
             apiKeyInput = loaded
             extraAPIKeys = loadedExtras
             idleTimeoutSelection = provider.idleTimeoutSeconds
             keySaved = !loaded.isEmpty || !loadedExtras.isEmpty
+            customMultiplierInput = PricingMultiplierPolicy.formatted(preferences.pricingMultiplier(for: provider.id))
+                .replacingOccurrences(of: "x", with: "")
         }
         .sheet(isPresented: $showAddModelSheet) {
             addModelSheet
@@ -730,7 +791,7 @@ struct ProviderDetailView: View {
                             return
                         }
                         let updated = extraAPIKeys + [candidate]
-                        guard KeychainService.shared.saveExtraAPIKeys(updated, for: provider.id) else {
+                        guard KeychainService.shared.saveExtraAPIKeys(updated, for: provider.credentialID) else {
                             saveError = String(localized: "保存失败，请保留输入并重试。")
                             return
                         }
@@ -751,7 +812,7 @@ struct ProviderDetailView: View {
         guard extraAPIKeys.indices.contains(index) else { return }
         var updated = extraAPIKeys
         updated.remove(at: index)
-        guard KeychainService.shared.saveExtraAPIKeys(updated, for: provider.id) else {
+        guard KeychainService.shared.saveExtraAPIKeys(updated, for: provider.credentialID) else {
             saveError = String(localized: "保存失败，请保留输入并重试。")
             return
         }
@@ -827,11 +888,11 @@ struct ProviderDetailView: View {
         if let existing = keyCoordinator {
             return existing
         }
-        let providerID = provider.id
+        let credentialID = provider.credentialID
         let coordinator = APIKeySaveCoordinator(
-            initialValue: KeychainService.shared.loadAPIKey(for: providerID),
+            initialValue: provider.apiKey,
             saveHandler: { trimmed in
-                KeychainService.shared.saveAPIKey(trimmed, for: providerID)
+                KeychainService.shared.saveAPIKey(trimmed, for: credentialID)
             }
         )
         coordinator.onResult = { ok, trimmed in
@@ -846,5 +907,13 @@ struct ProviderDetailView: View {
     private func flushPendingAPIKey(overrideValue: String? = nil) {
         let coordinator = ensureKeyCoordinator()
         _ = coordinator.flushNow(overrideValue: overrideValue)
+    }
+
+    private func applyPricingMultiplier(_ value: Double) {
+        let sanitized = PricingMultiplierPolicy.sanitize(value)
+        preferences.setPricingMultiplier(sanitized, for: provider.id)
+        let label = PricingMultiplierPolicy.formatted(sanitized)
+        customMultiplierInput = label.replacingOccurrences(of: "x", with: "")
+        multiplierStatusMessage = String(localized: "已设置当前服务商倍率为 \(label)。")
     }
 }

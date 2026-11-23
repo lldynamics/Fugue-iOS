@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.GraphicEq
@@ -126,6 +127,7 @@ fun ProviderListScreen(
     var pendingEncryptedImport by remember { mutableStateOf<File?>(null) }
     var importPassword by remember { mutableStateOf("") }
     var isBusyBackup by remember { mutableStateOf(false) }
+    var showWebDAVSheet by remember { mutableStateOf(false) }
 
     fun discardPendingBackup() {
         pendingEncryptedImport?.delete()
@@ -889,6 +891,16 @@ fun ProviderListScreen(
                             Text(L10n.text("从备份文件导入（自动识别加密包）", "Import Backup File"))
                         }
 
+                        OutlinedButton(
+                            enabled = !isBusyBackup,
+                            onClick = { showWebDAVSheet = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Filled.CloudSync, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.size(8.dp))
+                            Text(L10n.text("WebDAV 加密云同步", "Encrypted WebDAV Cloud Sync"))
+                        }
+
                         if (prefs.aiConsentAccepted) {
                             TextButton(
                                 onClick = {
@@ -1081,6 +1093,13 @@ fun ProviderListScreen(
                     Text(L10n.text("好", "OK"))
                 }
             }
+        )
+    }
+
+    if (showWebDAVSheet) {
+        WebDAVSyncSheet(
+            container = container,
+            onDismiss = { showWebDAVSheet = false }
         )
     }
 }

@@ -154,6 +154,13 @@ struct ProviderListView: View {
                     .disabled(isImporting)
 
                     NavigationLink {
+                        WebDAVSyncView()
+                    } label: {
+                        Label("WebDAV 加密云同步", systemImage: "icloud.and.arrow.up")
+                            .font(.subheadline)
+                    }
+
+                    NavigationLink {
                         AboutAndPrivacyView()
                     } label: {
                         Label("关于与隐私声明", systemImage: "info.circle")

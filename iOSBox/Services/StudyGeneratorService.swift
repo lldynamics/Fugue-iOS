@@ -110,7 +110,7 @@ enum StudyGeneratorService {
         context: ModelContext,
         stream: @Sendable (LLMChatRequest) -> AsyncThrowingStream<LLMStreamEvent, Error>
     ) async throws -> String {
-        let apiKey = KeychainService.shared.loadAPIKey(for: provider.id)
+        let apiKey = provider.apiKey
         let isLocal = NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL)
         if !provider.hasAuthentication && !isLocal {
             throw LLMError.missingAPIKey(provider.name)
@@ -145,7 +145,8 @@ enum StudyGeneratorService {
             spec: spec,
             conversationID: conversationID,
             messageID: messageID,
-            kind: .studyGeneration
+            kind: .studyGeneration,
+            pricingMultiplier: AppPreferences.shared.pricingMultiplier(for: target.providerID)
         )
         context.insert(record)
 

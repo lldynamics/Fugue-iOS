@@ -55,6 +55,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -115,6 +116,8 @@ fun ConversationListScreen(
     var selectedBatchIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showBatchTagDialog by remember { mutableStateOf(false) }
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
+    var showBookmarksHub by remember { mutableStateOf(false) }
+    var bookmarksRefreshTick by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
 
     val availableTags = remember(conversations) {
@@ -123,7 +126,7 @@ fun ConversationListScreen(
             .sorted()
     }
 
-    LaunchedEffect(conversations, searchQuery, bookmarkedOnly) {
+    LaunchedEffect(conversations, searchQuery, bookmarkedOnly, bookmarksRefreshTick) {
         if (searchQuery.isNotBlank() || bookmarkedOnly) {
             if (searchQuery.isNotBlank()) delay(160)
             messagesByConversation = container.chatRepository.getAllMessagesGroupedByConversation()
@@ -264,6 +267,11 @@ fun ConversationListScreen(
                             Icon(Icons.Filled.Bookmark, contentDescription = null, modifier = Modifier.size(14.dp))
                         },
                         label = { Text(L10n.text("有收藏", "Bookmarked")) }
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = { showBookmarksHub = true },
+                        label = { Text(L10n.text("收藏夹", "Bookmarks Hub")) }
                     )
                     for (tag in availableTags) {
                         FilterChip(
@@ -589,6 +597,18 @@ fun ConversationListScreen(
                 TextButton(onClick = { editingTagFor = null }) {
                     Text(L10n.text("取消", "Cancel"))
                 }
+            }
+        )
+    }
+
+    if (showBookmarksHub) {
+        BookmarksHubSheet(
+            container = container,
+            conversations = conversations,
+            onOpenConversation = onOpenConversation,
+            onDismiss = {
+                showBookmarksHub = false
+                bookmarksRefreshTick += 1
             }
         )
     }

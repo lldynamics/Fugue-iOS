@@ -43,12 +43,74 @@ final class AppPreferences {
         static let cloudTTSModel = "iosbox.pref.cloudTTSModel"
         static let cloudTTSVoice = "iosbox.pref.cloudTTSVoice"
         static let simpleDailyMode = "iosbox.pref.simpleDailyMode"
+        static let monthlyBudgetLimit = "iosbox.pref.monthlyBudgetLimit"
+        static let monthlyBudgetCurrency = "iosbox.pref.monthlyBudgetCurrency"
+        static let monthlyBudgetAlertRatio = "iosbox.pref.monthlyBudgetAlertRatio"
+        static let providerPricingMultipliers = "iosbox.pref.providerPricingMultipliers"
+        static let webDAVServerURL = "iosbox.pref.webDAVServerURL"
+        static let webDAVUsername = "iosbox.pref.webDAVUsername"
+        static let webDAVRemotePath = "iosbox.pref.webDAVRemotePath"
+        static let webDAVLastSyncEpoch = "iosbox.pref.webDAVLastSyncEpoch"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
 
     var simpleDailyMode: Bool {
         didSet { defaults.set(simpleDailyMode, forKey: Keys.simpleDailyMode) }
+    }
+
+    var monthlyBudgetLimit: Double {
+        didSet {
+            let clean = (monthlyBudgetLimit.isFinite && monthlyBudgetLimit > 0) ? monthlyBudgetLimit : 0
+            defaults.set(clean, forKey: Keys.monthlyBudgetLimit)
+        }
+    }
+
+    var monthlyBudgetCurrency: String {
+        didSet {
+            let clean = monthlyBudgetCurrency.trimmingCharacters(in: .whitespacesAndNewlines)
+            defaults.set(clean.isEmpty ? "USD" : clean, forKey: Keys.monthlyBudgetCurrency)
+        }
+    }
+
+    var monthlyBudgetAlertRatio: Double {
+        didSet {
+            let clean = min(max(monthlyBudgetAlertRatio.isFinite ? monthlyBudgetAlertRatio : 0.8, 0.5), 0.95)
+            defaults.set(clean, forKey: Keys.monthlyBudgetAlertRatio)
+        }
+    }
+
+    var providerPricingMultipliers: [String: Double] {
+        didSet {
+            if let data = try? JSONEncoder().encode(providerPricingMultipliers) {
+                defaults.set(data, forKey: Keys.providerPricingMultipliers)
+            }
+        }
+    }
+
+    var webDAVServerURL: String {
+        didSet { defaults.set(webDAVServerURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.webDAVServerURL) }
+    }
+
+    var webDAVUsername: String {
+        didSet { defaults.set(webDAVUsername.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.webDAVUsername) }
+    }
+
+    var webDAVRemotePath: String {
+        didSet {
+            let clean = webDAVRemotePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            defaults.set(clean.isEmpty ? "Fugue/fugue-sync.enc.json" : clean, forKey: Keys.webDAVRemotePath)
+        }
+    }
+
+    var webDAVLastSyncAt: Date? {
+        didSet {
+            if let date = webDAVLastSyncAt {
+                defaults.set(date.timeIntervalSince1970, forKey: Keys.webDAVLastSyncEpoch)
+            } else {
+                defaults.removeObject(forKey: Keys.webDAVLastSyncEpoch)
+            }
+        }
     }
 
     var fontScale: Double {
@@ -182,6 +244,40 @@ final class AppPreferences {
             self.customGroupTemplates = []
         }
         self.simpleDailyMode = defaults.bool(forKey: Keys.simpleDailyMode)
+        let storedBudget = defaults.double(forKey: Keys.monthlyBudgetLimit)
+        self.monthlyBudgetLimit = (storedBudget.isFinite && storedBudget > 0) ? storedBudget : 0
+        let storedCurrency = defaults.string(forKey: Keys.monthlyBudgetCurrency)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.monthlyBudgetCurrency = storedCurrency.isEmpty ? "USD" : storedCurrency
+        let storedAlert = defaults.double(forKey: Keys.monthlyBudgetAlertRatio)
+        self.monthlyBudgetAlertRatio = (storedAlert.isFinite && storedAlert >= 0.5 && storedAlert <= 0.95) ? storedAlert : 0.8
+        if let multData = defaults.data(forKey: Keys.providerPricingMultipliers),
+           let decodedMult = try? JSONDecoder().decode([String: Double].self, from: multData) {
+            self.providerPricingMultipliers = decodedMult
+        } else {
+            self.providerPricingMultipliers = [:]
+        }
+        self.webDAVServerURL = defaults.string(forKey: Keys.webDAVServerURL) ?? ""
+        self.webDAVUsername = defaults.string(forKey: Keys.webDAVUsername) ?? ""
+        let storedRemotePath = defaults.string(forKey: Keys.webDAVRemotePath)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.webDAVRemotePath = storedRemotePath.isEmpty ? "Fugue/fugue-sync.enc.json" : storedRemotePath
+        let lastSyncEpoch = defaults.double(forKey: Keys.webDAVLastSyncEpoch)
+        self.webDAVLastSyncAt = lastSyncEpoch > 0 ? Date(timeIntervalSince1970: lastSyncEpoch) : nil
+    }
+
+    func pricingMultiplier(for providerID: UUID) -> Double {
+        PricingMultiplierPolicy.sanitize(providerPricingMultipliers[providerID.uuidString.uppercased()])
+    }
+
+    func setPricingMultiplier(_ value: Double?, for providerID: UUID) {
+        let key = providerID.uuidString.uppercased()
+        let clean = PricingMultiplierPolicy.sanitize(value)
+        var updated = providerPricingMultipliers
+        if abs(clean - PricingMultiplierPolicy.defaultMultiplier) < 0.0001 {
+            updated.removeValue(forKey: key)
+        } else {
+            updated[key] = clean
+        }
+        providerPricingMultipliers = updated
     }
 
     func recordRecentModel(_ target: ResolvedModelTarget, maxCount: Int = 8) {

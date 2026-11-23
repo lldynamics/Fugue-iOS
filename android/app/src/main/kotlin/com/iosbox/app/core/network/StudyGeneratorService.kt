@@ -2,6 +2,7 @@ package com.iosbox.app.core.network
 
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.MessageRole
+import com.iosbox.app.core.model.PricingMultiplierPolicy
 import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestStatus
 import com.iosbox.app.core.model.ResolvedModelTarget
@@ -70,6 +71,7 @@ object StudyGeneratorService {
         repo: ChatRepository,
         secretStore: SecretStore,
         llmClient: LLMClient,
+        pricingMultiplier: Double = PricingMultiplierPolicy.DEFAULT_MULTIPLIER,
         streamOverride: ((LLMChatRequest) -> Flow<LLMStreamEvent>)? = null
     ): List<StudyCardDraft> {
         val trimmed = sourceText.trim()
@@ -83,6 +85,7 @@ object StudyGeneratorService {
             messageID = messageID,
             repo = repo,
             secretStore = secretStore,
+            pricingMultiplier = pricingMultiplier,
             stream = streamOverride ?: { llmClient.streamChat(it) }
         )
         return parseFlashcardsJSON(raw)
@@ -98,6 +101,7 @@ object StudyGeneratorService {
         repo: ChatRepository,
         secretStore: SecretStore,
         llmClient: LLMClient,
+        pricingMultiplier: Double = PricingMultiplierPolicy.DEFAULT_MULTIPLIER,
         streamOverride: ((LLMChatRequest) -> Flow<LLMStreamEvent>)? = null
     ): StudyQuizBundle {
         val trimmed = sourceText.trim()
@@ -111,6 +115,7 @@ object StudyGeneratorService {
             messageID = messageID,
             repo = repo,
             secretStore = secretStore,
+            pricingMultiplier = pricingMultiplier,
             stream = streamOverride ?: { llmClient.streamChat(it) }
         )
         return parseQuizJSON(raw, fallbackTitle = fallbackTitle)
@@ -125,6 +130,7 @@ object StudyGeneratorService {
         messageID: String,
         repo: ChatRepository,
         secretStore: SecretStore,
+        pricingMultiplier: Double = PricingMultiplierPolicy.DEFAULT_MULTIPLIER,
         stream: (LLMChatRequest) -> Flow<LLMStreamEvent>
     ): String {
         val allKeys = secretStore.loadAllAPIKeys(provider.id)
@@ -180,10 +186,10 @@ object StudyGeneratorService {
             cachedTokens = null,
             cacheWriteTokens = null,
             httpStatus = null,
-            inputPricePerMillion = modelSpec?.inputPricePerMillion,
-            outputPricePerMillion = modelSpec?.outputPricePerMillion,
-            cacheReadPricePerMillion = modelSpec?.cacheReadPricePerMillion,
-            cacheWritePricePerMillion = modelSpec?.cacheWritePricePerMillion,
+            inputPricePerMillion = PricingMultiplierPolicy.effectivePrice(modelSpec?.inputPricePerMillion, pricingMultiplier),
+            outputPricePerMillion = PricingMultiplierPolicy.effectivePrice(modelSpec?.outputPricePerMillion, pricingMultiplier),
+            cacheReadPricePerMillion = PricingMultiplierPolicy.effectivePrice(modelSpec?.cacheReadPricePerMillion, pricingMultiplier),
+            cacheWritePricePerMillion = PricingMultiplierPolicy.effectivePrice(modelSpec?.cacheWritePricePerMillion, pricingMultiplier),
             currency = modelSpec?.priceCurrency
         )
         repo.saveRequestRecord(record)

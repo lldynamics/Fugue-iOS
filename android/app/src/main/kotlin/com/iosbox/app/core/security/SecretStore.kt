@@ -88,6 +88,8 @@ interface SecretStore {
     companion object {
         const val TAVILY_KEY_ACCOUNT = "search/tavily"
         const val PERSONA_X_TOKEN_ACCOUNT = "persona-x-read-bearer"
+        const val WEBDAV_PASSWORD_ACCOUNT = "webdav/password"
+        const val WEBDAV_SYNC_PASSPHRASE_ACCOUNT = "webdav/sync-passphrase"
         val SUPPORTED_TIMEOUT_OPTIONS = listOf(0, 30, 60, 120, 300)
 
         fun extraKeysAccount(providerID: String): String = "${providerID.uppercase()}/extra-keys"

@@ -55,11 +55,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iosbox.app.AppContainer
 import com.iosbox.app.core.model.APIProtocolType
 import com.iosbox.app.core.model.CustomHeader
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.model.ModelPricingCatalog
 import com.iosbox.app.core.model.ModelSpec
+import com.iosbox.app.core.model.PricingMultiplierPolicy
 import com.iosbox.app.core.model.ProviderTemplate
 import com.iosbox.app.core.network.EndpointResolver
 import com.iosbox.app.core.network.NetworkLocation
@@ -76,6 +79,7 @@ fun ProviderDetailScreen(
     onBack: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val prefs by container.preferences.state.collectAsStateWithLifecycle()
     var loaded by remember { mutableStateOf<ProviderItem?>(null) }
 
     var name by remember { mutableStateOf("") }
@@ -108,6 +112,9 @@ fun ProviderDetailScreen(
     var newHeaderValue by remember { mutableStateOf("") }
     var newHeaderSecret by remember { mutableStateOf(false) }
 
+    var customMultiplierInput by remember { mutableStateOf("1") }
+    var multiplierMessage by remember { mutableStateOf<String?>(null) }
+
     LaunchedEffect(providerId) {
         val item = container.chatRepository.getProvider(providerId) ?: return@LaunchedEffect
         loaded = item
@@ -120,6 +127,8 @@ fun ProviderDetailScreen(
         extraKeys = container.secretStore.loadExtraAPIKeys(item.id)
         headers = item.customHeaders
         models = item.models
+        val mult = container.preferences.pricingMultiplierFor(item.id)
+        customMultiplierInput = PricingMultiplierPolicy.format(mult).removeSuffix("x")
     }
 
     fun persistProvider(
@@ -423,6 +432,125 @@ fun ProviderDetailScreen(
                             Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.size(6.dp))
                             Text(L10n.text("添加自定义 Header", "Add Header"))
+                        }
+                    }
+                }
+            }
+
+            item {
+                val activeMultiplier = remember(prefs.providerPricingMultipliers, providerId) {
+                    container.preferences.pricingMultiplierFor(providerId)
+                }
+                fun applyMultiplier(raw: Double) {
+                    val clean = PricingMultiplierPolicy.sanitize(raw)
+                    val label = PricingMultiplierPolicy.format(clean)
+                    customMultiplierInput = label.removeSuffix("x")
+                    multiplierMessage = L10n.text(
+                        "已设置当前服务商倍率为 $label（仅影响新请求费用估算）。",
+                        "Set provider pricing multiplier to $label."
+                    )
+                    scope.launch {
+                        container.preferences.setProviderPricingMultiplier(providerId, clean)
+                    }
+                }
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(DS.Spacing.md),
+                        verticalArrangement = Arrangement.spacedBy(DS.Spacing.sm)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = L10n.text("中转站计价倍率", "Provider Pricing Multiplier"),
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                            Text(
+                                text = PricingMultiplierPolicy.format(activeMultiplier),
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            for (preset in PricingMultiplierPolicy.PRESETS) {
+                                FilterChip(
+                                    selected = kotlin.math.abs(activeMultiplier - preset) < 0.001,
+                                    onClick = { applyMultiplier(preset) },
+                                    label = { Text(PricingMultiplierPolicy.format(preset)) }
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = customMultiplierInput,
+                                onValueChange = { customMultiplierInput = it },
+                                label = { Text(L10n.text("自定义倍率 (如 0.5 / 7.2)", "Custom (e.g. 0.5 / 7.2)")) },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Button(onClick = {
+                                val parsed = customMultiplierInput.trim().replace(',', '.').toDoubleOrNull()
+                                if (parsed != null && parsed.isFinite() && parsed > 0.0) {
+                                    applyMultiplier(parsed)
+                                } else {
+                                    multiplierMessage = L10n.text("请输入大于 0 的有效倍率。", "Enter a positive multiplier.")
+                                }
+                            }) {
+                                Text(L10n.text("应用", "Apply"))
+                            }
+                        }
+
+                        if (models.isNotEmpty()) {
+                            OutlinedButton(
+                                onClick = {
+                                    var updatedCount = 0
+                                    val next = models.map { spec ->
+                                        if (spec.inputPricePerMillion == null) {
+                                            val matched = ModelPricingCatalog.match(spec.id)
+                                            if (matched != null) {
+                                                updatedCount += 1
+                                                ModelPricingCatalog.apply(matched, spec)
+                                            } else {
+                                                spec
+                                            }
+                                        } else {
+                                            spec
+                                        }
+                                    }
+                                    models = next
+                                    persistProvider(updatedModels = next)
+                                    multiplierMessage = L10n.text(
+                                        "已为 $updatedCount 个未设价模型自动匹配主流参考单价。",
+                                        "Matched reference pricing for $updatedCount models."
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(L10n.text("一键填充主流模型参考单价", "Auto-Fill Reference Model Prices"))
+                            }
+                        }
+
+                        multiplierMessage?.let { msg ->
+                            Text(
+                                text = msg,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }

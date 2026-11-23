@@ -24,6 +24,7 @@ import com.iosbox.app.core.model.PersonaExcerpt
 import com.iosbox.app.core.model.PersonaFeed
 import com.iosbox.app.core.model.PersonalMemoryPrompt
 import com.iosbox.app.core.model.PickedGroupMention
+import com.iosbox.app.core.model.PricingMultiplierPolicy
 import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestMetrics
 import com.iosbox.app.core.model.RequestStatus
@@ -1094,7 +1095,8 @@ class ChatViewModel(
                         messageID = message.id,
                         repo = repo,
                         secretStore = container.secretStore,
-                        llmClient = container.llmClient
+                        llmClient = container.llmClient,
+                        pricingMultiplier = container.preferences.pricingMultiplierFor(provider.id)
                     )
                     repo.updateMessageMetadata(message.id) { current -> current.copy(generatedFlashcards = cards) }
                 } catch (t: Throwable) {
@@ -1135,7 +1137,8 @@ class ChatViewModel(
                         messageID = message.id,
                         repo = repo,
                         secretStore = container.secretStore,
-                        llmClient = container.llmClient
+                        llmClient = container.llmClient,
+                        pricingMultiplier = container.preferences.pricingMultiplierFor(provider.id)
                     )
                     repo.updateMessageMetadata(message.id) { current -> current.copy(generatedQuiz = quiz) }
                 } catch (t: Throwable) {
@@ -3505,10 +3508,22 @@ class ChatViewModel(
                 cachedTokens = null,
                 cacheWriteTokens = null,
                 httpStatus = null,
-                inputPricePerMillion = modelSpec?.inputPricePerMillion,
-                outputPricePerMillion = modelSpec?.outputPricePerMillion,
-                cacheReadPricePerMillion = modelSpec?.cacheReadPricePerMillion,
-                cacheWritePricePerMillion = modelSpec?.cacheWritePricePerMillion,
+                inputPricePerMillion = PricingMultiplierPolicy.effectivePrice(
+                    modelSpec?.inputPricePerMillion,
+                    container.preferences.pricingMultiplierFor(provider.id)
+                ),
+                outputPricePerMillion = PricingMultiplierPolicy.effectivePrice(
+                    modelSpec?.outputPricePerMillion,
+                    container.preferences.pricingMultiplierFor(provider.id)
+                ),
+                cacheReadPricePerMillion = PricingMultiplierPolicy.effectivePrice(
+                    modelSpec?.cacheReadPricePerMillion,
+                    container.preferences.pricingMultiplierFor(provider.id)
+                ),
+                cacheWritePricePerMillion = PricingMultiplierPolicy.effectivePrice(
+                    modelSpec?.cacheWritePricePerMillion,
+                    container.preferences.pricingMultiplierFor(provider.id)
+                ),
                 currency = modelSpec?.priceCurrency
             )
             repo.saveRequestRecord(record)

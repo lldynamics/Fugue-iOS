@@ -17,6 +17,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -24,14 +26,19 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +49,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iosbox.app.AppContainer
 import com.iosbox.app.core.model.ArenaBallot
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.model.MonthlyBudgetEvaluator
+import com.iosbox.app.core.model.MonthlyBudgetLevel
 import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestStatus
 import com.iosbox.app.core.storage.RequestRecordItem
@@ -49,6 +58,7 @@ import com.iosbox.app.core.storage.UsageTrendBucket
 import com.iosbox.app.core.storage.UsageTrendCalculator
 import com.iosbox.app.core.storage.UsageTrendGranularity
 import com.iosbox.app.ui.theme.DS
+import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Calendar
 import java.util.Date
@@ -85,10 +95,39 @@ fun UsageScreen(
 ) {
     val allRecords by container.chatRepository.observeRequestRecords().collectAsStateWithLifecycle(initialValue = emptyList())
     val arenaMessages by container.chatRepository.observeArenaMessages().collectAsStateWithLifecycle(initialValue = emptyList())
+    val prefs by container.preferences.state.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
     val blindStandings = remember(arenaMessages) { ArenaBallot.standings(arenaMessages) }
     var period by remember { mutableStateOf(UsagePeriod.MONTH) }
     var selectedProviderId by remember { mutableStateOf<String?>(null) }
     var selectedModelId by remember { mutableStateOf<String?>(null) }
+
+    var showBudgetDialog by remember { mutableStateOf(false) }
+    var budgetLimitInput by remember { mutableStateOf("") }
+    var budgetCurrencyInput by remember { mutableStateOf("USD") }
+    var budgetAlertRatioInput by remember { mutableDoubleStateOf(0.8) }
+
+    val budgetEvaluation = remember(
+        allRecords,
+        prefs.monthlyBudgetLimit,
+        prefs.monthlyBudgetCurrency,
+        prefs.monthlyBudgetAlertRatio
+    ) {
+        val byCurrency = LinkedHashMap<String, Double>()
+        for (rec in allRecords) {
+            if (rec.kind == RequestKind.WEB_SEARCH || rec.status == RequestStatus.RUNNING) continue
+            if (!UsagePeriod.MONTH.includes(rec.startedAtEpochMs)) continue
+            val cur = rec.currency ?: continue
+            val cost = rec.estimatedCost ?: continue
+            byCurrency[cur] = (byCurrency[cur] ?: 0.0) + cost
+        }
+        MonthlyBudgetEvaluator.evaluate(
+            spentByCurrency = byCurrency,
+            limit = prefs.monthlyBudgetLimit,
+            currency = prefs.monthlyBudgetCurrency,
+            alertRatio = prefs.monthlyBudgetAlertRatio
+        )
+    }
 
     val providerOptions = remember(allRecords) {
         allRecords.distinctBy { it.providerID }.map { it.providerID to it.providerName }
@@ -173,6 +212,105 @@ fun UsageScreen(
             contentPadding = PaddingValues(DS.Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(DS.Spacing.md)
         ) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(DS.Spacing.md),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = L10n.text("月度预算提醒", "Monthly Budget Guard"),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                            TextButton(onClick = {
+                                budgetLimitInput = if (prefs.monthlyBudgetLimit > 0.0) {
+                                    String.format(Locale.US, "%.2f", prefs.monthlyBudgetLimit).trimEnd('0').trimEnd('.')
+                                } else ""
+                                budgetCurrencyInput = prefs.monthlyBudgetCurrency
+                                budgetAlertRatioInput = prefs.monthlyBudgetAlertRatio
+                                showBudgetDialog = true
+                            }) {
+                                Text(
+                                    if (budgetEvaluation.level == MonthlyBudgetLevel.UNCONFIGURED) {
+                                        L10n.text("设置预算", "Set Budget")
+                                    } else {
+                                        L10n.text("调整", "Edit")
+                                    }
+                                )
+                            }
+                        }
+
+                        if (budgetEvaluation.level == MonthlyBudgetLevel.UNCONFIGURED) {
+                            Text(
+                                text = L10n.text(
+                                    "设置本月消费上限与预警比例（如 80%），接近或超额时将在账本顶部提醒。",
+                                    "Set a monthly spend cap and warning threshold to get alerted before overspending."
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            val tint = when (budgetEvaluation.level) {
+                                MonthlyBudgetLevel.EXCEEDED -> MaterialTheme.colorScheme.error
+                                MonthlyBudgetLevel.WARNING -> MaterialTheme.colorScheme.tertiary
+                                else -> MaterialTheme.colorScheme.primary
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "${budgetEvaluation.currency} ${String.format(Locale.US, "%.4f", budgetEvaluation.spent).trimEnd('0').trimEnd('.')} / ${budgetEvaluation.currency} ${String.format(Locale.US, "%.2f", budgetEvaluation.limit).trimEnd('0').trimEnd('.')}",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                                )
+                                Text(
+                                    text = "${(budgetEvaluation.ratio * 100.0).roundToInt()}%",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                    color = tint
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { budgetEvaluation.ratio.toFloat().coerceIn(0f, 1f) },
+                                color = tint,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(999.dp))
+                            )
+                            Text(
+                                text = when (budgetEvaluation.level) {
+                                    MonthlyBudgetLevel.EXCEEDED -> L10n.text(
+                                        "已达本月预算上限，建议切换轻量模型或本地模型。",
+                                        "Monthly budget cap reached or exceeded."
+                                    )
+                                    MonthlyBudgetLevel.WARNING -> L10n.text(
+                                        "已接近本月预算上限，剩余 ${budgetEvaluation.currency} ${String.format(Locale.US, "%.2f", budgetEvaluation.remaining)}。",
+                                        "Approaching monthly cap (${budgetEvaluation.currency} ${String.format(Locale.US, "%.2f", budgetEvaluation.remaining)} left)."
+                                    )
+                                    else -> L10n.text(
+                                        "本月预算充足，剩余 ${budgetEvaluation.currency} ${String.format(Locale.US, "%.2f", budgetEvaluation.remaining)}。",
+                                        "${budgetEvaluation.currency} ${String.format(Locale.US, "%.2f", budgetEvaluation.remaining)} remaining this month."
+                                    )
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (budgetEvaluation.level == MonthlyBudgetLevel.NORMAL) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else tint
+                            )
+                        }
+                    }
+                }
+            }
+
             item {
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -357,6 +495,73 @@ fun UsageScreen(
                 }
             }
         }
+    }
+
+    if (showBudgetDialog) {
+        AlertDialog(
+            onDismissRequest = { showBudgetDialog = false },
+            title = { Text(L10n.text("设置月度预算", "Monthly Budget")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = budgetLimitInput,
+                        onValueChange = { budgetLimitInput = it },
+                        label = { Text(L10n.text("每月预算金额（填 0 停用）", "Monthly limit (0 disables)")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = L10n.text("币种", "Currency"),
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for (cur in listOf("USD", "CNY", "EUR", "JPY")) {
+                            FilterChip(
+                                selected = budgetCurrencyInput == cur,
+                                onClick = { budgetCurrencyInput = cur },
+                                label = { Text(cur) }
+                            )
+                        }
+                    }
+                    Text(
+                        text = L10n.text("预警阈值", "Alert Threshold"),
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        for (ratio in listOf(0.7, 0.8, 0.9)) {
+                            FilterChip(
+                                selected = kotlin.math.abs(budgetAlertRatioInput - ratio) < 0.05,
+                                onClick = { budgetAlertRatioInput = ratio },
+                                label = { Text("${(ratio * 100).roundToInt()}%") }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val parsed = budgetLimitInput.trim().replace(',', '.').toDoubleOrNull() ?: 0.0
+                    scope.launch {
+                        container.preferences.setMonthlyBudget(
+                            limit = parsed,
+                            currency = budgetCurrencyInput,
+                            alertRatio = budgetAlertRatioInput
+                        )
+                    }
+                    showBudgetDialog = false
+                }) {
+                    Text(L10n.text("保存", "Save"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBudgetDialog = false }) {
+                    Text(L10n.text("取消", "Cancel"))
+                }
+            }
+        )
     }
 }
 

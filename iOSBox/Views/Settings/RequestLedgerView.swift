@@ -4,13 +4,40 @@ import Charts
 
 struct RequestLedgerView: View {
     @Query(sort: \RequestRecord.startedAt, order: .reverse) private var records: [RequestRecord]
-    @Query(filter: #Predicate<ChatMessage> { $0.comparisonGroupID != nil && !$0.isSynthesis })
+    @Query(filter: #Predicate<ChatMessage> { $0.comparisonGroupID != nil && $0.synthesisSourceDigest == nil })
     private var arenaMessages: [ChatMessage]
     @State private var period: LedgerPeriod = .month
     @State private var referenceDate = Date()
     @State private var providerID: UUID?
     @State private var modelID: String?
     @State private var visibleLimit = 50
+    @State private var preferences = AppPreferences.shared
+    @State private var showBudgetSheet = false
+    @State private var budgetLimitInput = ""
+    @State private var budgetCurrencyInput = "USD"
+    @State private var budgetAlertRatioInput = 0.8
+
+    private var theme: DS.AccentTheme { preferences.accentTheme }
+
+    private func overallMedianTPS(in records: [RequestRecord]) -> (tps: Double, count: Int)? {
+        let samples = records.compactMap(\.tokensPerSecond).sorted()
+        guard !samples.isEmpty else { return nil }
+        let mid = samples.count / 2
+        let median = samples.count.isMultiple(of: 2)
+            ? (samples[mid - 1] + samples[mid]) / 2.0
+            : samples[mid]
+        return (median, samples.count)
+    }
+
+    private func compactTokenText(_ count: Int) -> String {
+        if count >= 1_000_000 {
+            return String(format: "%.1fM", Double(count) / 1_000_000.0)
+        }
+        if count >= 1_000 {
+            return String(format: "%.1fK", Double(count) / 1_000.0)
+        }
+        return "\(count)"
+    }
 
     private var providerOptions: [(UUID, String)] {
         var seen = Set<UUID>()
@@ -31,8 +58,67 @@ struct RequestLedgerView: View {
     var body: some View {
         let rows = filtered
         let modelRows = rows.filter { $0.kind != .webSearch }
+        let monthSpentByCurrency = RequestLedger.costs(
+            records.filter { $0.kind != .webSearch && LedgerPeriod.month.includes($0.startedAt, now: referenceDate) }
+        )
+        let budgetEval = MonthlyBudgetEvaluator.evaluate(
+            spentByCurrency: monthSpentByCurrency,
+            limit: preferences.monthlyBudgetLimit,
+            currency: preferences.monthlyBudgetCurrency,
+            alertRatio: preferences.monthlyBudgetAlertRatio
+        )
+
         return NavigationStack {
             List {
+                Section("月度预算监控") {
+                    if budgetEval.level == .unconfigured {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("未设置月度预算上限")
+                                    .font(.subheadline.weight(.medium))
+                                Text("可设置每月预算与提醒阈值（默认 80%），超额自动醒目提醒。")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("设置") {
+                                openBudgetEditor()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
+                    } else {
+                        let tint: Color = switch budgetEval.level {
+                        case .exceeded: .red
+                        case .warning: .orange
+                        default: theme.tintColor
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("\(RequestLedger.costText(budgetEval.spent, currency: budgetEval.currency)) / \(RequestLedger.costText(budgetEval.limit, currency: budgetEval.currency))")
+                                    .font(.subheadline.monospacedDigit().weight(.semibold))
+                                Spacer()
+                                Text("\(Int((budgetEval.ratio * 100).rounded()))%")
+                                    .font(.caption.monospacedDigit().weight(.bold))
+                                    .foregroundStyle(tint)
+                            }
+                            ProgressView(value: min(max(budgetEval.ratio, 0), 1))
+                                .tint(tint)
+                            HStack {
+                                Text(budgetStatusLine(for: budgetEval))
+                                    .font(.caption)
+                                    .foregroundStyle(budgetEval.level == .normal ? .secondary : tint)
+                                Spacer()
+                                Button("调整预算") {
+                                    openBudgetEditor()
+                                }
+                                .font(.caption.weight(.medium))
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
                 Section {
                     Picker("统计周期", selection: $period) {
                         ForEach(LedgerPeriod.allCases) { Text($0.title).tag($0) }
@@ -51,9 +137,57 @@ struct RequestLedgerView: View {
                 }
 
                 Section("用量与预估费用") {
+                    let totalPrompt = rows.compactMap { LLMUsage.valid($0.promptTokens) }.reduce(0, LLMUsage.saturatedSum)
+                    let totalCompletion = rows.compactMap { LLMUsage.valid($0.completionTokens) }.reduce(0, LLMUsage.saturatedSum)
+                    let totalCached = rows.compactMap { LLMUsage.valid($0.cachedTokens) }.reduce(0, LLMUsage.saturatedSum)
+                    let succeededCount = rows.filter { $0.status == .succeeded }.count
+                    let totals = RequestLedger.costs(modelRows)
+                    let savings = RequestLedger.cacheSavings(modelRows)
+                    let primaryCurrency = totals.keys.sorted().first
+                    let primaryCostText = primaryCurrency.map { RequestLedger.costText(totals[$0] ?? 0, currency: $0) } ?? "—"
+                    let primarySavingsText: String? = primaryCurrency.flatMap { cur in
+                        guard let saved = savings[cur], saved > 0 else { return nil }
+                        return String(localized: "缓存省 \(RequestLedger.costText(saved, currency: cur))")
+                    }
+                    let speedSummary = overallMedianTPS(in: modelRows)
+                    let speedText = speedSummary.map { "\($0.tps.formatted(.number.precision(.fractionLength(1)))) tok/s" } ?? "—"
+                    let speedDetail = speedSummary.map { String(localized: "\($0.count) 样本") }
+
+                    LazyVGrid(
+                        columns: [
+                            GridItem(.flexible(), spacing: DS.Spacing.sm),
+                            GridItem(.flexible(), spacing: DS.Spacing.sm)
+                        ],
+                        spacing: DS.Spacing.sm
+                    ) {
+                        DSMetricTile(
+                            title: String(localized: "预估费用"),
+                            value: primaryCostText,
+                            detail: primarySavingsText
+                        )
+                        DSMetricTile(
+                            title: String(localized: "中位速率"),
+                            value: speedText,
+                            detail: speedDetail,
+                            valueTint: theme.readableText
+                        )
+                        DSMetricTile(
+                            title: String(localized: "请求次数"),
+                            value: "\(rows.count)",
+                            detail: String(localized: "完整 \(succeededCount)")
+                        )
+                        DSMetricTile(
+                            title: String(localized: "已知 Token"),
+                            value: compactTokenText(LLMUsage.saturatedSum(totalPrompt, totalCompletion)),
+                            detail: totalCached > 0 ? String(localized: "缓存命中 \(compactTokenText(totalCached))") : nil
+                        )
+                    }
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+
                     let buckets = RequestLedger.trendBuckets(rows, period: period)
                     if buckets.count >= 2 {
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                             Text("Token 消耗趋势")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
@@ -62,39 +196,36 @@ struct RequestLedgerView: View {
                                     x: .value(String(localized: "时间"), item.date, unit: period == .today ? .hour : (period == .month ? .day : .month)),
                                     y: .value("Tokens", item.totalTokens)
                                 )
-                                .foregroundStyle(Color.accentColor.gradient)
+                                .foregroundStyle(theme.tintColor.gradient)
                                 .cornerRadius(4)
                             }
                             .frame(height: 135)
                         }
-                        .padding(.vertical, 4)
+                        .padding(.vertical, DS.Spacing.xxs)
                     }
 
                     LabeledContent("请求次数", value: String(rows.count))
-                    LabeledContent("完整完成", value: String(rows.filter { $0.status == .succeeded }.count))
-                    LabeledContent("已知输入 Token", value: rows.compactMap(\.promptTokens).reduce(0.0) { $0 + Double($1) }.formatted(.number.precision(.fractionLength(0))))
-                    LabeledContent("已知输出 Token", value: rows.compactMap(\.completionTokens).reduce(0.0) { $0 + Double($1) }.formatted(.number.precision(.fractionLength(0))))
-                    let totalCached = rows.compactMap(\.cachedTokens).reduce(0, +)
+                    LabeledContent("完整完成", value: String(succeededCount))
+                    LabeledContent("已知输入 Token", value: Double(totalPrompt).formatted(.number.precision(.fractionLength(0))))
+                    LabeledContent("已知输出 Token", value: Double(totalCompletion).formatted(.number.precision(.fractionLength(0))))
                     if totalCached > 0 {
                         LabeledContent("缓存命中 Token", value: Double(totalCached).formatted(.number.precision(.fractionLength(0))))
                     }
                     let searchCount = rows.count - modelRows.count
                     if searchCount > 0 { Text("含联网搜索 \(searchCount) 次；搜索费用另计。").font(.caption).foregroundStyle(.secondary) }
-                    let totals = RequestLedger.costs(modelRows)
                     ForEach(totals.keys.sorted(), id: \.self) { currency in
                         LabeledContent("预估费用", value: RequestLedger.costText(totals[currency] ?? 0, currency: currency))
                     }
-                    let savings = RequestLedger.cacheSavings(modelRows)
                     ForEach(savings.keys.sorted(), id: \.self) { currency in
                         LabeledContent("缓存已节省", value: RequestLedger.costText(savings[currency] ?? 0, currency: currency))
-                            .foregroundStyle(.green)
+                            .foregroundStyle(.primary)
                     }
-                    if totals.isEmpty { Text("暂无可计价记录").foregroundStyle(.secondary) }
+                    if totals.isEmpty { Text("暂无可计价记录").foregroundStyle(.primary) }
                     let unpriced = modelRows.filter { $0.status != .running && $0.status != .blocked && $0.estimatedCost == nil }.count
                     Text("缺少用量或单价：\(unpriced) 次（不按零费用计算）")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(Color(uiColor: .label))
                     Text("按请求开始时间归入本地日期。费用采用请求当时的单价，不合并不同币种；可在服务商的模型列表设置单价。")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(Color(uiColor: .label))
                 }
 
                 let groups = RequestLedger.groups(modelRows)
@@ -111,7 +242,7 @@ struct RequestLedgerView: View {
                                     x: .value("tok/s", item.medianTPS ?? 0),
                                     y: .value(String(localized: "模型"), "\(item.modelName) (\(item.providerName))")
                                 )
-                                .foregroundStyle(Color.accentColor.gradient)
+                                .foregroundStyle(theme.tintColor.gradient)
                                 .cornerRadius(4)
                                 .annotation(position: .trailing) {
                                     if let tps = item.medianTPS {
@@ -123,34 +254,42 @@ struct RequestLedgerView: View {
                             }
                             .frame(height: CGFloat(max(90, rankedSpeedGroups.count * 34)))
                         }
-                        .padding(.vertical, 4)
+                        .padding(.vertical, DS.Spacing.xxs)
                     }
 
                     ForEach(groups) { group in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(group.modelName).font(.subheadline.weight(.semibold))
+                        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(group.modelName).font(.subheadline.weight(.semibold))
+                                Spacer()
+                                if let tps = group.medianTPS {
+                                    Text("≈ \(tps.formatted(.number.precision(.fractionLength(1)))) tok/s")
+                                        .font(.caption.monospacedDigit().weight(.semibold))
+                                        .foregroundStyle(theme.readableText)
+                                }
+                            }
                             Text("\(group.providerName) · \(group.kind.title)").font(.caption).foregroundStyle(.secondary)
                             Text("已完成 \(group.completed.count)/\(group.records.count) · 速度样本 \(group.speedSampleCount)")
                                 .font(.caption)
-                            HStack {
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: DS.Spacing.md) {
                                 if let first = group.medianFirstOutputMs {
                                     Text("首段 \(RequestLedger.seconds(Int(first)))")
                                 }
                                 if let content = group.medianFirstContentMs {
                                     Text("正文 \(RequestLedger.seconds(Int(content)))")
                                 }
-                            }.font(.caption.monospacedDigit())
-                            if let tps = group.medianTPS {
-                                Text("≈ \(tps.formatted(.number.precision(.fractionLength(1)))) tok/s")
-                                    .font(.caption.monospacedDigit()).foregroundStyle(Color.accentColor)
                             }
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
                             ForEach(group.costs.keys.sorted(), id: \.self) { currency in
                                 Text(RequestLedger.costText(group.costs[currency] ?? 0, currency: currency)).font(.caption)
                             }
-                        }.padding(.vertical, 3)
+                        }
+                        .padding(.vertical, 3)
                     }
                 } header: {
-                    Text("测速榜（中位数）")
+                    Text("测速榜（中位数）").foregroundStyle(.primary)
                 } footer: {
                     Text("按服务商、模型和请求类型分组。首段包含思考；正文为首个正文片段。速度仅统计完整流式回复，用 API 返回的输出 Token 除以首末输出间隔，可能包含思考 Token。不同提示词和输入长度会影响结果。")
                 }
@@ -162,24 +301,30 @@ struct RequestLedgerView: View {
                     Section {
                         if blindLeaderboard.isEmpty { Text("尚无独立选票").foregroundStyle(.secondary) }
                         ForEach(blindLeaderboard) { stat in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(stat.modelName)
-                                        .font(.subheadline.weight(.semibold))
-                                    Text(stat.providerName)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(stat.modelName)
+                                            .font(.subheadline.weight(.semibold))
+                                        Text(stat.providerName)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text(stat.winRate, format: .percent.precision(.fractionLength(0)))
+                                            .font(.subheadline.monospacedDigit().weight(.semibold))
+                                            .foregroundStyle(theme.readableText)
+                                        Text("胜 \(stat.wins)/\(stat.rounds)")
+                                            .font(.caption2.monospacedDigit())
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
-                                Spacer()
-                                VStack(alignment: .trailing, spacing: 2) {
-                                    Text(stat.winRate, format: .percent.precision(.fractionLength(0)))
-                                        .font(.subheadline.monospacedDigit().weight(.semibold))
-                                        .foregroundStyle(Color.accentColor)
-                                    Text("胜 \(stat.wins)/\(stat.rounds)")
-                                        .font(.caption2.monospacedDigit())
-                                        .foregroundStyle(.secondary)
-                                }
+                                ProgressView(value: min(max(stat.winRate, 0), 1))
+                                    .tint(theme.tintColor)
+                                    .accessibilityHidden(true)
                             }
+                            .padding(.vertical, 2)
                         }
                     } header: {
                         Text("双盲评测胜率榜")
@@ -221,6 +366,75 @@ struct RequestLedgerView: View {
             .onChange(of: providerID) { _, _ in modelID = nil; visibleLimit = 50 }
             .onChange(of: period) { _, _ in visibleLimit = 50 }
             .onChange(of: modelID) { _, _ in visibleLimit = 50 }
+            .sheet(isPresented: $showBudgetSheet) {
+                NavigationStack {
+                    Form {
+                        Section {
+                            TextField("每月预算金额（填 0 停用）", text: $budgetLimitInput)
+                                .keyboardType(.decimalPad)
+                            Picker("预算币种", selection: $budgetCurrencyInput) {
+                                ForEach(RequestRecord.currencies, id: \.self) { Text($0).tag($0) }
+                            }
+                            Picker("预警阈值", selection: $budgetAlertRatioInput) {
+                                Text("70%").tag(0.7)
+                                Text("80%").tag(0.8)
+                                Text("90%").tag(0.9)
+                            }
+                        } footer: {
+                            Text("预算监控统计当前自然月内所选币种的预估费用，达到阈值或超支时将在账本顶部提示。")
+                        }
+                    }
+                    .navigationTitle("设置月度预算")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("取消") { showBudgetSheet = false }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("保存") {
+                                let normalized = budgetLimitInput
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .replacingOccurrences(of: ",", with: ".")
+                                let parsed = Double(normalized) ?? 0
+                                preferences.monthlyBudgetLimit = (parsed.isFinite && parsed > 0) ? parsed : 0
+                                preferences.monthlyBudgetCurrency = budgetCurrencyInput
+                                preferences.monthlyBudgetAlertRatio = budgetAlertRatioInput
+                                showBudgetSheet = false
+                            }
+                        }
+                    }
+                }
+                .presentationDetents([.medium])
+            }
+        }
+    }
+
+    private func openBudgetEditor() {
+        budgetLimitInput = preferences.monthlyBudgetLimit > 0
+            ? preferences.monthlyBudgetLimit.formatted(.number.precision(.fractionLength(0...4)))
+            : ""
+        budgetCurrencyInput = preferences.monthlyBudgetCurrency
+        let currentRatio = preferences.monthlyBudgetAlertRatio
+        if abs(currentRatio - 0.7) < 0.05 {
+            budgetAlertRatioInput = 0.7
+        } else if abs(currentRatio - 0.9) < 0.05 {
+            budgetAlertRatioInput = 0.9
+        } else {
+            budgetAlertRatioInput = 0.8
+        }
+        showBudgetSheet = true
+    }
+
+    private func budgetStatusLine(for evaluation: MonthlyBudgetEvaluation) -> String {
+        switch evaluation.level {
+        case .unconfigured:
+            return ""
+        case .exceeded:
+            return String(localized: "已超支或达本月预算上限，建议切换轻量模型或本地模型")
+        case .warning:
+            return String(localized: "已接近本月预算上限，剩余 \(RequestLedger.costText(evaluation.remaining, currency: evaluation.currency))")
+        case .normal:
+            return String(localized: "本月预算充足，剩余 \(RequestLedger.costText(evaluation.remaining, currency: evaluation.currency))")
         }
     }
 }

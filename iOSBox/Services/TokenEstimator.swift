@@ -127,7 +127,8 @@ enum TokenEstimator {
         attachments: [MessageAttachment],
         quotedText: String?,
         target: ResolvedModelTarget?,
-        omitMemory: Bool = false
+        omitMemory: Bool = false,
+        omitKnowledge: Bool = false
     ) -> Estimate {
         let effectiveTarget = target ?? (conversation.isGroupMode ? conversation.activeGroupMembers.first?.target : nil)
         let renderedSystem = PromptTemplateEngine.render(conversation.systemPrompt, target: effectiveTarget)
@@ -149,7 +150,7 @@ enum TokenEstimator {
         }
         if !conversation.isArenaMode && !conversation.isGroupMode && conversation.assistanceSettings.enableAgentTools {
             let hasTavilyKey = hasTavilySearchKey()
-            let hasKB = !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty
+            let hasKB = !omitKnowledge && !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty
             for tool in AgentToolRunner.definitions(hasTavilyKey: hasTavilyKey, hasKnowledgeBase: hasKB) {
                 tokens += estimateTokens(for: tool.name + " " + tool.description + " " + tool.parametersSchemaJSON)
             }
@@ -166,7 +167,11 @@ enum TokenEstimator {
         if let effectiveTarget,
            let provider = providers.first(where: { $0.id == effectiveTarget.providerID }),
            let spec = provider.models.first(where: { $0.id == effectiveTarget.modelID }),
-           let price = RequestRecord.validPrice(spec.inputPricePerMillion),
+           let rawPrice = RequestRecord.validPrice(spec.inputPricePerMillion),
+           let price = PricingMultiplierPolicy.effectivePrice(
+               rawPrice,
+               multiplier: AppPreferences.shared.pricingMultiplier(for: effectiveTarget.providerID)
+           ),
            let currency = spec.priceCurrency,
            RequestRecord.currencies.contains(currency) {
             let cost = Double(tokens) * price / 1_000_000.0

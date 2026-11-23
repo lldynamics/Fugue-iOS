@@ -39,9 +39,9 @@ extension ChatEngine {
     ) async -> String? {
         guard Self.isAlive(conversation), !Task.isCancelled,
               expectedUnchangedTitle == nil || expectedUnchangedTitle == conversation.title else { return nil }
-        let active = ConversationTree.activeMessages(in: conversation)
-        guard let firstUser = active.first(where: { $0.role == .user && !$0.content.isEmpty }),
-              let firstAssistant = active.first(where: { $0.role == .assistant && !$0.content.isEmpty }) else {
+        let visible = eligiblePromptContext(ConversationTree.activeMessages(in: conversation)).filter { !$0.content.isEmpty }
+        guard let firstUser = visible.first(where: { $0.role == .user }),
+              let firstAssistant = visible.first(where: { $0.role == .assistant }) else {
             return nil
         }
 
@@ -50,7 +50,7 @@ extension ChatEngine {
               let provider = providers.first(where: { $0.id == target.providerID && $0.isEnabled }) else {
             return nil
         }
-        let apiKey = KeychainService.shared.loadAPIKey(for: provider.id)
+        let apiKey = provider.apiKey
         let extraKeys = provider.extraAPIKeys
         let isLocalHost = NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL)
         guard provider.hasAuthentication || isLocalHost else { return nil }
@@ -79,10 +79,25 @@ extension ChatEngine {
             idleTimeoutSeconds: provider.customIdleTimeout
         )
 
-        request.validateBeforeSending = provider.transmissionCheck(for: target.modelID)
+        let validateRecipient = provider.transmissionCheck(for: target.modelID)
+        request.validateBeforeSending = { [weak self, weak conversation] in
+            try validateRecipient()
+            guard let self, let conversation, Self.isAlive(conversation) else { throw AppCompliance.RequestChanged() }
+            let current = self.eligiblePromptContext(ConversationTree.activeMessages(in: conversation)).filter { !$0.content.isEmpty }
+            guard current.first(where: { $0.role == .user })?.id == firstUser.id,
+                  current.first(where: { $0.role == .assistant })?.id == firstAssistant.id,
+                  String(firstUser.content.prefix(400)) == userExcerpt,
+                  String(firstAssistant.content.prefix(500)) == assistantExcerpt else { throw AppCompliance.RequestChanged() }
+        }
         let spec = provider.enabledModels.first { $0.id == target.modelID }
-        var record = RequestRecord(target: target, spec: spec, conversationID: conversation.id,
-                                   messageID: firstUser.id, kind: .titleGeneration)
+        var record = RequestRecord(
+            target: target,
+            spec: spec,
+            conversationID: conversation.id,
+            messageID: firstUser.id,
+            kind: .titleGeneration,
+            pricingMultiplier: AppPreferences.shared.pricingMultiplier(for: target.providerID)
+        )
         context.insert(record)
         do { try context.save() } catch { context.delete(record); return nil }
         var started = ContinuousClock.now
@@ -132,8 +147,13 @@ extension ChatEngine {
         }
         let bounded = String(cleaned.prefix(32))
         let previousTitle = conversation.title
-        conversation.title = bounded
-        do { try context.save() } catch { conversation.title = previousTitle; return nil }
+        let previousEdits = conversation.backupState.organizationEdits
+        conversation.rename(to: bounded)
+        do { try context.save() } catch {
+            conversation.title = previousTitle
+            conversation.backupState.organizationEdits = previousEdits
+            return nil
+        }
         SpotlightIndexService.shared.indexConversation(conversation)
         return bounded
     }
@@ -145,6 +165,7 @@ extension ChatEngine {
         in conversation: Conversation,
         providers: [ProviderConfig]
     ) -> (target: ResolvedModelTarget, provider: ProviderConfig, spec: ModelSpec)? {
+        guard !message.assistanceMetadata.isExcludedFromContext else { return nil }
         let candidate = replyTarget(message, in: conversation, providers: providers)
             ?? conversation.primaryTarget.flatMap { AssistancePolicy.resolve($0, providers: providers) }
             ?? availableTargets(from: providers).first
@@ -240,7 +261,7 @@ extension ChatEngine {
         var parts: [String] = []
         if let idx = active.firstIndex(where: { $0.id == message.id }), idx > 0 {
             let prev = active[idx - 1]
-            if prev.role == .user && !prev.content.isEmpty {
+            if prev.role == .user && !prev.assistanceMetadata.isExcludedFromContext && !prev.content.isEmpty {
                 parts.append("Question / Topic:\n" + String(prev.content.prefix(2_000)))
             }
         }
@@ -274,7 +295,7 @@ extension ChatEngine {
         generatingStudyMessageIDs.insert(message.id)
         defer { generatingStudyMessageIDs.remove(message.id) }
 
-        let apiKey = KeychainService.shared.loadAPIKey(for: resolved.provider.id)
+        let apiKey = resolved.provider.apiKey
         let isLocal = NetworkLocation.isLocalOrPrivate(baseURL: resolved.provider.baseURL)
         if !resolved.provider.hasAuthentication && !isLocal {
             throw LLMError.missingAPIKey(resolved.provider.name)
@@ -307,7 +328,8 @@ extension ChatEngine {
             spec: resolved.spec,
             conversationID: conversation.id,
             messageID: message.id,
-            kind: .studyGeneration
+            kind: .studyGeneration,
+            pricingMultiplier: AppPreferences.shared.pricingMultiplier(for: resolved.target.providerID)
         )
         context.insert(record)
 

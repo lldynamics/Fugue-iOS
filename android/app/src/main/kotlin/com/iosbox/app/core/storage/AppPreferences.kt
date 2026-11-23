@@ -4,10 +4,13 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.model.PricingMultiplierPolicy
 import com.iosbox.app.core.network.CapabilityCacheBackingStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +18,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlin.math.abs
 
 enum class AccentTheme(val rawValue: String) {
     COBALT("cobalt"),
@@ -72,7 +78,15 @@ data class UserPreferencesSnapshot(
     val cloudTTSModel: String = "tts-1",
     val cloudTTSVoice: String = "alloy",
     val simpleDailyMode: Boolean = false,
-    val dailyPresetsSeededV2: Boolean = false
+    val dailyPresetsSeededV2: Boolean = false,
+    val monthlyBudgetLimit: Double = 0.0,
+    val monthlyBudgetCurrency: String = "USD",
+    val monthlyBudgetAlertRatio: Double = 0.8,
+    val providerPricingMultipliers: Map<String, Double> = emptyMap(),
+    val webDAVServerURL: String = "",
+    val webDAVUsername: String = "",
+    val webDAVRemotePath: String = "Fugue/fugue-sync.enc.json",
+    val webDAVLastSyncEpochMs: Long = 0L
 )
 
 private val Context.prefsDataStore: DataStore<Preferences> by preferencesDataStore(name = "fugue_preferences")
@@ -98,6 +112,14 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
         val CLOUD_TTS_VOICE = stringPreferencesKey("cloud_tts_voice")
         val SIMPLE_DAILY_MODE = booleanPreferencesKey("simple_daily_mode")
         val DAILY_PRESETS_SEEDED_V2 = booleanPreferencesKey("has_seeded_daily_presets_v2")
+        val MONTHLY_BUDGET_LIMIT = doublePreferencesKey("monthly_budget_limit")
+        val MONTHLY_BUDGET_CURRENCY = stringPreferencesKey("monthly_budget_currency")
+        val MONTHLY_BUDGET_ALERT_RATIO = doublePreferencesKey("monthly_budget_alert_ratio")
+        val PROVIDER_PRICING_MULTIPLIERS = stringPreferencesKey("provider_pricing_multipliers_json")
+        val WEBDAV_SERVER_URL = stringPreferencesKey("webdav_server_url")
+        val WEBDAV_USERNAME = stringPreferencesKey("webdav_username")
+        val WEBDAV_REMOTE_PATH = stringPreferencesKey("webdav_remote_path")
+        val WEBDAV_LAST_SYNC_MS = longPreferencesKey("webdav_last_sync_ms")
     }
 
     private val _state = MutableStateFlow(UserPreferencesSnapshot())
@@ -127,7 +149,16 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
             cloudTTSModel = prefs[Keys.CLOUD_TTS_MODEL]?.takeIf { it.isNotBlank() } ?: "tts-1",
             cloudTTSVoice = prefs[Keys.CLOUD_TTS_VOICE]?.takeIf { it.isNotBlank() } ?: "alloy",
             simpleDailyMode = prefs[Keys.SIMPLE_DAILY_MODE] ?: false,
-            dailyPresetsSeededV2 = prefs[Keys.DAILY_PRESETS_SEEDED_V2] ?: false
+            dailyPresetsSeededV2 = prefs[Keys.DAILY_PRESETS_SEEDED_V2] ?: false,
+            monthlyBudgetLimit = prefs[Keys.MONTHLY_BUDGET_LIMIT]?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0,
+            monthlyBudgetCurrency = prefs[Keys.MONTHLY_BUDGET_CURRENCY]?.trim()?.takeIf { it.isNotEmpty() } ?: "USD",
+            monthlyBudgetAlertRatio = prefs[Keys.MONTHLY_BUDGET_ALERT_RATIO]?.coerceIn(0.5, 0.95) ?: 0.8,
+            providerPricingMultipliers = decodeMultipliers(prefs[Keys.PROVIDER_PRICING_MULTIPLIERS]),
+            webDAVServerURL = prefs[Keys.WEBDAV_SERVER_URL].orEmpty(),
+            webDAVUsername = prefs[Keys.WEBDAV_USERNAME].orEmpty(),
+            webDAVRemotePath = prefs[Keys.WEBDAV_REMOTE_PATH]?.trim()?.takeIf { it.isNotEmpty() }
+                ?: "Fugue/fugue-sync.enc.json",
+            webDAVLastSyncEpochMs = prefs[Keys.WEBDAV_LAST_SYNC_MS] ?: 0L
         )
     }
 
@@ -228,6 +259,67 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
     suspend fun markDailyPresetsSeededV2() {
         _state.value = _state.value.copy(dailyPresetsSeededV2 = true)
         appContext.prefsDataStore.edit { it[Keys.DAILY_PRESETS_SEEDED_V2] = true }
+    }
+
+    fun pricingMultiplierFor(providerId: String): Double =
+        PricingMultiplierPolicy.sanitize(_state.value.providerPricingMultipliers[providerId.uppercase()])
+
+    suspend fun setProviderPricingMultiplier(providerId: String, multiplier: Double) {
+        val key = providerId.trim().uppercase()
+        val clean = PricingMultiplierPolicy.sanitize(multiplier)
+        val nextMap = _state.value.providerPricingMultipliers.toMutableMap()
+        if (abs(clean - PricingMultiplierPolicy.DEFAULT_MULTIPLIER) < 0.0001) {
+            nextMap.remove(key)
+        } else {
+            nextMap[key] = clean
+        }
+        val immutable = nextMap.toMap()
+        _state.value = _state.value.copy(providerPricingMultipliers = immutable)
+        val encoded = Json.encodeToString(immutable)
+        appContext.prefsDataStore.edit { it[Keys.PROVIDER_PRICING_MULTIPLIERS] = encoded }
+    }
+
+    suspend fun setMonthlyBudget(limit: Double, currency: String, alertRatio: Double) {
+        val cleanLimit = if (limit.isFinite() && limit > 0.0) limit else 0.0
+        val cleanCurrency = currency.trim().ifEmpty { "USD" }
+        val cleanRatio = (if (alertRatio.isFinite()) alertRatio else 0.8).coerceIn(0.5, 0.95)
+        _state.value = _state.value.copy(
+            monthlyBudgetLimit = cleanLimit,
+            monthlyBudgetCurrency = cleanCurrency,
+            monthlyBudgetAlertRatio = cleanRatio
+        )
+        appContext.prefsDataStore.edit {
+            it[Keys.MONTHLY_BUDGET_LIMIT] = cleanLimit
+            it[Keys.MONTHLY_BUDGET_CURRENCY] = cleanCurrency
+            it[Keys.MONTHLY_BUDGET_ALERT_RATIO] = cleanRatio
+        }
+    }
+
+    suspend fun setWebDAVConfig(serverUrl: String, username: String, remotePath: String) {
+        val cleanServer = serverUrl.trim()
+        val cleanUser = username.trim()
+        val cleanPath = remotePath.trim().ifEmpty { "Fugue/fugue-sync.enc.json" }
+        _state.value = _state.value.copy(
+            webDAVServerURL = cleanServer,
+            webDAVUsername = cleanUser,
+            webDAVRemotePath = cleanPath
+        )
+        appContext.prefsDataStore.edit {
+            it[Keys.WEBDAV_SERVER_URL] = cleanServer
+            it[Keys.WEBDAV_USERNAME] = cleanUser
+            it[Keys.WEBDAV_REMOTE_PATH] = cleanPath
+        }
+    }
+
+    suspend fun setWebDAVLastSyncEpochMs(epochMs: Long) {
+        _state.value = _state.value.copy(webDAVLastSyncEpochMs = epochMs)
+        appContext.prefsDataStore.edit { it[Keys.WEBDAV_LAST_SYNC_MS] = epochMs }
+    }
+
+    private fun decodeMultipliers(raw: String?): Map<String, Double> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching { Json.decodeFromString<Map<String, Double>>(raw) }
+            .getOrDefault(emptyMap())
     }
 
     override fun loadRaw(): String? = capabilityRaw

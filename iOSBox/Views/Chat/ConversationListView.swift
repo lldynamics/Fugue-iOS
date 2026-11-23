@@ -51,6 +51,7 @@ struct ConversationListView: View {
     @State private var showReader = false
     @State private var showGroupSetup = false
     @State private var showBookFriends = false
+    @State private var showBookmarksHub = false
     @State private var readyModelCount = 0
     @State private var bookmarkedConversationIDs: Set<UUID> = []
     @State private var isBatchSelecting = false
@@ -190,6 +191,22 @@ struct ConversationListView: View {
         .sheet(isPresented: $showBookFriends) {
             BookFriendSetupSheet { openConversation($0) }
         }
+        .sheet(isPresented: $showBookmarksHub) {
+            BookmarksHubSheet(
+                onJumpToRoute: { route in
+                    if horizontalSizeClass == .regular {
+                        splitSelection = route.conversation
+                        splitSearchRoute = route
+                    } else {
+                        navigationPath = NavigationPath()
+                        navigationPath.append(route)
+                    }
+                },
+                onBookmarksChanged: {
+                    refreshBookmarkedIndex()
+                }
+            )
+        }
         .safeAreaInset(edge: .bottom) {
             if let error = SystemIntegration.shared.error {
                 Text(error).font(.caption).foregroundStyle(.orange).padding(8)
@@ -259,6 +276,11 @@ struct ConversationListView: View {
                             if showOnlyBookmarked || !bookmarkedConversationIDs.isEmpty {
                                 filterChip(title: String(localized: "含收藏"), selected: showOnlyBookmarked) {
                                     showOnlyBookmarked.toggle()
+                                }
+                            }
+                            if !conversations.isEmpty {
+                                filterChip(title: String(localized: "收藏夹"), selected: false) {
+                                    showBookmarksHub = true
                                 }
                             }
                             ForEach(tags, id: \.self) { tag in
