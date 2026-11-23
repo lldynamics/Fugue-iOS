@@ -25,6 +25,24 @@ final class AppPreferences {
         }
     }
 
+    enum AppLockGracePeriod: Int, CaseIterable, Identifiable {
+        case immediately = 0
+        case oneMinute = 60
+        case fiveMinutes = 300
+        case fifteenMinutes = 900
+
+        var id: Int { rawValue }
+
+        var label: String {
+            switch self {
+            case .immediately: return String(localized: "立即锁定")
+            case .oneMinute: return String(localized: "1 分钟后")
+            case .fiveMinutes: return String(localized: "5 分钟后")
+            case .fifteenMinutes: return String(localized: "15 分钟后")
+            }
+        }
+    }
+
     private enum Keys {
         static let fontScale = "iosbox.pref.fontScale"
         static let accentTheme = "iosbox.pref.accentTheme"
@@ -51,6 +69,14 @@ final class AppPreferences {
         static let webDAVUsername = "iosbox.pref.webDAVUsername"
         static let webDAVRemotePath = "iosbox.pref.webDAVRemotePath"
         static let webDAVLastSyncEpoch = "iosbox.pref.webDAVLastSyncEpoch"
+        static let webDAVAutoSyncEnabled = "iosbox.pref.webDAVAutoSyncEnabled"
+        static let webDAVAutoSyncIntervalMinutes = "iosbox.pref.webDAVAutoSyncIntervalMinutes"
+        static let webDAVLastRemoteETag = "iosbox.pref.webDAVLastRemoteETag"
+        static let webDAVLastRemoteModifiedEpoch = "iosbox.pref.webDAVLastRemoteModifiedEpoch"
+        static let webDAVLastAutoSyncSummary = "iosbox.pref.webDAVLastAutoSyncSummary"
+        static let appLockEnabled = "iosbox.pref.appLockEnabled"
+        static let appLockGraceSeconds = "iosbox.pref.appLockGraceSeconds"
+        static let privacyBlurOnBackground = "iosbox.pref.privacyBlurOnBackground"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -111,6 +137,56 @@ final class AppPreferences {
                 defaults.removeObject(forKey: Keys.webDAVLastSyncEpoch)
             }
         }
+    }
+
+    static let validWebDAVAutoSyncIntervals = [5, 15, 30, 60]
+
+    static func sanitizedWebDAVSyncInterval(_ minutes: Int) -> Int {
+        validWebDAVAutoSyncIntervals.contains(minutes) ? minutes : 15
+    }
+
+    var webDAVAutoSyncEnabled: Bool {
+        didSet { defaults.set(webDAVAutoSyncEnabled, forKey: Keys.webDAVAutoSyncEnabled) }
+    }
+
+    var webDAVAutoSyncIntervalMinutes: Int {
+        didSet {
+            let clean = Self.sanitizedWebDAVSyncInterval(webDAVAutoSyncIntervalMinutes)
+            if clean != webDAVAutoSyncIntervalMinutes {
+                webDAVAutoSyncIntervalMinutes = clean
+            }
+            defaults.set(clean, forKey: Keys.webDAVAutoSyncIntervalMinutes)
+        }
+    }
+
+    var webDAVLastRemoteETag: String {
+        didSet { defaults.set(webDAVLastRemoteETag, forKey: Keys.webDAVLastRemoteETag) }
+    }
+
+    var webDAVLastRemoteModifiedAt: Date? {
+        didSet {
+            if let date = webDAVLastRemoteModifiedAt {
+                defaults.set(date.timeIntervalSince1970, forKey: Keys.webDAVLastRemoteModifiedEpoch)
+            } else {
+                defaults.removeObject(forKey: Keys.webDAVLastRemoteModifiedEpoch)
+            }
+        }
+    }
+
+    var webDAVLastAutoSyncSummary: String {
+        didSet { defaults.set(webDAVLastAutoSyncSummary, forKey: Keys.webDAVLastAutoSyncSummary) }
+    }
+
+    var appLockEnabled: Bool {
+        didSet { defaults.set(appLockEnabled, forKey: Keys.appLockEnabled) }
+    }
+
+    var appLockGracePeriod: AppLockGracePeriod {
+        didSet { defaults.set(appLockGracePeriod.rawValue, forKey: Keys.appLockGraceSeconds) }
+    }
+
+    var privacyBlurOnBackground: Bool {
+        didSet { defaults.set(privacyBlurOnBackground, forKey: Keys.privacyBlurOnBackground) }
     }
 
     var fontScale: Double {
@@ -262,6 +338,21 @@ final class AppPreferences {
         self.webDAVRemotePath = storedRemotePath.isEmpty ? "Fugue/fugue-sync.enc.json" : storedRemotePath
         let lastSyncEpoch = defaults.double(forKey: Keys.webDAVLastSyncEpoch)
         self.webDAVLastSyncAt = lastSyncEpoch > 0 ? Date(timeIntervalSince1970: lastSyncEpoch) : nil
+        self.webDAVAutoSyncEnabled = defaults.bool(forKey: Keys.webDAVAutoSyncEnabled)
+        let storedInterval = defaults.integer(forKey: Keys.webDAVAutoSyncIntervalMinutes)
+        self.webDAVAutoSyncIntervalMinutes = Self.sanitizedWebDAVSyncInterval(storedInterval)
+        self.webDAVLastRemoteETag = defaults.string(forKey: Keys.webDAVLastRemoteETag) ?? ""
+        let remoteModEpoch = defaults.double(forKey: Keys.webDAVLastRemoteModifiedEpoch)
+        self.webDAVLastRemoteModifiedAt = remoteModEpoch > 0 ? Date(timeIntervalSince1970: remoteModEpoch) : nil
+        self.webDAVLastAutoSyncSummary = defaults.string(forKey: Keys.webDAVLastAutoSyncSummary) ?? ""
+        self.appLockEnabled = defaults.bool(forKey: Keys.appLockEnabled)
+        if let rawGrace = defaults.object(forKey: Keys.appLockGraceSeconds) as? Int,
+           let parsedGrace = AppLockGracePeriod(rawValue: rawGrace) {
+            self.appLockGracePeriod = parsedGrace
+        } else {
+            self.appLockGracePeriod = .immediately
+        }
+        self.privacyBlurOnBackground = defaults.bool(forKey: Keys.privacyBlurOnBackground)
     }
 
     func pricingMultiplier(for providerID: UUID) -> Double {

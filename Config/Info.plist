@@ -39,6 +39,8 @@
 	<string>用于在你点击确认后将对话中提炼的日程写入系统日历。</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>用于在你点击确认后将对话中提炼的待办事项加入系统提醒事项。</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>用于通过面容 ID 解锁「夜奔」以保护你的私人对话与个人记忆。</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>

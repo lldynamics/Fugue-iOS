@@ -44,6 +44,15 @@ struct WebDAVResolvedTarget: Equatable {
     let parentDirectories: [URL]
 }
 
+struct WebDAVRemoteMetadata: Equatable, Sendable {
+    let exists: Bool
+    let etag: String?
+    let lastModified: Date?
+    let contentLength: Int64?
+
+    static let missing = WebDAVRemoteMetadata(exists: false, etag: nil, lastModified: nil, contentLength: nil)
+}
+
 private final class WebDAVRedirectGuardDelegate: NSObject, URLSessionTaskDelegate, Sendable {
     func urlSession(
         _ session: URLSession,
@@ -167,6 +176,69 @@ enum WebDAVSyncService {
         try validateStatusCode(http.statusCode, allow207: true)
     }
 
+    static func parseHTTPDate(_ raw: String) -> Date? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let formats = [
+            "EEE, dd MMM yyyy HH:mm:ss zzz",
+            "EEEE, dd-MMM-yy HH:mm:ss zzz",
+            "EEE MMM d HH:mm:ss yyyy",
+            "EEE MMM  d HH:mm:ss yyyy"
+        ]
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        for format in formats {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: trimmed) {
+                return date
+            }
+        }
+        return nil
+    }
+
+    static func metadata(from http: HTTPURLResponse, exists: Bool = true) -> WebDAVRemoteMetadata {
+        let etag = http.value(forHTTPHeaderField: "ETag")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lastMod = http.value(forHTTPHeaderField: "Last-Modified").flatMap(parseHTTPDate)
+        let length = http.value(forHTTPHeaderField: "Content-Length")
+            .flatMap { Int64($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        return WebDAVRemoteMetadata(
+            exists: exists,
+            etag: (etag?.isEmpty == false) ? etag : nil,
+            lastModified: lastMod,
+            contentLength: length
+        )
+    }
+
+    static func fetchRemoteMetadata(
+        serverURL rawServerURL: String,
+        remotePath: String,
+        username: String,
+        password: String,
+        session: URLSession? = nil
+    ) async throws -> WebDAVRemoteMetadata {
+        let resolved = try resolvedTarget(serverURL: rawServerURL, remotePath: remotePath)
+        let cleanUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanUser.isEmpty, !password.isEmpty else {
+            throw WebDAVSyncError.missingCredentials
+        }
+
+        var head = URLRequest(url: resolved.targetURL)
+        head.httpMethod = "HEAD"
+        head.setValue(basicAuthHeader(username: cleanUser, password: password), forHTTPHeaderField: "Authorization")
+
+        let (_, response) = try await (session ?? defaultSession).data(for: head)
+        guard let http = response as? HTTPURLResponse else {
+            throw WebDAVSyncError.httpError(0)
+        }
+        if http.statusCode == 404 {
+            return .missing
+        }
+        try validateStatusCode(http.statusCode, allow207: false)
+        return metadata(from: http, exists: true)
+    }
+
+    @discardableResult
     static func uploadEncryptedData(
         _ data: Data,
         serverURL rawServerURL: String,
@@ -174,7 +246,7 @@ enum WebDAVSyncService {
         username: String,
         password: String,
         session: URLSession? = nil
-    ) async throws {
+    ) async throws -> WebDAVRemoteMetadata {
         guard data.count <= BackupService.maximumFileBytes else {
             throw WebDAVSyncError.payloadTooLarge
         }
@@ -213,6 +285,7 @@ enum WebDAVSyncService {
             throw WebDAVSyncError.httpError(0)
         }
         try validateStatusCode(http.statusCode, allow207: false)
+        return metadata(from: http, exists: true)
     }
 
     static func downloadEncryptedData(

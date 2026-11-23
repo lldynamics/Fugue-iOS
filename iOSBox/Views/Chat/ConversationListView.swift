@@ -355,6 +355,7 @@ struct ConversationListView: View {
         .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave, object: modelContext)) { _ in
             refreshBookmarkedIndex()
             WidgetSnapshotService.shared.sync(context: modelContext)
+            WebDAVAutoSyncCoordinator.shared.markLocalDataChanged()
             if !searchQuery.text.isEmpty { searchRevision += 1 }
         }
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索对话")

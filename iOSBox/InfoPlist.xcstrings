@@ -65,6 +65,22 @@
         }
       }
     },
+    "NSFaceIDUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used to unlock Fugue with Face ID to protect your private chats and personal memory."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用于通过面容 ID 解锁「夜奔」以保护你的私人对话与个人记忆。"
+          }
+        }
+      }
+    },
     "NSLocalNetworkUsageDescription": {
       "localizations": {
         "en": {

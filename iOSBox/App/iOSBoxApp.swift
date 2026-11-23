@@ -8,6 +8,7 @@ struct iOSBoxApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var runtime: AppRuntime
+    @State private var lockController = AppLockController.shared
 
     #if DEBUG && targetEnvironment(simulator)
     private let testingWorkspaces = ProcessInfo.processInfo.arguments.contains("-ui-test-workspaces")
@@ -33,6 +34,7 @@ struct iOSBoxApp: App {
         }
         #endif
         _runtime = State(initialValue: AppRuntime.shared)
+        AppLockController.shared.handleLaunch()
         Task.detached(priority: .utility) {
             Self.cleanupExpiredTemporaryExports()
         }
@@ -123,15 +125,36 @@ struct iOSBoxApp: App {
             #if DEBUG && targetEnvironment(simulator)
             if testingPicker || testingWorkspaces { return }
             #endif
+            lockController.handleScenePhaseChange(newPhase)
             if newPhase == .active {
                 runtime.retryStorageIfAvailable()
                 SystemEntryRouter.shared.drainPendingInbox()
+                if !lockController.isLocked {
+                    let context = runtime.store.container.mainContext
+                    Task {
+                        await WebDAVAutoSyncCoordinator.shared.syncIfNeeded(trigger: .foreground, context: context)
+                    }
+                }
             } else if newPhase == .background {
                 let context = runtime.store.container.mainContext
                 guard PersistenceController.canCommitUserData(in: context) else { return }
                 try? context.save()
                 PersonaRefreshDelegate.schedule(in: context)
                 WidgetSnapshotService.shared.sync(context: context)
+                Task {
+                    await WebDAVAutoSyncCoordinator.shared.syncIfNeeded(trigger: .background, context: context)
+                }
+            }
+        }
+        .onChange(of: lockController.isLocked) { wasLocked, isLocked in
+            #if DEBUG && targetEnvironment(simulator)
+            if testingPicker || testingWorkspaces { return }
+            #endif
+            if wasLocked && !isLocked && scenePhase == .active {
+                let context = runtime.store.container.mainContext
+                Task {
+                    await WebDAVAutoSyncCoordinator.shared.syncIfNeeded(trigger: .foreground, context: context)
+                }
             }
         }
     }
@@ -139,23 +162,35 @@ struct iOSBoxApp: App {
     @ViewBuilder
     private var appContent: some View {
         let store = runtime.store
-        if PersistenceController.canCommitUserData(in: store.container.mainContext) {
-            MainTabView(startupNotice: store.startupNotice)
-                .task(id: scenePhase) {
-                    guard scenePhase == .active else { return }
-                    while !Task.isCancelled {
-                        _ = await PersonaFeedService.shared.refresh(in: store.container.mainContext)
-                        do { try await Task.sleep(for: .seconds(300)) } catch { return }
+        let shouldShowLockOverlay = lockController.isLocked || lockController.isPrivacyShieldVisible
+        ZStack {
+            Group {
+                if PersistenceController.canCommitUserData(in: store.container.mainContext) {
+                    MainTabView(startupNotice: store.startupNotice)
+                        .task(id: scenePhase) {
+                            guard scenePhase == .active else { return }
+                            while !Task.isCancelled {
+                                _ = await PersonaFeedService.shared.refresh(in: store.container.mainContext)
+                                do { try await Task.sleep(for: .seconds(300)) } catch { return }
+                            }
+                        }
+                } else {
+                    ContentUnavailableView {
+                        Label("本地数据库暂不可用", systemImage: "lock")
+                    } description: {
+                        Text(verbatim: store.startupNotice ?? "")
+                    } actions: {
+                        Button("重试") { runtime.retryStorageIfAvailable() }
                     }
                 }
-        } else {
-            ContentUnavailableView {
-                Label("本地数据库暂不可用", systemImage: "lock")
-            } description: {
-                Text(verbatim: store.startupNotice ?? "")
-            } actions: {
-                Button("重试") { runtime.retryStorageIfAvailable() }
             }
+
+            if shouldShowLockOverlay {
+                AppLockOverlayView(controller: lockController)
+            }
+        }
+        .onChange(of: shouldShowLockOverlay, initial: true) { _, visible in
+            AppLockWindowPresenter.shared.update(visible: visible, controller: lockController)
         }
     }
 }

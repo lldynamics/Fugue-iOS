@@ -641,6 +641,22 @@
         }
       }
     },
+    "1 分钟后": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "After 1 minute"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 分钟后"
+          }
+        }
+      }
+    },
     "1. 零自建后端与零数据收集": {
       "localizations": {
         "en": {
@@ -669,6 +685,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "10 分钟"
+          }
+        }
+      }
+    },
+    "15 分钟": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "15 minutes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "15 分钟"
+          }
+        }
+      }
+    },
+    "15 分钟后": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "After 15 minutes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "15 分钟后"
           }
         }
       }
@@ -705,6 +753,22 @@
         }
       }
     },
+    "30 分钟": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "30 minutes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "30 分钟"
+          }
+        }
+      }
+    },
     "4. 系统扩展、权限与安全防护": {
       "localizations": {
         "en": {
@@ -717,6 +781,54 @@
           "stringUnit": {
             "state": "translated",
             "value": "4. 系统扩展、权限与安全防护"
+          }
+        }
+      }
+    },
+    "5 分钟": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "5 minutes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "5 分钟"
+          }
+        }
+      }
+    },
+    "5 分钟后": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "After 5 minutes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "5 分钟后"
+          }
+        }
+      }
+    },
+    "60 分钟": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "60 minutes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "60 分钟"
           }
         }
       }
@@ -2593,6 +2705,22 @@
         }
       }
     },
+    "与云端一致": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Up to date"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与云端一致"
+          }
+        }
+      }
+    },
     "与另一模型并排对比": {
       "localizations": {
         "en": {
@@ -2945,6 +3073,22 @@
         }
       }
     },
+    "云端修改时间": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remote Modified"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端修改时间"
+          }
+        }
+      }
+    },
     "云端同步文件路径无效，不能包含 .. 或特殊查询字符。": {
       "localizations": {
         "en": {
@@ -2957,6 +3101,54 @@
           "stringUnit": {
             "state": "translated",
             "value": "云端同步文件路径无效，不能包含 .. 或特殊查询字符。"
+          }
+        }
+      }
+    },
+    "云端备份": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remote Backup"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端备份"
+          }
+        }
+      }
+    },
+    "云端备份已处于最新一致状态。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cloud backup is already up to date."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端备份已处于最新一致状态。"
+          }
+        }
+      }
+    },
+    "云端尚未找到该同步文件。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sync file not found on WebDAV server yet."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端尚未找到该同步文件。"
           }
         }
       }
@@ -2989,6 +3181,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "云端文件不是有效的夜奔加密备份格式。"
+          }
+        }
+      }
+    },
+    "云端文件大小": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remote File Size"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端文件大小"
+          }
+        }
+      }
+    },
+    "云端暂无备份": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No remote backup yet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端暂无备份"
+          }
+        }
+      }
+    },
+    "云端有更新": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update Available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端有更新"
+          }
+        }
+      }
+    },
+    "云端比对": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remote Status"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端比对"
           }
         }
       }
@@ -4241,6 +4497,22 @@
         }
       }
     },
+    "使用 %@ 解锁以查看对话与个人记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlock with %@ to view your conversations and personal memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 %@ 解锁以查看对话与个人记忆"
+          }
+        }
+      }
+    },
     "使用 /v1/messages 接口，原生支持 Extended Thinking 与 PDF 文档": {
       "localizations": {
         "en": {
@@ -4413,6 +4685,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "使用群内阅读进度？"
+          }
+        }
+      }
+    },
+    "使用设备密码": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Device Passcode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用设备密码"
           }
         }
       }
@@ -5533,6 +5821,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "分类"
+          }
+        }
+      }
+    },
+    "切后台后自动锁定": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto-Lock Delay"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切后台后自动锁定"
+          }
+        }
+      }
+    },
+    "切后台时模糊内容防窥": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blur Content in App Switcher"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切后台时模糊内容防窥"
           }
         }
       }
@@ -7265,6 +7585,22 @@
         }
       }
     },
+    "同步最小间隔": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minimum Sync Interval"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同步最小间隔"
+          }
+        }
+      }
+    },
     "向 ${model} 询问 ${question}": {
       "localizations": {
         "en": {
@@ -8369,6 +8705,22 @@
         }
       }
     },
+    "多任务防窥": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy Shield"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "多任务防窥"
+          }
+        }
+      }
+    },
     "多模型对比": {
       "localizations": {
         "en": {
@@ -8497,6 +8849,22 @@
         }
       }
     },
+    "夜奔 · 内容已隐藏": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fugue · Content Hidden"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "夜奔 · 内容已隐藏"
+          }
+        }
+      }
+    },
     "夜奔 · 对话记录": {
       "localizations": {
         "en": {
@@ -8589,6 +8957,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "夜奔 · 精选回复"
+          }
+        }
+      }
+    },
+    "夜奔已锁定": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fugue Locked"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "夜奔已锁定"
           }
         }
       }
@@ -8797,6 +9181,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "安全审计"
+          }
+        }
+      }
+    },
+    "安全说明": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Security Notes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安全说明"
           }
         }
       }
@@ -9377,6 +9777,22 @@
         }
       }
     },
+    "将删除本地保存的 WebDAV 地址、账号及钥匙串中的密码和同步加密密钥，不会影响云端已有文件。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removes your local WebDAV URL, username, password, and encryption passphrase from Keychain. Files on the server remain untouched."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将删除本地保存的 WebDAV 地址、账号及钥匙串中的密码和同步加密密钥，不会影响云端已有文件。"
+          }
+        }
+      }
+    },
     "将原问题、相关上下文及 %lld 条完整答案发送给所选裁判，产生一次额外请求。失败、取消和截断的答案不参与。": {
       "localizations": {
         "en": {
@@ -9825,6 +10241,22 @@
         }
       }
     },
+    "已从云端合并：%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Merged from cloud: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已从云端合并：%@"
+          }
+        }
+      }
+    },
     "已从地址自动匹配服务商「%@」。": {
       "localizations": {
         "en": {
@@ -9981,6 +10413,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "已加密上传完整备份到 %@。"
+          }
+        }
+      }
+    },
+    "已双向合并并上传更新：%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Merged both ways & uploaded updates: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已双向合并并上传更新：%@"
           }
         }
       }
@@ -10433,6 +10881,22 @@
         }
       }
     },
+    "已清除本地 WebDAV 凭据与同步状态。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cleared local WebDAV credentials and sync state."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已清除本地 WebDAV 凭据与同步状态。"
+          }
+        }
+      }
+    },
     "已熟记": {
       "localizations": {
         "en": {
@@ -10557,6 +11021,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "已绑定 %lld 份"
+          }
+        }
+      }
+    },
+    "已自动加密上传最新备份。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encrypted backup uploaded automatically."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已自动加密上传最新备份。"
+          }
+        }
+      }
+    },
+    "已获取云端加密备份信息。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fetched remote encrypted backup status."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已获取云端加密备份信息。"
           }
         }
       }
@@ -10961,6 +11457,22 @@
         }
       }
     },
+    "应用锁": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Lock"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用锁"
+          }
+        }
+      }
+    },
     "底层模型": {
       "localizations": {
         "en": {
@@ -10973,6 +11485,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "底层模型"
+          }
+        }
+      }
+    },
+    "开启 %@ 应用锁": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Require %@ to Unlock"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启 %@ 应用锁"
           }
         }
       }
@@ -11009,6 +11537,22 @@
         }
       }
     },
+    "开启后，冷启动或切回「夜奔」超过锁定延迟时需通过系统验证，防止他人拿起手机直接翻阅敏感对话。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requires authentication on launch or when returning to Fugue after the selected delay to keep private chats protected."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启后，冷启动或切回「夜奔」超过锁定延迟时需通过系统验证，防止他人拿起手机直接翻阅敏感对话。"
+          }
+        }
+      }
+    },
     "开启后，将启用的记忆发送给此会话使用的模型。发送前可选择「本次不使用记忆」。": {
       "localizations": {
         "en": {
@@ -11021,6 +11565,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "开启后，将启用的记忆发送给此会话使用的模型。发送前可选择「本次不使用记忆」。"
+          }
+        }
+      }
+    },
+    "开启后，进入或离开「夜奔」且超过最小间隔时会自动比对云端时间戳：若有新内容先安全合并，再按需上传本机改动，不会覆盖另一台设备的记录。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatically checks remote metadata on foreground/background after the minimum interval, safely merging newer cloud changes before pushing local edits."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启后，进入或离开「夜奔」且超过最小间隔时会自动比对云端时间戳：若有新内容先安全合并，再按需上传本机改动，不会覆盖另一台设备的记录。"
+          }
+        }
+      }
+    },
+    "开启后，进入系统多任务切换界面时将自动以毛玻璃遮挡当前页面；启用应用锁时防窥遮罩会始终开启。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatically blurs app previews in the iOS app switcher. Always active while App Lock is enabled."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启后，进入系统多任务切换界面时将自动以毛玻璃遮挡当前页面；启用应用锁时防窥遮罩会始终开启。"
           }
         }
       }
@@ -11069,6 +11645,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "开启智能工具 (联网 / 网页 / 记忆建议)"
+          }
+        }
+      }
+    },
+    "开启自动静默同步": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Automatic Silent Sync"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启自动静默同步"
           }
         }
       }
@@ -11501,6 +12093,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "当前设备暂不支持语音识别。"
+          }
+        }
+      }
+    },
+    "当前设备未设置密码或生物识别，请先在系统「设置」中配置锁屏密码。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No device passcode or biometrics configured. Set up a passcode in iOS Settings first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前设备未设置密码或生物识别，请先在系统「设置」中配置锁屏密码。"
           }
         }
       }
@@ -15025,6 +15633,38 @@
         }
       }
     },
+    "智能双向同步": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Smart Two-Way Sync"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "智能双向同步"
+          }
+        }
+      }
+    },
+    "智能双向同步已完成。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Smart two-way sync completed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "智能双向同步已完成。"
+          }
+        }
+      }
+    },
     "智能增强": {
       "localizations": {
         "en": {
@@ -17057,6 +17697,38 @@
         }
       }
     },
+    "检查云端备份状态": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check Remote Backup Status"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查云端备份状态"
+          }
+        }
+      }
+    },
+    "检查云端状态失败。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed to check remote backup status."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查云端状态失败。"
+          }
+        }
+      }
+    },
     "检查成员动态": {
       "localizations": {
         "en": {
@@ -18689,6 +19361,22 @@
         }
       }
     },
+    "清除本地 WebDAV 凭据": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear Local WebDAV Credentials"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除本地 WebDAV 凭据"
+          }
+        }
+      }
+    },
     "温柔树洞": {
       "localizations": {
         "en": {
@@ -19057,6 +19745,22 @@
         }
       }
     },
+    "生物识别与设备密码验证完全由 iOS 本地安全隔区（Secure Enclave）完成，应用本身不会读取或保存你的面部、指纹或锁屏密码数据。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Biometric and passcode verification is handled entirely by Apple's Secure Enclave. Fugue never reads or stores your face, fingerprint, or passcode data."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "生物识别与设备密码验证完全由 iOS 本地安全隔区（Secure Enclave）完成，应用本身不会读取或保存你的面部、指纹或锁屏密码数据。"
+          }
+        }
+      }
+    },
     "用 ${model} 分析 ${image}": {
       "localizations": {
         "en": {
@@ -19069,6 +19773,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "用 ${model} 分析 ${image}"
+          }
+        }
+      }
+    },
+    "用 %@ 解锁": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlock with %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用 %@ 解锁"
           }
         }
       }
@@ -19553,6 +20273,38 @@
         }
       }
     },
+    "确认清除": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear Now"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认清除"
+          }
+        }
+      }
+    },
+    "确认清除 WebDAV 配置？": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear WebDAV Settings?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认清除 WebDAV 配置？"
+          }
+        }
+      }
+    },
     "确认读取外部网页？": {
       "localizations": {
         "en": {
@@ -19805,6 +20557,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "立即打开「夜奔」文档扫描相机并支持本地 OCR 转文字，可绑定到 iPhone 操作按钮。"
+          }
+        }
+      }
+    },
+    "立即锁定": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Immediately"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即锁定"
+          }
+        }
+      }
+    },
+    "立即锁定应用": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lock App Now"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即锁定应用"
           }
         }
       }
@@ -21441,6 +22225,22 @@
         }
       }
     },
+    "自动无感同步": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatic Silent Sync"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动无感同步"
+          }
+        }
+      }
+    },
     "自动识别": {
       "localizations": {
         "en": {
@@ -21937,6 +22737,22 @@
         }
       }
     },
+    "解锁「夜奔」以查看你的私人对话与记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlock Fugue to access your private chats and memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "解锁「夜奔」以查看你的私人对话与记忆"
+          }
+        }
+      }
+    },
     "订阅类型": {
       "localizations": {
         "en": {
@@ -22173,6 +22989,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "设备免费识别"
+          }
+        }
+      }
+    },
+    "设备密码": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device Passcode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备密码"
           }
         }
       }
@@ -24129,6 +24961,22 @@
         }
       }
     },
+    "身份验证已取消，轻点下方按钮重试。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authentication cancelled. Tap the button below to try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "身份验证已取消，轻点下方按钮重试。"
+          }
+        }
+      }
+    },
     "转写/杂记秒出 TL;DR、结论与可入日历待办": {
       "localizations": {
         "en": {
@@ -26065,6 +26913,22 @@
         }
       }
     },
+    "隐私锁与防窥遮罩": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy Lock & Blur Shield"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐私锁与防窥遮罩"
+          }
+        }
+      }
+    },
     "隐藏 API Key": {
       "localizations": {
         "en": {
@@ -26541,6 +27405,54 @@
           "stringUnit": {
             "state": "translated",
             "value": "验证仅发送一条固定测试消息，可能产生少量 API 费用。验证成功后返回对话。"
+          }
+        }
+      }
+    },
+    "验证未通过，请重试。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authentication failed. Please try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "验证未通过，请重试。"
+          }
+        }
+      }
+    },
+    "验证身份以关闭「夜奔」隐私锁": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authenticate to disable Fugue App Lock"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "验证身份以关闭「夜奔」隐私锁"
+          }
+        }
+      }
+    },
+    "验证身份以开启「夜奔」隐私锁": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authenticate to enable Fugue App Lock"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "验证身份以开启「夜奔」隐私锁"
           }
         }
       }

@@ -162,6 +162,13 @@ struct ProviderListView: View {
                     }
 
                     NavigationLink {
+                        PrivacyLockSettingsView()
+                    } label: {
+                        Label("隐私锁与防窥遮罩", systemImage: "faceid")
+                            .font(.subheadline)
+                    }
+
+                    NavigationLink {
                         AboutAndPrivacyView()
                     } label: {
                         Label("关于与隐私声明", systemImage: "info.circle")
