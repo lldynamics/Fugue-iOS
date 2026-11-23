@@ -14,7 +14,10 @@ struct MessageRowView: View {
 
     private var isReading: Bool { message.conversation?.readingVolumeID != nil }
 
-    @State private var copiedToast = false
+    @State private var copiedToastText: String?
+    @State private var copyToastToken = UUID()
+    @State private var exportShareItem: ExportSharePayload?
+    @State private var exportErrorMessage: String?
     @State private var previewImage: UIImage?
     @State private var showEditSheet = false
     @State private var showTextSelectionSheet = false
@@ -22,6 +25,7 @@ struct MessageRowView: View {
     @State private var editDraftText = ""
     @State private var speech = SpeechService.shared
     @State private var preferences = AppPreferences.shared
+    @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var baseBodySize: CGFloat = 17
 
     var body: some View {
@@ -677,6 +681,67 @@ struct MessageRowView: View {
         .sheet(isPresented: $showTextSelectionSheet) {
             TextSelectionSheet(text: message.content)
         }
+        .sheet(item: $exportShareItem) { payload in
+            ActivityShareSheet(items: [payload.url])
+        }
+        .alert("导出失败", isPresented: Binding(
+            get: { exportErrorMessage != nil },
+            set: { if !$0 { exportErrorMessage = nil } }
+        )) {
+            Button("好", role: .cancel) { exportErrorMessage = nil }
+        } message: {
+            Text(exportErrorMessage ?? "")
+        }
+    }
+
+    private func triggerCopiedToast(_ label: String) {
+        let token = UUID()
+        copyToastToken = token
+        copiedToastText = label
+        preferences.triggerLightHaptic()
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            await MainActor.run {
+                if copyToastToken == token {
+                    copiedToastText = nil
+                }
+            }
+        }
+    }
+
+    private func exportSinglePDF(speaker: String) {
+        let title = message.conversation?.title ?? speaker
+        do {
+            let url = try MessageExportRenderer.writePDFFile(
+                title: title,
+                speaker: speaker,
+                date: message.createdAt,
+                markdown: message.content
+            )
+            exportShareItem = ExportSharePayload(url: url)
+        } catch {
+            exportErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func exportSingleShareCard(speaker: String) {
+        let title = message.conversation?.title ?? speaker
+        do {
+            if let url = try MessageExportRenderer.writeShareCardFile(
+                title: title,
+                speaker: speaker,
+                date: message.createdAt,
+                markdown: message.content,
+                accentHex: message.accentHex,
+                colorScheme: colorScheme
+            ) {
+                exportShareItem = ExportSharePayload(url: url)
+            } else {
+                exportErrorMessage = String(localized: "当前消息暂无可导出的文本内容。")
+            }
+        } catch {
+            exportErrorMessage = error.localizedDescription
+        }
     }
 
     @ViewBuilder
@@ -777,39 +842,56 @@ struct MessageRowView: View {
         isSpeaking: Bool,
         groupPersona: String?
     ) -> some View {
-        HStack(spacing: 14) {
+        let exportSpeaker = blindLabel
+            ?? meta.groupSpeakerDisplayTitle
+            ?? (message.modelDisplayName.isEmpty ? String(localized: "AI 助手") : message.modelDisplayName)
+
+        HStack(spacing: 12) {
             if !message.content.isEmpty {
                 Button {
-                    UIPasteboard.general.string = message.content
-                    preferences.triggerLightHaptic()
-                    copiedToast = true
-                    Task {
-                        try? await Task.sleep(for: .seconds(1.5))
-                        await MainActor.run { copiedToast = false }
-                    }
+                    UIPasteboard.general.string = PlainTextFormatter.format(message.content)
+                    triggerCopiedToast(String(localized: "已复制纯文本"))
                 } label: {
-                    Label(copiedToast ? String(localized: "已复制") : String(localized: "复制"), systemImage: copiedToast ? "checkmark" : "doc.on.doc")
+                    Label(copiedToastText ?? String(localized: "纯文本"), systemImage: copiedToastText != nil ? "checkmark" : "doc.plaintext")
                         .font(.caption2.weight(.medium))
-                        .foregroundStyle(copiedToast ? .green : .secondary)
+                        .foregroundStyle(copiedToastText != nil ? .green : .secondary)
+                        .lineLimit(1)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("复制纯文本")
 
-                if isSpeaking {
+                Button {
+                    if let onToggleSpeak = actions.onToggleSpeak {
+                        onToggleSpeak()
+                    } else {
+                        speech.toggleSpeaking(messageID: message.id, text: message.content, personaID: meta.groupMemberID)
+                    }
+                } label: {
+                    Label(
+                        isSpeaking
+                            ? (speech.isSynthesizingCloudSpeech ? String(localized: "合成中") : String(localized: "停止"))
+                            : String(localized: "朗读"),
+                        systemImage: isSpeaking ? "speaker.wave.2.circle.fill" : "speaker.wave.2"
+                    )
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(isSpeaking ? preferences.accentTheme.readableText : .secondary)
+                    .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isSpeaking ? String(localized: "停止朗读") : String(localized: "朗读回复"))
+
+                if !isCompactCard && !message.isStreaming, let onExtractSchedule = actions.onExtractSchedule {
                     Button {
-                        if let onToggleSpeak = actions.onToggleSpeak {
-                            onToggleSpeak()
-                        } else {
-                            speech.toggleSpeaking(messageID: message.id, text: message.content, personaID: meta.groupMemberID)
-                        }
+                        onExtractSchedule()
                     } label: {
-                        Label(
-                            speech.isSynthesizingCloudSpeech ? String(localized: "合成语音中…") : String(localized: "停止朗读"),
-                            systemImage: "speaker.wave.2.circle.fill"
-                        )
+                        Label("日程", systemImage: "calendar.badge.plus")
                             .font(.caption2.weight(.medium))
-                            .foregroundStyle(preferences.accentTheme.readableText)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                     .buttonStyle(.plain)
+                    .disabled(isGeneratingStudy)
+                    .accessibilityLabel("提取待办与日程")
                 }
             }
 
@@ -890,28 +972,27 @@ struct MessageRowView: View {
                 Menu {
                     if !message.content.isEmpty {
                         Button {
-                            UIPasteboard.general.string = PlainTextFormatter.format(message.content)
-                            preferences.triggerLightHaptic()
-                            copiedToast = true
-                            Task {
-                                try? await Task.sleep(for: .seconds(1.5))
-                                await MainActor.run { copiedToast = false }
-                            }
+                            UIPasteboard.general.string = message.content
+                            triggerCopiedToast(String(localized: "已复制 Markdown"))
                         } label: {
-                            Label("复制纯文本（去格式）", systemImage: "doc.plaintext")
+                            Label("复制 Markdown 原文", systemImage: "doc.on.doc")
                         }
 
-                        Button {
-                            if let onToggleSpeak = actions.onToggleSpeak {
-                                onToggleSpeak()
-                            } else {
-                                speech.toggleSpeaking(messageID: message.id, text: message.content, personaID: meta.groupMemberID)
+                        if !isCompactCard {
+                            Menu {
+                                Button {
+                                    exportSinglePDF(speaker: exportSpeaker)
+                                } label: {
+                                    Label("导出 PDF 文档", systemImage: "doc.richtext")
+                                }
+                                Button {
+                                    exportSingleShareCard(speaker: exportSpeaker)
+                                } label: {
+                                    Label("导出分享长图", systemImage: "photo")
+                                }
+                            } label: {
+                                Label("导出此回复", systemImage: "square.and.arrow.up")
                             }
-                        } label: {
-                            Label(
-                                isSpeaking ? String(localized: "停止朗读") : String(localized: "朗读回复"),
-                                systemImage: isSpeaking ? "speaker.slash" : "speaker.wave.2"
-                            )
                         }
                     }
 
@@ -1178,4 +1259,19 @@ private struct ImageFullScreenSheet: View {
             }
         }
     }
+}
+
+private struct ExportSharePayload: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct ActivityShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

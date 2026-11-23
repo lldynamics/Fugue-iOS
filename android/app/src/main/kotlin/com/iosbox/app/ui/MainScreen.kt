@@ -1,5 +1,6 @@
 package com.iosbox.app.ui
 
+import android.net.Uri
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -7,6 +8,9 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -14,10 +18,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -31,9 +37,12 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.iosbox.app.AppContainer
 import com.iosbox.app.R
+import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.storage.ChatRepository
+import com.iosbox.app.core.storage.ChatDraft
 import com.iosbox.app.core.storage.PresetItem
 import com.iosbox.app.core.system.IncomingEntryRequest
+import com.iosbox.app.core.system.InitialConversationDraft
 import com.iosbox.app.ui.assistants.AssistantListScreen
 import com.iosbox.app.ui.chat.ChatDetailScreen
 import com.iosbox.app.ui.chat.ConversationListScreen
@@ -56,7 +65,7 @@ private object Routes {
     const val MEMORIES = "memories"
     const val FLASHCARDS = "flashcards"
 
-    fun chatDetail(id: String) = "chat/$id"
+    fun chatDetail(id: String) = "chat/${Uri.encode(id)}"
     fun providerDetail(id: String) = "provider/$id"
 }
 
@@ -67,11 +76,18 @@ fun MainScreen(container: AppContainer) {
     val currentDestination = backStackEntry?.destination
     val scope = rememberCoroutineScope()
     var showCreateGroupSheet by remember { mutableStateOf(false) }
+    var externalDraftArena by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    var externalDraftText by rememberSaveable { mutableStateOf("") }
     val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
     val personaProfiles by container.chatRepository.observePersonaProfiles().collectAsStateWithLifecycle(initialValue = emptyList())
     val incomingRequest by container.externalEntryRouter.pendingRequest.collectAsStateWithLifecycle()
+    val prefs by container.preferences.state.collectAsStateWithLifecycle()
 
-    val topLevelRoutes = setOf(Routes.CHATS, Routes.ASSISTANTS, Routes.PROVIDERS, Routes.USAGE)
+    val topLevelRoutes = if (prefs.simpleDailyMode) {
+        setOf(Routes.CHATS, Routes.ASSISTANTS, Routes.PROVIDERS)
+    } else {
+        setOf(Routes.CHATS, Routes.ASSISTANTS, Routes.PROVIDERS, Routes.USAGE)
+    }
     val showBottomBar = currentDestination?.route in topLevelRoutes
 
     val openNewChat: (PresetItem?) -> Unit = { preset ->
@@ -100,18 +116,18 @@ fun MainScreen(container: AppContainer) {
     LaunchedEffect(incomingRequest) {
         when (val req = incomingRequest) {
             is IncomingEntryRequest.OpenConversation -> {
-                container.externalEntryRouter.clearPendingRequest()
-                navController.navigate(Routes.chatDetail(req.conversationId)) {
-                    launchSingleTop = true
+                val conversation = container.chatRepository.getConversation(req.conversationId)
+                if (container.externalEntryRouter.consumeRequest(req) && conversation != null) {
+                    runCatching {
+                        navController.navigate(Routes.chatDetail(conversation.id)) { launchSingleTop = true }
+                    }
                 }
             }
-            IncomingEntryRequest.NewChat -> {
-                container.externalEntryRouter.clearPendingRequest()
-                openNewChat(null)
-            }
-            IncomingEntryRequest.NewArena -> {
-                container.externalEntryRouter.clearPendingRequest()
-                openNewArena()
+            IncomingEntryRequest.NewChat, IncomingEntryRequest.NewArena -> {
+                if (container.externalEntryRouter.consumeRequest(req) && externalDraftArena == null) {
+                    externalDraftText = ""
+                    externalDraftArena = req == IncomingEntryRequest.NewArena
+                }
             }
             IncomingEntryRequest.OpenFlashcards -> {
                 container.externalEntryRouter.clearPendingRequest()
@@ -161,20 +177,27 @@ fun MainScreen(container: AppContainer) {
                             }
                         },
                         icon = { Icon(Icons.Filled.Dns, contentDescription = null) },
-                        label = { Text(stringResource(R.string.tab_providers)) }
+                        label = {
+                            Text(
+                                if (prefs.simpleDailyMode) L10n.text("设置", "Settings")
+                                else stringResource(R.string.tab_providers)
+                            )
+                        }
                     )
-                    NavigationBarItem(
-                        selected = currentDestination?.hierarchy?.any { it.route == Routes.USAGE } == true,
-                        onClick = {
-                            navController.navigate(Routes.USAGE) {
-                                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
-                        icon = { Icon(Icons.Filled.BarChart, contentDescription = null) },
-                        label = { Text(stringResource(R.string.tab_usage)) }
-                    )
+                    if (!prefs.simpleDailyMode) {
+                        NavigationBarItem(
+                            selected = currentDestination?.hierarchy?.any { it.route == Routes.USAGE } == true,
+                            onClick = {
+                                navController.navigate(Routes.USAGE) {
+                                    popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            },
+                            icon = { Icon(Icons.Filled.BarChart, contentDescription = null) },
+                            label = { Text(stringResource(R.string.tab_usage)) }
+                        )
+                    }
                 }
             }
         }
@@ -219,11 +242,17 @@ fun MainScreen(container: AppContainer) {
                     container = container,
                     onOpenProvider = { id -> navController.navigate(Routes.providerDetail(id)) },
                     onOpenMemories = { navController.navigate(Routes.MEMORIES) },
-                    onOpenFlashcards = { navController.navigate(Routes.FLASHCARDS) }
+                    onOpenFlashcards = { navController.navigate(Routes.FLASHCARDS) },
+                    onOpenUsage = { navController.navigate(Routes.USAGE) }
                 )
             }
             composable(Routes.USAGE) {
-                UsageScreen(container = container)
+                UsageScreen(
+                    container = container,
+                    onBack = if (prefs.simpleDailyMode) {
+                        { navController.popBackStack() }
+                    } else null
+                )
             }
             composable(Routes.MEMORIES) {
                 PersonalMemoryScreen(
@@ -269,6 +298,45 @@ fun MainScreen(container: AppContainer) {
         }
     }
 
+    externalDraftArena?.let { arena ->
+        AlertDialog(
+            onDismissRequest = { externalDraftArena = null },
+            title = { Text(if (arena) L10n.text("新建竞技场", "New Arena") else L10n.text("新建对话", "New Chat")) },
+            text = {
+                OutlinedTextField(
+                    value = externalDraftText,
+                    onValueChange = { externalDraftText = it },
+                    label = { Text(L10n.text("消息草稿", "Message draft")) },
+                    minLines = 3
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val draft = externalDraftText.trim()
+                    externalDraftArena = null
+                    scope.launch {
+                        val ready = ChatRepository.readyTargets(container.chatRepository.getProviders())
+                        val target = ready.firstOrNull { it.id == container.preferences.state.value.defaultTargetID }
+                            ?: ready.firstOrNull()
+                        val created = container.chatRepository.createConversation(
+                            primaryTarget = target.takeUnless { arena },
+                            isArenaMode = arena,
+                            arenaTargets = if (arena) ready.take(2) else emptyList(),
+                            initialDraft = draft.takeIf { it.isNotEmpty() }?.let { ChatDraft(text = it) }
+                        )
+                        if (draft.isNotEmpty()) {
+                            container.externalEntryRouter.stageInitialDraft(created.id, InitialConversationDraft(draft, userAuthored = true))
+                        }
+                        navController.navigate(Routes.chatDetail(created.id))
+                    }
+                }) { Text(L10n.text("继续编辑", "Continue editing")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { externalDraftArena = null }) { Text(L10n.text("取消", "Cancel")) }
+            }
+        )
+    }
+
     if (showCreateGroupSheet) {
         GroupSetupSheet(
             existing = null,
@@ -295,16 +363,18 @@ fun MainScreen(container: AppContainer) {
 
     val shareReq = incomingRequest as? IncomingEntryRequest.SharedContent
     if (shareReq != null) {
-        ExternalShareDialog(
-            payload = shareReq.payload,
-            container = container,
-            onDismiss = { container.externalEntryRouter.clearPendingRequest() },
-            onOpenConversation = { id ->
-                container.externalEntryRouter.clearPendingRequest()
-                navController.navigate(Routes.chatDetail(id)) {
-                    launchSingleTop = true
+        key(shareReq) {
+            ExternalShareDialog(
+                payload = shareReq.payload,
+                container = container,
+                isCurrent = { container.externalEntryRouter.pendingRequest.value == shareReq },
+                onDismiss = { container.externalEntryRouter.consumeRequest(shareReq) },
+                onOpenConversation = { id ->
+                    if (container.externalEntryRouter.consumeRequest(shareReq)) {
+                        navController.navigate(Routes.chatDetail(id)) { launchSingleTop = true }
+                    }
                 }
-            }
-        )
+            )
+        }
     }
 }

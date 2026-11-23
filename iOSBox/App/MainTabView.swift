@@ -1,35 +1,49 @@
-import CoreSpotlight
 import SwiftUI
 import SwiftData
+
+@MainActor @Observable
+final class WorkspaceNavigation {
+    var tab = 0
+    var assistantSection: AssistantListView.WorkshopSection = .presets
+
+    func openBookshelf() {
+        assistantSection = .books
+        tab = 1
+    }
+}
 
 struct MainTabView: View {
     /// Shown once if the local database had to be rebuilt at launch.
     var startupNotice: String?
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @State private var integration = SystemIntegration.shared
     @State private var entryRouter = SystemEntryRouter.shared
+    @State private var preferences = AppPreferences.shared
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
 
-    @State private var selectedTab: Int = 0
+    @State private var navigation = WorkspaceNavigation()
     @State private var pendingConversationToOpen: Conversation?
     @State private var pendingMessageRouteToOpen: ConversationMessageRoute?
     @State private var showStartupNotice = false
     @State private var hasSyncedSpotlightOnLaunch = false
 
     var body: some View {
-        TabView(selection: $selectedTab) {
+        TabView(selection: $navigation.tab) {
             ConversationListView(
                 pendingConversationToOpen: $pendingConversationToOpen,
-                pendingMessageRoute: $pendingMessageRouteToOpen
+                pendingMessageRoute: $pendingMessageRouteToOpen,
+                selectSection: { navigation.tab = $0 }
             )
+            .toolbar(horizontalSizeClass == .regular ? .hidden : .automatic, for: .tabBar)
             .tabItem {
                 Label("对话", systemImage: "bubble.left.and.bubble.right.fill")
             }
             .tag(0)
 
-            AssistantListView { preset in
+            AssistantListView(activeSection: $navigation.assistantSection) { preset in
                 startChat(with: preset)
             }
             .tabItem {
@@ -39,15 +53,25 @@ struct MainTabView: View {
 
             ProviderListView()
                 .tabItem {
-                    Label("服务商", systemImage: "server.rack")
+                    Label(preferences.simpleDailyMode ? String(localized: "设置") : String(localized: "服务商"), systemImage: preferences.simpleDailyMode ? "gearshape.fill" : "server.rack")
                 }
                 .tag(2)
 
-            RequestLedgerView()
-                .tabItem { Label("用量", systemImage: "chart.bar.xaxis") }
-                .tag(3)
+            if !preferences.simpleDailyMode {
+                RequestLedgerView()
+                    .tabItem { Label("用量", systemImage: "chart.bar.xaxis") }
+                    .tag(3)
+            }
+        }
+        .environment(navigation)
+        .tint(preferences.accentTheme.tintColor)
+        .onChange(of: preferences.simpleDailyMode) { _, isSimple in
+            if isSimple && navigation.tab == 3 {
+                navigation.tab = 2
+            }
         }
         .onAppear {
+            guard hasPersistentStore else { return }
             DataSeeder.seedIfNeeded(context: modelContext)
             refreshSystemEntries()
             if activeStartupNotice != nil {
@@ -58,28 +82,12 @@ struct MainTabView: View {
             if phase == .active { refreshSystemEntries() }
         }
         .onChange(of: SystemIntegration.fingerprint(providers)) { _, _ in
-            integration.refresh(context: modelContext)
+            if hasPersistentStore { integration.refresh(context: modelContext) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .init("IOSBoxCredentialsChanged"))) { _ in
-            integration.refresh(context: modelContext)
+            if hasPersistentStore { integration.refresh(context: modelContext) }
         }
         .onChange(of: entryRouter.conversationID) { _, _ in openRoutedConversation() }
-        .onContinueUserActivity(CSSearchableItemActionType) { activity in
-            if let raw = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
-               let parsed = SpotlightIndexService.parseIdentifier(raw) {
-                entryRouter.messageID = parsed.messageID
-                entryRouter.conversationID = parsed.conversationID
-            }
-        }
-        .onOpenURL { url in
-            guard url.scheme?.lowercased() == "iosbox",
-                  url.host?.lowercased() == "conversation" else { return }
-            let rawID = url.pathComponents.dropFirst().first ?? ""
-            if let id = UUID(uuidString: rawID) {
-                entryRouter.messageID = nil
-                entryRouter.conversationID = id
-            }
-        }
         .alert("本地存储提示", isPresented: $showStartupNotice) {
             Button("知道了", role: .cancel) {
                 PersistenceController.acknowledgePendingRebuildNotice()
@@ -93,13 +101,19 @@ struct MainTabView: View {
         startupNotice ?? PersistenceController.pendingRebuildNotice()
     }
 
+    // An in-memory scene must not consume pending receipts or publish its temporary records to Spotlight.
+    private var hasPersistentStore: Bool {
+        modelContext.container.configurations.contains { !$0.isStoredInMemoryOnly }
+    }
+
     private func refreshSystemEntries() {
+        guard hasPersistentStore else { return }
         integration.refresh(context: modelContext)
         do {
             if let store = try? SystemEntryStore() { try ExternalReceiptImporter.drain(store, context: modelContext) }
             try ExternalReceiptImporter.drain(ReaderSheet.localStore, context: modelContext)
         } catch { integration.error = error.localizedDescription }
-        if !hasSyncedSpotlightOnLaunch {
+        if !hasSyncedSpotlightOnLaunch || SpotlightIndexService.shared.needsLegacyPreviewPurge {
             hasSyncedSpotlightOnLaunch = true
             SpotlightIndexService.shared.syncRecentConversations(in: modelContext)
         }
@@ -111,7 +125,7 @@ struct MainTabView: View {
         let targetMsgID = entryRouter.messageID
         let descriptor = FetchDescriptor<Conversation>(predicate: #Predicate { $0.id == id })
         if let conversation = try? modelContext.fetch(descriptor).first {
-            selectedTab = 0
+            navigation.tab = 0
             if let targetMsgID {
                 pendingMessageRouteToOpen = ConversationMessageRoute(conversation: conversation, messageID: targetMsgID)
             } else {
@@ -127,14 +141,14 @@ struct MainTabView: View {
 
         let conv = Conversation(
             title: preset.name,
-            primaryTarget: ready.first,
+            primaryTarget: AppPreferences.shared.initialTarget(from: ready),
             arenaTargets: Array(ready.prefix(2))
         )
         conv.applyPreset(preset)
         modelContext.insert(conv)
         try? modelContext.save()
 
-        selectedTab = 0
+        navigation.tab = 0
         Task { @MainActor in
             await Task.yield()
             pendingConversationToOpen = conv

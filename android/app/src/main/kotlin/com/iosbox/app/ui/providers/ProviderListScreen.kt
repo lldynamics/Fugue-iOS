@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -99,7 +100,8 @@ fun ProviderListScreen(
     container: AppContainer,
     onOpenProvider: (String) -> Unit,
     onOpenMemories: () -> Unit,
-    onOpenFlashcards: () -> Unit
+    onOpenFlashcards: () -> Unit,
+    onOpenUsage: () -> Unit = {}
 ) {
     val providers by container.chatRepository.observeProviders().collectAsStateWithLifecycle(initialValue = emptyList())
     val memories by container.chatRepository.observePersonalMemories().collectAsStateWithLifecycle(initialValue = emptyList())
@@ -339,6 +341,47 @@ fun ProviderListScreen(
                         }
                         Text(
                             text = L10n.text("复习", "Study"),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenUsage() }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(DS.Spacing.md),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.BarChart,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = L10n.text("用量与费用账本", "Usage & Cost Ledger"),
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                            Text(
+                                text = L10n.text(
+                                    "查看每日/每月 Token 趋势、响应测速与费用明细",
+                                    "Inspect token trends, response speed, and estimated costs"
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            text = L10n.text("查看", "View"),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary
                         )

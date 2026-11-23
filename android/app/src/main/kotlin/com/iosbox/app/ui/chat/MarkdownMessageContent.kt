@@ -8,10 +8,14 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -95,13 +99,18 @@ fun MarkdownMessageContent(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .height(IntrinsicSize.Min)
                                 .clip(RoundedCornerShape(DS.Radius.xs))
                                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .padding(vertical = 2.dp)
-                                    .size(width = 3.dp, height = 18.dp)
+                                    .fillMaxHeight()
+                                    .width(3.5.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                                        RoundedCornerShape(2.dp)
+                                    )
                             )
                             Column(
                                 modifier = Modifier
@@ -411,6 +420,7 @@ private fun parseMarkdownBlocks(raw: String): List<MarkdownBlock> {
     val lines = raw.replace("\r\n", "\n").split('\n')
     val blocks = mutableListOf<MarkdownBlock>()
     var i = 0
+    var remainingTableCells = 2048
 
     while (i < lines.size) {
         val line = lines[i]
@@ -503,14 +513,34 @@ private fun parseMarkdownBlocks(raw: String): List<MarkdownBlock> {
 
         // Markdown Table
         if (trimmed.contains('|') && i + 1 < lines.size && isTableSeparator(lines[i + 1].trim())) {
+            val start = i
             val headers = splitTableRow(trimmed)
+            var columns = headers.size
+            var oversized = columns > 24 || columns > remainingTableCells
             i += 2
             val rows = mutableListOf<List<String>>()
             while (i < lines.size && lines[i].trim().contains('|') && lines[i].trim().isNotEmpty()) {
-                rows.add(splitTableRow(lines[i].trim()))
+                if (!oversized) {
+                    val row = splitTableRow(lines[i].trim())
+                    columns = maxOf(columns, row.size)
+                    oversized = columns > 24 || rows.size >= 128 || columns * (rows.size + 2) > remainingTableCells
+                    if (!oversized) rows.add(row)
+                }
                 i++
             }
-            blocks.add(MarkdownBlock.Table(headers, rows))
+            if (oversized) {
+                val preview = buildString {
+                    for (line in lines.subList(start, i)) {
+                        val remaining = 16000 - length
+                        if (remaining <= 1) break
+                        appendLine(line.take(remaining - 1))
+                    }
+                }
+                blocks.add(MarkdownBlock.CodeBlock("", preview))
+            } else {
+                remainingTableCells -= columns * (rows.size + 1)
+                blocks.add(MarkdownBlock.Table(headers, rows))
+            }
             continue
         }
 
@@ -579,7 +609,7 @@ private fun isTableSeparator(line: String): Boolean {
 }
 
 private fun splitTableRow(line: String): List<String> =
-    line.trim().trim('|').split('|').map { it.trim() }
+    line.trim().trim('|').split('|', limit = 25).map { it.trim() }
 
 private fun parseInlineMarkdown(
     text: String,

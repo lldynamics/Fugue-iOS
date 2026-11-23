@@ -19,11 +19,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ViewColumn
@@ -72,6 +75,7 @@ import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.ConversationItem
 import com.iosbox.app.core.storage.ConversationSearch
 import com.iosbox.app.core.storage.ConversationSearchHit
+import com.iosbox.app.core.storage.ConversationTimeGrouping
 import com.iosbox.app.ui.providers.QuickKeySetupSheet
 import com.iosbox.app.ui.theme.DS
 import com.iosbox.app.ui.theme.LocalAccentColors
@@ -107,6 +111,10 @@ fun ConversationListScreen(
     var messagesByConversation by remember { mutableStateOf<Map<String, List<ChatMessageItem>>>(emptyMap()) }
     var editingTagFor by remember { mutableStateOf<ConversationItem?>(null) }
     var showQuickKeySetup by remember { mutableStateOf(false) }
+    var isBatchSelecting by remember { mutableStateOf(false) }
+    var selectedBatchIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showBatchTagDialog by remember { mutableStateOf(false) }
+    var showBatchDeleteConfirm by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     val availableTags = remember(conversations) {
@@ -176,8 +184,10 @@ fun ConversationListScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = onCreateConversation) {
-                Icon(Icons.Filled.Add, contentDescription = L10n.text("新对话", "New Chat"))
+            if (!isBatchSelecting) {
+                FloatingActionButton(onClick = onCreateConversation) {
+                    Icon(Icons.Filled.Add, contentDescription = L10n.text("新对话", "New Chat"))
+                }
             }
         }
     ) { innerPadding ->
@@ -264,6 +274,24 @@ fun ConversationListScreen(
                             label = { Text(tag) }
                         )
                     }
+                    if (searchQuery.isBlank()) {
+                        FilterChip(
+                            selected = isBatchSelecting,
+                            onClick = {
+                                isBatchSelecting = !isBatchSelecting
+                                selectedBatchIds = emptySet()
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Checklist, contentDescription = null, modifier = Modifier.size(14.dp))
+                            },
+                            label = {
+                                Text(
+                                    if (isBatchSelecting) L10n.text("完成", "Done")
+                                    else L10n.text("批量管理", "Manage")
+                                )
+                            }
+                        )
+                    }
                 }
             }
 
@@ -289,30 +317,157 @@ fun ConversationListScreen(
                 }
             } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 88.dp)
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentPadding = PaddingValues(bottom = if (isBatchSelecting) 16.dp else 88.dp)
                 ) {
-                    items(searchResults, key = { it.conversationID }) { res ->
-                        val conv = conversationMap[res.conversationID] ?: return@items
-                        ConversationRow(
-                            conversation = conv,
-                            hits = res.hits,
-                            onClick = { onOpenConversation(conv.id) },
-                            onTogglePin = {
-                                scope.launch {
-                                    container.chatRepository.saveConversation(
-                                        conv.copy(isPinned = !conv.isPinned)
-                                    )
-                                }
-                            },
-                            onSetFolderTag = { editingTagFor = conv },
-                            onDelete = {
-                                scope.launch {
-                                    container.chatRepository.deleteConversation(conv.id)
-                                }
+                    if (searchQuery.isBlank()) {
+                        val filteredConvs = searchResults.mapNotNull { conversationMap[it.conversationID] }
+                        val pinned = filteredConvs.filter { it.isPinned }
+                        val regular = filteredConvs.filter { !it.isPinned }
+
+                        if (pinned.isNotEmpty()) {
+                            item(key = "hdr_pinned") {
+                                Text(
+                                    text = L10n.text("置顶对话", "Pinned"),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = DS.Spacing.lg, vertical = 6.dp)
+                                )
                             }
+                            items(pinned, key = { it.id }) { conv ->
+                                val isChecked = conv.id in selectedBatchIds
+                                ConversationRow(
+                                    conversation = conv,
+                                    hits = emptyList(),
+                                    isBatchSelecting = isBatchSelecting,
+                                    isBatchSelected = isChecked,
+                                    onClick = {
+                                        if (isBatchSelecting) {
+                                            selectedBatchIds = if (isChecked) selectedBatchIds - conv.id else selectedBatchIds + conv.id
+                                        } else {
+                                            onOpenConversation(conv.id)
+                                        }
+                                    },
+                                    onTogglePin = {
+                                        scope.launch {
+                                            container.chatRepository.saveConversation(conv.copy(isPinned = !conv.isPinned))
+                                        }
+                                    },
+                                    onSetFolderTag = { editingTagFor = conv },
+                                    onDelete = {
+                                        scope.launch {
+                                            container.chatRepository.deleteConversation(conv.id)
+                                        }
+                                    }
+                                )
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                            }
+                        }
+
+                        val grouped = ConversationTimeGrouping.groupByTime(
+                            items = regular,
+                            timestampOf = { it.updatedAtEpochMs }
                         )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                        for ((bucket, groupItems) in grouped) {
+                            item(key = "hdr_${bucket.name}") {
+                                Text(
+                                    text = bucket.title,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = DS.Spacing.lg, vertical = 6.dp)
+                                )
+                            }
+                            items(groupItems, key = { it.id }) { conv ->
+                                val isChecked = conv.id in selectedBatchIds
+                                ConversationRow(
+                                    conversation = conv,
+                                    hits = emptyList(),
+                                    isBatchSelecting = isBatchSelecting,
+                                    isBatchSelected = isChecked,
+                                    onClick = {
+                                        if (isBatchSelecting) {
+                                            selectedBatchIds = if (isChecked) selectedBatchIds - conv.id else selectedBatchIds + conv.id
+                                        } else {
+                                            onOpenConversation(conv.id)
+                                        }
+                                    },
+                                    onTogglePin = {
+                                        scope.launch {
+                                            container.chatRepository.saveConversation(conv.copy(isPinned = !conv.isPinned))
+                                        }
+                                    },
+                                    onSetFolderTag = { editingTagFor = conv },
+                                    onDelete = {
+                                        scope.launch {
+                                            container.chatRepository.deleteConversation(conv.id)
+                                        }
+                                    }
+                                )
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                            }
+                        }
+                    } else {
+                        items(searchResults, key = { it.conversationID }) { res ->
+                            val conv = conversationMap[res.conversationID] ?: return@items
+                            ConversationRow(
+                                conversation = conv,
+                                hits = res.hits,
+                                isBatchSelecting = false,
+                                isBatchSelected = false,
+                                onClick = { onOpenConversation(conv.id) },
+                                onTogglePin = {
+                                    scope.launch {
+                                        container.chatRepository.saveConversation(
+                                            conv.copy(isPinned = !conv.isPinned)
+                                        )
+                                    }
+                                },
+                                onSetFolderTag = { editingTagFor = conv },
+                                onDelete = {
+                                    scope.launch {
+                                        container.chatRepository.deleteConversation(conv.id)
+                                    }
+                                }
+                            )
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                        }
+                    }
+                }
+            }
+
+            if (isBatchSelecting) {
+                Surface(
+                    tonalElevation = 3.dp,
+                    shadowElevation = 4.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = DS.Spacing.lg, vertical = DS.Spacing.sm),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = L10n.text("已选 ${selectedBatchIds.size} 项", "${selectedBatchIds.size} selected"),
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(
+                                onClick = { showBatchTagDialog = true },
+                                enabled = selectedBatchIds.isNotEmpty()
+                            ) {
+                                Text(L10n.text("批量标签", "Tag"))
+                            }
+                            Button(
+                                onClick = { showBatchDeleteConfirm = true },
+                                enabled = selectedBatchIds.isNotEmpty()
+                            ) {
+                                Text(L10n.text("删除 (${selectedBatchIds.size})", "Delete (${selectedBatchIds.size})"))
+                            }
+                        }
                     }
                 }
             }
@@ -328,6 +483,79 @@ fun ConversationListScreen(
                 onCreateConversation()
             },
             onDismiss = { showQuickKeySetup = false }
+        )
+    }
+
+    if (showBatchTagDialog) {
+        var tagDraft by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showBatchTagDialog = false },
+            title = { Text(L10n.text("批量设置分组标签", "Batch Set Folder Tag")) },
+            text = {
+                OutlinedTextField(
+                    value = tagDraft,
+                    onValueChange = { tagDraft = it },
+                    singleLine = true,
+                    placeholder = { Text(L10n.text("例如：工作、学习（留空清除）", "e.g. Work, Study (blank to clear)")) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val cleaned = tagDraft.trim().takeIf { it.isNotEmpty() }?.take(32)
+                    val targetIds = selectedBatchIds
+                    showBatchTagDialog = false
+                    isBatchSelecting = false
+                    selectedBatchIds = emptySet()
+                    scope.launch {
+                        for (conv in conversations.filter { it.id in targetIds }) {
+                            container.chatRepository.saveConversation(conv.copy(folderTag = cleaned))
+                        }
+                    }
+                }) {
+                    Text(L10n.text("应用", "Apply"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchTagDialog = false }) {
+                    Text(L10n.text("取消", "Cancel"))
+                }
+            }
+        )
+    }
+
+    if (showBatchDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBatchDeleteConfirm = false },
+            title = { Text(L10n.text("批量删除对话", "Delete Selected Conversations")) },
+            text = {
+                Text(
+                    L10n.text(
+                        "确定永久删除已选择的 ${selectedBatchIds.size} 段对话及其消息？",
+                        "Permanently delete ${selectedBatchIds.size} selected conversations?"
+                    )
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val targetIds = selectedBatchIds
+                    showBatchDeleteConfirm = false
+                    isBatchSelecting = false
+                    selectedBatchIds = emptySet()
+                    scope.launch {
+                        for (id in targetIds) {
+                            container.chatRepository.deleteConversation(id)
+                        }
+                    }
+                }) {
+                    Text(L10n.text("全部删除", "Delete All"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchDeleteConfirm = false }) {
+                    Text(L10n.text("取消", "Cancel"))
+                }
+            }
         )
     }
 
@@ -370,6 +598,8 @@ fun ConversationListScreen(
 private fun ConversationRow(
     conversation: ConversationItem,
     hits: List<ConversationSearchHit>,
+    isBatchSelecting: Boolean = false,
+    isBatchSelected: Boolean = false,
     onClick: () -> Unit,
     onTogglePin: () -> Unit,
     onSetFolderTag: () -> Unit,
@@ -392,6 +622,14 @@ private fun ConversationRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (isBatchSelecting) {
+                Icon(
+                    imageVector = if (isBatchSelected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                    contentDescription = null,
+                    tint = if (isBatchSelected) accent.readableText else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
             Text(
                 text = conversation.assistantEmoji.ifBlank { "✨" },
                 style = MaterialTheme.typography.headlineSmall

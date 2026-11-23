@@ -1,21 +1,29 @@
 package com.iosbox.app.ui.usage
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -25,7 +33,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -35,6 +45,9 @@ import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestStatus
 import com.iosbox.app.core.storage.RequestRecordItem
+import com.iosbox.app.core.storage.UsageTrendBucket
+import com.iosbox.app.core.storage.UsageTrendCalculator
+import com.iosbox.app.core.storage.UsageTrendGranularity
 import com.iosbox.app.ui.theme.DS
 import java.text.DateFormat
 import java.util.Calendar
@@ -66,22 +79,44 @@ private enum class UsagePeriod {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun UsageScreen(container: AppContainer) {
+fun UsageScreen(
+    container: AppContainer,
+    onBack: (() -> Unit)? = null
+) {
     val allRecords by container.chatRepository.observeRequestRecords().collectAsStateWithLifecycle(initialValue = emptyList())
     val arenaMessages by container.chatRepository.observeArenaMessages().collectAsStateWithLifecycle(initialValue = emptyList())
     val blindStandings = remember(arenaMessages) { ArenaBallot.standings(arenaMessages) }
     var period by remember { mutableStateOf(UsagePeriod.MONTH) }
     var selectedProviderId by remember { mutableStateOf<String?>(null) }
+    var selectedModelId by remember { mutableStateOf<String?>(null) }
 
     val providerOptions = remember(allRecords) {
         allRecords.distinctBy { it.providerID }.map { it.providerID to it.providerName }
     }
 
-    val filtered = remember(allRecords, period, selectedProviderId) {
+    val modelOptions = remember(allRecords, selectedProviderId) {
+        allRecords
+            .filter { selectedProviderId == null || it.providerID == selectedProviderId }
+            .map { it.modelID }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+
+    val filtered = remember(allRecords, period, selectedProviderId, selectedModelId) {
         allRecords.filter { rec ->
             period.includes(rec.startedAtEpochMs) &&
-                (selectedProviderId == null || rec.providerID == selectedProviderId)
+                (selectedProviderId == null || rec.providerID == selectedProviderId) &&
+                (selectedModelId == null || rec.modelID == selectedModelId)
         }
+    }
+    val trendBuckets = remember(filtered, period) {
+        val granularity = when (period) {
+            UsagePeriod.TODAY -> UsageTrendGranularity.HOUR
+            UsagePeriod.MONTH -> UsageTrendGranularity.DAY
+            UsagePeriod.ALL -> UsageTrendGranularity.MONTH
+        }
+        UsageTrendCalculator.buildBuckets(filtered, granularity)
     }
 
     val modelRows = remember(filtered) { filtered.filter { it.kind != RequestKind.WEB_SEARCH } }
@@ -117,6 +152,16 @@ fun UsageScreen(container: AppContainer) {
                         text = L10n.text("用量与测速账本", "Usage & Ledger"),
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                     )
+                },
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = L10n.text("返回", "Back")
+                            )
+                        }
+                    }
                 }
             )
         }
@@ -151,14 +196,42 @@ fun UsageScreen(container: AppContainer) {
                     ) {
                         FilterChip(
                             selected = selectedProviderId == null,
-                            onClick = { selectedProviderId = null },
+                            onClick = {
+                                selectedProviderId = null
+                                selectedModelId = null
+                            },
                             label = { Text(L10n.text("全部服务商", "All Providers")) }
                         )
                         for ((pid, pName) in providerOptions) {
                             FilterChip(
                                 selected = selectedProviderId == pid,
-                                onClick = { selectedProviderId = if (selectedProviderId == pid) null else pid },
+                                onClick = {
+                                    selectedProviderId = if (selectedProviderId == pid) null else pid
+                                    selectedModelId = null
+                                },
                                 label = { Text(pName) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (modelOptions.isNotEmpty()) {
+                item {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = selectedModelId == null,
+                            onClick = { selectedModelId = null },
+                            label = { Text(L10n.text("全部模型", "All Models")) }
+                        )
+                        for (mid in modelOptions) {
+                            FilterChip(
+                                selected = selectedModelId == mid,
+                                onClick = { selectedModelId = if (selectedModelId == mid) null else mid },
+                                label = { Text(mid) }
                             )
                         }
                     }
@@ -195,6 +268,12 @@ fun UsageScreen(container: AppContainer) {
                             modifier = Modifier.weight(1f)
                         )
                     }
+                }
+            }
+
+            if (trendBuckets.size >= 2) {
+                item {
+                    UsageTrendChartCard(buckets = trendBuckets)
                 }
             }
 
@@ -363,6 +442,68 @@ private fun RequestLogRow(rec: RequestRecordItem) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+@Composable
+private fun UsageTrendChartCard(buckets: List<UsageTrendBucket>) {
+    val shown = buckets.takeLast(14)
+    val maxTokens = (shown.maxOfOrNull { it.totalTokens } ?: 0L).coerceAtLeast(1L)
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(DS.Spacing.md),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = L10n.text("Token 消耗趋势", "Token Trend"),
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                )
+                Text(
+                    text = L10n.text("峰值 ${compactTokens(maxTokens.toInt())}", "Peak ${compactTokens(maxTokens.toInt())}"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(110.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                for (bucket in shown) {
+                    val fraction = (bucket.totalTokens.toFloat() / maxTokens.toFloat()).coerceIn(0.06f, 1f)
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Bottom
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(0.72f)
+                                .height((82 * fraction).dp)
+                                .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                        Text(
+                            text = bucket.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -53,6 +53,11 @@ struct ConversationListView: View {
     @State private var showBookFriends = false
     @State private var readyModelCount = 0
     @State private var bookmarkedConversationIDs: Set<UUID> = []
+    @State private var isBatchSelecting = false
+    @State private var batchSelectedIDs: Set<UUID> = []
+    @State private var showBatchDeleteConfirm = false
+    @State private var showBatchTagAlert = false
+    @State private var batchTagDraft = ""
     @State private var preferences = AppPreferences.shared
     private var theme: DS.AccentTheme { preferences.accentTheme }
 
@@ -243,7 +248,7 @@ struct ConversationListView: View {
         let regular = filtered.filter { !$0.isPinned }
 
         List {
-            if !searchQuery.text.isEmpty || !tags.isEmpty || showOnlyBookmarked || !bookmarkedConversationIDs.isEmpty {
+            if !searchQuery.text.isEmpty || !tags.isEmpty || showOnlyBookmarked || !bookmarkedConversationIDs.isEmpty || !conversations.isEmpty {
                 Section {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
@@ -251,12 +256,25 @@ struct ConversationListView: View {
                                 selectedFilterTag = nil
                                 showOnlyBookmarked = false
                             }
-                            filterChip(title: String(localized: "含收藏"), selected: showOnlyBookmarked) {
-                                showOnlyBookmarked.toggle()
+                            if showOnlyBookmarked || !bookmarkedConversationIDs.isEmpty {
+                                filterChip(title: String(localized: "含收藏"), selected: showOnlyBookmarked) {
+                                    showOnlyBookmarked.toggle()
+                                }
                             }
                             ForEach(tags, id: \.self) { tag in
                                 filterChip(title: tag, selected: selectedFilterTag == tag) {
                                     selectedFilterTag = (selectedFilterTag == tag) ? nil : tag
+                                }
+                            }
+                            if !conversations.isEmpty && searchQuery.text.isEmpty {
+                                filterChip(
+                                    title: isBatchSelecting ? String(localized: "完成") : String(localized: "批量管理"),
+                                    selected: isBatchSelecting
+                                ) {
+                                    withAnimation(.easeInOut(duration: 0.16)) {
+                                        isBatchSelecting.toggle()
+                                        batchSelectedIDs.removeAll()
+                                    }
                                 }
                             }
                         }
@@ -273,8 +291,10 @@ struct ConversationListView: View {
                         ForEach(pinned) { conv in conversationRow(conv, useSplitSelection: useSplitSelection) }
                     }
                 }
-                Section(pinned.isEmpty ? String(localized: "全部对话") : String(localized: "最近对话")) {
-                    ForEach(regular) { conv in conversationRow(conv, useSplitSelection: useSplitSelection) }
+                ForEach(ConversationTimeBucket.group(regular, date: \.updatedAt), id: \.bucket) { group in
+                    Section(group.bucket.title) {
+                        ForEach(group.items) { conv in conversationRow(conv, useSplitSelection: useSplitSelection) }
+                    }
                 }
             } else if useSplitSelection {
                 ConversationSearchResults(
@@ -300,6 +320,26 @@ struct ConversationListView: View {
             if !searchQuery.text.isEmpty { searchRevision += 1 }
         }
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索对话")
+        .safeAreaInset(edge: .bottom) {
+            if isBatchSelecting {
+                batchActionBar
+            }
+        }
+        .alert("批量设置标签", isPresented: $showBatchTagAlert) {
+            TextField("标签名称（留空清除）", text: $batchTagDraft)
+            Button("取消", role: .cancel) { batchTagDraft = "" }
+            Button("应用") { applyBatchTag() }
+        } message: {
+            Text("将为已选择的 \(batchSelectedIDs.count) 段对话设置分组标签。")
+        }
+        .confirmationDialog(
+            "确定删除已选择的 \(batchSelectedIDs.count) 段对话？",
+            isPresented: $showBatchDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("全部删除", role: .destructive) { deleteBatchSelected() }
+            Button("取消", role: .cancel) {}
+        }
     }
 
     @ToolbarContentBuilder
@@ -464,7 +504,25 @@ struct ConversationListView: View {
         .padding(.vertical, 3)
 
         Group {
-            if useSplitSelection {
+            if isBatchSelecting {
+                let checked = batchSelectedIDs.contains(conv.id)
+                Button {
+                    if checked {
+                        batchSelectedIDs.remove(conv.id)
+                    } else {
+                        batchSelectedIDs.insert(conv.id)
+                    }
+                } label: {
+                    HStack(spacing: DS.Spacing.sm) {
+                        Image(systemName: checked ? "checkmark.circle.fill" : "circle")
+                            .font(.title3)
+                            .foregroundStyle(checked ? theme.readableText : .secondary)
+                        rowContent
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else if useSplitSelection {
                 Button {
                     splitSearchRoute = nil
                     splitSelection = conv
@@ -561,6 +619,54 @@ struct ConversationListView: View {
             .padding(.bottom, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.bar)
+        }
+    }
+
+    private var batchActionBar: some View {
+        HStack(spacing: DS.Spacing.sm) {
+            Text("已选 \(batchSelectedIDs.count) 项")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("批量标签") {
+                batchTagDraft = ""
+                showBatchTagAlert = true
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(batchSelectedIDs.isEmpty)
+
+            Button("删除 (\(batchSelectedIDs.count))", role: .destructive) {
+                showBatchDeleteConfirm = true
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.small)
+            .disabled(batchSelectedIDs.isEmpty)
+        }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.vertical, DS.Spacing.sm)
+        .background(.bar)
+    }
+
+    private func applyBatchTag() {
+        let cleaned = batchTagDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ids = batchSelectedIDs
+        for conv in conversations where ids.contains(conv.id) {
+            conv.setFolderTag(cleaned.isEmpty ? nil : cleaned)
+        }
+        try? modelContext.save()
+        batchTagDraft = ""
+        isBatchSelecting = false
+        batchSelectedIDs.removeAll()
+    }
+
+    private func deleteBatchSelected() {
+        let targets = conversations.filter { batchSelectedIDs.contains($0.id) }
+        isBatchSelecting = false
+        batchSelectedIDs.removeAll()
+        for conv in targets {
+            deleteConversation(conv)
         }
     }
 

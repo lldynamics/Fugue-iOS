@@ -140,6 +140,7 @@ import com.iosbox.app.core.storage.ConversationSearch
 import com.iosbox.app.core.storage.ModelMentionParser
 import com.iosbox.app.core.storage.SlashPromptCommand
 import com.iosbox.app.core.system.CalendarIntentLauncher
+import com.iosbox.app.core.system.MessageExportRenderer
 import com.iosbox.app.core.system.PlainTextFormatter
 import com.iosbox.app.core.system.WebLinkHandoff
 import java.io.File
@@ -149,6 +150,7 @@ import com.iosbox.app.ui.study.MessageStudyDeckCard
 import com.iosbox.app.ui.theme.DS
 import com.iosbox.app.ui.theme.LocalAccentColors
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -772,6 +774,7 @@ fun ChatDetailScreen(
                                 val msg = entry.message
                                 MessageBubbleRow(
                                     message = msg,
+                                    conversationTitle = conv?.title.orEmpty(),
                                     activeBookID = activeFriend?.bookID,
                                     branchSiblings = state.branchSiblings[msg.id].orEmpty(),
                                     canEditUser = !state.isGenerating && msg.role == MessageRole.USER,
@@ -1895,6 +1898,7 @@ fun ChatDetailScreen(
 @Composable
 private fun MessageBubbleRow(
     message: ChatMessageItem,
+    conversationTitle: String = "",
     activeBookID: String?,
     branchSiblings: List<ChatMessageItem>,
     canEditUser: Boolean,
@@ -1929,8 +1933,65 @@ private fun MessageBubbleRow(
     val scope = rememberCoroutineScope()
     val accent = LocalAccentColors.current
     val meta = message.assistanceMetadata
-    var showCopyMenu by remember { mutableStateOf(false) }
-    var copiedFeedback by remember { mutableStateOf(false) }
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var copiedFeedbackText by remember { mutableStateOf<String?>(null) }
+    var copiedJob by remember { mutableStateOf<Job?>(null) }
+    var isExporting by remember { mutableStateOf(false) }
+
+    fun copyAndNotify(text: String, toastLabel: String) {
+        val cm = context.getSystemService(ClipboardManager::class.java)
+        cm?.setPrimaryClip(ClipData.newPlainText("Fugue", text))
+        copiedJob?.cancel()
+        copiedFeedbackText = toastLabel
+        copiedJob = scope.launch {
+            delay(1500)
+            copiedFeedbackText = null
+        }
+    }
+
+    fun exportMessage(asPdf: Boolean) {
+        if (isExporting) return
+        val speaker = meta.groupSpeakerDisplayTitle
+            ?: message.modelDisplayName.ifBlank { L10n.text("AI 助手", "Assistant") }
+        val exportTitle = conversationTitle.ifBlank { speaker }
+        isExporting = true
+        scope.launch {
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    if (asPdf) {
+                        MessageExportRenderer.writePdfFile(
+                            context = context,
+                            title = exportTitle,
+                            speaker = speaker,
+                            timestampMs = message.createdAtEpochMs,
+                            markdown = message.content
+                        )
+                    } else {
+                        MessageExportRenderer.writeShareCardPngFile(
+                            context = context,
+                            title = exportTitle,
+                            speaker = speaker,
+                            timestampMs = message.createdAtEpochMs,
+                            markdown = message.content
+                        )
+                    }
+                }
+                MessageExportRenderer.shareFile(
+                    context = context,
+                    file = file,
+                    mimeType = if (asPdf) "application/pdf" else "image/png"
+                )
+            } catch (t: Throwable) {
+                android.widget.Toast.makeText(
+                    context,
+                    t.message ?: L10n.text("导出失败", "Export failed"),
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            } finally {
+                isExporting = false
+            }
+        }
+    }
 
     if (meta.isContextDivider) {
         Row(
@@ -2283,52 +2344,32 @@ private fun MessageBubbleRow(
                         )
                     }
                     if (message.content.isNotEmpty()) {
-                        Box {
-                            IconButton(
-                                onClick = { showCopyMenu = true },
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (copiedFeedback) Icons.Filled.Check else Icons.Filled.ContentCopy,
-                                    contentDescription = L10n.text("复制", "Copy"),
-                                    tint = if (copiedFeedback) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(15.dp)
+                        Surface(
+                            shape = CircleShape,
+                            color = if (copiedFeedbackText != null) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                            modifier = Modifier.clickable {
+                                copyAndNotify(
+                                    PlainTextFormatter.toPlainText(message.content),
+                                    L10n.text("已复制纯文本", "Plain copied")
                                 )
                             }
-                            DropdownMenu(
-                                expanded = showCopyMenu,
-                                onDismissRequest = { showCopyMenu = false }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                DropdownMenuItem(
-                                    text = { Text(L10n.text("复制纯文本（微信/办公）", "Copy Plain Text")) },
-                                    onClick = {
-                                        showCopyMenu = false
-                                        val cm = context.getSystemService(ClipboardManager::class.java)
-                                        cm?.setPrimaryClip(
-                                            ClipData.newPlainText(
-                                                "Fugue",
-                                                PlainTextFormatter.toPlainText(message.content)
-                                            )
-                                        )
-                                        copiedFeedback = true
-                                        scope.launch {
-                                            delay(1500)
-                                            copiedFeedback = false
-                                        }
-                                    }
+                                Icon(
+                                    imageVector = if (copiedFeedbackText != null) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                                    contentDescription = L10n.text("复制纯文本", "Copy Plain Text"),
+                                    tint = if (copiedFeedbackText != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(13.dp)
                                 )
-                                DropdownMenuItem(
-                                    text = { Text(L10n.text("复制 Markdown 原文", "Copy Markdown")) },
-                                    onClick = {
-                                        showCopyMenu = false
-                                        val cm = context.getSystemService(ClipboardManager::class.java)
-                                        cm?.setPrimaryClip(ClipData.newPlainText("Fugue", message.content))
-                                        copiedFeedback = true
-                                        scope.launch {
-                                            delay(1500)
-                                            copiedFeedback = false
-                                        }
-                                    }
+                                Text(
+                                    text = copiedFeedbackText ?: L10n.text("纯文本", "Plain"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (copiedFeedbackText != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -2429,6 +2470,51 @@ private fun MessageBubbleRow(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(15.dp)
                             )
+                        }
+                    }
+                    if (message.content.isNotEmpty()) {
+                        Box {
+                            IconButton(
+                                onClick = { showMoreMenu = true },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                if (isExporting) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 1.8.dp)
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Filled.MoreVert,
+                                        contentDescription = L10n.text("更多操作与导出", "More Actions & Export"),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = showMoreMenu,
+                                onDismissRequest = { showMoreMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(L10n.text("复制 Markdown 原文", "Copy Markdown")) },
+                                    onClick = {
+                                        showMoreMenu = false
+                                        copyAndNotify(message.content, L10n.text("已复制 MD", "MD copied"))
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(L10n.text("导出 PDF 文档", "Export PDF")) },
+                                    onClick = {
+                                        showMoreMenu = false
+                                        exportMessage(asPdf = true)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(L10n.text("导出分享长图", "Export Share Card PNG")) },
+                                    onClick = {
+                                        showMoreMenu = false
+                                        exportMessage(asPdf = false)
+                                    }
+                                )
+                            }
                         }
                     }
                     val metaParts = buildList {

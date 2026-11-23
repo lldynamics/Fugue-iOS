@@ -59,6 +59,7 @@ struct ProviderListView: View {
 
                 Section("个性化与联网") {
                     Toggle("极简日常模式（界面减法）", isOn: $preferences.simpleDailyMode)
+                    NavigationLink { RequestLedgerView() } label: { Label("用量与费用账本", systemImage: "chart.bar.xaxis") }
                     NavigationLink { NewChatDefaultsView() } label: {
                         Label("新对话默认设置", systemImage: "bubble.left.and.text.bubble.right")
                     }
@@ -69,23 +70,25 @@ struct ProviderListView: View {
                 }
 
                 Section {
-                    ForEach(APIProtocolType.allCases) { proto in
-                        HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: proto.symbolName)
-                                .foregroundStyle(Color.accentColor)
-                                .frame(width: 22)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(proto.displayName)
-                                    .font(.footnote.weight(.semibold))
-                                Text(proto.subtitle)
-                                    .font(.caption)
+                    DisclosureGroup("查看支持的 API 协议说明") {
+                        ForEach(APIProtocolType.allCases) { proto in
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: proto.symbolName)
+                                    .foregroundStyle(Color.accentColor)
+                                    .frame(width: 22)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(proto.displayName)
+                                        .font(.footnote.weight(.semibold))
+                                    Text(proto.subtitle)
+                                        .font(.caption)
+                                }
                             }
+                            .padding(.vertical, 2)
+                            .foregroundStyle(.primary)
                         }
-                        .padding(.vertical, 2)
-                        .foregroundStyle(.primary)
                     }
                 } header: {
-                    Text("支持接入的协议说明").foregroundStyle(.primary)
+                    Text("协议说明").foregroundStyle(.primary)
                 }
 
                 Section {
