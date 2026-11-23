@@ -45,6 +45,7 @@ struct ComposerBarView: View {
     let onOpenOptions: () -> Void
     let onManageKnowledge: () -> Void
     var onOpenAudioTranscription: (() -> Void)? = nil
+    var externalDocumentScanTrigger: Int = 0
     var writingFirst = false
     var needsModel = false
     var canChooseModel = false
@@ -453,6 +454,15 @@ struct ComposerBarView: View {
             Button("确定", role: .cancel) { speech.speechError = nil }
         } message: {
             Text(speech.speechError ?? "")
+        }
+        .onChange(of: externalDocumentScanTrigger) { _, newValue in
+            guard newValue > 0 else { return }
+            isCapabilityDrawerOpen = false
+            if DocumentScannerView.isSupported {
+                showDocumentScanner = true
+            } else {
+                draft.attachmentError = String(localized: "当前设备不支持文档相机扫描，可通过「相册」或「拍照」导入图片后点击本地 OCR 转文字。")
+            }
         }
         .onDisappear {
             if speech.isRecording {

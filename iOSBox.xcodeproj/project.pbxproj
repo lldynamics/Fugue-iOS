@@ -28,6 +28,8 @@
 		DD0000000000000000000011 /* Localizable.xcstrings */ = {isa = PBXBuildFile; fileRef = BB000000000000000000006E; };
 		DD0000000000000000000012 /* InfoPlist.xcstrings */ = {isa = PBXBuildFile; fileRef = BB000000000000000000012C; };
 		DD0000000000000000000013 /* PrivacyInfo.xcprivacy */ = {isa = PBXBuildFile; fileRef = BB000000000000000000012D; };
+		DD0000000000000000000030 /* QuickEntryTypes.swift */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000020; };
+		DD0000000000000000000031 /* QuickLaunchIntents.swift */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000021; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -68,6 +70,8 @@
 		CC0000000000000000000001 /* iOSBoxUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = iOSBoxUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DD0000000000000000000002 /* GenerationActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/GenerationActivityAttributes.swift; sourceTree = SOURCE_ROOT; };
 		DD0000000000000000000004 /* iOSBoxWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = iOSBoxWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		DD0000000000000000000020 /* QuickEntryTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/QuickEntryTypes.swift; sourceTree = SOURCE_ROOT; };
+		DD0000000000000000000021 /* QuickLaunchIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iOSBox/Intents/QuickLaunchIntents.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -136,7 +140,7 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		BB000000000000000000000F /* Extension Shared Sources */ = {isa = PBXGroup; children = (BB0000000000000000000064, BB0000000000000000000065, BB0000000000000000000066, BB0000000000000000000067, BB0000000000000000000068, BB0000000000000000000069, BB000000000000000000006A, BB000000000000000000006B, BB000000000000000000006C, BB000000000000000000006D, BB000000000000000000006E, DD0000000000000000000002, ); name = "Extension Shared Sources"; sourceTree = "<group>"; };
+		BB000000000000000000000F /* Extension Shared Sources */ = {isa = PBXGroup; children = (BB0000000000000000000064, BB0000000000000000000065, BB0000000000000000000066, BB0000000000000000000067, BB0000000000000000000068, BB0000000000000000000069, BB000000000000000000006A, BB000000000000000000006B, BB000000000000000000006C, BB000000000000000000006D, BB000000000000000000006E, DD0000000000000000000002, DD0000000000000000000020, DD0000000000000000000021, ); name = "Extension Shared Sources"; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -306,7 +310,7 @@
 		};
 		BB0000000000000000000008 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (BB00000000000000000000C8, BB00000000000000000000C9, BB00000000000000000000CA, BB00000000000000000000CB, BB00000000000000000000CC, BB00000000000000000000CD, BB00000000000000000000CE, BB00000000000000000000CF, BB00000000000000000000D0, BB00000000000000000000D1, ); runOnlyForDeploymentPostprocessing = 0; };
 		CC0000000000000000000004 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		DD0000000000000000000008 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (DD0000000000000000000010, ); runOnlyForDeploymentPostprocessing = 0; };
+		DD0000000000000000000008 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (DD0000000000000000000010, DD0000000000000000000030, DD0000000000000000000031, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */

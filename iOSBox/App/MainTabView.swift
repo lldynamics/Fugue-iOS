@@ -88,6 +88,9 @@ struct MainTabView: View {
             if hasPersistentStore { integration.refresh(context: modelContext) }
         }
         .onChange(of: entryRouter.conversationID) { _, _ in openRoutedConversation() }
+        .onChange(of: entryRouter.pendingQuickAction, initial: true) { _, action in
+            if action != nil { navigation.tab = 0 }
+        }
         .alert("本地存储提示", isPresented: $showStartupNotice) {
             Button("知道了", role: .cancel) {
                 PersistenceController.acknowledgePendingRebuildNotice()
@@ -107,6 +110,10 @@ struct MainTabView: View {
     }
 
     private func refreshSystemEntries() {
+        entryRouter.drainPendingInbox()
+        if entryRouter.pendingQuickAction != nil {
+            navigation.tab = 0
+        }
         guard hasPersistentStore else { return }
         integration.refresh(context: modelContext)
         do {
@@ -117,6 +124,7 @@ struct MainTabView: View {
             hasSyncedSpotlightOnLaunch = true
             SpotlightIndexService.shared.syncRecentConversations(in: modelContext)
         }
+        WidgetSnapshotService.shared.sync(context: modelContext)
         openRoutedConversation()
     }
 

@@ -119,5 +119,13 @@ struct IOSBoxShortcuts: AppShortcutsProvider {
                     shortTitle: "分析图片", systemImageName: "photo.badge.magnifyingglass")
         AppShortcut(intent: RunSkillIntent(), phrases: ["用 \(.applicationName) 运行技能", "用 \(.applicationName) 运行 \(\.$skill)"],
                     shortTitle: "运行 AI 技能", systemImageName: "wand.and.stars")
+        AppShortcut(intent: QuickNewChatIntent(), phrases: ["用 \(.applicationName) 新建对话"],
+                    shortTitle: "新建对话", systemImageName: "square.and.pencil")
+        AppShortcut(intent: QuickVoiceNoteIntent(), phrases: ["用 \(.applicationName) 录音纪要", "用 \(.applicationName) 开始录音"],
+                    shortTitle: "录音纪要", systemImageName: "waveform.and.mic")
+        AppShortcut(intent: QuickScanDocumentIntent(), phrases: ["用 \(.applicationName) 扫描文档", "用 \(.applicationName) 扫文档转文字"],
+                    shortTitle: "扫描文档", systemImageName: "doc.viewfinder")
+        AppShortcut(intent: QuickBookmarksIntent(), phrases: ["用 \(.applicationName) 打开收藏夹"],
+                    shortTitle: "收藏知识库", systemImageName: "bookmark.fill")
     }
 }

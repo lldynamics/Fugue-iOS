@@ -1,8 +1,11 @@
+import SwiftData
 import SwiftUI
 
 struct AboutAndPrivacyView: View {
+    @Environment(\.modelContext) private var modelContext
     @AppStorage(AppCompliance.consentKey, store: AppCompliance.consentDefaults) private var hasConsent = false
     @AppStorage(SpotlightIndexService.enabledKey) private var spotlightEnabled = false
+    @AppStorage(WidgetSnapshotService.showRecentTitlesKey) private var widgetShowRecentTitles = false
 
     private var appVersion: String {
         let ver = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
@@ -28,6 +31,28 @@ struct AboutAndPrivacyView: View {
                     Text("尚未授权，下次发送前会显示接收方并请你确认。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+            }
+
+            Section("锁屏与灵动岛") {
+                Toggle("显示对话标题和回答预览", isOn: Binding(
+                    get: { LiveActivityCoordinator.shared.showsPreviews },
+                    set: { LiveActivityCoordinator.shared.setShowsPreviews($0) }
+                ))
+                Text("默认仅显示生成进度。开启后，新的实时活动可显示标题、发言者和回答片段。盲评揭晓前始终匿名。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+
+            Section("桌面与锁屏小组件") {
+                Toggle("在中号桌面小组件显示最近对话标题", isOn: Binding(
+                    get: { widgetShowRecentTitles },
+                    set: { enabled in
+                        widgetShowRecentTitles = enabled
+                        WidgetSnapshotService.shared.setShowsRecentTitles(enabled, context: modelContext)
+                    }
+                ))
+                Text("默认关闭。仅开启后才会在桌面中号小组件显示最多 3 条最近对话标题，且会自动响应系统隐私隐藏开关。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Section("系统搜索与本地索引") {
@@ -107,7 +132,7 @@ struct BuiltInPrivacyPolicyView: View {
 
                     policyBlock(
                         title: String(localized: "4. 系统扩展、权限与安全防护"),
-                        detail: String(localized: "系统分享扩展与实时活动仅通过本机 App Group 安全容器与主应用交换必要的最小化任务状态；智能工具访问外部网页时默认启用内网地址（SSRF）拦截与非受信域名人工确认闸门；系统 Spotlight 索引默认关闭，仅在你手动开启时在设备本地建立搜索条目。")
+                        detail: String(localized: "分享扩展通过本机 App Group 与主应用交换数据。实时活动默认只显示生成进度，你可以在隐私设置中开启或关闭回答预览。盲评揭晓前会隐藏模型身份和回答内容。网页工具会拦截内网地址，访问未经授权的外部域名时会请你确认。Spotlight 索引默认关闭，开启后才会在本机建立搜索条目。")
                     )
                 }
             }

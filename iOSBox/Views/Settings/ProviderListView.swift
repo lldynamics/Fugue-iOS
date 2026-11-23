@@ -67,6 +67,7 @@ struct ProviderListView: View {
                     NavigationLink { VoiceSettingsView() } label: { Label("语音转写与自然朗读", systemImage: "waveform") }
                     NavigationLink { PersonalMemoryView() } label: { Label("个人长期记忆", systemImage: "brain.head.profile") }
                     NavigationLink { SearchSettingsView() } label: { Label("联网搜索", systemImage: "globe") }
+                    NavigationLink { SystemQuickEntryGuideView() } label: { Label("小组件、控制中心与操作按钮", systemImage: "square.grid.2x2") }
                 }
 
                 Section {

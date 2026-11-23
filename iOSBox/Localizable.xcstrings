@@ -1,22 +1,6 @@
 {
   "sourceLanguage": "zh-Hans",
   "strings": {
-    "": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": ""
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": ""
-          }
-        }
-      }
-    },
     "\n\n…[OCR 文本较长，已截断至前 %lld 个字符]…": {
       "localizations": {
         "en": {
@@ -2225,6 +2209,70 @@
         }
       }
     },
+    "一键打开「夜奔」开始录音并生成纪要。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Fugue and start recording a voice note right away."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一键打开「夜奔」开始录音并生成纪要。"
+          }
+        }
+      }
+    },
+    "一键打开「夜奔」开始新对话。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Fugue and start a new conversation right away."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一键打开「夜奔」开始新对话。"
+          }
+        }
+      }
+    },
+    "一键打开「夜奔」扫描文档并本地 OCR 转文字。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Fugue to scan documents with on-device OCR."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一键打开「夜奔」扫描文档并本地 OCR 转文字。"
+          }
+        }
+      }
+    },
+    "一键打开「夜奔」收藏夹。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open your Fugue Saved Bookmarks Hub."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一键打开「夜奔」收藏夹。"
+          }
+        }
+      }
+    },
     "一键拉取并测通模型": {
       "localizations": {
         "en": {
@@ -2349,6 +2397,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "上次读到 %@"
+          }
+        }
+      }
+    },
+    "下拉打开控制中心，点击左上角「+」→「添加控制」，即可添加「新建对话」「录音纪要」「扫描文档」「收藏知识库」；同样可替换锁屏左下角或右下角快捷按钮。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Swipe down to open Control Center, tap '+' then 'Add a Control', and pick 'New Chat', 'Voice Note', 'Scan Document', or 'Bookmarks Hub'. You can also assign them to Lock Screen bottom buttons."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下拉打开控制中心，点击左上角「+」→「添加控制」，即可添加「新建对话」「录音纪要」「扫描文档」「收藏知识库」；同样可替换锁屏左下角或右下角快捷按钮。"
           }
         }
       }
@@ -3581,6 +3645,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "从文件选择"
+          }
+        }
+      }
+    },
+    "从桌面或锁屏一键启动新对话、录音纪要、文档扫描 OCR 或收藏知识库。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Launch New Chat, Voice Note, Document Scan OCR, or Bookmarks Hub directly from your Home Screen or Lock Screen."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从桌面或锁屏一键启动新对话、录音纪要、文档扫描 OCR 或收藏知识库。"
           }
         }
       }
@@ -5809,6 +5889,22 @@
         }
       }
     },
+    "前往系统「设置」→「操作按钮」→「快捷指令」，或在下方快捷指令库中选择「开始录音纪要」「扫描文档转文字」或「运行 AI 技能」即可硬件按键一键唤醒。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go to Settings > Action Button > Shortcut, or open Shortcuts below and pick 'Start Voice Note', 'Scan Document to Text', or 'Run AI Skill' for instant hardware-button access."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前往系统「设置」→「操作按钮」→「快捷指令」，或在下方快捷指令库中选择「开始录音纪要」「扫描文档转文字」或「运行 AI 技能」即可硬件按键一键唤醒。"
+          }
+        }
+      }
+    },
     "剪贴板中未检测到可识别的 Key 或接口地址。": {
       "localizations": {
         "en": {
@@ -7697,6 +7793,38 @@
         }
       }
     },
+    "在中号桌面小组件显示最近对话标题": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Recent Chat Titles in Medium Widget"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在中号桌面小组件显示最近对话标题"
+          }
+        }
+      }
+    },
+    "在主屏幕或锁屏长按空白处点击「+」，搜索「夜奔」，可选小号/中号桌面小组件或锁屏圆角/矩形小组件；长按小号小组件点「编辑小组件」可切换默认直达功能。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch and hold an empty area on your Home Screen or Lock Screen, tap '+' and search for 'Fugue'. Edit a small widget to switch its default quick-launch action."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在主屏幕或锁屏长按空白处点击「+」，搜索「夜奔」，可选小号/中号桌面小组件或锁屏圆角/矩形小组件；长按小号小组件点「编辑小组件」可切换默认直达功能。"
+          }
+        }
+      }
+    },
     "在任意圆桌群聊的设置页点击「保存为我的圆桌模板」，即可在此一键复用自定义角色组合。": {
       "localizations": {
         "en": {
@@ -7741,6 +7869,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "在当前会话中搜索"
+          }
+        }
+      }
+    },
+    "在桌面小组件显示最近对话标题": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Recent Chat Titles on Widget"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在桌面小组件显示最近对话标题"
           }
         }
       }
@@ -8337,6 +8481,22 @@
         }
       }
     },
+    "夜奔 · %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fugue · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "夜奔 · %@"
+          }
+        }
+      }
+    },
     "夜奔 · 对话记录": {
       "localizations": {
         "en": {
@@ -8353,6 +8513,70 @@
         }
       }
     },
+    "夜奔 · 录音纪要": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fugue · Voice Note"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "夜奔 · 录音纪要"
+          }
+        }
+      }
+    },
+    "夜奔 · 扫描文档": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fugue · Scan Document"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "夜奔 · 扫描文档"
+          }
+        }
+      }
+    },
+    "夜奔 · 收藏知识库": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fugue · Bookmarks Hub"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "夜奔 · 收藏知识库"
+          }
+        }
+      }
+    },
+    "夜奔 · 新建对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fugue · New Chat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "夜奔 · 新建对话"
+          }
+        }
+      }
+    },
     "夜奔 · 精选回复": {
       "localizations": {
         "en": {
@@ -8365,6 +8589,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "夜奔 · 精选回复"
+          }
+        }
+      }
+    },
+    "夜奔快捷入口": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fugue Quick Launch"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "夜奔快捷入口"
           }
         }
       }
@@ -9249,6 +9489,38 @@
         }
       }
     },
+    "小组件、控制中心与操作按钮": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Widgets, Control Center & Action Button"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "小组件、控制中心与操作按钮"
+          }
+        }
+      }
+    },
+    "小组件隐私设置": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Widget Privacy"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "小组件隐私设置"
+          }
+        }
+      }
+    },
     "尚无独立选票": {
       "localizations": {
         "en": {
@@ -9885,6 +10157,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "已将旧数据库完整备份到 App 的 Application Support/%@ 目录。"
+          }
+        }
+      }
+    },
+    "已就绪 %lld 模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld ready models"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已就绪 %lld 模型"
+          }
+        }
+      }
+    },
+    "已就绪 %lld 模型 · 收藏 %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld ready · %lld saved"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已就绪 %lld 模型 · 收藏 %lld"
           }
         }
       }
@@ -10881,6 +11185,22 @@
         }
       }
     },
+    "开始录音纪要": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start Voice Note"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始录音纪要"
+          }
+        }
+      }
+    },
     "开始汇总": {
       "localizations": {
         "en": {
@@ -11201,6 +11521,22 @@
         }
       }
     },
+    "录音": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Voice"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "录音"
+          }
+        }
+      }
+    },
     "录音与音频转会议纪要": {
       "localizations": {
         "en": {
@@ -11245,6 +11581,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "录音时间太短，未录到有效声音。"
+          }
+        }
+      }
+    },
+    "录音纪要": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Voice Note"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "录音纪要"
           }
         }
       }
@@ -11357,6 +11709,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "微信/邮件秒出正式、温和、简短三版纯文本"
+          }
+        }
+      }
+    },
+    "快捷动作": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quick Action"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "快捷动作"
           }
         }
       }
@@ -12161,6 +12529,22 @@
         }
       }
     },
+    "打开收藏知识库": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Bookmarks Hub"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开收藏知识库"
+          }
+        }
+      }
+    },
     "扫描文档": {
       "localizations": {
         "en": {
@@ -12173,6 +12557,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "扫描文档"
+          }
+        }
+      }
+    },
+    "扫描文档转文字": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan Document to Text"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描文档转文字"
+          }
+        }
+      }
+    },
+    "扫文档": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫文档"
           }
         }
       }
@@ -12413,6 +12829,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "拍照"
+          }
+        }
+      }
+    },
+    "拍照扫描 + 本地 OCR": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Camera scan + on-device OCR"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拍照扫描 + 本地 OCR"
           }
         }
       }
@@ -12781,6 +13213,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "接收截图或照片，发送给指定的视觉模型并返回分析结果。"
+          }
+        }
+      }
+    },
+    "控制中心与锁屏底部按钮": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Control Center & Lock Screen Buttons"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "控制中心与锁屏底部按钮"
           }
         }
       }
@@ -13281,6 +13729,22 @@
         }
       }
     },
+    "操作按钮（Action Button）与快捷指令": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Action Button & Shortcuts"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作按钮（Action Button）与快捷指令"
+          }
+        }
+      }
+    },
     "支持 @ 点名与成员互相点名抢麦，有话接话、没话潜水，自动碰撞 2～6 句后停下等你拍板。": {
       "localizations": {
         "en": {
@@ -13521,6 +13985,22 @@
         }
       }
     },
+    "收藏 %lld 条": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld saved"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收藏 %lld 条"
+          }
+        }
+      }
+    },
     "收藏夹": {
       "localizations": {
         "en": {
@@ -13549,6 +14029,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "收藏消息"
+          }
+        }
+      }
+    },
+    "收藏知识库": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bookmarks Hub"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收藏知识库"
           }
         }
       }
@@ -13853,6 +14349,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "新建助手预设"
+          }
+        }
+      }
+    },
+    "新建对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Chat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建对话"
           }
         }
       }
@@ -16353,6 +16865,22 @@
         }
       }
     },
+    "查看已收藏问答片段": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Browse bookmarked snippets"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看已收藏问答片段"
+          }
+        }
+      }
+    },
     "查看提示": {
       "localizations": {
         "en": {
@@ -16509,6 +17037,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "核心要点精炼总结"
+          }
+        }
+      }
+    },
+    "桌面与锁屏小组件": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Home & Lock Screen Widgets"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "桌面与锁屏小组件"
           }
         }
       }
@@ -17841,6 +18385,22 @@
         }
       }
     },
+    "添加方式指南": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Setup Guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加方式指南"
+          }
+        }
+      }
+    },
     "添加自定义 API": {
       "localizations": {
         "en": {
@@ -18493,54 +19053,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "生成随堂测验"
-          }
-        }
-      }
-    },
-    "用 ${applicationName} 分析图片": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Analyze an image with ${applicationName}"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "用 ${applicationName} 分析图片"
-          }
-        }
-      }
-    },
-    "用 ${applicationName} 提问": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ask with ${applicationName}"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "用 ${applicationName} 提问"
-          }
-        }
-      }
-    },
-    "用 ${applicationName} 运行技能": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Run a skill with ${applicationName}"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "用 ${applicationName} 运行技能"
           }
         }
       }
@@ -19201,6 +19713,102 @@
         }
       }
     },
+    "立即体验快捷直达": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try Quick Launch"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即体验快捷直达"
+          }
+        }
+      }
+    },
+    "立即开始文字提问": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start typing right away"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即开始文字提问"
+          }
+        }
+      }
+    },
+    "立即打开「夜奔」并开始一段新对话。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Fugue immediately and start a new conversation."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即打开「夜奔」并开始一段新对话。"
+          }
+        }
+      }
+    },
+    "立即打开「夜奔」录音与语音转纪要面板，可绑定到 iPhone 操作按钮。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Fugue's voice recorder and meeting-notes panel. Ideal for the iPhone Action Button."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即打开「夜奔」录音与语音转纪要面板，可绑定到 iPhone 操作按钮。"
+          }
+        }
+      }
+    },
+    "立即打开「夜奔」收藏夹查看已收藏的问答片段。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Fugue's Bookmarks Hub to view saved highlights."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即打开「夜奔」收藏夹查看已收藏的问答片段。"
+          }
+        }
+      }
+    },
+    "立即打开「夜奔」文档扫描相机并支持本地 OCR 转文字，可绑定到 iPhone 操作按钮。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Fugue's document scanner with on-device OCR. Ideal for the iPhone Action Button."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即打开「夜奔」文档扫描相机并支持本地 OCR 转文字，可绑定到 iPhone 操作按钮。"
+          }
+        }
+      }
+    },
     "章节": {
       "localizations": {
         "en": {
@@ -19485,6 +20093,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "系统分享"
+          }
+        }
+      }
+    },
+    "系统快捷入口": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System Quick Entry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统快捷入口"
           }
         }
       }
@@ -21937,6 +22561,22 @@
         }
       }
     },
+    "语音速记与会议纪要": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Voice memos & meeting notes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音速记与会议纪要"
+          }
+        }
+      }
+    },
     "说话风格与关注点": {
       "localizations": {
         "en": {
@@ -23665,6 +24305,22 @@
         }
       }
     },
+    "轻点直达": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap to launch"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "轻点直达"
+          }
+        }
+      }
+    },
     "轻量思考 (2K)": {
       "localizations": {
         "en": {
@@ -24353,6 +25009,22 @@
         }
       }
     },
+    "选择快捷入口": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Quick Action"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择快捷入口"
+          }
+        }
+      }
+    },
     "选择文本": {
       "localizations": {
         "en": {
@@ -24637,6 +25309,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "配置多模型并发对比"
+          }
+        }
+      }
+    },
+    "配置小组件点击后直达的常用功能。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose which quick action opens when tapping this widget."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配置小组件点击后直达的常用功能。"
           }
         }
       }
@@ -25901,6 +26589,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "默认仅显示生成进度。开启后，新的实时活动可显示标题、发言者和回答片段。盲评揭晓前始终匿名。"
+          }
+        }
+      }
+    },
+    "默认关闭。仅开启后才会在桌面中号小组件显示最多 3 条最近对话标题，且会自动响应系统隐私隐藏开关。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off by default. When enabled, the medium Home Screen widget also shows up to 3 recent conversation titles while respecting system privacy redaction."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认关闭。仅开启后才会在桌面中号小组件显示最多 3 条最近对话标题，且会自动响应系统隐私隐藏开关。"
+          }
+        }
+      }
+    },
+    "默认关闭。开启后，中号桌面小组件除 4 个快捷动作外，还会额外展示最多 3 条最近对话标题（优先显示置顶对话），并在锁屏/隐私场景自动隐藏。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off by default. When enabled, the medium widget displays up to 3 recent conversation titles (pinned first) alongside quick actions, and redacts them on locked screens."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认关闭。开启后，中号桌面小组件除 4 个快捷动作外，还会额外展示最多 3 条最近对话标题（优先显示置顶对话），并在锁屏/隐私场景自动隐藏。"
           }
         }
       }

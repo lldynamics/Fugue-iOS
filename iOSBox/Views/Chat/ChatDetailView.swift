@@ -40,6 +40,8 @@ struct ChatDetailView: View {
     @State private var consent = AIConsentGate()
     @State private var requestOptions = ComposerRequestOptions()
     @State private var preferences = AppPreferences.shared
+    @State private var entryRouter = SystemEntryRouter.shared
+    @State private var externalDocumentScanTrigger = 0
     @State private var pendingAutoExtractSchedule = false
     @FocusState private var inputFocused: Bool
 
@@ -421,6 +423,7 @@ struct ChatDetailView: View {
             onOpenOptions: { activeSheet = .options },
             onManageKnowledge: { activeSheet = .knowledge },
             onOpenAudioTranscription: { activeSheet = .audioTranscription },
+            externalDocumentScanTrigger: externalDocumentScanTrigger,
             writingFirst: writingFirst,
             needsModel: needsAPIKeyBanner,
             canChooseModel: canPickConnectedModel,
@@ -808,6 +811,19 @@ struct ChatDetailView: View {
         }
         .sheet(item: $activeSheet) { sheet in
             sheetContent(for: sheet)
+        }
+        .onChange(of: entryRouter.pendingChatToolRequest, initial: true) { _, request in
+            guard let request, request.conversationID == conversation.id else { return }
+            entryRouter.pendingChatToolRequest = nil
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(220))
+                switch request.tool {
+                case .voiceNote:
+                    activeSheet = .audioTranscription
+                case .scanDocument:
+                    externalDocumentScanTrigger += 1
+                }
+            }
         }
         .fullScreenCover(isPresented: $showsShelfReader) {
             if let id = conversation.readingVolumeID {

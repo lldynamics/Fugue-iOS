@@ -110,6 +110,7 @@ final class PersonaFeedService {
         if !items.isEmpty {
             let tree = ConversationTree.usesTree(chat)
             var parent = tree ? ConversationTree.currentAnchorID(in: chat) : nil
+            chat.normalizeMessageOrderIfNeeded()
             var index = (chat.messages.map(\.sortIndex).max() ?? -1) + 1
             var known = Set(chat.messages.map(\.id))
             for item in items {
@@ -152,6 +153,19 @@ final class PersonaRefreshDelegate: NSObject, UIApplicationDelegate {
     static let identifier = (Bundle.main.bundleIdentifier ?? "com.iosbox.app") + ".persona-refresh"
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        application.shortcutItems = QuickEntryAction.allCases.map { action in
+            UIApplicationShortcutItem(
+                type: action.shortcutItemType,
+                localizedTitle: action.title,
+                localizedSubtitle: action.subtitle,
+                icon: UIApplicationShortcutIcon(systemImageName: action.systemImage),
+                userInfo: nil
+            )
+        }
+        if let item = launchOptions?[.shortcutItem] as? UIApplicationShortcutItem,
+           let action = QuickEntryAction(shortcutType: item.type) {
+            QuickEntryInbox.shared.enqueue(action)
+        }
         BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.identifier, using: .main) { task in
             let worker = Task { @MainActor in
                 let context = AppRuntime.persistence.container.mainContext
@@ -162,6 +176,20 @@ final class PersonaRefreshDelegate: NSObject, UIApplicationDelegate {
             task.expirationHandler = { worker.cancel() }
         }
         return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        if let item = options.shortcutItem,
+           let action = QuickEntryAction(shortcutType: item.type) {
+            QuickEntryInbox.shared.enqueue(action)
+        }
+        let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = QuickActionSceneDelegate.self
+        return configuration
     }
 
     static func schedule(in context: ModelContext) {
@@ -175,5 +203,21 @@ final class PersonaRefreshDelegate: NSObject, UIApplicationDelegate {
         request.earliestBeginDate = Date(timeIntervalSinceNow: PersonaFeedService.interval)
         // Foreground refresh remains available when background refresh is disabled by the system.
         try? BGTaskScheduler.shared.submit(request)
+    }
+}
+
+@MainActor
+final class QuickActionSceneDelegate: NSObject, UIWindowSceneDelegate {
+    func windowScene(
+        _ windowScene: UIWindowScene,
+        performActionFor shortcutItem: UIApplicationShortcutItem,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        if let action = QuickEntryAction(shortcutType: shortcutItem.type) {
+            QuickEntryInbox.shared.enqueue(action)
+            completionHandler(true)
+        } else {
+            completionHandler(false)
+        }
     }
 }

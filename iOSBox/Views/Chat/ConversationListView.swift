@@ -175,6 +175,12 @@ struct ConversationListView: View {
                     showsCompactLanding = true
                 }
             }
+            handleQuickActionIfNeeded()
+        }
+        .onChange(of: SystemEntryRouter.shared.pendingQuickAction, initial: true) { _, action in
+            if action != nil {
+                handleQuickActionIfNeeded()
+            }
         }
         .onChange(of: preferences.defaultTargetID) { refreshUntouchedLanding() }
         .onChange(of: preferences.defaultAssistantID) { refreshUntouchedLanding() }
@@ -204,6 +210,7 @@ struct ConversationListView: View {
                 },
                 onBookmarksChanged: {
                     refreshBookmarkedIndex()
+                    WidgetSnapshotService.shared.sync(context: modelContext)
                 }
             )
         }
@@ -347,6 +354,7 @@ struct ConversationListView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave, object: modelContext)) { _ in
             refreshBookmarkedIndex()
+            WidgetSnapshotService.shared.sync(context: modelContext)
             if !searchQuery.text.isEmpty { searchRevision += 1 }
         }
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索对话")
@@ -757,5 +765,56 @@ struct ConversationListView: View {
             try modelContext.save()
             openConversation(conv)
         } catch { deletionError = error.localizedDescription }
+    }
+
+    private func handleQuickActionIfNeeded() {
+        guard let action = SystemEntryRouter.shared.pendingQuickAction else { return }
+        SystemEntryRouter.shared.pendingQuickAction = nil
+        switch action {
+        case .newChat:
+            _ = openOrCreateFreshQuickChat()
+        case .voiceNote:
+            if let conv = openOrCreateFreshQuickChat() {
+                SystemEntryRouter.shared.pendingChatToolRequest = ChatToolLaunchRequest(conversationID: conv.id, tool: .voiceNote)
+            }
+        case .scanDocument:
+            if let conv = openOrCreateFreshQuickChat() {
+                SystemEntryRouter.shared.pendingChatToolRequest = ChatToolLaunchRequest(conversationID: conv.id, tool: .scanDocument)
+            }
+        case .bookmarks:
+            showReader = false
+            showGroupSetup = false
+            showBookFriends = false
+            if horizontalSizeClass != .regular {
+                navigationPath = NavigationPath()
+                showsCompactLanding = false
+            }
+            showBookmarksHub = true
+        }
+    }
+
+    private func openOrCreateFreshQuickChat() -> Conversation? {
+        let conv: Conversation
+        if let existing = conversations.first(where: {
+            Conversation.isDefaultTitle($0.title) && $0.messages.isEmpty && !$0.isArenaMode &&
+            !$0.isGroupMode && $0.activeBookFriend == nil && $0.assistanceSettings.knowledgeVolumeIDs.isEmpty
+        }) {
+            conv = existing
+        } else {
+            let fresh = newDraft(arenaMode: false)
+            modelContext.insert(fresh)
+            do {
+                try modelContext.save()
+            } catch {
+                deletionError = error.localizedDescription
+                return nil
+            }
+            conv = fresh
+        }
+        if horizontalSizeClass != .regular {
+            showsCompactLanding = false
+        }
+        openConversation(conv)
+        return conv
     }
 }

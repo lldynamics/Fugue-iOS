@@ -3,6 +3,7 @@
 <plist version="1.0"><dict>
     <key>CFBundleName</key><string>Fugue</string>
     <key>CFBundleDisplayName</key><string>Fugue</string>
+    <key>IOSBoxAppGroup</key><string>$(IOSBOX_APP_GROUP)</string>
     <key>NSSupportsLiveActivities</key><true/>
     <key>NSExtension</key><dict>
         <key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string>

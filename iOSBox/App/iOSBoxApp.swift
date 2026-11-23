@@ -1,3 +1,4 @@
+import CoreSpotlight
 import SwiftUI
 import SwiftData
 
@@ -6,33 +7,32 @@ struct iOSBoxApp: App {
     @UIApplicationDelegateAdaptor(PersonaRefreshDelegate.self) private var refreshDelegate
     @Environment(\.scenePhase) private var scenePhase
 
-    private let sharedModelContainer: ModelContainer
-    private let startupNotice: String?
+    @State private var runtime: AppRuntime
 
     #if DEBUG && targetEnvironment(simulator)
+    private let testingWorkspaces = ProcessInfo.processInfo.arguments.contains("-ui-test-workspaces")
     private let testingPicker = ProcessInfo.processInfo.arguments.contains("-ui-test-model-picker")
     #endif
 
     init() {
         #if DEBUG && targetEnvironment(simulator)
-        if testingPicker {
+        if testingPicker || testingWorkspaces {
             let schema = Schema(versionedSchema: CurrentSchema.self)
-            sharedModelContainer = try! ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-            startupNotice = nil
+            let container = try! ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+            _runtime = State(initialValue: AppRuntime(store: .init(container: container, startupNotice: nil)))
+            if testingWorkspaces { try! WorkspaceTestContent.insert(in: container.mainContext) }
             if let rawPort = ProcessInfo.processInfo.environment["UI_TEST_MODEL_PORT"], let port = UInt16(rawPort) {
                 var model = ModelSpec(id: "fixture-chat")
                 model.catalogStatus = .manual
                 let provider = ProviderConfig(name: "Local Fixture", protocolType: .openAICompatible,
                                               baseURL: "http://127.0.0.1:\(port)/v1", isEnabled: false, models: [model])
-                sharedModelContainer.mainContext.insert(provider)
-                try! sharedModelContainer.mainContext.save()
+                container.mainContext.insert(provider)
+                try! container.mainContext.save()
             }
             return
         }
         #endif
-        let result = AppRuntime.persistence
-        sharedModelContainer = result.container
-        startupNotice = result.startupNotice
+        _runtime = State(initialValue: AppRuntime.shared)
         Task.detached(priority: .utility) {
             Self.cleanupExpiredTemporaryExports()
         }
@@ -74,12 +74,13 @@ struct iOSBoxApp: App {
         let exportsDir = directory.appendingPathComponent(ConversationExporter.exportsSubdirectoryName, isDirectory: true)
         if let exportedFiles = try? FileManager.default.contentsOfDirectory(
             at: exportsDir,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles]
         ) {
             for url in exportedFiles {
-                guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
-                      values.isRegularFile == true,
+                guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]),
+                      values.isSymbolicLink != true,
+                      values.isRegularFile == true || (values.isDirectory == true && UUID(uuidString: url.lastPathComponent) != nil),
                       let modified = values.contentModificationDate,
                       now.timeIntervalSince(modified) >= maxAge else { continue }
                 try? FileManager.default.removeItem(at: url)
@@ -89,32 +90,72 @@ struct iOSBoxApp: App {
 
     var body: some Scene {
         WindowGroup {
+            Group {
             #if DEBUG && targetEnvironment(simulator)
-            if testingPicker {
-                ConversationListView(pendingConversationToOpen: .constant(nil))
-            } else { appContent }
+                if testingPicker {
+                    ConversationListView(pendingConversationToOpen: .constant(nil))
+                } else if testingWorkspaces {
+                    MainTabView()
+                } else { appContent }
             #else
-            appContent
+                appContent
             #endif
+            }
+            .modelContainer(runtime.store.container)
+            .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                if let raw = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+                   let parsed = SpotlightIndexService.parseIdentifier(raw) {
+                    SystemEntryRouter.shared.messageID = parsed.messageID
+                    SystemEntryRouter.shared.conversationID = parsed.conversationID
+                }
+            }
+            .onOpenURL { url in
+                SystemEntryRouter.shared.route(url)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: QuickEntryInbox.didReceiveActionNotification)) { _ in
+                SystemEntryRouter.shared.drainPendingInbox()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+                runtime.retryStorageIfAvailable()
+            }
         }
-        .modelContainer(sharedModelContainer)
-        .onChange(of: scenePhase) { _, newPhase in
-            // Persist any streamed-but-unsaved content before the app may be suspended.
-            if newPhase == .background {
-                try? sharedModelContainer.mainContext.save()
-                PersonaRefreshDelegate.schedule(in: sharedModelContainer.mainContext)
+        .onChange(of: scenePhase, initial: true) { _, newPhase in
+            #if DEBUG && targetEnvironment(simulator)
+            if testingPicker || testingWorkspaces { return }
+            #endif
+            if newPhase == .active {
+                runtime.retryStorageIfAvailable()
+                SystemEntryRouter.shared.drainPendingInbox()
+            } else if newPhase == .background {
+                let context = runtime.store.container.mainContext
+                guard PersistenceController.canCommitUserData(in: context) else { return }
+                try? context.save()
+                PersonaRefreshDelegate.schedule(in: context)
+                WidgetSnapshotService.shared.sync(context: context)
             }
         }
     }
 
+    @ViewBuilder
     private var appContent: some View {
-        MainTabView(startupNotice: startupNotice)
-            .task(id: scenePhase) {
-                guard scenePhase == .active else { return }
-                while !Task.isCancelled {
-                    _ = await PersonaFeedService.shared.refresh(in: sharedModelContainer.mainContext)
-                    do { try await Task.sleep(for: .seconds(300)) } catch { return }
+        let store = runtime.store
+        if PersistenceController.canCommitUserData(in: store.container.mainContext) {
+            MainTabView(startupNotice: store.startupNotice)
+                .task(id: scenePhase) {
+                    guard scenePhase == .active else { return }
+                    while !Task.isCancelled {
+                        _ = await PersonaFeedService.shared.refresh(in: store.container.mainContext)
+                        do { try await Task.sleep(for: .seconds(300)) } catch { return }
+                    }
                 }
+        } else {
+            ContentUnavailableView {
+                Label("本地数据库暂不可用", systemImage: "lock")
+            } description: {
+                Text(verbatim: store.startupNotice ?? "")
+            } actions: {
+                Button("重试") { runtime.retryStorageIfAvailable() }
             }
+        }
     }
 }

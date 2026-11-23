@@ -2,11 +2,46 @@ import CryptoKit
 import Foundation
 import SwiftData
 import Observation
+import UIKit
 
 @MainActor
-enum AppRuntime {
-    // App Intents and the main scene use the same container and recovery pass.
-    static let persistence = PersistenceController.makeContainer()
+@Observable
+final class AppRuntime {
+    static let shared = AppRuntime(store: PersistenceController.makeContainer())
+    private(set) var store: PersistenceController.Result
+
+    init(store: PersistenceController.Result) { self.store = store }
+
+    // Intents may run after unlock, before a scene has received its activation notification.
+    static var persistence: PersistenceController.Result {
+        shared.retryStorageIfAvailable()
+        return shared.store
+    }
+
+    func retryStorageIfAvailable() {
+        retryStorageIfAvailable(protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable) {
+            PersistenceController.makeContainer()
+        }
+    }
+
+    func retryStorageIfAvailable(protectedDataAvailable: Bool, open: () -> PersistenceController.Result) {
+        guard protectedDataAvailable, !PersistenceController.canCommitUserData(in: store.container.mainContext) else { return }
+        let next = open()
+        if PersistenceController.canCommitUserData(in: next.container.mainContext) || next.startupNotice != store.startupNotice {
+            store = next
+        }
+    }
+}
+
+struct ChatToolLaunchRequest: Equatable {
+    enum Tool: Equatable {
+        case voiceNote
+        case scanDocument
+    }
+
+    let id = UUID()
+    let conversationID: UUID
+    let tool: Tool
 }
 
 @MainActor @Observable
@@ -14,6 +49,28 @@ final class SystemEntryRouter {
     static let shared = SystemEntryRouter()
     var conversationID: UUID?
     var messageID: UUID?
+    var openOriginalForChatID: UUID?
+    var pendingQuickAction: QuickEntryAction?
+    var pendingChatToolRequest: ChatToolLaunchRequest?
+
+    @discardableResult
+    func route(_ url: URL) -> Bool {
+        guard let link = SystemDeepLink.parse(url) else { return false }
+        switch link {
+        case .conversation(let id):
+            messageID = nil
+            conversationID = id
+        case .action(let action):
+            pendingQuickAction = action
+        }
+        return true
+    }
+
+    func drainPendingInbox(from inbox: QuickEntryInbox = .shared) {
+        if let action = inbox.consume() {
+            pendingQuickAction = action
+        }
+    }
 }
 
 @MainActor @Observable
@@ -21,23 +78,49 @@ final class SystemIntegration {
     static let shared = SystemIntegration()
     var error: String?
     private let defaults: UserDefaults
-    private static let enabledKey = "systemShareProviderIDs"
+    private static let legacyEnabledKey = "systemShareProviderIDs"
+    private static let destinationsKey = "systemShareProviderDestinations"
     @ObservationIgnored private var lastPublishedDigest: String?
 
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
 
-    func isEnabled(_ id: UUID) -> Bool {
-        (defaults.stringArray(forKey: Self.enabledKey) ?? []).contains(id.uuidString)
+    private var destinationGrants: [String: String] {
+        (defaults.dictionary(forKey: Self.destinationsKey) as? [String: String]) ?? [:]
     }
 
-    func setEnabled(_ enabled: Bool, providerID: UUID, context: ModelContext) throws {
+    func isEnabled(_ provider: ProviderConfig) -> Bool {
+        destinationGrants[provider.credentialID.uuidString] == Self.destinationDigest(for: provider)
+    }
+
+    static func destinationDigest(for provider: ProviderConfig) -> String {
+        destinationDigest(protocolType: provider.protocolType, baseURL: provider.baseURL)
+    }
+
+    private static func destinationDigest(protocolType: APIProtocolType, baseURL: String) -> String {
+        let identity = [protocolType.rawValue, baseURL.trimmingCharacters(in: .whitespacesAndNewlines)]
+        let data = (try? JSONEncoder().encode(identity)) ?? Data()
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func setEnabled(_ enabled: Bool, provider: ProviderConfig, context: ModelContext) throws {
+        let providerID = provider.id
+        let grantID = provider.credentialID
         if enabled {
             guard PersistenceController.canCommitUserData(in: context) else { throw SystemEntryError.storage }
             try context.save()
         }
-        var ids = Set(defaults.stringArray(forKey: Self.enabledKey) ?? [])
-        if enabled { ids.insert(providerID.uuidString) } else { ids.remove(providerID.uuidString) }
-        defaults.set(Array(ids), forKey: Self.enabledKey)
+        var grants = destinationGrants
+        var legacyIDs = Set(defaults.stringArray(forKey: Self.legacyEnabledKey) ?? [])
+        legacyIDs.remove(grantID.uuidString)
+        legacyIDs.remove(providerID.uuidString)
+        defaults.set(Array(legacyIDs), forKey: Self.legacyEnabledKey)
+        if enabled {
+            grants[grantID.uuidString] = Self.destinationDigest(for: provider)
+        } else {
+            grants.removeValue(forKey: grantID.uuidString)
+            grants.removeValue(forKey: providerID.uuidString)
+        }
+        defaults.set(grants, forKey: Self.destinationsKey)
         if enabled {
             try publish(context: context, force: true)
         } else {
@@ -65,15 +148,38 @@ final class SystemIntegration {
         do { try publish(context: context); error = nil } catch { self.error = error.localizedDescription }
     }
 
+    static func publishableProviders(_ providers: [ProviderConfig], optedIn: (ProviderConfig) -> Bool) -> [ProviderConfig] {
+        providers.filter { optedIn($0) && $0.isReadyForChat }
+    }
+
     func publish(context: ModelContext, force: Bool = false) throws {
         let providers = try context.fetch(FetchDescriptor<ProviderConfig>(sortBy: [SortDescriptor(\.sortOrder)]))
-        let allowed = providers.filter { $0.isEnabled && isEnabled($0.id) && !$0.enabledModels.isEmpty }
         let store: SystemEntryStore
         do { store = try SystemEntryStore() } catch {
-            if allowed.isEmpty { return }
+            if !providers.contains(where: isEnabled) { return }
             throw error
         }
         let previous = try store.models()
+        let keychain = SharedConnectionKeychain()
+        let legacyIDs = Set(defaults.stringArray(forKey: Self.legacyEnabledKey) ?? [])
+        var grants = destinationGrants
+        // Migrate an old grant only when its published connection proves the approved destination.
+        for provider in providers where provider.credentialID == provider.id && legacyIDs.contains(provider.id.uuidString) {
+            let key = provider.credentialID.uuidString
+            let digest = Self.destinationDigest(for: provider)
+            if grants[key] == nil, let entry = previous.first(where: { $0.target.providerID == provider.id }),
+               let connection = try? keychain.load(id: entry.connectionID),
+               digest == Self.destinationDigest(protocolType: entry.target.protocolType, baseURL: connection.baseURL) {
+                grants[key] = digest
+            }
+        }
+        let currentGrants = providers.reduce(into: [String: String]()) { retained, provider in
+            let key = provider.credentialID.uuidString
+            if grants[key] == Self.destinationDigest(for: provider) { retained[key] = grants[key] }
+        }
+        if currentGrants != destinationGrants { defaults.set(currentGrants, forKey: Self.destinationsKey) }
+        if !legacyIDs.isEmpty { defaults.removeObject(forKey: Self.legacyEnabledKey) }
+        let allowed = Self.publishableProviders(providers, optedIn: { currentGrants[$0.credentialID.uuidString] != nil })
         guard !allowed.isEmpty || !previous.isEmpty else {
             lastPublishedDigest = ""
             return
@@ -85,8 +191,6 @@ final class SystemIntegration {
         if !force, lastPublishedDigest == currentDigest, previousProviderIDs == allowedProviderIDs {
             return
         }
-
-        let keychain = SharedConnectionKeychain()
 
         // If any previously authorized provider was disabled or revoked, revoke its credentials first
         // so a failed subsequent write can never leave a revoked provider accessible.
@@ -155,7 +259,7 @@ final class SystemIntegration {
         let timeout = provider.idleTimeoutSeconds
         return SharedConnection(
             baseURL: provider.baseURL,
-            apiKey: KeychainService.shared.loadAPIKey(for: provider.id),
+            apiKey: provider.apiKey,
             extraAPIKeys: extras.isEmpty ? nil : extras,
             idleTimeoutSeconds: timeout > 0 ? timeout : nil,
             headers: provider.resolvedCustomHeaders
