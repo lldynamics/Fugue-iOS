@@ -45,7 +45,7 @@ Review your peers' strongest points, catch any errors, gaps, or unsupported assu
             message.content.isNotBlank()
 
     fun eligibleSources(messages: List<ChatMessageItem>, groupID: String): List<ChatMessageItem> =
-        sources(messages, groupID).filter(::isComplete)
+        sources(messages, groupID).filter { isComplete(it) && !it.assistanceMetadata.isExcludedFromContext }
 
     fun digest(sources: List<ChatMessageItem>): String {
         val snapshot = sources
@@ -60,7 +60,7 @@ Review your peers' strongest points, catch any errors, gaps, or unsupported assu
                     msg.finishReason ?: "",
                     msg.isStreaming.toString(),
                     msg.latestRequestID?.uppercase() ?: ""
-                )
+                ) + if (msg.assistanceMetadata.isExcludedFromContext) listOf("excluded") else emptyList()
             }
         val encoded = promptJson.encodeToString(snapshot).toByteArray(Charsets.UTF_8)
         return sha256Hex(encoded)

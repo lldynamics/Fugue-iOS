@@ -1,6 +1,7 @@
 package com.iosbox.app.core.network
 
 import com.iosbox.app.core.model.PersonaFeedItem
+import kotlinx.coroutines.CancellationException
 import org.xml.sax.Attributes
 import org.xml.sax.InputSource
 import org.xml.sax.SAXException
@@ -19,18 +20,15 @@ import javax.xml.parsers.SAXParserFactory
 
 object SubscriptionFeedParser {
     private val RECOGNIZED_ROOTS = setOf("rss", "feed", "rdf")
-    private val LINK_TAG_REGEX = Regex("<link\\b[^>]*>", RegexOption.IGNORE_CASE)
-    private val LINK_ATTR_REGEX = Regex(
-        "\\b(rel|type|href)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-        RegexOption.IGNORE_CASE
-    )
+    private val LINK_ATTRIBUTES = setOf("rel", "type", "href")
     private val DOCTYPE_OR_ENTITY_REGEX = Regex("<!(?:DOCTYPE|ENTITY)\\b", RegexOption.IGNORE_CASE)
     private val RFC822_FALLBACK = DateTimeFormatter.ofPattern("EEE, d MMM yyyy HH:mm:ss Z", Locale.US)
 
     fun parse(
         data: ByteArray,
         baseUrl: String,
-        skipPublicHostCheckForTesting: Boolean = false
+        skipPublicHostCheckForTesting: Boolean = false,
+        checkCancellation: () -> Unit = {}
     ): List<PersonaFeedItem> {
         if (data.size > WebpageReader.MAXIMUM_BYTES) {
             throw WebpageReadError.TooLarge()
@@ -52,7 +50,8 @@ object SubscriptionFeedParser {
 
         val handler = FeedSaxHandler(
             initialBaseUrl = baseUrl,
-            skipPublicHostCheckForTesting = skipPublicHostCheckForTesting
+            skipPublicHostCheckForTesting = skipPublicHostCheckForTesting,
+            checkCancellation = checkCancellation
         )
         try {
             val parser = factory.newSAXParser()
@@ -60,6 +59,8 @@ object SubscriptionFeedParser {
             reader.entityResolver = org.xml.sax.EntityResolver { _, _ -> InputSource(StringReader("")) }
             reader.contentHandler = handler
             reader.parse(InputSource(ByteArrayInputStream(data)))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             throw PersonaFeedError.InvalidFeed()
         }
@@ -73,30 +74,64 @@ object SubscriptionFeedParser {
     fun discover(
         html: String,
         baseUrl: String,
-        skipPublicHostCheckForTesting: Boolean = false
+        skipPublicHostCheckForTesting: Boolean = false,
+        checkCancellation: () -> Unit = {}
     ): String? {
         val baseUri = runCatching { URI(baseUrl) }.getOrNull() ?: return null
-        val head = html.take(150_000).substringBefore("</head>", html.take(150_000))
-        for (tagMatch in LINK_TAG_REGEX.findAll(head)) {
-            val values = LinkedHashMap<String, String>()
-            for (attrMatch in LINK_ATTR_REGEX.findAll(tagMatch.value)) {
-                val key = attrMatch.groupValues[1].lowercase()
-                val rawVal = attrMatch.groupValues[2].ifEmpty {
-                    attrMatch.groupValues[3].ifEmpty { attrMatch.groupValues[4] }
-                }
-                values[key] = rawVal
+        val head = html.take(150_000)
+        var found: String? = null
+        var hidden: String? = null
+        WebpageReader.scanHtml(head, checkCancellation) { name, closing, _, start, end ->
+            if (hidden != null) {
+                if (closing && name == hidden) hidden = null
+                return@scanHtml true
             }
+            if (!closing && (name == "script" || name == "style" || name == "template")) {
+                hidden = name
+                return@scanHtml true
+            }
+            if (name == "head" && closing) return@scanHtml false
+            if (name != "link" || closing) return@scanHtml true
+            val values = discoveryAttributes(head, start + 5, end - 1)
             val relTokens = values["rel"].orEmpty().lowercase().split(Regex("\\s+"))
             val type = values["type"].orEmpty().lowercase()
-            val rawHref = values["href"] ?: continue
-            if (!relTokens.contains("alternate")) continue
-            if (type != "application/rss+xml" && type != "application/atom+xml") continue
-            val decoded = WebpageReader.decodeHtmlEntities(rawHref)
-            val resolved = runCatching { baseUri.resolve(decoded) }.getOrNull() ?: continue
-            val validated = validateUrl(resolved, skipPublicHostCheckForTesting) ?: continue
-            return validated
+            val rawHref = values["href"] ?: return@scanHtml true
+            if ("alternate" !in relTokens || type !in setOf("application/rss+xml", "application/atom+xml")) return@scanHtml true
+            val resolved = runCatching { baseUri.resolve(WebpageReader.decodeHtmlEntities(rawHref)) }.getOrNull()
+            if (resolved != null) found = validateUrl(resolved, skipPublicHostCheckForTesting)
+            found == null
         }
-        return null
+        return found
+    }
+
+    private fun discoveryAttributes(html: String, start: Int, end: Int): Map<String, String> {
+        val values = HashMap<String, String>()
+        var cursor = start
+        while (cursor < end) {
+            if (html[cursor].isWhitespace() || html[cursor] == '/') {
+                cursor++
+                continue
+            }
+            val nameStart = cursor
+            while (cursor < end && !html[cursor].isWhitespace() && html[cursor] !in "=/") cursor++
+            if (cursor == nameStart) {
+                cursor++
+                continue
+            }
+            val name = html.substring(nameStart, cursor).lowercase()
+            while (cursor < end && html[cursor].isWhitespace()) cursor++
+            if (cursor >= end || html[cursor] != '=') continue
+            cursor++
+            while (cursor < end && html[cursor].isWhitespace()) cursor++
+            if (cursor >= end) break
+            val quote = html[cursor].takeIf { it == '"' || it == '\'' }
+            if (quote != null) cursor++
+            val valueStart = cursor
+            while (cursor < end && (if (quote != null) html[cursor] != quote else !html[cursor].isWhitespace())) cursor++
+            if (name in LINK_ATTRIBUTES) values.putIfAbsent(name, html.substring(valueStart, cursor))
+            if (quote != null && cursor < end) cursor++
+        }
+        return values
     }
 
     internal fun parseFeedDate(raw: String): Long? {
@@ -123,7 +158,8 @@ object SubscriptionFeedParser {
 
     private class FeedSaxHandler(
         initialBaseUrl: String,
-        private val skipPublicHostCheckForTesting: Boolean
+        private val skipPublicHostCheckForTesting: Boolean,
+        private val checkCancellation: () -> Unit
     ) : DefaultHandler() {
         private val stack = ArrayList<String>()
         private val bases = ArrayList<URI>().apply {
@@ -142,6 +178,7 @@ object SubscriptionFeedParser {
         val items = ArrayList<PersonaFeedItem>()
 
         override fun startElement(uri: String?, localName: String?, qName: String?, attributes: Attributes?) {
+            checkCancellation()
             val rawName = (qName?.takeIf { it.isNotBlank() } ?: localName.orEmpty())
             val name = rawName.substringAfterLast(':').lowercase()
             stack.add(name)
@@ -186,6 +223,7 @@ object SubscriptionFeedParser {
         }
 
         override fun characters(ch: CharArray, start: Int, length: Int) {
+            checkCancellation()
             if (fieldName != null && buffer.length < 8192) {
                 val take = minOf(length, 8192 - buffer.length)
                 buffer.appendRange(ch, start, start + take)
@@ -193,6 +231,7 @@ object SubscriptionFeedParser {
         }
 
         override fun endElement(uri: String?, localName: String?, qName: String?) {
+            checkCancellation()
             val activeField = fieldName
             if (activeField != null && stack.size == fieldDepth) {
                 val text = buffer.toString().trim()

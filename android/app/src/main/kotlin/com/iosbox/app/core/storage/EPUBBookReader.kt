@@ -9,10 +9,13 @@ import org.xml.sax.InputSource
 import org.xml.sax.helpers.DefaultHandler
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.IOException
+import java.io.InputStream
 import java.io.StringReader
 import java.net.URI
 import java.net.URLDecoder
-import java.util.zip.ZipInputStream
+import java.util.zip.ZipFile
 import javax.xml.parsers.SAXParserFactory
 
 /**
@@ -42,104 +45,82 @@ object EPUBBookReader {
     )
     private val entityDeclRegex = Regex("<!ENTITY\\b", RegexOption.IGNORE_CASE)
 
-    fun read(data: ByteArray, fallbackTitle: String): BookManuscript {
-        var expanded = 0L
-        val seenPaths = HashSet<String>()
-        var containerBytes: ByteArray? = null
-        var encryptionBytes: ByteArray? = null
+    fun read(data: ByteArray, fallbackTitle: String, checkCancellation: () -> Unit = {}): BookManuscript {
+        checkCancellation()
+        val temporary = try {
+            File.createTempFile("fugue-book-", ".epub")
+        } catch (_: IOException) {
+            throw BookImportError.InvalidBook()
+        }
+        try {
+            temporary.writeBytes(data)
+            return ZipFile(temporary).use { readArchive(it, fallbackTitle, checkCancellation) }
+        } catch (_: IOException) {
+            throw BookImportError.InvalidBook()
+        } finally {
+            temporary.delete()
+        }
+    }
 
-        scanZip(data) { name, zis ->
-            if (seenPaths.size >= MAX_ENTRY_COUNT || !seenPaths.add(name)) {
-                throw BookImportError.InvalidBook()
-            }
-            when (name) {
-                "META-INF/container.xml" -> {
-                    val b = readLimited(zis, CONTAINER_LIMIT) { expanded + it <= MAX_EXPANDED_BYTES }
-                    expanded += b.size
-                    containerBytes = b
-                }
-                "META-INF/encryption.xml" -> {
-                    val b = readLimited(zis, ENCRYPTION_LIMIT) { expanded + it <= MAX_EXPANDED_BYTES }
-                    expanded += b.size
-                    encryptionBytes = b
-                }
-            }
+    private data class ParsedChapter(val label: String, val text: String, val textBytes: Int)
+
+    private fun readArchive(zip: ZipFile, fallbackTitle: String, checkCancellation: () -> Unit): BookManuscript {
+        if (zip.size() > MAX_ENTRY_COUNT) throw BookImportError.InvalidBook()
+        val files = HashSet<String>()
+        for (entry in zip.entries()) {
+            checkCancellation()
+            if (!entry.isDirectory && !files.add(entry.name)) throw BookImportError.InvalidBook()
         }
 
-        val containerData = containerBytes ?: throw BookImportError.InvalidBook()
-        val container = parseXml(containerData, XmlMode.CONTAINER)
+        var expanded = 0L
+        fun readEntry(path: String, limit: Int): ByteArray {
+            if (path !in files) throw BookImportError.InvalidBook()
+            val entry = zip.getEntry(path) ?: throw BookImportError.InvalidBook()
+            if (entry.size > limit || entry.size > MAX_EXPANDED_BYTES - expanded) {
+                throw BookImportError.TextLimit()
+            }
+            val bytes = zip.getInputStream(entry).use { input ->
+                readLimited(input, limit, checkCancellation) { it <= MAX_EXPANDED_BYTES - expanded }
+            }
+            expanded += bytes.size
+            return bytes
+        }
+
+        val container = parseXml(readEntry("META-INF/container.xml", CONTAINER_LIMIT), XmlMode.CONTAINER, checkCancellation)
         val packagePath = container.rootFile ?: throw BookImportError.InvalidBook()
         val opfPath = localPath(packagePath, relativeTo = "") ?: throw BookImportError.InvalidBook()
-
         val encrypted = HashSet<String>()
-        encryptionBytes?.let { encData ->
-            val enc = parseXml(encData, XmlMode.ENCRYPTION)
+        if ("META-INF/encryption.xml" in files) {
+            val enc = parseXml(readEntry("META-INF/encryption.xml", ENCRYPTION_LIMIT), XmlMode.ENCRYPTION, checkCancellation)
             for (raw in enc.encryptedPaths) {
                 localPath(raw, relativeTo = "")?.let { encrypted.add(it) }
             }
         }
 
-        var opfBytes: ByteArray? = null
-        scanZip(data) { name, zis ->
-            if (name == opfPath) {
-                val b = readLimited(zis, OPF_LIMIT) { expanded + it <= MAX_EXPANDED_BYTES }
-                expanded += b.size
-                opfBytes = b
-            }
-        }
-        val opfData = opfBytes ?: throw BookImportError.InvalidBook()
-        val pkg = parseXml(opfData, XmlMode.PACKAGE)
-        if (pkg.spine.size > BookManuscript.MAXIMUM_CHAPTERS) {
-            throw BookImportError.TextLimit()
-        }
-
-        val orderedChapterPaths = mutableListOf<String>()
-        val neededPaths = HashSet<String>()
-        for (id in pkg.spine) {
-            val resource = pkg.manifest[id] ?: throw BookImportError.InvalidBook()
-            if (resource.mediaType != "application/xhtml+xml" && resource.mediaType != "text/html") continue
-            val resolved = localPath(resource.href, relativeTo = opfPath) ?: throw BookImportError.InvalidBook()
-            if (encrypted.contains(resolved)) {
-                throw BookImportError.Locked()
-            }
-            orderedChapterPaths.add(resolved)
-            neededPaths.add(resolved)
-        }
-
-        val extractedChapters = HashMap<String, ByteArray>(neededPaths.size)
-        if (neededPaths.isNotEmpty()) {
-            scanZip(data) { name, zis ->
-                if (neededPaths.contains(name)) {
-                    val b = readLimited(zis, CHAPTER_LIMIT) { expanded + it <= MAX_EXPANDED_BYTES }
-                    expanded += b.size
-                    extractedChapters[name] = b
-                }
-            }
-        }
-
+        val pkg = parseXml(readEntry(opfPath, OPF_LIMIT), XmlMode.PACKAGE, checkCancellation)
+        if (pkg.spine.size > BookManuscript.MAXIMUM_CHAPTERS) throw BookImportError.TextLimit()
+        val parsed = HashMap<String, ParsedChapter>()
         val chapters = mutableListOf<BookChapter>()
         var totalTextBytes = 0
-        for (path in orderedChapterPaths) {
-            val chapterData = extractedChapters[path] ?: throw BookImportError.InvalidBook()
-            val page = parseChapterWithEntityFallback(chapterData)
-            val text = page.body.trim()
-            if (text.isEmpty()) continue
-            totalTextBytes += text.toByteArray(Charsets.UTF_8).size
-            if (totalTextBytes > BookManuscript.MAXIMUM_TEXT_BYTES) {
-                throw BookImportError.TextLimit()
+        for (id in pkg.spine) {
+            checkCancellation()
+            val resource = pkg.manifest[id] ?: throw BookImportError.InvalidBook()
+            if (resource.mediaType != "application/xhtml+xml" && resource.mediaType != "text/html") continue
+            val path = localPath(resource.href, relativeTo = opfPath) ?: throw BookImportError.InvalidBook()
+            if (path in encrypted) throw BookImportError.Locked()
+            val chapter = parsed.getOrPut(path) {
+                val page = parseChapterWithEntityFallback(readEntry(path, CHAPTER_LIMIT), checkCancellation)
+                val text = page.body.trim()
+                ParsedChapter(page.heading.ifEmpty { page.title }.take(300), text, text.toByteArray(Charsets.UTF_8).size)
             }
-            val label = page.heading.ifEmpty { page.title }
-            val chapterTitle = if (label.isEmpty()) {
-                L10n.text("第 ${chapters.size + 1} 节", "Section ${chapters.size + 1}")
-            } else {
-                label.take(300)
-            }
-            chapters.add(BookChapter(title = chapterTitle, text = text))
+            if (chapter.text.isEmpty()) continue
+            if (chapter.textBytes > BookManuscript.MAXIMUM_TEXT_BYTES - totalTextBytes) throw BookImportError.TextLimit()
+            totalTextBytes += chapter.textBytes
+            val title = chapter.label.ifEmpty { L10n.text("第 ${chapters.size + 1} 节", "Section ${chapters.size + 1}") }
+            chapters.add(BookChapter(title, chapter.text))
         }
 
-        if (chapters.isEmpty()) {
-            throw BookImportError.NoText()
-        }
+        if (chapters.isEmpty()) throw BookImportError.NoText()
         val bookTitle = pkg.title.ifEmpty { fallbackTitle }.ifEmpty { L10n.text("未命名书籍", "Untitled Book") }.take(300)
         return BookManuscript(title = bookTitle, chapters = chapters)
     }
@@ -167,35 +148,19 @@ object EPUBBookReader {
         return if (result.isEmpty()) null else result.joinToString("/")
     }
 
-    private inline fun scanZip(data: ByteArray, onEntry: (String, ZipInputStream) -> Unit) {
-        try {
-            ZipInputStream(ByteArrayInputStream(data)).use { zis ->
-                while (true) {
-                    val entry = zis.nextEntry ?: break
-                    if (!entry.isDirectory) {
-                        onEntry(entry.name, zis)
-                    }
-                    zis.closeEntry()
-                }
-            }
-        } catch (e: BookImportError) {
-            throw e
-        } catch (_: Throwable) {
-            throw BookImportError.InvalidBook()
-        }
-    }
-
     private fun readLimited(
-        zis: ZipInputStream,
+        input: InputStream,
         entryLimit: Int,
+        checkCancellation: () -> Unit,
         canExpandBy: (Long) -> Boolean
     ): ByteArray {
         val out = ByteArrayOutputStream()
         val buf = ByteArray(16_384)
         while (true) {
-            val read = zis.read(buf)
-            if (read <= 0) break
-            if (out.size() + read > entryLimit || !canExpandBy(out.size().toLong() + read)) {
+            checkCancellation()
+            val read = input.read(buf)
+            if (read < 0) break
+            if (read > entryLimit - out.size() || !canExpandBy(out.size().toLong() + read)) {
                 throw BookImportError.TextLimit()
             }
             out.write(buf, 0, read)
@@ -207,7 +172,7 @@ object EPUBBookReader {
 
     private data class ManifestItem(val href: String, val mediaType: String)
 
-    private class EpubXmlHandler(private val mode: XmlMode) : DefaultHandler() {
+    private class EpubXmlHandler(private val mode: XmlMode, private val checkCancellation: () -> Unit) : DefaultHandler() {
         val manifest = HashMap<String, ManifestItem>()
         val spine = mutableListOf<String>()
         val encryptedPaths = mutableListOf<String>()
@@ -229,6 +194,7 @@ object EPUBBookReader {
         }
 
         override fun startElement(uri: String?, localName: String?, qName: String?, attributes: Attributes?) {
+            checkCancellation()
             val rawName = localName?.takeIf { it.isNotEmpty() } ?: qName.orEmpty()
             val name = rawName.substringAfterLast(':').lowercase()
             stack.add(name)
@@ -287,6 +253,7 @@ object EPUBBookReader {
         }
 
         override fun characters(ch: CharArray, start: Int, length: Int) {
+            checkCancellation()
             if (suppressed > 0 || length <= 0) return
             val str = String(ch, start, length)
             if (captureDepth != null && captureBuf.length < 1_200) {
@@ -298,6 +265,7 @@ object EPUBBookReader {
         }
 
         override fun endElement(uri: String?, localName: String?, qName: String?) {
+            checkCancellation()
             if (stack.size == captureDepth) {
                 val clean = captureBuf.toString()
                     .trim()
@@ -347,13 +315,14 @@ object EPUBBookReader {
         }
     }
 
-    private fun parseChapterWithEntityFallback(data: ByteArray): EpubXmlHandler {
+    private fun parseChapterWithEntityFallback(data: ByteArray, checkCancellation: () -> Unit): EpubXmlHandler {
         return try {
-            parseXml(data, XmlMode.CHAPTER)
+            parseXml(data, XmlMode.CHAPTER, checkCancellation)
         } catch (_: BookImportError) {
             var source = data.toString(Charsets.UTF_8)
             var changed = false
             for ((name, code) in htmlEntities) {
+                checkCancellation()
                 val token = "&$name;"
                 if (source.contains(token)) {
                     source = source.replace(token, "&#$code;")
@@ -361,11 +330,12 @@ object EPUBBookReader {
                 }
             }
             if (!changed) throw BookImportError.InvalidBook()
-            parseXml(source.toByteArray(Charsets.UTF_8), XmlMode.CHAPTER)
+            parseXml(source.toByteArray(Charsets.UTF_8), XmlMode.CHAPTER, checkCancellation)
         }
     }
 
-    private fun parseXml(data: ByteArray, mode: XmlMode): EpubXmlHandler {
+    private fun parseXml(data: ByteArray, mode: XmlMode, checkCancellation: () -> Unit): EpubXmlHandler {
+        checkCancellation()
         val probe = data.toString(Charsets.UTF_8)
         if (entityDeclRegex.containsMatchIn(probe)) {
             throw BookImportError.InvalidBook()
@@ -379,13 +349,14 @@ object EPUBBookReader {
             runCatching { setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false) }
             runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", false) }
         }
-        val handler = EpubXmlHandler(mode)
+        val handler = EpubXmlHandler(mode, checkCancellation)
         try {
             val parser = factory.newSAXParser()
             parser.parse(InputSource(ByteArrayInputStream(data)), handler)
         } catch (e: BookImportError) {
             throw e
-        } catch (_: Throwable) {
+        } catch (_: Exception) {
+            checkCancellation()
             throw BookImportError.InvalidBook()
         }
         return handler

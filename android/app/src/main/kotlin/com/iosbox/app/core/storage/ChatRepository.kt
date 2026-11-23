@@ -6,6 +6,7 @@ import com.iosbox.app.core.model.AttachmentKind
 import com.iosbox.app.core.model.BookChapter
 import com.iosbox.app.core.model.BookFriend
 import com.iosbox.app.core.model.BookImportError
+import com.iosbox.app.core.model.BookManuscript
 import com.iosbox.app.core.model.ConversationAssistanceSettings
 import com.iosbox.app.core.model.CustomHeader
 import com.iosbox.app.core.model.GroupMember
@@ -17,6 +18,7 @@ import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.MessageRole
 import com.iosbox.app.core.model.ModelSpec
 import com.iosbox.app.core.model.PersonalMemoryPrompt
+import com.iosbox.app.core.model.PersonaFeed
 import com.iosbox.app.core.model.PreparedBook
 import com.iosbox.app.core.model.RequestKind
 import com.iosbox.app.core.model.RequestMetrics
@@ -29,6 +31,8 @@ import com.iosbox.app.core.network.LLMPromptMessage
 import com.iosbox.app.core.network.NetworkLocation
 import com.iosbox.app.core.security.SecretStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
@@ -37,6 +41,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
 import java.util.UUID
 
@@ -393,13 +399,16 @@ class ChatRepository(
         primaryTarget: ResolvedModelTarget? = null,
         isArenaMode: Boolean = false,
         arenaTargets: List<ResolvedModelTarget> = emptyList(),
-        blindArenaMode: Boolean = false
+        blindArenaMode: Boolean = false,
+        initialTitle: String = ConversationItem.defaultTitle,
+        initialDraft: ChatDraft? = null,
+        isCurrent: () -> Boolean = { true }
     ): ConversationItem = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString().uppercase()
         val item = ConversationItem(
             id = id,
-            title = ConversationItem.defaultTitle,
+            title = initialTitle,
             isPinned = false,
             assistantID = preset?.id,
             assistantEmoji = preset?.iconEmoji ?: "✨",
@@ -422,7 +431,26 @@ class ChatRepository(
             createdAtEpochMs = now,
             updatedAtEpochMs = now
         )
-        saveConversation(item)
+        if (initialDraft == null) {
+            saveConversation(item)
+        } else {
+            val drafts = checkNotNull(draftStore)
+            prepareDraftStore()
+            try {
+                db.withTransaction {
+                    if (!isCurrent()) throw CancellationException()
+                    drafts.save(id, initialDraft)
+                    saveConversationInternal(item)
+                }
+            } catch (failure: Exception) {
+                withContext(NonCancellable) {
+                    runCatching {
+                        if (db.conversationDao().getById(id) == null) drafts.remove(id)
+                    }
+                }
+                throw failure
+            }
+        }
         item
     }
 
@@ -572,11 +600,13 @@ class ChatRepository(
     }
 
     suspend fun deleteMessage(messageID: String) = withContext(Dispatchers.IO) {
-        val mid = messageID.uppercase()
-        val existing = db.chatMessageDao().getById(mid)
-        existing?.attachmentsBlobKey?.let { blobStore.delete(it) }
-        existing?.assistanceMetadataBlobKey?.let { blobStore.delete(it) }
-        db.chatMessageDao().deleteById(mid)
+        db.withTransaction {
+            val mid = messageID.uppercase()
+            val existing = db.chatMessageDao().getById(mid)
+            existing?.attachmentsBlobKey?.let { blobStore.delete(it) }
+            existing?.assistanceMetadataBlobKey?.let { blobStore.delete(it) }
+            db.chatMessageDao().deleteById(mid)
+        }
     }
 
     fun observePersonalMemories(): Flow<List<PersonalMemoryItem>> =
@@ -660,27 +690,41 @@ class ChatRepository(
     }
 
     suspend fun loadBookChapters(bookID: String): List<BookChapter> = withContext(Dispatchers.IO) {
-        val bid = bookID.uppercase()
-        val key = db.bookVolumeDao().getById(bid)?.manuscriptBlobKey ?: "book_$bid.json"
-        val raw = blobStore.readText(key) ?: return@withContext emptyList()
-        runCatching { json.decodeFromString<List<BookChapter>>(raw) }.getOrDefault(emptyList())
+        db.bookVolumeDao().getById(bookID.uppercase())?.let(::verifiedBookChapters).orEmpty()
+    }
+
+    private fun verifiedBookChapters(entity: BookVolumeEntity): List<BookChapter>? {
+        val raw = blobStore.readText(entity.manuscriptBlobKey) ?: return null
+        return try {
+            val chapters = json.decodeFromString<List<BookChapter>>(raw)
+            if (PreparedBook.forIdentifier(BookManuscript(entity.title, chapters), entity.id) != null) chapters else null
+        } catch (_: IllegalArgumentException) {
+            null
+        } catch (_: BookImportError) {
+            null
+        }
     }
 
     suspend fun storePreparedBook(prepared: PreparedBook): BookVolumeItem = withContext(Dispatchers.IO) {
-        val id = prepared.id.uppercase()
-        db.bookVolumeDao().getById(id)?.let { return@withContext toBookVolumeItem(it) }
-        val key = "book_$id.json"
-        blobStore.writeText(key, prepared.encodedJson)
-        val entity = BookVolumeEntity(
-            id = id,
-            title = prepared.title,
-            chapterTitlesJson = json.encodeToString(prepared.chapterTitles),
-            manuscriptBlobKey = key,
-            byteCount = prepared.byteCount,
-            importedAtEpochMs = System.currentTimeMillis()
-        )
-        db.bookVolumeDao().upsert(entity)
-        toBookVolumeItem(entity)
+        db.withTransaction {
+            val id = prepared.id.uppercase()
+            db.bookVolumeDao().getById(id)?.let {
+                if (verifiedBookChapters(it) == null) throw BookImportError.IdentityMismatch()
+                return@withTransaction toBookVolumeItem(it)
+            }
+            val key = "book_$id.json"
+            blobStore.writeText(key, prepared.encodedJson)
+            val entity = BookVolumeEntity(
+                id = id,
+                title = prepared.title,
+                chapterTitlesJson = json.encodeToString(prepared.chapterTitles),
+                manuscriptBlobKey = key,
+                byteCount = prepared.byteCount,
+                importedAtEpochMs = System.currentTimeMillis()
+            )
+            db.bookVolumeDao().upsert(entity)
+            toBookVolumeItem(entity)
+        }
     }
 
     suspend fun deleteBook(bookID: String) = withContext(Dispatchers.IO) {
@@ -880,7 +924,20 @@ class ChatRepository(
     }
 
     suspend fun saveConversation(item: ConversationItem) = withContext(Dispatchers.IO) {
-        saveConversationInternal(item)
+        db.withTransaction { saveConversationInternal(item) }
+    }
+
+    suspend fun updateConversationActivity(
+        id: String, now: Long, leaf: String? = null, messages: List<ChatMessageItem> = emptyList()
+    ) = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            val conversationID = id.uppercase()
+            if (messages.isNotEmpty()) {
+                if (db.conversationDao().getById(conversationID) == null) return@withTransaction
+                for (message in messages) saveMessageInternal(message)
+            }
+            db.conversationDao().updateActivity(conversationID, now, leaf?.uppercase())
+        }
     }
 
     suspend fun saveConversationAndMessages(
@@ -892,6 +949,55 @@ class ChatRepository(
             for (msg in messages) {
                 saveMessageInternal(msg)
             }
+        }
+    }
+
+    internal suspend fun saveGroupFeedRefresh(
+        id: String, checkedAt: Long, updates: List<GroupMember>,
+        notices: List<Pair<PersonaFeed, ChatMessageItem>>
+    ): Int = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            val live = db.conversationDao().getById(id.uppercase())?.let(::toConversationItem)
+                ?.takeIf { it.isGroupMode } ?: return@withTransaction 0
+            val results = updates.associateBy { it.id.uppercase() }
+            val acceptedSources = HashMap<String, List<PersonaFeed>>()
+            val members = live.groupMembers.map { member ->
+                if (member.isMuted) return@map member
+                val liveFeeds = member.persona?.feeds.orEmpty()
+                val result = results[member.id.uppercase()] ?: return@map member
+                val persona = result.persona ?: return@map member
+                val checkedFeeds = persona.feeds.filter { checked ->
+                    checked.lastChecked == checkedAt && liveFeeds.any { it.enabled && it.sameSourceAs(checked) }
+                }
+                if (checkedFeeds.isEmpty()) return@map member
+                acceptedSources[member.id.uppercase()] = checkedFeeds
+                member.preservingFeedProgress(result.copy(persona = persona.copy(feeds = checkedFeeds)))
+            }
+            if (acceptedSources.isEmpty()) return@withTransaction 0
+            val retained = notices.mapNotNull { (feed, message) ->
+                val memberID = message.assistanceMetadata.groupMemberID?.uppercase() ?: return@mapNotNull null
+                if (acceptedSources[memberID].orEmpty().any { it.sameSourceAs(feed) }) message else null
+            }
+            var leaf = live.activeLeafMessageID
+            if (retained.isNotEmpty()) {
+                val history = db.chatMessageDao().getByConversation(live.id).map(::toChatMessageItem)
+                val treeActive = ConversationTree.usesTree(leaf, history)
+                if (treeActive) leaf = ConversationTree.currentAnchorID(leaf, history)
+                val nextSort = (history.maxOfOrNull { it.sortIndex } ?: 0).toLong() + 1
+                for ((index, message) in retained.withIndex()) {
+                    saveMessageInternal(message.copy(
+                        parentMessageID = if (treeActive) leaf else null,
+                        sortIndex = (nextSort + index).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    ))
+                    if (treeActive) leaf = message.id
+                }
+            }
+            saveConversationInternal(live.copy(
+                assistanceSettings = live.assistanceSettings.copy(groupMembers = members),
+                activeLeafMessageID = leaf,
+                updatedAtEpochMs = System.currentTimeMillis()
+            ))
+            retained.size
         }
     }
 
@@ -938,7 +1044,12 @@ class ChatRepository(
         )
     }
 
+    suspend fun prepareDraftStore() = withContext(Dispatchers.IO) {
+        draftStore?.migrateLegacy(db.conversationDao().getIDs())
+    }
+
     suspend fun deleteConversation(conversationID: String) = withContext(Dispatchers.IO) {
+        prepareDraftStore()
         val cid = conversationID.uppercase()
         val conv = db.conversationDao().getById(cid)
         val msgs = db.chatMessageDao().getByConversation(cid)
@@ -973,8 +1084,25 @@ class ChatRepository(
             .flowOn(Dispatchers.IO)
 
     suspend fun saveMessage(item: ChatMessageItem) = withContext(Dispatchers.IO) {
-        saveMessageInternal(item)
+        db.withTransaction { saveMessageInternal(item) }
     }
+
+    suspend fun updateMessageMetadata(id: String, transform: (MessageAssistanceMetadata) -> MessageAssistanceMetadata) =
+        withContext(Dispatchers.IO) {
+            db.withTransaction {
+                val mid = id.uppercase()
+                val existing = db.chatMessageDao().getById(mid) ?: return@withTransaction
+                val key = existing.assistanceMetadataBlobKey ?: "msg_meta_$mid.json"
+                val existingObj = blobStore.readText(existing.assistanceMetadataBlobKey)?.let {
+                    json.parseToJsonElement(it).jsonObject
+                }
+                val current = existingObj?.let { json.decodeFromJsonElement(MessageAssistanceMetadata.serializer(), it) }
+                    ?: MessageAssistanceMetadata()
+                val merged = transform(current).mergeInto(existingObj, json)
+                blobStore.writeText(key, json.encodeToString(JsonObject.serializer(), merged))
+                db.chatMessageDao().updateMetadataKey(mid, key)
+            }
+        }
 
     private suspend fun saveMessageInternal(item: ChatMessageItem) {
         val mid = item.id.uppercase()
@@ -992,7 +1120,11 @@ class ChatRepository(
             val existingObj = blobStore.readText(existing?.assistanceMetadataBlobKey)?.let { raw ->
                 runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull()
             }
-            val merged = item.assistanceMetadata.mergeInto(existingObj, json)
+            val metadata = if (existingObj == null) item.assistanceMetadata else item.assistanceMetadata.copy(
+                isExcludedFromContext = (existingObj["isExcludedFromContext"] as? JsonPrimitive)?.booleanOrNull == true,
+                isBookmarked = (existingObj["isBookmarked"] as? JsonPrimitive)?.booleanOrNull == true
+            )
+            val merged = metadata.mergeInto(existingObj, json)
             blobStore.writeText(key, json.encodeToString(JsonObject.serializer(), merged))
             key
         } else {
@@ -1256,29 +1388,48 @@ class ChatRepository(
 
     companion object {
         const val MEDIA_TURNS_TO_KEEP = 2
+        private val UUID_TEXT = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+        fun canonicalConversationID(raw: String?): String? = raw?.takeIf(UUID_TEXT::matches)?.uppercase()
 
         fun readyTargets(providers: List<ProviderItem>): List<ResolvedModelTarget> =
             providers.filter { it.hasConfiguredChatAPI }.flatMap { p ->
                 p.enabledModels.map { p.makeTarget(it) }
             }
 
-        fun buildPromptHistory(messages: List<ChatMessageItem>, limit: Int): List<LLMPromptMessage> {
+        fun resolveChatTarget(
+            selected: ResolvedModelTarget?,
+            ready: List<ResolvedModelTarget>
+        ): ResolvedModelTarget? {
+            if (selected == null) return ready.firstOrNull()
+            return ready.firstOrNull {
+                it.providerID.equals(selected.providerID, ignoreCase = true) && it.modelID == selected.modelID
+            }
+        }
+
+        fun contextMessages(messages: List<ChatMessageItem>): List<ChatMessageItem> {
             val dividerIdx = messages.indexOfLast { it.assistanceMetadata.isContextDivider }
             val activeRange = if (dividerIdx >= 0) messages.subList(dividerIdx + 1, messages.size) else messages
+            return activeRange.filter { it.role != MessageRole.SYSTEM && !it.assistanceMetadata.isExcludedFromContext }
+        }
 
+        fun buildPromptHistory(messages: List<ChatMessageItem>, limit: Int): List<LLMPromptMessage> {
+            val activeRange = contextMessages(messages)
+            val groups = activeRange.filter { it.comparisonGroupID != null }.groupBy { it.comparisonGroupID }
+            val synthesisSourceGroups = messages.filter { it.comparisonGroupID != null }
+                .groupBy { it.comparisonGroupID?.uppercase() }
             val collapsed = mutableListOf<ChatMessageItem>()
             val processedGroups = HashSet<String>()
 
             for (msg in activeRange) {
-                if (msg.role == MessageRole.SYSTEM || msg.assistanceMetadata.isExcludedFromContext) continue
                 val gid = msg.comparisonGroupID
                 if (gid != null) {
                     if (!processedGroups.add(gid)) continue
-                    val candidates = activeRange.filter { c ->
-                        c.comparisonGroupID == gid &&
-                            !c.assistanceMetadata.isExcludedFromContext &&
-                            (c.content.isNotEmpty() || c.attachments.isNotEmpty()) &&
-                            (!c.isSynthesis || (ArenaSynthesis.isComplete(c) && ArenaSynthesis.isCurrent(c, activeRange)))
+                    val group = groups[gid].orEmpty()
+                    val synthesisSources = synthesisSourceGroups[gid.uppercase()].orEmpty()
+                    val candidates = group.filter { c ->
+                        (c.content.isNotEmpty() || c.attachments.isNotEmpty()) &&
+                            (!c.isSynthesis || (ArenaSynthesis.isComplete(c) && ArenaSynthesis.isCurrent(c, synthesisSources)))
                     }
                     val winner = candidates.firstOrNull { it.isSelectedInGroup }
                         ?: candidates.firstOrNull { !it.isSynthesis }

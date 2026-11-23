@@ -1,6 +1,7 @@
 package com.iosbox.app.core.storage
 
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -8,6 +9,7 @@ interface ExternalBlobStore {
     fun readBytes(key: String): ByteArray?
     fun writeBytes(key: String, bytes: ByteArray)
     fun delete(key: String)
+    fun keys(): Set<String> = emptySet()
 
     fun readText(key: String?): String? {
         if (key.isNullOrBlank()) return null
@@ -36,7 +38,10 @@ class FileExternalBlobStore(private val rootDir: File) : ExternalBlobStore {
         val target = resolveSafeFile(key) ?: error("Invalid blob key: $key")
         if (!rootDir.exists()) rootDir.mkdirs()
         val tmp = File(rootDir, "${target.name}.tmp")
-        tmp.writeBytes(bytes)
+        FileOutputStream(tmp).use { output ->
+            output.write(bytes)
+            if (RestoreBlobBatch.owns(key)) output.fd.sync()
+        }
         try {
             Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
         } catch (_: Exception) {
@@ -50,6 +55,10 @@ class FileExternalBlobStore(private val rootDir: File) : ExternalBlobStore {
             file.delete()
         }
     }
+
+    override fun keys(): Set<String> = rootDir.listFiles().orEmpty()
+        .filter { it.isFile && !Files.isSymbolicLink(it.toPath()) }
+        .mapTo(HashSet()) { it.name }
 
     private fun resolveSafeFile(key: String): File? {
         if (key.isBlank() || key.length > 160) return null
@@ -83,4 +92,6 @@ class InMemoryBlobStore : ExternalBlobStore {
             map.remove(key)
         }
     }
+
+    override fun keys(): Set<String> = synchronized(lock) { map.keys.toSet() }
 }

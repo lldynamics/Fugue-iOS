@@ -15,6 +15,7 @@ import com.iosbox.app.core.network.LLMToolCall
 import com.iosbox.app.core.network.ReadablePage
 import com.iosbox.app.core.network.SearchEvidence
 import com.iosbox.app.core.network.SearchSource
+import com.iosbox.app.core.network.SubscriptionFeedParser
 import com.iosbox.app.core.network.TavilySearchClient
 import com.iosbox.app.core.network.ToolCallRecord
 import com.iosbox.app.core.network.WebpageApprovalDecision
@@ -36,6 +37,40 @@ import org.junit.Test
 import java.net.URI
 
 class AgentToolsTest {
+    @Test
+    fun webpageReaderAppliesApprovalBeforeFollowingANewLocation() = runTest {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/current"))
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/current"))
+            server.enqueue(MockResponse().setHeader("Content-Type", "text/plain").setBody("Current text"))
+            val client = OkHttpClient()
+            val url = server.url("/previous").toUri()
+            try {
+                WebpageReader.read(url, client, skipPublicHostCheckForTesting = true, authorizeRedirect = { false })
+                throw AssertionError("The new location still needs approval")
+            } catch (_: WebpageReadError.DestinationNotApproved) {}
+            assertEquals(1, server.requestCount)
+            val allowed = WebpageReader.read(url, client, skipPublicHostCheckForTesting = true,
+                authorizeRedirect = { it.path == "/current" })
+            assertEquals("Current text", allowed.text)
+            assertEquals(3, server.requestCount)
+        }
+    }
+    @Test
+    fun articleAndFeedParsersKeepVisibleContentAndReadQuotedLinkAttributes() {
+        val (title, body) = WebpageReader.extractReadableHtml(
+            "<title>Notes &amp; references</title><article><svg /><p>Keep this paragraph.</p></article>"
+        )
+        assertEquals("Notes & references", title)
+        assertTrue(body.contains("Keep this paragraph."))
+        val feed = SubscriptionFeedParser.discover(
+            """<head><template><link rel="alternate" type="application/rss+xml" href="/example.xml"></template>
+                <link title="Today's notes" href="/feed.xml?group=one&amp;format=rss" type="application/rss+xml" rel="alternate"></head>""",
+            "https://example.com/library/"
+        )
+        assertEquals("https://example.com/feed.xml?group=one&format=rss", feed)
+    }
+
     @Test
     fun webpageReaderBlocksInsecureAndPrivateHostsAndExtractsCleanHtmlText() = runTest {
         assertThrows(WebpageReadError.InvalidUrl::class.java) {

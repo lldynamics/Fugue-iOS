@@ -265,6 +265,15 @@ data class FullEncryptedPayload(
 )
 
 sealed class BackupException(override val message: String) : Exception(message) {
+    class ImportMemoryLimit(maximumBytes: Int) : BackupException(
+        L10n.text("此设备可安全导入的备份上限为 ${maximumBytes / (1024 * 1024)} MB。",
+            "This device can safely import backups up to ${maximumBytes / (1024 * 1024)} MB.")
+    )
+
+    class ConversationMessageLimit : BackupException(
+        L10n.text("单个对话超过 50,000 条消息的导入上限。", "A conversation exceeds the 50,000-message import limit.")
+    )
+
     class UnrecognizedFormat : BackupException(
         L10n.text(
             "无法识别该文件，请选择由「夜奔 / Fugue」导出的 JSON 备份。",
@@ -313,10 +322,11 @@ data class ImportSummary(
     val skipped: Int = 0,
     val confirmedCredentials: Int = 0,
     val failedCredentialWrites: Int = 0,
-    val credentialConflicts: List<String> = emptyList()
+    val credentialConflicts: List<String> = emptyList(),
+    val flashcardRestoreFailed: Boolean = false
 ) {
     val hasWarnings: Boolean
-        get() = credentialConflicts.isNotEmpty() || failedCredentialWrites > 0
+        get() = credentialConflicts.isNotEmpty() || failedCredentialWrites > 0 || flashcardRestoreFailed
 
     val title: String
         get() = if (hasWarnings) {
@@ -342,6 +352,16 @@ data class ImportSummary(
             if (parts.isNotEmpty()) {
                 val sep = L10n.text("，", ", ")
                 lines.add(L10n.text("已导入：${parts.joinToString(sep)}。", "Imported: ${parts.joinToString(sep)}."))
+            }
+            if (providers > 0) {
+                lines.add(L10n.text(
+                    "请在服务商设置中核对导入的连接地址，再启用服务商。",
+                    "Review each imported endpoint in Providers before enabling it."
+                ))
+            }
+            if (flashcardRestoreFailed) {
+                lines.add(L10n.text("闪卡未能保存。请检查闪卡库和设备存储，再重新导入备份。",
+                    "Flashcards could not be saved. Check the flashcard library and device storage, then retry the import."))
             }
             if (confirmedCredentials > 0) {
                 lines.add(

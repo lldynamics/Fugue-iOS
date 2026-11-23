@@ -110,35 +110,37 @@ class FlashcardRepository(
         list.size - before
     }
 
-    fun mergeImported(incoming: List<StudyFlashcard>): Int = change { list ->
-        if (incoming.isEmpty()) return@change 0
-        val existingIDs = list.mapTo(HashSet()) { it.id.uppercase() }
-        var added = 0
-        for (card in incoming) {
-            val cleanFront = card.front.trim()
-            val cleanBack = card.back.trim()
-            if (cleanFront.isEmpty() || cleanBack.isEmpty()) continue
-            if (!existingIDs.add(card.id.uppercase())) continue
-            val cleanHint = card.hint?.trim()?.takeIf { it.isNotEmpty() }?.take(300)
-            list.add(
-                card.copy(
-                    id = card.id.uppercase(),
-                    deckName = normalizeDeckName(card.deckName),
-                    front = cleanFront.take(600),
-                    back = cleanBack.take(2000),
-                    hint = cleanHint,
-                    easeFactor = if (card.easeFactor.isFinite()) card.easeFactor.coerceIn(1.3, 5.0) else 2.5,
-                    intervalDays = if (card.intervalDays.isFinite()) card.intervalDays.coerceIn(0.0, 3650.0) else 0.0,
-                    repetitions = card.repetitions.coerceAtLeast(0),
-                    lapses = card.lapses.coerceAtLeast(0)
+    fun mergeImported(incoming: List<StudyFlashcard>): Int {
+        if (incoming.isEmpty()) return 0
+        return change(requireReadableStore = true) { list ->
+            val existingIDs = list.mapTo(HashSet()) { it.id.uppercase() }
+            var added = 0
+            for (card in incoming) {
+                val cleanFront = card.front.trim()
+                val cleanBack = card.back.trim()
+                if (cleanFront.isEmpty() || cleanBack.isEmpty()) continue
+                if (!existingIDs.add(card.id.uppercase())) continue
+                val cleanHint = card.hint?.trim()?.takeIf { it.isNotEmpty() }?.take(300)
+                list.add(
+                    card.copy(
+                        id = card.id.uppercase(),
+                        deckName = normalizeDeckName(card.deckName),
+                        front = cleanFront.take(600),
+                        back = cleanBack.take(2000),
+                        hint = cleanHint,
+                        easeFactor = if (card.easeFactor.isFinite()) card.easeFactor.coerceIn(1.3, 5.0) else 2.5,
+                        intervalDays = if (card.intervalDays.isFinite()) card.intervalDays.coerceIn(0.0, 3650.0) else 0.0,
+                        repetitions = card.repetitions.coerceAtLeast(0),
+                        lapses = card.lapses.coerceAtLeast(0)
+                    )
                 )
-            )
-            added++
+                added++
+            }
+            if (added > 0) {
+                list.sortByDescending { it.createdAt }
+            }
+            added
         }
-        if (added > 0) {
-            list.sortByDescending { it.createdAt }
-        }
-        added
     }
 
     fun updateCard(id: String, deckName: String, front: String, back: String, hint: String?) {
@@ -246,11 +248,12 @@ class FlashcardRepository(
         return created
     }
 
-    private inline fun <R> change(edit: (MutableList<StudyFlashcard>) -> R): R {
+    private inline fun <R> change(requireReadableStore: Boolean = false, edit: (MutableList<StudyFlashcard>) -> R): R {
         synchronized(lock) {
-            val current = _cards.value.toMutableList()
+            val previous = if (requireReadableStore) decodeStoredCards() else _cards.value
+            val current = previous.toMutableList()
             val result = edit(current)
-            if (current != _cards.value) {
+            if (current != previous) {
                 val encoded = BackupJson.prettyCodec.encodeToString(current)
                 blobStore.writeText(FLASHCARDS_BLOB_KEY, encoded)
                 _cards.value = current.toList()
@@ -259,12 +262,11 @@ class FlashcardRepository(
         }
     }
 
-    private fun loadFromStore(): List<StudyFlashcard> {
+    private fun loadFromStore(): List<StudyFlashcard> = runCatching { decodeStoredCards() }.getOrDefault(emptyList())
+
+    private fun decodeStoredCards(): List<StudyFlashcard> {
         val raw = blobStore.readText(FLASHCARDS_BLOB_KEY) ?: return emptyList()
-        if (raw.isBlank()) return emptyList()
-        return runCatching {
-            BackupJson.codec.decodeFromString<List<StudyFlashcard>>(raw)
-        }.getOrDefault(emptyList())
+        return BackupJson.codec.decodeFromString<List<StudyFlashcard>>(raw)
     }
 
     companion object {

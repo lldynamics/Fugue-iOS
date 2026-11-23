@@ -2,35 +2,50 @@ package com.iosbox.app.core.backup
 
 import androidx.room.withTransaction
 import com.iosbox.app.core.model.APIProtocolType
+import com.iosbox.app.core.model.BookChapter
+import com.iosbox.app.core.model.BookManuscript
 import com.iosbox.app.core.model.CustomHeader
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.ModelSpec
 import com.iosbox.app.core.model.RequestMetrics
 import com.iosbox.app.core.model.ResolvedModelTarget
+import com.iosbox.app.core.model.PreparedBook
+import com.iosbox.app.core.model.StudyFlashcard
 import com.iosbox.app.core.security.SecretStore
 import com.iosbox.app.core.storage.AssistantPresetEntity
+import com.iosbox.app.core.storage.AttachmentProcessor
 import com.iosbox.app.core.storage.BookVolumeEntity
 import com.iosbox.app.core.storage.ChatMessageEntity
+import com.iosbox.app.core.storage.ChatRepository
+import com.iosbox.app.core.storage.ChatDraftStore
 import com.iosbox.app.core.storage.ConversationEntity
 import com.iosbox.app.core.storage.ExternalBlobStore
 import com.iosbox.app.core.storage.FugueDatabase
+import com.iosbox.app.core.storage.FlashcardRepository
 import com.iosbox.app.core.storage.PersonalMemoryEntity
 import com.iosbox.app.core.storage.PersonaProfileEntity
 import com.iosbox.app.core.storage.ProviderEntity
 import com.iosbox.app.core.storage.RequestRecordEntity
+import com.iosbox.app.core.storage.RestoreBlobBatch
 import com.iosbox.app.core.storage.ShelfReadingStateEntity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.net.URI
-import java.util.UUID
 
 class BackupRepository(
     private val db: FugueDatabase,
     private val blobStore: ExternalBlobStore,
     private val secretStore: SecretStore,
-    private val appVersion: String = "1.0.0"
+    private val flashcardRepository: FlashcardRepository,
+    private val appVersion: String = "1.0.0",
+    private val draftStore: ChatDraftStore? = null
 ) {
     private val codec = BackupJson.codec
     private val prettyCodec = BackupJson.prettyCodec
@@ -329,7 +344,7 @@ class BackupRepository(
     }
 
     fun decodePlainArchive(data: ByteArray): BackupArchive {
-        if (data.size > EncryptedBackupCrypto.MAXIMUM_FILE_BYTES) throw BackupException.FileTooLarge()
+        EncryptedBackupCrypto.requireImportSize(data.size)
         val text = data.toString(Charsets.UTF_8)
         val archive = runCatching { codec.decodeFromString<BackupArchive>(text) }.getOrNull()
         if (archive != null) {
@@ -356,7 +371,7 @@ class BackupRepository(
             if (p.baseURL.isBlank()) {
                 val bundle = bundles[p.id.uppercase()]
                 if (bundle != null && isValidDestination(bundle.rawBaseURL)) {
-                    p.copy(baseURL = bundle.rawBaseURL, isEnabled = bundle.isEnabled)
+                    p.copy(baseURL = bundle.rawBaseURL)
                 } else {
                     p
                 }
@@ -437,11 +452,45 @@ class BackupRepository(
         )
     }
 
+    internal suspend fun reconcileRestoreBlobs() = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            val referenced = db.conversationDao().getRestoreBlobKeys().toSet()
+            RestoreBlobBatch.reconcile(blobStore, referenced)
+        }
+    }
+
+    private suspend fun importWithStagedBlobs(write: suspend (RestoreBlobBatch) -> Unit) {
+        val batch = RestoreBlobBatch(blobStore)
+        try {
+            db.withTransaction { write(batch) }
+        } catch (failure: Exception) {
+            // SQLite might have committed just before cancellation. Keep any keys it actually published.
+            withContext(NonCancellable) { runCatching { reconcileRestoreBlobs() } }
+            throw failure
+        }
+    }
+
     suspend fun applyArchive(archive: BackupArchive): ImportSummary = withContext(Dispatchers.IO) {
+        if (archive.conversations.any { it.messages.size > MAX_IMPORTED_MESSAGES_PER_CONVERSATION }) {
+            throw BackupException.ConversationMessageLimit()
+        }
         val incomingMessages = archive.conversations.flatMap { it.messages }
         val incomingRequests = archive.requests.orEmpty()
         val incomingMemories = archive.memories.orEmpty()
         val incomingBooks = archive.books.orEmpty()
+        val preparedBooks = incomingBooks.associate { it.id.uppercase() to prepareRestoredBook(it) }
+        val incomingCards = decodeRestoredFlashcards(archive.flashcards.orEmpty())
+        val incomingProfiles = archive.personaProfiles.orEmpty().map { value ->
+            val profile = value as? JsonObject ?: throw BackupException.UnrecognizedFormat()
+            val rawID = (profile["id"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            val id = ChatRepository.canonicalConversationID(rawID) ?: throw BackupException.UnrecognizedFormat()
+            val linkedId = profile["profileID"]
+            if (linkedId != null && linkedId != JsonNull &&
+                ChatRepository.canonicalConversationID((linkedId as? JsonPrimitive)?.takeIf { it.isString }?.content) != id) {
+                throw BackupException.UnrecognizedFormat()
+            }
+            id to restoredMember(JsonObject(profile + mapOf("id" to JsonPrimitive(id), "profileID" to JsonPrimitive(id))))
+        }
 
         fun <T> hasUnique(items: List<T>, selector: (T) -> String): Boolean =
             items.map { selector(it).uppercase() }.toSet().size == items.size
@@ -452,7 +501,8 @@ class BackupRepository(
             !hasUnique(incomingMessages) { it.id } ||
             !hasUnique(incomingRequests) { it.id } ||
             !hasUnique(incomingMemories) { it.id } ||
-            !hasUnique(incomingBooks) { it.id }
+            !hasUnique(incomingBooks) { it.id } ||
+            !hasUnique(incomingProfiles) { it.first }
         ) {
             throw BackupException.ConflictingIDs()
         }
@@ -474,21 +524,34 @@ class BackupRepository(
         var booksCount = 0
         var skippedCount = 0
 
-        db.withTransaction {
+        importWithStagedBlobs { staged ->
+            draftStore?.migrateLegacy(db.conversationDao().getIDs())
             val existingProviders = db.providerDao().getAll().associateBy { it.id.uppercase() }
             val existingPresets = db.assistantPresetDao().getAll().associateBy { it.id.uppercase() }
             val existingConversations = db.conversationDao().getAll().associateBy { it.id.uppercase() }
             val existingMessages = db.chatMessageDao().getAll().associateBy { it.id.uppercase() }
+            val existingMessageCounts = existingMessages.values.groupingBy { it.conversationID.uppercase() }.eachCount()
             val existingRequests = db.requestRecordDao().getAllAsc().associateBy { it.id.uppercase() }
             val existingMemories = db.personalMemoryDao().getAll().map { it.id.uppercase() }.toSet()
             val existingBooks = db.bookVolumeDao().getAll().map { it.id.uppercase() }.toSet()
 
             for (conv in archive.conversations) {
+                if (ChatRepository.canonicalConversationID(conv.id) == null && conv.id.uppercase() !in existingConversations) {
+                    throw BackupException.UnrecognizedFormat()
+                }
+                var addedCount = 0
                 for (msg in conv.messages) {
                     val localMsg = existingMessages[msg.id.uppercase()]
                     if (localMsg != null && !localMsg.conversationID.equals(conv.id, ignoreCase = true)) {
                         throw BackupException.ConflictingIDs()
                     }
+                    if (localMsg == null) {
+                        if (ChatRepository.canonicalConversationID(msg.id) == null) throw BackupException.UnrecognizedFormat()
+                        addedCount++
+                    }
+                }
+                if (addedCount > 0 && addedCount > MAX_IMPORTED_MESSAGES_PER_CONVERSATION - (existingMessageCounts[conv.id.uppercase()] ?: 0)) {
+                    throw BackupException.ConversationMessageLimit()
                 }
             }
 
@@ -496,15 +559,15 @@ class BackupRepository(
             for (b in incomingBooks) {
                 val id = b.id.uppercase()
                 if (existingBooks.contains(id)) continue
-                val key = "book_$id.json"
-                blobStore.writeText(key, codec.encodeToString(b.chapters))
+                val prepared = preparedBooks.getValue(id)
+                val key = staged.writeText(prepared.encodedJson)
                 booksToInsert.add(
                     BookVolumeEntity(
                         id = id,
                         title = b.title,
-                        chapterTitlesJson = codec.encodeToString(b.chapters.map { it.title }),
+                        chapterTitlesJson = codec.encodeToString(prepared.chapterTitles),
                         manuscriptBlobKey = key,
-                        byteCount = b.chapters.sumOf { it.text.toByteArray(Charsets.UTF_8).size.toLong() },
+                        byteCount = prepared.byteCount,
                         importedAtEpochMs = b.importedAt
                     )
                 )
@@ -512,17 +575,11 @@ class BackupRepository(
             }
             for (book in booksToInsert) db.bookVolumeDao().upsert(book)
 
-            val profiles = archive.personaProfiles.orEmpty()
-            if (profiles.isNotEmpty()) {
+            if (incomingProfiles.isNotEmpty()) {
                 val existingProfiles = db.personaProfileDao().getAll().map { it.id.uppercase() }.toSet()
-                val toInsert = profiles.mapIndexedNotNull { index, elem ->
-                    val id = runCatching {
-                        (elem as? kotlinx.serialization.json.JsonObject)?.get("id")
-                            ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
-                    }.getOrNull()?.uppercase() ?: "PROFILE_${index}_${UUID.randomUUID().toString().uppercase()}"
-                    if (existingProfiles.contains(id)) return@mapIndexedNotNull null
-                    val key = "persona_$id.json"
-                    blobStore.writeText(key, codec.encodeToString(JsonElement.serializer(), elem))
+                val toInsert = incomingProfiles.mapNotNull { (id, profile) ->
+                    if (existingProfiles.contains(id)) return@mapNotNull null
+                    val key = staged.writeText(codec.encodeToString(JsonObject.serializer(), profile))
                     PersonaProfileEntity(id = id, payloadBlobKey = key, updatedAtEpochMs = now)
                 }
                 if (toInsert.isNotEmpty()) db.personaProfileDao().upsertAll(toInsert)
@@ -596,23 +653,7 @@ class BackupRepository(
                     skippedCount++
                     continue
                 }
-                providersToInsert.add(
-                    ProviderEntity(
-                        id = id,
-                        name = p.name,
-                        protocolRaw = p.protocolRaw,
-                        baseURL = p.baseURL,
-                        iconSymbol = p.iconSymbol,
-                        accentHex = p.accentHex,
-                        isEnabled = p.isEnabled && p.baseURL.trim().isNotEmpty(),
-                        sortOrder = p.sortOrder,
-                        modelsJson = codec.encodeToString(ModelSpec.deduplicated(p.models)),
-                        headersJson = codec.encodeToString(p.customHeaders),
-                        notes = p.notes,
-                        createdAtEpochMs = now,
-                        updatedAtEpochMs = now
-                    )
-                )
+                providersToInsert.add(restoredProvider(p, now))
                 providersCount++
             }
             if (providersToInsert.isNotEmpty()) db.providerDao().upsertAll(providersToInsert)
@@ -664,10 +705,8 @@ class BackupRepository(
                     }
                     restoredConversationsCount++
                 } else {
-                    val settingsKey = c.assistanceSettings?.let { settings ->
-                        "conv_settings_$cid.json".also { key ->
-                            blobStore.writeText(key, codec.encodeToString(JsonElement.serializer(), settings))
-                        }
+                    val settingsKey = restoredAssistanceSettings(c.assistanceSettings)?.let { settings ->
+                        staged.writeText(codec.encodeToString(JsonObject.serializer(), settings))
                     }
                     val convEntity = ConversationEntity(
                         id = cid,
@@ -701,14 +740,10 @@ class BackupRepository(
                 val messageEntities = missing.map { m ->
                     val mid = m.id.uppercase()
                     val attKey = if (m.attachments.isNotEmpty()) {
-                        "msg_att_$mid.json".also { key ->
-                            blobStore.writeText(key, codec.encodeToString(m.attachments))
-                        }
+                        staged.writeText(codec.encodeToString(AttachmentProcessor.validateRestoredImages(m.attachments)))
                     } else null
                     val metaKey = m.assistanceMetadata?.let { meta ->
-                        "msg_meta_$mid.json".also { key ->
-                            blobStore.writeText(key, codec.encodeToString(JsonElement.serializer(), meta))
-                        }
+                        staged.writeText(codec.encodeToString(JsonElement.serializer(), meta))
                     }
                     messagesCount++
                     ChatMessageEntity(
@@ -747,9 +782,7 @@ class BackupRepository(
             }
         }
 
-        if (!archive.flashcards.isNullOrEmpty()) {
-            blobStore.writeText(FLASHCARDS_BLOB_KEY, codec.encodeToString(archive.flashcards))
-        }
+        val flashcards = runCatching { flashcardRepository.mergeImported(incomingCards) }
 
         ImportSummary(
             providers = providersCount,
@@ -760,12 +793,69 @@ class BackupRepository(
             requests = requestsCount,
             memories = memoriesCount,
             books = booksCount,
-            flashcards = archive.flashcards?.size ?: 0,
+            flashcards = flashcards.getOrDefault(0),
+            flashcardRestoreFailed = flashcards.isFailure,
             skipped = skippedCount
         )
     }
 
     companion object {
+        private const val MAX_IMPORTED_MESSAGES_PER_CONVERSATION = 50_000
+
+        internal fun prepareRestoredBook(snapshot: BookVolumeSnapshot): PreparedBook {
+            val manuscript = BookManuscript(snapshot.title, snapshot.chapters.map { BookChapter(it.title, it.text) })
+            return PreparedBook.forIdentifier(manuscript, snapshot.id) ?: throw BackupException.ConflictingIDs()
+        }
+
+        internal fun decodeRestoredFlashcards(elements: List<JsonElement>): List<StudyFlashcard> {
+            return try {
+                elements.map { BackupJson.codec.decodeFromJsonElement(StudyFlashcard.serializer(), it) }.also { cards ->
+                    if (cards.any { it.id.isBlank() || it.front.isBlank() || it.back.isBlank() }) {
+                        throw BackupException.UnrecognizedFormat()
+                    }
+                }
+            } catch (_: IllegalArgumentException) {
+                throw BackupException.UnrecognizedFormat()
+            }
+        }
+
+        internal fun restoredProvider(backup: ProviderBackup, now: Long): ProviderEntity = ProviderEntity(
+            id = backup.id.uppercase(),
+            name = backup.name,
+            protocolRaw = backup.protocolRaw,
+            baseURL = backup.baseURL,
+            iconSymbol = backup.iconSymbol,
+            accentHex = backup.accentHex,
+            isEnabled = false,
+            sortOrder = backup.sortOrder,
+            modelsJson = BackupJson.codec.encodeToString(ModelSpec.deduplicated(backup.models)),
+            headersJson = BackupJson.codec.encodeToString(backup.customHeaders),
+            notes = backup.notes,
+            createdAtEpochMs = now,
+            updatedAtEpochMs = now
+        )
+
+        internal fun restoredAssistanceSettings(settings: JsonElement?): JsonObject? {
+            val source = settings as? JsonObject ?: return null
+            val normalized = source.toMutableMap()
+            normalized["usePersonalMemory"] = JsonPrimitive(false)
+            (source["groupMembers"] as? JsonArray)?.let { members ->
+                normalized["groupMembers"] = JsonArray(members.map { (it as? JsonObject)?.let(::restoredMember) ?: it })
+            }
+            (source["privatePersona"] as? JsonObject)?.let { normalized["privatePersona"] = restoredMember(it) }
+            return JsonObject(normalized)
+        }
+
+        internal fun restoredMember(member: JsonObject): JsonObject {
+            val persona = member["persona"] as? JsonObject ?: return member
+            val feeds = persona["feeds"] as? JsonArray ?: return member
+            val disabled = JsonArray(feeds.map { element ->
+                val feed = element as? JsonObject ?: return@map element
+                JsonObject(feed - setOf("checkpoint", "lastChecked", "lastError") + ("enabled" to JsonPrimitive(false)))
+            })
+            return JsonObject(member + ("persona" to JsonObject(persona + ("feeds" to disabled))))
+        }
+
         private const val FLASHCARDS_BLOB_KEY = "sidecar_flashcards.json"
 
         private val portablePaths = setOf(

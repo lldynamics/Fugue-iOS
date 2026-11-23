@@ -526,6 +526,7 @@ private fun GroupMemberEditorDialog(
     var rolePrompt by remember(initial.id) { mutableStateOf(initial.rolePrompt) }
     var temperature by remember(initial.id) { mutableDoubleStateOf(initial.temperature) }
     var target by remember(initial.id) { mutableStateOf(initial.target) }
+    var feeds by remember(initial.id) { mutableStateOf(initial.persona?.feeds.orEmpty()) }
     var showTargetPicker by remember { mutableStateOf(false) }
 
     AlertDialog(
@@ -607,6 +608,17 @@ private fun GroupMemberEditorDialog(
                     onValueChange = { temperature = ((it * 20).roundToInt() / 20.0).coerceIn(0.0, 1.5) },
                     valueRange = 0f..1.5f
                 )
+                feeds.forEachIndexed { index, feed ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(feed.address, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = feed.enabled, onCheckedChange = { enabled ->
+                            feeds = feeds.toMutableList().also { it[index] = feed.copy(enabled = enabled) }
+                        })
+                    }
+                }
             }
         },
         confirmButton = {
@@ -621,7 +633,8 @@ private fun GroupMemberEditorDialog(
                             accentHex = accentHex,
                             rolePrompt = rolePrompt.trim(),
                             target = target,
-                            temperature = temperature
+                            temperature = temperature,
+                            persona = initial.persona?.copy(feeds = feeds)
                         )
                     )
                 }

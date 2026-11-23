@@ -29,6 +29,8 @@ data class ToolCallRecord(
  */
 object AgentToolRunner {
     const val MAX_TOOL_ROUNDS = 3
+    const val MAX_CALLS_PER_TURN = 6
+    const val MAX_SEARCHES_PER_TURN = 3
     private const val MAX_MEMORY_CHARACTERS = 200
     private val compactJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val httpsLinkRegex = Regex("https://[^\\s<>\"'\\)\\]]+", RegexOption.IGNORE_CASE)
@@ -48,20 +50,7 @@ object AgentToolRunner {
         return allowed
     }
 
-    fun canonicalURLKey(uri: URI): String {
-        val scheme = uri.scheme?.lowercase() ?: "https"
-        val host = uri.host?.lowercase() ?: ""
-        val port = if (uri.port == 443) -1 else uri.port
-        val rawPath = uri.rawPath.orEmpty()
-        val authority = if (port != -1) "$host:$port" else host
-        return buildString {
-            append(scheme).append("://").append(authority).append(rawPath)
-            val q = uri.rawQuery
-            if (!q.isNullOrEmpty()) {
-                append('?').append(q)
-            }
-        }
-    }
+    fun canonicalURLKey(uri: URI): String = WebpageReader.requestIdentity(uri)
 
     fun definitions(hasTavilyKey: Boolean, hasKnowledgeBase: Boolean = false): List<LLMToolDefinition> {
         val tools = mutableListOf(
@@ -111,7 +100,7 @@ object AgentToolRunner {
     suspend fun execute(
         call: LLMToolCall,
         searchHandler: suspend (String) -> SearchEvidence,
-        webpageHandler: suspend (URI) -> ReadablePage = { WebpageReader.read(it) },
+        webpageHandler: (suspend (URI) -> ReadablePage)? = null,
         webpageApproval: (suspend (URI) -> WebpageApprovalDecision)? = null,
         knowledgeHandler: (suspend (String) -> KnowledgeEvidence)? = null
     ): ExecutionOutput {
@@ -239,7 +228,9 @@ object AgentToolRunner {
                             )
                         }
                     }
-                    val page = webpageHandler(uri)
+                    val page = if (webpageHandler != null) webpageHandler(uri) else WebpageReader.read(
+                        uri, authorizeRedirect = { next -> webpageApproval?.invoke(next) == WebpageApprovalDecision.ALLOW }
+                    )
                     val payload = buildJsonObject {
                         put("url", page.url)
                         put("title", page.title)

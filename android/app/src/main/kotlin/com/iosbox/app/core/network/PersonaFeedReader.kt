@@ -5,6 +5,10 @@ import com.iosbox.app.core.model.PersonaFeed
 import com.iosbox.app.core.model.PersonaFeedCheckpoint
 import com.iosbox.app.core.model.PersonaFeedItem
 import com.iosbox.app.core.model.PersonaFeedKind
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.net.URI
@@ -111,9 +115,12 @@ class PersonaFeedReader(
                 val finalUri = runCatching { URI(finalUrl) }.getOrNull() ?: throw WebpageReadError.InvalidUrl()
                 WebpageReader.validate(finalUri)
             }
-            val parsed = runCatching {
-                SubscriptionFeedParser.parse(data, finalUrl, skipPublicHostCheckForTesting)
-            }.getOrNull()
+            val parsed = withContext(Dispatchers.Default) {
+                val context = currentCoroutineContext()
+                try {
+                    SubscriptionFeedParser.parse(data, finalUrl, skipPublicHostCheckForTesting) { context.ensureActive() }
+                } catch (_: PersonaFeedError.InvalidFeed) { null }
+            }
             if (parsed != null) {
                 val ordered = if (parsed.all { it.published != null }) {
                     parsed.sortedByDescending { it.published ?: 0L }
@@ -123,8 +130,12 @@ class PersonaFeedReader(
                 return finalUrl to ordered
             }
             if (attempt == 0) {
-                val html = data.toString(Charsets.UTF_8)
-                val discovered = SubscriptionFeedParser.discover(html, finalUrl, skipPublicHostCheckForTesting)
+                val discovered = withContext(Dispatchers.Default) {
+                    val context = currentCoroutineContext()
+                    SubscriptionFeedParser.discover(data.toString(Charsets.UTF_8), finalUrl, skipPublicHostCheckForTesting) {
+                        context.ensureActive()
+                    }
+                }
                 if (discovered != null && discovered != finalUrl) {
                     currentUrl = discovered
                     continue

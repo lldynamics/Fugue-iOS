@@ -188,6 +188,9 @@ data class PersonaFeed(
 ) {
     val displayName: String
         get() = if (kind == PersonaFeedKind.X) "@$address" else address
+
+    fun sameSourceAs(other: PersonaFeed): Boolean =
+        id.equals(other.id, ignoreCase = true) && kind == other.kind && address == other.address
 }
 
 @Serializable
@@ -223,6 +226,39 @@ data class PersonaExcerpt(
     val source: String,
     val excerpt: String
 )
+
+@Serializable
+data class PickedGroupMention(val offset: Int, val token: String, val memberID: String) {
+    companion object {
+        fun updating(mentions: List<PickedGroupMention>, oldText: String, newText: String): List<PickedGroupMention> {
+            if (mentions.isEmpty() || oldText == newText) return mentions
+            val commonLength = minOf(oldText.length, newText.length)
+            var prefix = 0
+            while (prefix < commonLength && oldText[prefix] == newText[prefix]) prefix++
+            var suffix = 0
+            while (suffix < commonLength - prefix &&
+                oldText[oldText.lastIndex - suffix] == newText[newText.lastIndex - suffix]) suffix++
+            fun uniqueOffset(token: String, text: String): Int? {
+                val first = text.indexOf(token)
+                return first.takeIf { it >= 0 && text.indexOf(token, startIndex = it + 1) < 0 }
+            }
+            return mentions.mapNotNull { mention ->
+                if (mention.token.isEmpty() || mention.offset !in 0..oldText.length ||
+                    mention.token.length > oldText.length - mention.offset) {
+                    return@mapNotNull null
+                }
+                when {
+                    mention.offset + mention.token.length <= prefix -> mention
+                    mention.offset >= oldText.length - suffix ->
+                        mention.copy(offset = mention.offset + (newText.length - oldText.length))
+                    uniqueOffset(mention.token, oldText) == mention.offset ->
+                        uniqueOffset(mention.token, newText)?.let { mention.copy(offset = it) }
+                    else -> null
+                }
+            }
+        }
+    }
+}
 
 @Serializable
 data class GroupMember(
@@ -294,11 +330,7 @@ data class GroupMember(
         if (currentPersona.feeds.isEmpty() || existingFeeds.isEmpty()) return this
 
         val updatedFeeds = currentPersona.feeds.map { feed ->
-            val local = existingFeeds.firstOrNull {
-                it.id.equals(feed.id, ignoreCase = true) &&
-                    it.kind == feed.kind &&
-                    it.address == feed.address
-            }
+            val local = existingFeeds.firstOrNull { it.sameSourceAs(feed) }
             if (local == null) {
                 feed
             } else {

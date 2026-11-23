@@ -267,5 +267,15 @@ class ArenaTest {
         )
         assertEquals(2, historyWithValidSynth.size)
         assertEquals("Stale judge summary", historyWithValidSynth[1].content)
+
+        val excluded = sampleMessage(id = "C3", content = "Private note", isSelectedInGroup = false, sortIndex = 2)
+            .copy(assistanceMetadata = MessageAssistanceMetadata(isExcludedFromContext = true))
+        val sources = listOf(cand1, cand2, excluded)
+        val acceptedSummary = currentSynthesisSelected.copy(
+            content = "Only the two visible answers",
+            synthesisSourceDigest = ArenaSynthesis.digest(sources)
+        )
+        val historyWithExcludedSource = ChatRepository.buildPromptHistory(listOf(userQ) + sources + acceptedSummary, limit = 20)
+        assertEquals(listOf("Question 1", "Only the two visible answers"), historyWithExcludedSource.map { it.content })
     }
 }

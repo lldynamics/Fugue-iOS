@@ -9,6 +9,17 @@ import java.net.URI
  * substring checks (e.g. `api10.example.com` must not count as a private `10.x` address).
  */
 object NetworkLocation {
+    internal fun isPrivateCleartextAddress(address: InetAddress): Boolean {
+        if (address.isAnyLocalAddress || address.isMulticastAddress) return false
+        if (address.isLoopbackAddress || address.isLinkLocalAddress) return true
+        val bytes = address.address.map { it.toInt() and 0xff }
+        if (bytes.size == 4) return bytes[0] != 0 && isPrivateIPv4(bytes.toIntArray())
+        if (bytes.size != 16) return false
+        if ((bytes[0] and 0xfe) == 0xfc) return true
+        val mapped = bytes.take(10).all { it == 0 } && bytes[10] == 0xff && bytes[11] == 0xff
+        return mapped && bytes[12] != 0 && isPrivateIPv4(bytes.drop(12).toIntArray())
+    }
+
     fun isLocalOrPrivate(baseURL: String): Boolean {
         val host = hostOf(baseURL) ?: return false
         return isLocalOrPrivateHost(host)

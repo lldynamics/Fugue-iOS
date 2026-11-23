@@ -11,6 +11,7 @@ import com.iosbox.app.core.system.GenerationProgressFormatter
 import com.iosbox.app.core.system.IncomingEntryRequest
 import com.iosbox.app.core.system.ShareReadingAction
 import com.iosbox.app.core.system.SpeechTextCleaner
+import com.iosbox.app.core.system.WebLinkHandoff
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
@@ -42,8 +43,8 @@ class Phase4SystemIntegrationTest {
 
         // Deep links
         assertEquals(
-            IncomingEntryRequest.OpenConversation("conv-42"),
-            ExternalEntryParser.parseDeepLink("fugue://chat/conv-42")
+            IncomingEntryRequest.OpenConversation("28F14272-ADA0-471A-9347-B266EE53E87E"),
+            ExternalEntryParser.parseDeepLink("fugue://chat/28f14272-ada0-471a-9347-b266ee53e87e")
         )
         assertEquals(
             IncomingEntryRequest.NewChat,
@@ -58,6 +59,7 @@ class Phase4SystemIntegrationTest {
             ExternalEntryParser.parseDeepLink("fugue://flashcards")
         )
         assertNull(ExternalEntryParser.parseDeepLink("fugue://chat"))
+        assertNull(ExternalEntryParser.parseDeepLink("fugue://chat/not-a-conversation-id"))
         assertNull(ExternalEntryParser.parseDeepLink("https://example.com/chat/conv-42"))
         assertNull(ExternalEntryParser.parseDeepLink("fugue://unknown-route"))
         assertNull(ExternalEntryParser.parseDeepLink("   "))
@@ -81,6 +83,15 @@ class Phase4SystemIntegrationTest {
     }
 
     @Test
+    fun citationHandoffOnlyOffersLinksWithinItsWebPolicy() {
+        assertEquals("https://example.com/notes", WebLinkHandoff.destination("https://example.com/notes")?.toString())
+        assertEquals("http://example.com/notes", WebLinkHandoff.destination("http://example.com/notes")?.toString())
+        assertNull(WebLinkHandoff.destination("mailto:editor@example.com"))
+        assertNull(WebLinkHandoff.destination("http://example.com/notes", publicHttps = true))
+        assertNull(WebLinkHandoff.destination("https://localhost/notes", publicHttps = true))
+    }
+
+    @Test
     fun generationProgressFormatterRespectsBlindModeAndPrivacy() {
         val longTitle = "A".repeat(50)
         val normal = GenerationNotificationState(
@@ -91,10 +102,10 @@ class Phase4SystemIntegrationTest {
             phaseText = "第 2 轮 · 正文生成",
             isBlind = false
         )
-        val normalTitle = GenerationProgressFormatter.formatTitle(normal)
-        assertTrue(normalTitle.startsWith("Arena · "))
-        assertEquals("Arena · " + "A".repeat(36), normalTitle)
-        assertEquals("Claude 3.7 · 第 2 轮 · 正文生成", GenerationProgressFormatter.formatBody(normal))
+        val normalTitle = GenerationProgressFormatter.formatTitle()
+        assertTrue(normalTitle == "夜奔 · 正在生成" || normalTitle == "Fugue · Generating")
+        val normalBody = GenerationProgressFormatter.formatBody(normal)
+        assertTrue(normalBody == "正在流式接收回复…" || normalBody == "Streaming response…")
 
         val blankTitleState = GenerationNotificationState(
             conversationID = "conv-2",
@@ -104,8 +115,6 @@ class Phase4SystemIntegrationTest {
             phaseText = "",
             isBlind = false
         )
-        val blankTitle = GenerationProgressFormatter.formatTitle(blankTitleState)
-        assertTrue(blankTitle == "新对话" || blankTitle == "New Chat")
         val blankBody = GenerationProgressFormatter.formatBody(blankTitleState)
         assertTrue(blankBody == "正在流式接收回复…" || blankBody == "Streaming response…")
 
@@ -117,7 +126,7 @@ class Phase4SystemIntegrationTest {
             phaseText = "Phase 1",
             isBlind = true
         )
-        val blindTitle = GenerationProgressFormatter.formatTitle(blindState)
+        val blindTitle = GenerationProgressFormatter.formatTitle()
         val blindBody = GenerationProgressFormatter.formatBody(blindState)
         assertFalse(blindTitle.contains("Confidential Strategy"))
         assertFalse(blindBody.contains("GPT-Hidden-Model"))

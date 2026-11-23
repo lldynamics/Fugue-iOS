@@ -30,6 +30,8 @@ object SSEDecoder {
         val fields = mutableListOf<String>()
         var eventSize = 0
         var bytesSinceTouch = 0
+        var streamBytes = 0
+        var emittedEvents = 0
         var skipLF = false
         var firstLine = true
 
@@ -70,6 +72,7 @@ object SSEDecoder {
         while (!source.exhausted()) {
             currentCoroutineContext().ensureActive()
             val byte = source.readByte().toInt() and 0xFF
+            if (++streamBytes > 32 * 1024 * 1024) throw LLMError.InterruptedStream()
             if (skipLF) {
                 skipLF = false
                 if (byte == 10) continue
@@ -79,7 +82,10 @@ object SSEDecoder {
                 onActivity?.invoke()
                 skipLF = (byte == 13)
                 val event = finishLine()
-                if (event != null) emit(event)
+                if (event != null) {
+                    if (++emittedEvents > 12_000) throw LLMError.InterruptedStream()
+                    emit(event)
+                }
             } else {
                 line.write(byte)
                 if (line.size() > maximumBytes) throw LLMError.InterruptedStream()

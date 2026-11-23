@@ -51,7 +51,9 @@ class AppContainer(context: Context) {
         db = database,
         blobStore = blobStore,
         secretStore = secretStore,
-        appVersion = BuildConfig.VERSION_NAME
+        flashcardRepository = flashcardRepository,
+        appVersion = BuildConfig.VERSION_NAME,
+        draftStore = draftStore
     )
 
     val dataSeeder: DataSeeder = DataSeeder(

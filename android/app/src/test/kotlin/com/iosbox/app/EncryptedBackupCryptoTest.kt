@@ -8,6 +8,14 @@ import org.junit.Test
 
 class EncryptedBackupCryptoTest {
     @Test
+    fun importMemoryLimitAllowsFilesUpToTheBudget() {
+        EncryptedBackupCrypto.requireImportSize(1024, limit = 1024)
+        assertThrows(BackupException.ImportMemoryLimit::class.java) {
+            EncryptedBackupCrypto.requireImportSize(1025, limit = 1024)
+        }
+    }
+
+    @Test
     fun decryptsGenuineIosCryptoKitGoldenVectorWithUnicodePassword() {
         // Generated via Swift CommonCrypto CCKeyDerivationPBKDF + Apple CryptoKit AES.GCM.seal
         // matching iOSBox/Services/EncryptedBackupService.swift byte-for-byte.

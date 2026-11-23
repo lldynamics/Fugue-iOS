@@ -4,13 +4,18 @@ import com.iosbox.app.core.model.APIProtocolType
 import com.iosbox.app.core.model.MessageRole
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.IOException
 
 class ProtocolAdaptersTest {
     private lateinit var server: MockWebServer
@@ -29,6 +34,15 @@ class ProtocolAdaptersTest {
     @After
     fun tearDown() {
         server.shutdown()
+    }
+
+    @Test
+    fun catalogEntryBudgetIsSharedAcrossPages() {
+        val budget = CatalogReadBudget()
+        val row = JsonObject(mapOf("id" to JsonPrimitive("local-fixture")))
+        assertEquals(6000, budget.modelRows(JsonArray(List(6000) { row })).size)
+        assertThrows(IOException::class.java) { budget.modelRows(JsonArray(List(4001) { row })) }
+        assertEquals(4000, budget.modelRows(JsonArray(List(4000) { row })).size)
     }
 
     @Test

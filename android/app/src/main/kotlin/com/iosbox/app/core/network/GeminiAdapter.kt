@@ -434,6 +434,8 @@ object GeminiAdapter {
         val results = mutableListOf<ModelSpec>()
         var pageToken: String? = null
         var pages = 0
+        val budget = CatalogReadBudget()
+        val seenCursors = HashSet<String>()
 
         do {
             val urlBuilder = baseEndpoint.toHttpUrl().newBuilder()
@@ -448,8 +450,10 @@ object GeminiAdapter {
             }
             LLMClient.applyCustomHeaders(customHeaders, builder)
 
-            val page = client.fetchJsonObject(builder.build())
-            val items = page.objList("models") ?: throw IOException("Missing models array in Gemini response")
+            val page = client.fetchJsonObject(builder.build(), budget)
+            val rows = page["models"] as? JsonArray
+                ?: throw IOException("Missing models array in Gemini response")
+            val items = budget.modelRows(rows)
             for (item in items) {
                 val name = item.str("name") ?: throw IOException("Missing model name")
                 val methods = item.strList("supportedGenerationMethods")
@@ -462,8 +466,11 @@ object GeminiAdapter {
                 results.add(ModelSpec.create(id = id, displayName = item.str("displayName")))
             }
             pageToken = page.str("nextPageToken")?.takeIf { it.isNotEmpty() }
+            val next = pageToken
+            if (next != null && !seenCursors.add(next)) throw IOException("Repeated model list cursor")
             pages++
         } while (pageToken != null && pages < 20)
+        if (pageToken != null) throw IOException("Model list has too many pages")
 
         return results
     }

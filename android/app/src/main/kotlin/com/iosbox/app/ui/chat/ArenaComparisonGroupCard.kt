@@ -173,7 +173,7 @@ fun ArenaComparisonGroupCard(
             ?: messages.firstOrNull { it.isSelectedInGroup }
             ?: messages.firstOrNull()
     }
-    val completeCount = originals.count(ArenaSynthesis::isComplete)
+    val eligibleCount = ArenaSynthesis.eligibleSources(messages, groupID).size
 
     Surface(
         shape = RoundedCornerShape(DS.Radius.lg),
@@ -361,7 +361,7 @@ fun ArenaComparisonGroupCard(
             ) {
                 OutlinedButton(
                     onClick = onSynthesize,
-                    enabled = !isGenerating && completeCount >= 2,
+                    enabled = !isGenerating && eligibleCount >= 2,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Icon(
@@ -378,7 +378,7 @@ fun ArenaComparisonGroupCard(
 
                 OutlinedButton(
                     onClick = onCrossCritique,
-                    enabled = !isGenerating && completeCount >= 2,
+                    enabled = !isGenerating && eligibleCount >= 2,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Icon(
@@ -394,7 +394,7 @@ fun ArenaComparisonGroupCard(
                 }
             }
 
-            if (completeCount < 2) {
+            if (eligibleCount < 2) {
                 Text(
                     text = L10n.text("至少需要两条完整答案才能汇总。", "At least 2 complete answers are required to synthesize."),
                     style = MaterialTheme.typography.labelSmall,

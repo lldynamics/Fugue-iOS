@@ -4,6 +4,9 @@ import com.iosbox.app.core.model.AttachmentKind
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.storage.ChatDraft
 import com.iosbox.app.core.storage.ChatDraftStore
+import com.iosbox.app.core.storage.AttachmentException
+import com.iosbox.app.core.storage.BoundedShareRead
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -11,6 +14,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class ReleaseHardeningAndDraftStoreTest {
 
@@ -82,6 +87,7 @@ class ReleaseHardeningAndDraftStoreTest {
         try {
             val store = ChatDraftStore(dir)
             val target = store.draftFile("conv-corrupt")
+            target.parentFile?.mkdirs()
             target.writeText("{not-valid-json", Charsets.UTF_8)
             assertTrue(target.exists())
 
@@ -89,8 +95,8 @@ class ReleaseHardeningAndDraftStoreTest {
             assertTrue(recovered.isEmpty)
             assertFalse(target.exists())
 
-            val quarantinedFiles = dir.listFiles { _, name ->
-                name.startsWith("CONV-CORRUPT.corrupt-") && name.endsWith(".json")
+            val quarantinedFiles = target.parentFile?.listFiles { _, name ->
+                name.startsWith("${target.nameWithoutExtension}.corrupt-") && name.endsWith(".json")
             }.orEmpty()
             assertEquals(1, quarantinedFiles.size)
             assertEquals("{not-valid-json", quarantinedFiles[0].readText(Charsets.UTF_8))
@@ -111,7 +117,7 @@ class ReleaseHardeningAndDraftStoreTest {
             val maliciousId = "../../etc/passwd"
             val target = store.draftFile(maliciousId)
 
-            assertEquals(dir.canonicalFile, target.parentFile?.canonicalFile)
+            assertEquals(File(dir, "v2").canonicalFile, target.parentFile?.canonicalFile)
             assertFalse(target.name.contains("/"))
             assertFalse(target.name.contains(".."))
 
@@ -119,10 +125,47 @@ class ReleaseHardeningAndDraftStoreTest {
             store.save(maliciousId, ChatDraft(text = "Version 2"))
 
             assertEquals("Version 2", store.load(maliciousId).text)
-            val leftoverTmp = dir.listFiles { _, name -> name.endsWith(".tmp") }.orEmpty()
+            val leftoverTmp = target.parentFile?.listFiles { _, name -> name.endsWith(".tmp") }.orEmpty()
             assertTrue(leftoverTmp.isEmpty())
         } finally {
             dir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun legacyMigrationPreservesUnambiguousDraftsAndArchivesUnknownOwnership() {
+        val directory = Files.createTempDirectory("fugue_draft_migration").toFile()
+        try {
+            val known = "28F14272-ADA0-471A-9347-B266EE53E87E"
+            File(directory, "$known.json").writeText("""{"text":"Keep this draft"}""")
+            File(directory, "READING_NOTES.json").writeText("""{"text":"Keep these notes too"}""")
+            val store = ChatDraftStore(directory)
+            store.migrateLegacy(listOf(known, "READING.NOTES", "READING_NOTES"))
+            assertEquals("Keep this draft", store.load(known).text)
+            assertTrue(store.load("READING.NOTES").isEmpty)
+            assertTrue(store.load("READING_NOTES").isEmpty)
+            val recovered = File(directory, "recovery").listFiles().orEmpty()
+            assertEquals(1, recovered.size)
+            assertTrue(recovered.single().readText().contains("Keep these notes too"))
+            store.save("READING.NOTES", ChatDraft(text = "First"))
+            store.save("READING_NOTES", ChatDraft(text = "Second"))
+            store.remove("READING.NOTES")
+            assertEquals("Second", store.load("READING_NOTES").text)
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun sharedReadDeadlineIgnoresLateWorkerResults() = runBlocking {
+        val released = CountDownLatch(1)
+        val result = runCatching {
+            BoundedShareRead.run(timeoutMillis = 200, close = { released.countDown() }) {
+                try { released.await(2, TimeUnit.SECONDS) } catch (_: InterruptedException) { /* Provider returned late. */ }
+                "late result"
+            }
+        }
+        assertTrue(result.exceptionOrNull() is AttachmentException.ShareReadUnavailable)
+        assertEquals("ready", BoundedShareRead.run(1_000, close = {}) { "ready" })
     }
 }

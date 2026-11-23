@@ -29,25 +29,13 @@ data class GenerationNotificationState(
 )
 
 object GenerationProgressFormatter {
-    fun formatTitle(state: GenerationNotificationState): String {
-        if (state.isBlind) {
-            return L10n.text("夜奔 · 正在生成", "Fugue · Generating")
-        }
-        val cleanTitle = state.chatTitle.trim().take(36).ifEmpty {
-            L10n.text("新对话", "New Chat")
-        }
-        val prefix = state.modeBadge.trim()
-        return if (prefix.isEmpty()) cleanTitle else "$prefix · $cleanTitle"
-    }
+    fun formatTitle(): String = L10n.text("夜奔 · 正在生成", "Fugue · Generating")
 
     fun formatBody(state: GenerationNotificationState): String {
         if (state.isBlind) {
             return L10n.text("双盲对比生成中…", "Blind comparison in progress…")
         }
-        return listOf(state.speakerOrModel.trim(), state.phaseText.trim())
-            .filter { it.isNotEmpty() }
-            .joinToString(" · ")
-            .ifEmpty { L10n.text("正在流式接收回复…", "Streaming response…") }
+        return L10n.text("正在流式接收回复…", "Streaming response…")
     }
 }
 
@@ -131,8 +119,9 @@ class GenerationForegroundService : Service() {
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_fugue)
-            .setContentTitle(GenerationProgressFormatter.formatTitle(state))
+            .setContentTitle(GenerationProgressFormatter.formatTitle())
             .setContentText(GenerationProgressFormatter.formatBody(state))
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)

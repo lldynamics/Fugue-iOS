@@ -47,12 +47,17 @@ import com.iosbox.app.core.network.ReadablePage
 import com.iosbox.app.core.network.WebpageReader
 import com.iosbox.app.core.storage.AttachmentProcessor
 import com.iosbox.app.core.storage.ChatRepository
+import com.iosbox.app.core.storage.ChatDraft
+import com.iosbox.app.core.system.ExternalEntryRouter
 import com.iosbox.app.core.system.ExternalSharePayload
 import com.iosbox.app.core.system.InitialConversationDraft
 import com.iosbox.app.core.system.ShareReadingAction
 import com.iosbox.app.ui.chat.ModelPickerSheet
 import com.iosbox.app.ui.theme.DS
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.URI
@@ -61,6 +66,7 @@ import java.net.URI
 fun ExternalShareDialog(
     payload: ExternalSharePayload,
     container: AppContainer,
+    isCurrent: () -> Boolean,
     onDismiss: () -> Unit,
     onOpenConversation: (String) -> Unit
 ) {
@@ -80,11 +86,19 @@ fun ExternalShareDialog(
     var fetchedPage by remember { mutableStateOf<ReadablePage?>(null) }
     var isFetchingUrl by remember { mutableStateOf(false) }
     var isCreating by remember { mutableStateOf(false) }
-    var errorText by remember { mutableStateOf<String?>(null) }
+    var isCommitting by remember { mutableStateOf(false) }
+    var preparation by remember { mutableStateOf<Job?>(null) }
+    val missingReadGrant = L10n.text("共享附件缺少读取授权，请从原应用重新分享。",
+        "The attachment is missing a read grant. Share it again from the source app.")
+    var errorText by remember(payload) { mutableStateOf(if (payload.attachmentsRejected) missingReadGrant else null) }
     var showModelPicker by remember { mutableStateOf(false) }
+    val cancel = {
+        preparation?.cancel()
+        onDismiss()
+    }
 
     AlertDialog(
-        onDismissRequest = { if (!isCreating) onDismiss() },
+        onDismissRequest = { if (!isCommitting) cancel() },
         title = {
             Text(
                 text = if (payload.isProcessText) {
@@ -231,8 +245,9 @@ fun ExternalShareDialog(
             Button(
                 enabled = !isCreating && !isFetchingUrl,
                 onClick = {
-                    scope.launch {
-                        isCreating = true
+                    isCreating = true
+                    val target = selectedTarget
+                    preparation = scope.launch {
                         errorText = null
                         val page = fetchedPage
                         val rawBody = page?.text ?: payload.sharedText
@@ -249,48 +264,41 @@ fun ExternalShareDialog(
                             .take(28)
                             .ifEmpty { L10n.text("分享精读", "Shared Reading") }
 
-                        val processedAttachments = runCatching {
-                            withContext(Dispatchers.IO) {
-                                val list = payload.streamUris.mapNotNull { rawUri ->
-                                    runCatching {
-                                        val parsed = rawUri.toUri()
-                                        val mime = context.contentResolver.getType(parsed).orEmpty()
-                                        AttachmentProcessor.processUri(
-                                            contentResolver = context.contentResolver,
-                                            uri = parsed,
-                                            imageOnly = mime.startsWith("image/")
-                                        )
-                                    }.getOrNull()
-                                }
-                                if (list.isNotEmpty()) AttachmentProcessor.validate(list)
-                                list
+                        try {
+                            if (payload.attachmentsRejected) throw SecurityException(missingReadGrant)
+                            val processedAttachments = AttachmentProcessor.processSharedBatch(
+                                context.contentResolver, payload.streamUris.map { it.toUri() }
+                            ) {
+                                if (!ExternalEntryRouter.canReadSharedAttachment(context, it)) throw SecurityException(missingReadGrant)
                             }
-                        }.getOrElse { err ->
-                            errorText = err.message ?: L10n.text("附件处理失败", "Failed to read shared files")
-                            isCreating = false
-                            return@launch
-                        }
-
-                        val created = container.chatRepository.createConversation(
-                            primaryTarget = selectedTarget
-                        )
-                        val conv = if (titleHint.isNotBlank()) {
-                            created.copy(title = titleHint).also { updated ->
-                                container.chatRepository.saveConversation(updated)
-                            }
-                        } else {
-                            created
-                        }
-                        container.externalEntryRouter.stageInitialDraft(
-                            conversationId = conv.id,
-                            draft = InitialConversationDraft(
-                                text = prompt,
-                                attachments = processedAttachments,
-                                autoSend = selectedTarget != null && container.preferences.isConsentAccepted
+                            ensureActive()
+                            if (!isCurrent()) return@launch
+                            isCommitting = true
+                            val conversation = container.chatRepository.createConversation(
+                                primaryTarget = target,
+                                initialTitle = titleHint,
+                                initialDraft = ChatDraft(text = prompt, attachments = processedAttachments),
+                                isCurrent = isCurrent
                             )
-                        )
-                        onDismiss()
-                        onOpenConversation(conv.id)
+                            ensureActive()
+                            if (!isCurrent()) return@launch
+                            container.externalEntryRouter.stageInitialDraft(
+                                conversationId = conversation.id,
+                                draft = InitialConversationDraft(
+                                    text = prompt,
+                                    attachments = processedAttachments,
+                                    autoSend = target != null && container.preferences.isConsentAccepted
+                                )
+                            )
+                            onOpenConversation(conversation.id)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (err: Exception) {
+                            errorText = err.message ?: L10n.text("附件处理失败", "Failed to read shared files")
+                        } finally {
+                            isCreating = false
+                            isCommitting = false
+                        }
                     }
                 }
             ) {
@@ -298,7 +306,7 @@ fun ExternalShareDialog(
             }
         },
         dismissButton = {
-            TextButton(enabled = !isCreating, onClick = onDismiss) {
+            TextButton(enabled = !isCommitting, onClick = cancel) {
                 Text(L10n.text("取消", "Cancel"))
             }
         }

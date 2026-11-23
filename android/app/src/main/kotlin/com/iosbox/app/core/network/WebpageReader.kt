@@ -2,9 +2,12 @@ package com.iosbox.app.core.network
 
 import com.iosbox.app.core.model.L10n
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.Dns
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import java.io.ByteArrayOutputStream
 import java.net.InetAddress
@@ -45,6 +48,10 @@ sealed class WebpageReadError(override val message: String) : Exception(message)
 
     class EmptyContent : WebpageReadError(
         L10n.text("网页正文为空。", "Webpage content was empty.")
+    )
+
+    class DestinationNotApproved : WebpageReadError(
+        L10n.text("用户已拒绝访问", "Declined by user")
     )
 }
 
@@ -93,6 +100,15 @@ object WebpageReader {
         }
     }
 
+    fun requestIdentity(uri: URI): String =
+        uri.toASCIIString().toHttpUrlOrNull()?.newBuilder()?.fragment(null)?.build()?.toString()
+            ?: uri.toASCIIString()
+
+    fun origin(uri: URI): String? {
+        val url = uri.toASCIIString().toHttpUrlOrNull() ?: return null
+        return url.newBuilder().encodedPath("/").query(null).fragment(null).build().toString()
+    }
+
     private data class FetchedResponse(
         val bytes: ByteArray,
         val finalUrl: String,
@@ -122,7 +138,8 @@ object WebpageReader {
     suspend fun read(
         uri: URI,
         client: OkHttpClient = defaultClient,
-        skipPublicHostCheckForTesting: Boolean = false
+        skipPublicHostCheckForTesting: Boolean = false,
+        authorizeRedirect: (suspend (URI) -> Boolean)? = null
     ): ReadablePage = withContext(Dispatchers.IO) {
         val fetched = fetchVerifiedBytes(
             uri = uri,
@@ -130,14 +147,16 @@ object WebpageReader {
             extraHeaders = emptyMap(),
             requireReadableMime = true,
             client = client,
-            skipPublicHostCheckForTesting = skipPublicHostCheckForTesting
+            skipPublicHostCheckForTesting = skipPublicHostCheckForTesting,
+            authorizeRedirect = authorizeRedirect
         )
 
         val rawText = fetched.bytes.toString(fetched.charset)
         val isHtml = fetched.mime.contains("html") ||
             fetched.mime.isEmpty() && rawText.trimStart().startsWith("<")
         val (rawTitle, bodyText) = if (isHtml) {
-            extractReadableHtml(rawText)
+            val context = currentCoroutineContext()
+            extractReadableHtml(rawText) { context.ensureActive() }
         } else {
             "" to collapseWhitespace(rawText)
         }
@@ -156,21 +175,36 @@ object WebpageReader {
         )
     }
 
-    private fun fetchVerifiedBytes(
+    private suspend fun fetchVerifiedBytes(
         uri: URI,
         accept: String,
         extraHeaders: Map<String, String>,
         requireReadableMime: Boolean,
         client: OkHttpClient,
-        skipPublicHostCheckForTesting: Boolean
+        skipPublicHostCheckForTesting: Boolean,
+        authorizeRedirect: (suspend (URI) -> Boolean)? = null
     ): FetchedResponse {
         var currentUri = uri
         var redirects = 0
+        val approved = hashSetOf(requestIdentity(uri))
+        val directClient = if (client.followRedirects || client.followSslRedirects) {
+            client.newBuilder().followRedirects(false).followSslRedirects(false).build()
+        } else client
+        val authenticatedOrigin = if (extraHeaders.keys.any { it.equals("Authorization", ignoreCase = true) }) {
+            origin(uri) ?: throw WebpageReadError.InvalidUrl()
+        } else null
 
         while (true) {
             if (!skipPublicHostCheckForTesting) {
                 validate(currentUri)
             }
+            if (authenticatedOrigin != null && origin(currentUri) != authenticatedOrigin) throw WebpageReadError.InvalidUrl()
+            val requestKey = requestIdentity(currentUri)
+            if (requestKey !in approved && authorizeRedirect != null) {
+                if (!authorizeRedirect(currentUri)) throw WebpageReadError.DestinationNotApproved()
+                approved.add(requestKey)
+            }
+            currentCoroutineContext().ensureActive()
 
             val reqBuilder = Request.Builder()
                 .url(currentUri.toASCIIString())
@@ -181,7 +215,7 @@ object WebpageReader {
                 reqBuilder.header(k, v)
             }
 
-            client.newCall(reqBuilder.build()).execute().use { resp ->
+            directClient.newCall(reqBuilder.build()).execute().use { resp ->
                 if (resp.code in listOf(301, 302, 303, 307, 308)) {
                     if (redirects >= MAX_REDIRECTS) {
                         throw WebpageReadError.HttpError(resp.code)
@@ -245,32 +279,102 @@ object WebpageReader {
             mime.endsWith("+xml") ||
             mime.endsWith("+json")
 
-    fun plainText(html: String): String {
-        var working = html
-        working = SCRIPT_STYLE_REGEX.replace(working, " ")
-        working = BLOCK_TAG_REGEX.replace(working, "\n")
-        working = ANY_TAG_REGEX.replace(working, "")
-        working = decodeHtmlEntities(working)
-        return collapseWhitespace(working)
+    fun plainText(html: String): String = extractReadableHtml(html).second
+
+    fun extractReadableHtml(html: String, checkCancellation: () -> Unit = {}): Pair<String, String> {
+        val input = html.take(MAXIMUM_BYTES)
+        val output = StringBuilder()
+        val title = StringBuilder()
+        var inTitle = false
+        var capturedTitle = false
+        var suppressed: String? = null
+        scanHtml(input, checkCancellation, text = { start, end ->
+            if (suppressed == null) {
+                output.append(input, start, end)
+                if (inTitle && title.length < 1200) title.append(input, start, minOf(end, start + 1200 - title.length))
+            }
+        }) { name, closing, selfClosing, _, _ ->
+            when {
+                suppressed != null -> if (closing && name == suppressed) suppressed = null
+                !closing && name in hiddenTags && !(name == "svg" && selfClosing) -> { suppressed = name; output.append(' ') }
+                name == "title" && !capturedTitle -> {
+                    inTitle = !closing
+                    capturedTitle = closing
+                }
+                name in blockTags -> output.append('\n')
+            }
+            true
+        }
+        return collapseWhitespace(decodeHtmlEntities(title.toString())) to
+            collapseWhitespace(decodeHtmlEntities(output.toString())).take(MAX_TEXT_CHARS + 1)
     }
 
-    fun extractReadableHtml(html: String): Pair<String, String> {
-        val titleMatch = TITLE_REGEX.find(html)
-        val title = titleMatch?.groupValues?.getOrNull(1)
-            ?.let(::decodeHtmlEntities)
-            ?.replace(Regex("\\s+"), " ")
-            ?.trim()
-            .orEmpty()
+    private val hiddenTags = setOf("script", "style", "noscript", "svg")
+    private val blockTags = setOf("p", "div", "br", "li", "ul", "ol", "tr", "h1", "h2", "h3", "h4",
+        "h5", "h6", "section", "article", "header", "footer", "blockquote")
+    private val horizontalSpace = Regex("[\\t ]+")
 
-        return title to plainText(html)
-    }
+    private fun collapseWhitespace(text: String): String =
+        text.lineSequence().map { horizontalSpace.replace(it, " ").trim() }
+            .filter { it.isNotEmpty() }.joinToString("\n")
 
-    private fun collapseWhitespace(text: String): String {
-        val lines = text.replace("\r\n", "\n").replace('\r', '\n')
-            .split('\n')
-            .map { line -> line.replace(Regex("[\\t ]+"), " ").trim() }
-            .filter { it.isNotEmpty() }
-        return lines.joinToString("\n")
+    // Advance over each candidate once, including malformed and unterminated tags.
+    internal fun scanHtml(input: String, checkCancellation: () -> Unit = {},
+                          text: (Int, Int) -> Unit = { _, _ -> },
+                          tag: (String, Boolean, Boolean, Int, Int) -> Boolean) {
+        var i = 0
+        var textStart = 0
+        var nextCancellationCheck = 0
+        while (i < input.length) {
+            if (i >= nextCancellationCheck) {
+                checkCancellation()
+                nextCancellationCheck = i + 1024
+            }
+            if (input[i] != '<' || i + 1 >= input.length) { i++; continue }
+            val start = i
+            if (input.startsWith("<!--", start)) {
+                text(textStart, start)
+                var end = start + 4
+                while (end + 2 < input.length && !input.startsWith("-->", end)) {
+                    if ((end and 1023) == 0) checkCancellation()
+                    end++
+                }
+                i = minOf(input.length, end + 3)
+                textStart = i
+                continue
+            }
+            val closing = input[i + 1] == '/'
+            var j = i + if (closing) 2 else 1
+            if (j >= input.length) break
+            val special = input[j] == '!' || input[j] == '?'
+            if (!special && !input[j].isLetter()) { i++; continue }
+            val nameStart = j
+            while (j < input.length && j - nameStart < 64 && (input[j].isLetterOrDigit() || input[j] == '-')) j++
+            val name = if (special) "" else input.substring(nameStart, j).lowercase()
+            var quote: Char? = null
+            while (j < input.length && j - start < 8192) {
+                val c = input[j]
+                if (quote != null) {
+                    if (c == quote) quote = null
+                } else {
+                    if (c == '>' || c == '<') break
+                    if (c == '"' || c == '\'') quote = c
+                }
+                j++
+            }
+            if (j < input.length && input[j] == '>' && quote == null) {
+                text(textStart, start)
+                var tail = j - 1
+                while (tail > start && input[tail].isWhitespace()) tail--
+                if (!tag(name, closing, input[tail] == '/', start, j + 1)) return
+                i = j + 1
+                textStart = i
+            } else {
+                i = maxOf(start + 1, j)
+            }
+        }
+        checkCancellation()
+        text(textStart, input.length)
     }
 
     internal fun decodeHtmlEntities(text: String): String {
@@ -293,10 +397,6 @@ object WebpageReader {
         return result
     }
 
-    private val TITLE_REGEX = Regex("(?is)<title[^>]*>(.*?)</title>")
-    private val SCRIPT_STYLE_REGEX = Regex("(?is)<(script|style|noscript|svg)[^>]*>.*?</\\1>")
-    private val BLOCK_TAG_REGEX = Regex("(?is)</?(p|div|br|li|ul|ol|tr|h[1-6]|section|article|header|footer|blockquote)[^>]*>")
-    private val ANY_TAG_REGEX = Regex("<[^>]+>")
     private val NUMERIC_HEX_ENTITY = Regex("&#[xX]([0-9a-fA-F]+);")
     private val NUMERIC_DEC_ENTITY = Regex("&#([0-9]+);")
 }

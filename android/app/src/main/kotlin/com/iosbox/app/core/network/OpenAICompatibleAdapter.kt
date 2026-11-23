@@ -618,13 +618,14 @@ object OpenAICompatibleAdapter {
         LLMClient.applyCustomHeaders(customHeaders, builder)
 
         val root = client.fetchJsonElement(builder.build())
-        val items: List<JsonObject> = when (root) {
-            is JsonObject -> root.objList("data")
-                ?: root.objList("models")
+        val rows = when (root) {
+            is JsonObject -> (root["data"] as? JsonArray)
+                ?: (root["models"] as? JsonArray)
                 ?: throw IOException("Unexpected model list payload")
-            is JsonArray -> root.mapNotNull { it as? JsonObject }
+            is JsonArray -> root
             else -> throw IOException("Unexpected model list payload")
         }
+        val items = CatalogReadBudget().modelRows(rows)
 
         data class RankedModel(val model: ModelSpec, val created: Double, val position: Int)
 

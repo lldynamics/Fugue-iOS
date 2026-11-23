@@ -57,6 +57,18 @@ interface AssistantPresetDao {
 
 @Dao
 interface ConversationDao {
+    @Query("SELECT id FROM conversations")
+    suspend fun getIDs(): List<String>
+
+    @Query("""
+        SELECT assistanceSettingsBlobKey AS blobKey FROM conversations WHERE assistanceSettingsBlobKey LIKE 'restore_%'
+        UNION SELECT attachmentsBlobKey FROM chat_messages WHERE attachmentsBlobKey LIKE 'restore_%'
+        UNION SELECT assistanceMetadataBlobKey FROM chat_messages WHERE assistanceMetadataBlobKey LIKE 'restore_%'
+        UNION SELECT manuscriptBlobKey FROM book_volumes WHERE manuscriptBlobKey LIKE 'restore_%'
+        UNION SELECT payloadBlobKey FROM persona_profiles WHERE payloadBlobKey LIKE 'restore_%'
+    """)
+    suspend fun getRestoreBlobKeys(): List<String>
+
     @Query("SELECT * FROM conversations ORDER BY isPinned DESC, updatedAtEpochMs DESC")
     fun observeAll(): Flow<List<ConversationEntity>>
 
@@ -77,6 +89,9 @@ interface ConversationDao {
 
     @Query("DELETE FROM conversations WHERE id = :id")
     suspend fun deleteById(id: String)
+
+    @Query("UPDATE conversations SET updatedAtEpochMs = MAX(updatedAtEpochMs, :now), activeLeafMessageID = COALESCE(:leaf, activeLeafMessageID) WHERE id = :id")
+    suspend fun updateActivity(id: String, now: Long, leaf: String?)
 }
 
 @Dao
@@ -104,6 +119,9 @@ interface ChatMessageDao {
 
     @Update
     suspend fun update(entity: ChatMessageEntity)
+
+    @Query("UPDATE chat_messages SET assistanceMetadataBlobKey = :key WHERE id = :id")
+    suspend fun updateMetadataKey(id: String, key: String)
 
     @Query("DELETE FROM chat_messages WHERE id = :id")
     suspend fun deleteById(id: String)

@@ -30,6 +30,11 @@ object ConversationTree {
 
         val result = ordered.toMutableList()
         val preservedNorm = preserving.mapNotNull(::norm).toSet()
+        val groupIndicesById = HashMap<String, MutableList<Int>>()
+        for ((i, message) in result.withIndex()) {
+            val groupId = norm(message.comparisonGroupID) ?: continue
+            groupIndicesById.getOrPut(groupId) { mutableListOf() }.add(i)
+        }
         var currentParentID = VIRTUAL_ROOT_ID
         val visitedGroups = HashSet<String>()
         var index = 0
@@ -42,7 +47,7 @@ object ConversationTree {
                     index++
                     continue
                 }
-                val groupIndices = result.indices.filter { norm(result[it].comparisonGroupID) == gid }
+                val groupIndices = groupIndicesById[gid].orEmpty()
                 val groupParent = norm(msg.parentMessageID) ?: currentParentID
                 for (i in groupIndices) {
                     val member = result[i]
@@ -119,15 +124,17 @@ object ConversationTree {
         val result = mutableListOf<ChatMessageItem>()
         val emittedGroups = HashSet<String>()
         val emittedIDs = HashSet<String>()
+        val comparisons = HashMap<Pair<String, String?>, MutableList<ChatMessageItem>>()
+        for (message in sorted) {
+            val groupId = norm(message.comparisonGroupID) ?: continue
+            comparisons.getOrPut(groupId to norm(message.parentMessageID)) { mutableListOf() }.add(message)
+        }
 
         for (node in path) {
             val gid = norm(node.comparisonGroupID)
             if (gid != null) {
                 if (!emittedGroups.add(gid)) continue
-                val nodeParent = norm(node.parentMessageID)
-                val groupMembers = sorted.filter {
-                    norm(it.comparisonGroupID) == gid && norm(it.parentMessageID) == nodeParent
-                }
+                val groupMembers = comparisons[gid to norm(node.parentMessageID)].orEmpty()
                 for (member in groupMembers) {
                     val mid = norm(member.id) ?: continue
                     if (emittedIDs.add(mid)) {

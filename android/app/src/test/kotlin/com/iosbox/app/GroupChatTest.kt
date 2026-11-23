@@ -12,6 +12,7 @@ import com.iosbox.app.core.model.GroupSpeechStyle
 import com.iosbox.app.core.model.MessageAssistanceMetadata
 import com.iosbox.app.core.model.MessageRole
 import com.iosbox.app.core.model.PersonaMaterial
+import com.iosbox.app.core.model.PickedGroupMention
 import com.iosbox.app.core.model.ResolvedModelTarget
 import com.iosbox.app.core.network.GroupDiscussionCoordinator
 import com.iosbox.app.core.network.GroupStreamSanitizer
@@ -199,6 +200,48 @@ class GroupChatTest {
             priorMessages = emptyList()
         )
         assertEquals("M_ARCH", smartPlan.first().member.id)
+    }
+
+    @Test
+    fun wholeMentionsAndPickedRecipientsSurviveAnEditWithoutExpandingTheRoster() {
+        val first = memberPM.copy(name = "Alex")
+        val second = memberArch.copy(name = "Alex")
+        val third = memberVC.copy(name = "Alexandra")
+        val roster = listOf(first, second, third)
+        val plain = GroupDiscussionCoordinator.extractMentions("@Alex What do you think?", roster)
+        assertTrue(plain.members.isEmpty())
+        assertEquals(listOf(third), GroupDiscussionCoordinator.extractMentions("@Alexandra, thoughts?", roster).members)
+        assertTrue(GroupDiscussionCoordinator.extractMentions("@everyoneElse and editor@example.com", roster).members.isEmpty())
+        assertTrue(GroupDiscussionCoordinator.extractMentions("@everyone, thoughts?", roster).mentionsAll)
+
+        val original = "@Alex Any recommendations?"
+        val edited = "📚 $original Please include a short list."
+        val originalPicks = listOf(PickedGroupMention(0, "@Alex", second.id))
+        val picks = PickedGroupMention.updating(originalPicks, original, edited)
+        val selected = GroupDiscussionCoordinator.extractMentions(edited, roster, picks)
+        val planned = GroupDiscussionCoordinator.selectInitialPlan(
+            edited, roster, GroupSpeakingMode.MENTION_ONLY, 4, emptyList(), resolvedMentions = selected
+        )
+        assertEquals(listOf(second.id), planned.map { it.member.id })
+        val reservedPick = PickedGroupMention(0, "@all", first.id)
+        val mutedPick = GroupDiscussionCoordinator.extractMentions("@all Hello", listOf(second), listOf(reservedPick))
+        assertFalse(mutedPick.mentionsAll)
+        assertTrue(mutedPick.members.isEmpty())
+    }
+
+    @Test
+    fun groupHistoryHonorsDividerAndExcludedMessages() {
+        val old = sampleMessage("OLD", MessageRole.USER, "Prior topic", sortIndex = 1)
+        val divider = sampleMessage("DIV", MessageRole.SYSTEM, "", sortIndex = 2)
+            .copy(assistanceMetadata = MessageAssistanceMetadata(isContextDivider = true))
+        val hidden = sampleMessage("EXCLUDED", MessageRole.ASSISTANT, "Local note", memberPM, 3)
+            .copy(assistanceMetadata = MessageAssistanceMetadata(isExcludedFromContext = true))
+        val visible = sampleMessage("VISIBLE", MessageRole.USER, "Current topic", sortIndex = 4)
+        val history = GroupDiscussionCoordinator.buildPromptHistory(listOf(old, divider, hidden, visible), memberPM, 1)
+        assertEquals(1, history.size)
+        assertTrue(history.single().content.contains("Current topic"))
+        assertFalse(history.single().content.contains("Prior topic"))
+        assertFalse(history.single().content.contains("Local note"))
     }
 
     @Test

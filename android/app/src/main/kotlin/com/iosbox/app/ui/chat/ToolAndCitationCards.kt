@@ -1,8 +1,7 @@
 package com.iosbox.app.ui.chat
 
-import android.content.Intent
 import androidx.compose.foundation.BorderStroke
-import androidx.core.net.toUri
+import com.iosbox.app.core.system.WebLinkHandoff
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -187,21 +186,21 @@ internal fun SearchCitationsCard(search: SearchEvidence) {
                             modifier = Modifier.padding(vertical = 4.dp)
                         )
                     }
+                    val link = remember(src.url) { WebLinkHandoff.destination(src.url) }
+                    val interaction = if (link == null) Modifier else Modifier.clickable {
+                        WebLinkHandoff.open(context, src.url)
+                    }
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                runCatching {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, src.url.toUri()))
-                                }
-                            }
+                            .then(interaction)
                             .padding(vertical = 2.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         Text(
                             text = "[${src.id}] ${src.title}",
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
-                            color = accent.readableText,
+                            color = if (link == null) MaterialTheme.colorScheme.onSurface else accent.readableText,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )

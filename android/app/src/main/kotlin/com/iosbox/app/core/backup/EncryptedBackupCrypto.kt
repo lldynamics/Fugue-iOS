@@ -21,6 +21,14 @@ object EncryptedBackupCrypto {
     const val MINIMUM_PASSWORD_CHARACTERS = 8
     const val DEFAULT_PBKDF2_ITERATIONS = 600_000
     const val MAXIMUM_FILE_BYTES = 256 * 1024 * 1024
+    // Import can retain the wire JSON, ciphertext, plaintext and decoded model graph at once.
+    val safeImportBytes: Int
+        get() = (Runtime.getRuntime().maxMemory() / 32).coerceIn(1024L * 1024, 24L * 1024 * 1024).toInt()
+
+    fun requireImportSize(bytes: Int, limit: Int = safeImportBytes) {
+        if (bytes > MAXIMUM_FILE_BYTES) throw BackupException.FileTooLarge()
+        if (bytes > limit) throw BackupException.ImportMemoryLimit(limit)
+    }
     private const val GCM_NONCE_BYTES = 12
     private const val GCM_TAG_BITS = 128
     private const val GCM_TAG_BYTES = 16
@@ -85,7 +93,7 @@ object EncryptedBackupCrypto {
     }
 
     fun decryptPayload(data: ByteArray, password: String): FullEncryptedPayload {
-        if (data.size > MAXIMUM_FILE_BYTES) throw BackupException.FileTooLarge()
+        requireImportSize(data.size)
         if (password.isEmpty()) throw BackupException.WrongPasswordOrCorrupted()
 
         val envelope = runCatching {

@@ -584,6 +584,8 @@ object AnthropicAdapter {
         val results = mutableListOf<ModelSpec>()
         var cursor: String? = null
         var pages = 0
+        val budget = CatalogReadBudget()
+        val seenCursors = HashSet<String>()
 
         do {
             val urlBuilder = baseEndpoint.toHttpUrl().newBuilder()
@@ -599,8 +601,10 @@ object AnthropicAdapter {
             }
             LLMClient.applyCustomHeaders(customHeaders, builder)
 
-            val page = client.fetchJsonObject(builder.build())
-            val items = page.objList("data") ?: throw IOException("Missing data array in Anthropic /models response")
+            val page = client.fetchJsonObject(builder.build(), budget)
+            val rows = page["data"] as? JsonArray
+                ?: throw IOException("Missing data array in Anthropic /models response")
+            val items = budget.modelRows(rows)
             for (item in items) {
                 val id = item.str("id")?.takeIf { it.isNotEmpty() } ?: throw IOException("Missing model id")
                 results.add(ModelSpec.create(id = id, displayName = item.str("display_name")))
@@ -611,8 +615,11 @@ object AnthropicAdapter {
             } else {
                 null
             }
+            val next = cursor
+            if (next != null && !seenCursors.add(next)) throw IOException("Repeated model list cursor")
             pages++
         } while (cursor != null && pages < 20)
+        if (cursor != null) throw IOException("Model list has too many pages")
 
         return results
     }

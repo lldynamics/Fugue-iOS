@@ -10,6 +10,7 @@ import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.model.MessageRole
 import com.iosbox.app.core.model.PersonaExcerpt
 import com.iosbox.app.core.model.PersonaMaterial
+import com.iosbox.app.core.model.PickedGroupMention
 import com.iosbox.app.core.storage.ChatMessageItem
 import com.iosbox.app.core.storage.ChatRepository
 import kotlinx.serialization.encodeToString
@@ -410,38 +411,71 @@ object GroupDiscussionCoordinator {
         return cjkCount == 0 && latinCount >= 4
     }
 
-    fun extractMentions(text: String, activeMembers: List<GroupMember>): MentionParseResult {
-        val lowered = text.lowercase()
-        if (lowered.contains("@所有人") || lowered.contains("@全体") ||
-            lowered.contains("@all") || lowered.contains("@everyone")
-        ) {
-            return MentionParseResult(mentionsAll = true, members = activeMembers)
-        }
-
-        val found = mutableListOf<Pair<Int, GroupMember>>()
+    fun extractMentions(
+        text: String,
+        activeMembers: List<GroupMember>,
+        pickedMentions: List<PickedGroupMention> = emptyList()
+    ): MentionParseResult {
+        val broadcasts = setOf("@所有人", "@全体", "@all", "@everyone")
+        val membersByAlias = mutableMapOf<String, MutableSet<String>>()
         for (member in activeMembers) {
-            val tokens = buildList {
-                add("@${member.name}")
-                if (member.title.isNotEmpty()) {
-                    add("@${member.displayLabel}")
-                    add("@${member.title}")
-                }
-            }
-            var earliestOffset: Int? = null
-            for (token in tokens) {
-                if (token.length <= 1) continue
-                val idx = text.indexOf(token, ignoreCase = true)
-                if (idx >= 0 && (earliestOffset == null || idx < earliestOffset)) {
-                    earliestOffset = idx
-                }
-            }
-            if (earliestOffset != null) {
-                found.add(earliestOffset to member)
+            for (alias in listOf(member.mentionToken, member.name, member.displayLabel, member.title)) {
+                val name = alias.trim().lowercase()
+                if (name.isNotEmpty()) membersByAlias.getOrPut("@$name") { mutableSetOf() }.add(member.id)
             }
         }
+        val aliases = (broadcasts + membersByAlias.keys).sortedByDescending { it.length }
+        val membersByID = activeMembers.associateBy { it.id }
+        val picks = pickedMentions.associateBy { it.offset }
+        val attachedPunctuation = "@/:.\\=+#%&?"
+        fun Char.isAsciiWord() = this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9' || this == '_' || this == '-'
+        fun endsAtBoundary(end: Int): Boolean {
+            val next = text.getOrNull(end) ?: return true
+            if (next == '.' && text.getOrNull(end + 1)?.isAsciiWord() == true) return false
+            val codePoint = text.codePointAt(end)
+            return !next.isAsciiWord() && !Character.isLetterOrDigit(codePoint) &&
+                Character.getType(codePoint) != Character.NON_SPACING_MARK.toInt()
+        }
 
-        found.sortBy { it.first }
-        return MentionParseResult(mentionsAll = false, members = found.map { it.second })
+        val found = mutableListOf<GroupMember>()
+        val seen = mutableSetOf<String>()
+        var offset = 0
+        while (offset < text.length) {
+            if (text[offset] != '@') {
+                offset++
+                continue
+            }
+            val before = text.getOrNull(offset - 1)
+            val startsAtBoundary = before == null || (!before.isAsciiWord() && before !in attachedPunctuation)
+            val pick = picks[offset]
+            if (pick != null && pick.token.length > 1 && text.startsWith(pick.token, offset)) {
+                offset += pick.token.length
+                val member = membersByID[pick.memberID]
+                if (startsAtBoundary && endsAtBoundary(offset) && member != null && seen.add(member.id)) {
+                    found.add(member)
+                }
+                continue
+            }
+            if (!startsAtBoundary) {
+                offset++
+                continue
+            }
+            val alias = aliases.firstOrNull {
+                it.length <= text.length - offset && text.startsWith(it, offset, ignoreCase = true)
+                    && endsAtBoundary(offset + it.length)
+            }
+            if (alias == null) {
+                offset++
+                continue
+            }
+            offset += alias.length
+            if (alias in broadcasts && alias !in membersByAlias) {
+                return MentionParseResult(mentionsAll = true, members = activeMembers)
+            }
+            val member = membersByAlias[alias]?.singleOrNull()?.let(membersByID::get)
+            if (member != null && seen.add(member.id)) found.add(member)
+        }
+        return MentionParseResult(mentionsAll = false, members = found)
     }
 
     /**
@@ -461,14 +495,14 @@ object GroupDiscussionCoordinator {
         val filtered = mutableListOf<ChatMessageItem>()
         val processedGroups = HashSet<String>()
 
-        for (msg in messages) {
-            if (msg.role == MessageRole.SYSTEM) continue
+        val context = ChatRepository.contextMessages(messages)
+        val groups = context.filter { it.comparisonGroupID != null }.groupBy { it.comparisonGroupID?.uppercase() }
+        for (msg in context) {
             val gid = msg.comparisonGroupID
             if (gid != null) {
                 if (!processedGroups.add(gid.uppercase())) continue
-                val winner = messages.firstOrNull { c ->
-                    c.comparisonGroupID.equals(gid, ignoreCase = true) &&
-                        c.isSelectedInGroup &&
+                val winner = groups[gid.uppercase()]?.firstOrNull { c ->
+                    c.isSelectedInGroup &&
                         c.content.isNotEmpty() &&
                         (!c.isSynthesis || ArenaSynthesis.isCurrent(c, messages))
                 }
@@ -759,13 +793,14 @@ Your persona & stance: ${speaker.rolePrompt}
         activeMembers: List<GroupMember>,
         speakingMode: GroupSpeakingMode,
         maxRelayTurns: Int,
-        priorMessages: List<ChatMessageItem>
+        priorMessages: List<ChatMessageItem>,
+        resolvedMentions: MentionParseResult? = null
     ): List<PlannedTurn> {
         if (activeMembers.isEmpty()) return emptyList()
-        val mentions = extractMentions(userText, activeMembers)
+        val mentions = resolvedMentions ?: extractMentions(userText, activeMembers)
 
         if (mentions.mentionsAll) {
-            return activeMembers.mapIndexed { idx, m ->
+            return mentions.members.mapIndexed { idx, m ->
                 val intent = if (idx == 0) GroupSpeechIntent.OPEN_PERSPECTIVE
                 else if (idx % 2 == 1) GroupSpeechIntent.REBUTTAL
                 else GroupSpeechIntent.ALTERNATIVE

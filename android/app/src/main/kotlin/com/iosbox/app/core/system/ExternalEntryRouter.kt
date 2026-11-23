@@ -1,11 +1,16 @@
 package com.iosbox.app.core.system
 
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Process
 import android.net.Uri
 import androidx.core.content.IntentCompat
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.MessageAttachment
 import com.iosbox.app.core.network.WebpageReader
+import com.iosbox.app.core.storage.AttachmentProcessor
+import com.iosbox.app.core.storage.ChatRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -67,13 +72,15 @@ data class ExternalSharePayload(
     val subject: String? = null,
     val streamUris: List<String> = emptyList(),
     val detectedHttpsUrl: String? = null,
-    val isProcessText: Boolean = false
+    val isProcessText: Boolean = false,
+    val attachmentsRejected: Boolean = false
 )
 
 data class InitialConversationDraft(
     val text: String,
     val attachments: List<MessageAttachment> = emptyList(),
-    val autoSend: Boolean = false
+    val autoSend: Boolean = false,
+    val userAuthored: Boolean = false
 )
 
 sealed interface IncomingEntryRequest {
@@ -105,9 +112,9 @@ object ExternalEntryParser {
         val uri = runCatching { URI(raw) }.getOrNull() ?: return null
         if (!uri.scheme.equals("fugue", ignoreCase = true)) return null
         val host = uri.host?.lowercase().orEmpty()
-        val path = uri.path.orEmpty().trim('/')
+        val path = uri.path.orEmpty().removePrefix("/")
         return when (host) {
-            "chat" -> path.takeIf { it.isNotEmpty() }?.let { IncomingEntryRequest.OpenConversation(it) }
+            "chat" -> ChatRepository.canonicalConversationID(path)?.let { IncomingEntryRequest.OpenConversation(it) }
             "new-chat" -> IncomingEntryRequest.NewChat
             "new-arena" -> IncomingEntryRequest.NewArena
             "flashcards" -> IncomingEntryRequest.OpenFlashcards
@@ -122,11 +129,13 @@ class ExternalEntryRouter {
 
     private val stagedDrafts = ConcurrentHashMap<String, InitialConversationDraft>()
 
-    fun ingestIntent(intent: Intent?) {
+    fun ingestIntent(intent: Intent?, context: Context) {
         if (intent == null) return
 
-        val explicitConvId = intent.getStringExtra(EXTRA_CONVERSATION_ID)?.trim()
-        if (!explicitConvId.isNullOrEmpty()) {
+        val explicitConvId = ChatRepository.canonicalConversationID(
+            runCatching { intent.getStringExtra(EXTRA_CONVERSATION_ID) }.getOrNull()
+        )
+        if (explicitConvId != null) {
             _pendingRequest.value = IncomingEntryRequest.OpenConversation(explicitConvId)
             return
         }
@@ -152,47 +161,70 @@ class ExternalEntryRouter {
                     )
                 }
             }
-            Intent.ACTION_SEND -> {
-                val sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim().orEmpty()
-                val subject = intent.getCharSequenceExtra(Intent.EXTRA_SUBJECT)?.toString()?.trim()
-                val streamUri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
-                val uris = streamUri?.let { listOf(it.toString()) } ?: emptyList()
-                if (sharedText.isNotEmpty() || uris.isNotEmpty()) {
-                    _pendingRequest.value = IncomingEntryRequest.SharedContent(
-                        ExternalSharePayload(
-                            sharedText = sharedText,
-                            subject = subject,
-                            streamUris = uris,
-                            detectedHttpsUrl = ExternalEntryParser.extractSinglePublicHttpsUrl(sharedText),
-                            isProcessText = false
-                        )
-                    )
+            Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> {
+                val payload = try {
+                    sharedPayload(context, intent)
+                } catch (_: RuntimeException) {
+                    ExternalSharePayload(attachmentsRejected = true)
+                }
+                if (payload.sharedText.isNotEmpty() || payload.streamUris.isNotEmpty() || payload.attachmentsRejected) {
+                    _pendingRequest.value = IncomingEntryRequest.SharedContent(payload)
                 }
             }
-            Intent.ACTION_SEND_MULTIPLE -> {
-                val sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim().orEmpty()
-                val subject = intent.getCharSequenceExtra(Intent.EXTRA_SUBJECT)?.toString()?.trim()
-                val streamUris = IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
-                    ?.map { it.toString() }
-                    .orEmpty()
-                if (sharedText.isNotEmpty() || streamUris.isNotEmpty()) {
-                    _pendingRequest.value = IncomingEntryRequest.SharedContent(
-                        ExternalSharePayload(
-                            sharedText = sharedText,
-                            subject = subject,
-                            streamUris = streamUris,
-                            detectedHttpsUrl = ExternalEntryParser.extractSinglePublicHttpsUrl(sharedText),
-                            isProcessText = false
-                        )
-                    )
-                }
-            }
+        }
+    }
+
+    private fun sharedPayload(context: Context, intent: Intent): ExternalSharePayload {
+        val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim().orEmpty()
+        val subject = intent.getCharSequenceExtra(Intent.EXTRA_SUBJECT)?.toString()?.trim()
+        val items: List<*>? = if (intent.action == Intent.ACTION_SEND) {
+            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { listOf(it) }
+        } else {
+            IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+        }
+        val clip = intent.clipData
+        val clipCount = clip?.itemCount ?: 0
+        // Older Android versions do not verify the types inside a Parcelable list.
+        val rejected = if (items == null) {
+            intent.hasExtra(Intent.EXTRA_STREAM)
+        } else {
+            items.size > AttachmentProcessor.MAXIMUM_ATTACHMENT_COUNT ||
+                (items.isNotEmpty() && ((intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) == 0 ||
+                    clipCount > AttachmentProcessor.MAXIMUM_ATTACHMENT_COUNT ||
+                    items.any { item ->
+                        item !is Uri || (intent.data != item && (0 until clipCount).none { clip?.getItemAt(it)?.uri == item }) ||
+                            !canReadSharedAttachment(context, item)
+                    }))
+        }
+        return ExternalSharePayload(
+            sharedText = text,
+            subject = subject,
+            streamUris = if (rejected) emptyList() else items.orEmpty().map { it.toString() },
+            detectedHttpsUrl = ExternalEntryParser.extractSinglePublicHttpsUrl(text),
+            attachmentsRejected = rejected
+        )
+    }
+
+    companion object {
+        const val ACTION_NEW_CHAT = "com.iosbox.app.action.NEW_CHAT"
+        const val EXTRA_CONVERSATION_ID = "extra_conversation_id"
+
+        fun canReadSharedAttachment(context: Context, uri: Uri): Boolean {
+            if (uri.scheme != "content") return false
+            val authority = uri.authority?.takeIf { it.isNotEmpty() } ?: return false
+            val provider = context.packageManager.resolveContentProvider(authority, 0) ?: return false
+            if (provider.packageName == context.packageName || provider.applicationInfo.uid == Process.myUid()) return false
+            return context.checkUriPermission(uri, Process.myPid(), Process.myUid(),
+                Intent.FLAG_GRANT_READ_URI_PERMISSION) == PackageManager.PERMISSION_GRANTED
         }
     }
 
     fun clearPendingRequest() {
         _pendingRequest.value = null
     }
+
+    fun consumeRequest(expected: IncomingEntryRequest): Boolean =
+        _pendingRequest.compareAndSet(expected, null)
 
     fun stageInitialDraft(conversationId: String, draft: InitialConversationDraft) {
         stagedDrafts[conversationId.uppercase()] = draft
@@ -201,8 +233,4 @@ class ExternalEntryRouter {
     fun consumeInitialDraft(conversationId: String): InitialConversationDraft? =
         stagedDrafts.remove(conversationId.uppercase())
 
-    companion object {
-        const val ACTION_NEW_CHAT = "com.iosbox.app.action.NEW_CHAT"
-        const val EXTRA_CONVERSATION_ID = "extra_conversation_id"
-    }
 }

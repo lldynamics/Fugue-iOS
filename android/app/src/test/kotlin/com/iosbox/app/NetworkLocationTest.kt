@@ -3,8 +3,17 @@ package com.iosbox.app.core.network
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.InetAddress
 
 class NetworkLocationTest {
+    @Test
+    fun cleartextPeerPolicyUsesResolvedAddressBytes() {
+        assertTrue(NetworkLocation.isPrivateCleartextAddress(InetAddress.getByAddress(byteArrayOf(10, 1, 2, 3))))
+        assertTrue(NetworkLocation.isPrivateCleartextAddress(InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))))
+        assertFalse(NetworkLocation.isPrivateCleartextAddress(InetAddress.getByAddress(byteArrayOf(8, 8, 8, 8))))
+        assertFalse(NetworkLocation.isPrivateCleartextAddress(InetAddress.getByAddress(byteArrayOf(0, 0, 0, 0))))
+    }
+
     @Test
     fun detectsPrivateAndLocalHostsAccurately() {
         assertTrue(NetworkLocation.isLocalOrPrivate("http://127.0.0.1:11434/v1"))
