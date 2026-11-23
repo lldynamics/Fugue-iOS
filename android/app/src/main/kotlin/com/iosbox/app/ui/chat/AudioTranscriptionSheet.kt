@@ -2,20 +2,26 @@ package com.iosbox.app.ui.chat
 
 import android.Manifest
 import android.content.ContentResolver
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -23,10 +29,14 @@ import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -58,6 +68,7 @@ import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.network.AudioTranscriptionService
 import com.iosbox.app.core.network.TranscriptActionMode
 import com.iosbox.app.core.storage.ProviderItem
+import com.iosbox.app.core.system.AudioMeteringNormalizer
 import com.iosbox.app.core.system.AudioRecorderController
 import com.iosbox.app.ui.theme.DS
 import kotlinx.coroutines.CancellationException
@@ -97,7 +108,10 @@ fun AudioTranscriptionSheet(
     val prefs by container.preferences.state.collectAsStateWithLifecycle()
     val recorder = remember(context) { AudioRecorderController(context) }
     val isRecording by recorder.isRecording.collectAsStateWithLifecycle()
+    val isPaused by recorder.isPaused.collectAsStateWithLifecycle()
     val elapsedSeconds by recorder.elapsedSeconds.collectAsStateWithLifecycle()
+    val levelHistory by recorder.levelHistory.collectAsStateWithLifecycle()
+    val isPlayingPreview by recorder.isPlayingPreview.collectAsStateWithLifecycle()
 
     var stagedAudio by remember { mutableStateOf<StagedAudioClip?>(null) }
     var transcriptText by remember { mutableStateOf("") }
@@ -108,8 +122,47 @@ fun AudioTranscriptionSheet(
 
     DisposableEffect(recorder) {
         onDispose {
+            recorder.stopPreviewPlayback()
             stagedAudio?.tempFile?.delete()
             recorder.release()
+        }
+    }
+
+    val dictationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val dictated = result.data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?.trim()
+        if (!dictated.isNullOrBlank()) {
+            transcriptText = if (transcriptText.isBlank()) dictated else "$transcriptText\n\n$dictated"
+            errorMessage = null
+        }
+    }
+
+    fun launchDeviceDictation() {
+        recorder.stopPreviewPlayback()
+        errorMessage = null
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            val configuredLang = prefs.audioTranscriptionLanguage.trim()
+            val locale = if (configuredLang.isNotEmpty()) {
+                Locale.forLanguageTag(configuredLang.replace('_', '-'))
+            } else {
+                Locale.getDefault()
+            }
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale.toLanguageTag())
+            putExtra(
+                RecognizerIntent.EXTRA_PROMPT,
+                L10n.text("请开始口述或会议发言（免费系统识别）", "Speak to dictate notes (free on-device)")
+            )
+        }
+        runCatching { dictationLauncher.launch(intent) }.onFailure {
+            errorMessage = L10n.text(
+                "当前设备暂不支持系统语音听写服务，可录音后使用 Whisper 转写。",
+                "System speech recognition is unavailable on this device. Please record and transcribe via Whisper."
+            )
         }
     }
 
@@ -258,8 +311,8 @@ fun AudioTranscriptionSheet(
                     ) {
                         Text(
                             text = L10n.text(
-                                "尚未连接 OpenAI 兼容服务商（如 OpenAI / Groq / 硅基流动 / 本地 Whisper），暂无法转写。",
-                                "No enabled OpenAI-compatible provider found for /audio/transcriptions."
+                                "未连接 Whisper 服务商（OpenAI / Groq / 硅基流动）：可直接使用下方「设备免费听写」，或先配置 Whisper Key。",
+                                "No Whisper provider connected: use Free Device Dictation below or configure an endpoint."
                             ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onErrorContainer,
@@ -275,11 +328,67 @@ fun AudioTranscriptionSheet(
                 }
             }
 
+            if (isRecording) {
+                Surface(
+                    shape = RoundedCornerShape(DS.Radius.sm),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = DS.Spacing.md, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        AudioWaveformBars(
+                            levels = levelHistory,
+                            isPaused = isPaused,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (isPaused) L10n.text("录音已暂停", "Paused") else L10n.text("正在录音", "Recording"),
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = if (isPaused) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error
+                            )
+                            val mins = elapsedSeconds / 60
+                            val secs = elapsedSeconds % 60
+                            Text(
+                                text = String.format(Locale.US, "%02d:%02d", mins, secs),
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(DS.Spacing.sm)
             ) {
                 if (isRecording) {
+                    OutlinedButton(
+                        enabled = !isTranscribing,
+                        onClick = {
+                            if (isPaused) {
+                                recorder.resumeRecording().onFailure { errorMessage = it.message }
+                            } else {
+                                recorder.pauseRecording().onFailure { errorMessage = it.message }
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = if (isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.size(6.dp))
+                        Text(if (isPaused) L10n.text("继续", "Resume") else L10n.text("暂停", "Pause"))
+                    }
+
                     Button(
                         onClick = {
                             recorder.stopRecording().fold(
@@ -309,7 +418,7 @@ fun AudioTranscriptionSheet(
                         Spacer(modifier = Modifier.size(6.dp))
                         val mins = elapsedSeconds / 60
                         val secs = elapsedSeconds % 60
-                        Text(String.format(Locale.US, "%s %02d:%02d", L10n.text("停止录音", "Stop"), mins, secs))
+                        Text(String.format(Locale.US, "%s %02d:%02d", L10n.text("停止", "Stop"), mins, secs))
                     }
                 } else {
                     Button(
@@ -331,19 +440,30 @@ fun AudioTranscriptionSheet(
                         Spacer(modifier = Modifier.size(6.dp))
                         Text(L10n.text("开始录音", "Record"))
                     }
-                }
 
-                OutlinedButton(
-                    enabled = !isRecording && !isTranscribing,
-                    onClick = {
-                        audioFileLauncher.launch(arrayOf("audio/*", "video/mp4", "application/ogg"))
-                    },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Filled.AudioFile, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.size(6.dp))
-                    Text(L10n.text("导入音频", "Import Audio"))
+                    OutlinedButton(
+                        enabled = !isTranscribing,
+                        onClick = {
+                            recorder.stopPreviewPlayback()
+                            audioFileLauncher.launch(arrayOf("audio/*", "video/mp4", "application/ogg"))
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Filled.AudioFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.size(6.dp))
+                        Text(L10n.text("导入音频", "Import Audio"))
+                    }
                 }
+            }
+
+            OutlinedButton(
+                enabled = !isRecording && !isTranscribing,
+                onClick = { launchDeviceDictation() },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Filled.RecordVoiceOver, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.size(6.dp))
+                Text(L10n.text("设备免费听写（免 Whisper Key）", "Free Device Dictation (No Key Required)"))
             }
 
             stagedAudio?.let { clip ->
@@ -371,9 +491,29 @@ fun AudioTranscriptionSheet(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        FilledTonalIconButton(
+                            enabled = !isRecording && !isTranscribing,
+                            onClick = {
+                                recorder.togglePreviewPlayback(clip.tempFile, clip.bytes).onFailure { err ->
+                                    errorMessage = err.message
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = if (isPlayingPreview) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                                contentDescription = if (isPlayingPreview) {
+                                    L10n.text("停止试听", "Stop Preview")
+                                } else {
+                                    L10n.text("试听", "Preview")
+                                }
+                            )
+                        }
                         Button(
                             enabled = provider != null && !isTranscribing && !isRecording,
-                            onClick = { requestTranscribeWithConsent() }
+                            onClick = {
+                                recorder.stopPreviewPlayback()
+                                requestTranscribeWithConsent()
+                            }
                         ) {
                             Text(
                                 if (isTranscribing) L10n.text("转写中…", "Transcribing…")
@@ -541,4 +681,45 @@ private fun readAudioClipFromUri(contentResolver: ContentResolver, uri: Uri): St
         bytes = bytes,
         tempFile = null
     )
+}
+
+@Composable
+private fun AudioWaveformBars(
+    levels: List<Float>,
+    isPaused: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val capacity = AudioMeteringNormalizer.MAX_SAMPLES
+    val padCount = (capacity - levels.size).coerceAtLeast(0)
+    val recent = if (levels.size > capacity) levels.takeLast(capacity) else levels
+    val activeColor = if (isPaused) {
+        MaterialTheme.colorScheme.tertiary
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+    val placeholderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.24f)
+
+    Row(
+        modifier = modifier.height(30.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        repeat(padCount) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(4.dp)
+                    .background(placeholderColor, CircleShape)
+            )
+        }
+        recent.forEach { level ->
+            val barHeight = (level.coerceIn(0.08f, 1.0f) * 28f).coerceAtLeast(3f)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(barHeight.dp)
+                    .background(activeColor, CircleShape)
+            )
+        }
+    }
 }

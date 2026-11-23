@@ -1,6 +1,13 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum TranscriptionEngine: String, CaseIterable, Identifiable {
+    case whisper
+    case localSpeech
+
+    var id: String { rawValue }
+}
+
 struct AudioTranscriptionSheet: View {
     let providers: [ProviderConfig]
     let onSubmit: (_ transcript: String, _ sourceLabel: String?, _ mode: TranscriptActionMode, _ autoExtractSchedule: Bool) -> Void
@@ -10,6 +17,7 @@ struct AudioTranscriptionSheet: View {
     @State private var recorder = AudioRecorderService()
     @State private var consent = AIConsentGate()
 
+    @State private var selectedEngine: TranscriptionEngine = .whisper
     @State private var stagedFileName: String?
     @State private var stagedAudioData: Data?
     @State private var isTemporaryRecording = false
@@ -43,7 +51,30 @@ struct AudioTranscriptionSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    if let provider = activeProvider {
+                    Picker("识别引擎", selection: $selectedEngine) {
+                        Text("Whisper 云端").tag(TranscriptionEngine.whisper)
+                        Text("设备免费识别").tag(TranscriptionEngine.localSpeech)
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(isTranscribing)
+
+                    if selectedEngine == .localSpeech {
+                        let lang = preferences.audioTranscriptionLanguage.isEmpty
+                            ? String(localized: "系统默认语言")
+                            : preferences.audioTranscriptionLanguage
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Apple 语音识别（免 Key）")
+                                    .font(.subheadline.weight(.medium))
+                                Text("识别语言：\(lang) · 适合会议录音与口述免费转写")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "mic.badge.plus")
+                                .foregroundStyle(preferences.accentTheme.readableText)
+                        }
+                    } else if let provider = activeProvider {
                         let lang = preferences.audioTranscriptionLanguage.isEmpty
                             ? String(localized: "自动识别")
                             : preferences.audioTranscriptionLanguage
@@ -61,7 +92,7 @@ struct AudioTranscriptionSheet: View {
                         }
                     } else {
                         Label {
-                            Text("暂未配置可用的 OpenAI 兼容服务商，请先在「服务商」页面启用并填入 Key。")
+                            Text("暂未配置可用的 OpenAI 兼容服务商，可切换上方「设备免费识别」或先配置 Whisper Key。")
                                 .font(.footnote)
                                 .foregroundStyle(.orange)
                         } icon: {
@@ -74,47 +105,94 @@ struct AudioTranscriptionSheet: View {
                 }
 
                 Section {
+                    if recorder.isRecording {
+                        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                            AudioWaveformStrip(
+                                levels: recorder.levelHistory,
+                                isPaused: recorder.isPaused,
+                                tintColor: preferences.accentTheme.tintColor
+                            )
+                            HStack {
+                                Text(recorder.isPaused ? "已暂停" : "正在录音")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(recorder.isPaused ? .orange : .red)
+                                Spacer()
+                                let mins = recorder.elapsedSeconds / 60
+                                let secs = recorder.elapsedSeconds % 60
+                                Text(String(format: "%02d:%02d", mins, secs))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+
                     HStack(spacing: DS.Spacing.sm) {
-                        Button {
-                            if recorder.isRecording {
+                        if recorder.isRecording {
+                            Button {
+                                if recorder.isPaused {
+                                    recorder.resumeRecording()
+                                } else {
+                                    recorder.pauseRecording()
+                                }
+                            } label: {
+                                Label(
+                                    recorder.isPaused ? String(localized: "继续") : String(localized: "暂停"),
+                                    systemImage: recorder.isPaused ? "play.circle.fill" : "pause.circle.fill"
+                                )
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(recorder.isPaused ? preferences.accentTheme.tintColor : .orange)
+                            .disabled(isTranscribing)
+
+                            Button {
                                 if let url = recorder.stopRecording() {
                                     loadRecordedFile(from: url)
                                 }
-                            } else {
+                            } label: {
+                                let mins = recorder.elapsedSeconds / 60
+                                let secs = recorder.elapsedSeconds % 60
+                                Label(
+                                    String(format: String(localized: "停止 %02d:%02d"), mins, secs),
+                                    systemImage: "stop.circle.fill"
+                                )
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.red)
+                            .disabled(isTranscribing)
+                        } else {
+                            Button {
+                                recorder.stopPreviewPlayback()
                                 cleanupStagedTempFile()
                                 stagedFileName = nil
                                 stagedAudioData = nil
                                 errorMessage = nil
                                 recorder.startRecording()
+                            } label: {
+                                Label(String(localized: "开始录音"), systemImage: "mic.fill")
+                                    .frame(maxWidth: .infinity)
                             }
-                        } label: {
-                            let mins = recorder.elapsedSeconds / 60
-                            let secs = recorder.elapsedSeconds % 60
-                            Label(
-                                recorder.isRecording
-                                    ? String(format: String(localized: "停止录音 %02d:%02d"), mins, secs)
-                                    : String(localized: "开始录音"),
-                                systemImage: recorder.isRecording ? "stop.circle.fill" : "mic.fill"
-                            )
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(recorder.isRecording ? .red : preferences.accentTheme.tintColor)
-                        .disabled(isTranscribing)
+                            .buttonStyle(.borderedProminent)
+                            .tint(preferences.accentTheme.tintColor)
+                            .disabled(isTranscribing)
 
-                        Button {
-                            showAudioImporter = true
-                        } label: {
-                            Label("导入音频", systemImage: "doc.badge.plus")
-                                .frame(maxWidth: .infinity)
+                            Button {
+                                recorder.stopPreviewPlayback()
+                                showAudioImporter = true
+                            } label: {
+                                Label("导入音频", systemImage: "doc.badge.plus")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isTranscribing)
                         }
-                        .buttonStyle(.bordered)
-                        .disabled(recorder.isRecording || isTranscribing)
                     }
                     .padding(.vertical, 4)
 
-                    if let fileName = stagedFileName, stagedAudioData != nil {
-                        HStack {
+                    if let fileName = stagedFileName, let data = stagedAudioData {
+                        HStack(spacing: DS.Spacing.xs) {
                             Image(systemName: "music.note")
                                 .foregroundStyle(preferences.accentTheme.readableText)
                             VStack(alignment: .leading, spacing: 2) {
@@ -127,6 +205,16 @@ struct AudioTranscriptionSheet: View {
                             }
                             Spacer()
                             Button {
+                                recorder.togglePreviewPlayback(url: stagedTempURL, data: data)
+                            } label: {
+                                Image(systemName: recorder.isPlayingPreview ? "stop.fill" : "play.fill")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(recorder.isRecording || isTranscribing)
+                            .accessibilityLabel(recorder.isPlayingPreview ? "停止试听" : "试听")
+
+                            Button {
                                 requestTranscribe()
                             } label: {
                                 if isTranscribing {
@@ -138,7 +226,7 @@ struct AudioTranscriptionSheet: View {
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
-                            .disabled(activeProvider == nil || isTranscribing || recorder.isRecording)
+                            .disabled((selectedEngine == .whisper && activeProvider == nil) || isTranscribing || recorder.isRecording)
                         }
                     }
 
@@ -203,6 +291,7 @@ struct AudioTranscriptionSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") {
+                        recorder.stopPreviewPlayback()
                         recorder.cancelAndDelete()
                         cleanupStagedTempFile()
                         dismiss()
@@ -237,7 +326,13 @@ struct AudioTranscriptionSheet: View {
                 }
             }
             .aiConsentSheet(consent)
+            .onAppear {
+                if activeProvider == nil {
+                    selectedEngine = .localSpeech
+                }
+            }
             .onDisappear {
+                recorder.stopPreviewPlayback()
                 if recorder.isRecording {
                     recorder.cancelAndDelete()
                 }
@@ -265,6 +360,7 @@ struct AudioTranscriptionSheet: View {
     }
 
     private func cleanupStagedTempFile() {
+        recorder.stopPreviewPlayback()
         if isTemporaryRecording, let url = stagedTempURL {
             try? FileManager.default.removeItem(at: url)
         }
@@ -273,8 +369,13 @@ struct AudioTranscriptionSheet: View {
     }
 
     private func requestTranscribe() {
+        recorder.stopPreviewPlayback()
+        if selectedEngine == .localSpeech {
+            performLocalTranscription()
+            return
+        }
         guard let provider = activeProvider else {
-            errorMessage = String(localized: "请先配置并启用 OpenAI 兼容服务商。")
+            errorMessage = String(localized: "请先配置并启用 OpenAI 兼容服务商，或切换为「设备免费识别」。")
             return
         }
         let recipient = AppCompliance.recipient(
@@ -287,10 +388,21 @@ struct AudioTranscriptionSheet: View {
         }
     }
 
+    private func performLocalTranscription() {
+        guard let data = stagedAudioData, let fileName = stagedFileName else { return }
+        let ext = (fileName as NSString).pathExtension
+        let language = preferences.audioTranscriptionLanguage.isEmpty ? nil : preferences.audioTranscriptionLanguage
+        runTranscriptionTask {
+            try await LocalSpeechTranscriber.transcribe(
+                audioData: data,
+                fileExtension: ext,
+                languageCode: language
+            )
+        }
+    }
+
     private func performTranscription(using provider: ProviderConfig) {
         guard let data = stagedAudioData, let fileName = stagedFileName else { return }
-        isTranscribing = true
-        errorMessage = nil
         let request = AudioTranscriptionRequest(
             baseURL: provider.baseURL,
             apiKey: provider.apiKey,
@@ -302,9 +414,17 @@ struct AudioTranscriptionSheet: View {
             mimeType: AudioTranscriptionService.mimeType(forFileName: fileName),
             audioData: data
         )
+        runTranscriptionTask {
+            try await AudioTranscriptionService.transcribe(request)
+        }
+    }
+
+    private func runTranscriptionTask(_ operation: @escaping @Sendable () async throws -> String) {
+        isTranscribing = true
+        errorMessage = nil
         Task {
             do {
-                let text = try await AudioTranscriptionService.transcribe(request)
+                let text = try await operation()
                 await MainActor.run {
                     if transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         transcriptText = text
@@ -321,5 +441,33 @@ struct AudioTranscriptionSheet: View {
                 }
             }
         }
+    }
+}
+
+private struct AudioWaveformStrip: View {
+    let levels: [Float]
+    let isPaused: Bool
+    let tintColor: Color
+
+    var body: some View {
+        let capacity = AudioMeteringNormalizer.maxSamples
+        let padCount = max(0, capacity - levels.count)
+        let displayLevels = Array(repeating: Float(0.08), count: padCount) + levels.suffix(capacity)
+
+        HStack(alignment: .center, spacing: 3) {
+            ForEach(Array(displayLevels.enumerated()), id: \.offset) { index, level in
+                let isPlaceholder = index < padCount
+                Capsule(style: .continuous)
+                    .fill(
+                        isPlaceholder
+                            ? Color.secondary.opacity(0.22)
+                            : (isPaused ? Color.orange.opacity(0.75) : tintColor)
+                    )
+                    .frame(maxWidth: .infinity)
+                    .frame(height: max(3, CGFloat(level) * 28))
+            }
+        }
+        .frame(height: 30)
+        .animation(.easeOut(duration: 0.09), value: displayLevels)
     }
 }

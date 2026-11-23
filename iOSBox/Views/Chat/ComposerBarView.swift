@@ -59,7 +59,9 @@ struct ComposerBarView: View {
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
     @State private var showCameraPicker = false
+    @State private var showDocumentScanner = false
     @State private var showFileImporter = false
+    @State private var isRunningLocalOCR = false
     @State private var searchQueryAutoSync = false
     @State private var speech = SpeechService.shared
     @State private var preferences = AppPreferences.shared
@@ -257,6 +259,34 @@ struct ComposerBarView: View {
                     }
                     .padding(.horizontal, DS.Spacing.md)
                 }
+
+                if draft.attachments.contains(where: { $0.kind == .image }) {
+                    HStack(spacing: DS.Spacing.sm) {
+                        Button {
+                            convertPendingImagesWithLocalOCR()
+                        } label: {
+                            HStack(spacing: 6) {
+                                if isRunningLocalOCR {
+                                    ProgressView().controlSize(.mini)
+                                } else {
+                                    Image(systemName: "doc.text.viewfinder")
+                                        .font(.caption.weight(.semibold))
+                                }
+                                Text(isRunningLocalOCR ? "正在本地识别文字…" : "本地 OCR 转文字（免识图 / 省 Token）")
+                                    .font(.caption.weight(.medium))
+                            }
+                            .foregroundStyle(theme.readableText)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(theme.softFill, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isRunningLocalOCR || draft.processingAttachments > 0)
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, DS.Spacing.md)
+                }
             }
 
             if let mentionOnlyHint {
@@ -350,6 +380,34 @@ struct ComposerBarView: View {
                     }
                 }
             }
+            .ignoresSafeArea()
+        }
+        .fullScreenCover(isPresented: $showDocumentScanner) {
+            DocumentScannerView(
+                onScan: { pages in
+                    let remainingSlots = max(0, AttachmentProcessor.maximumAttachmentCount - draft.attachments.count)
+                    let limitedPages = Array(pages.prefix(remainingSlots))
+                    if limitedPages.count < pages.count {
+                        draft.attachmentError = AttachmentError.limit.localizedDescription
+                    }
+                    guard !limitedPages.isEmpty else { return }
+                    draft.processingAttachments += 1
+                    Task {
+                        defer { draft.processingAttachments -= 1 }
+                        let processed = await Task.detached(priority: .userInitiated) {
+                            limitedPages.enumerated().compactMap { index, image in
+                                AttachmentProcessor.processImage(image, fileName: "scan-\(index + 1).jpg")
+                            }
+                        }.value
+                        for item in processed {
+                            appendAttachment(item)
+                        }
+                    }
+                },
+                onError: { message in
+                    draft.attachmentError = message
+                }
+            )
             .ignoresSafeArea()
         }
         .fileImporter(
@@ -584,6 +642,16 @@ struct ComposerBarView: View {
                 drawerTile(title: String(localized: "拍照"), systemImage: "camera") {
                     isCapabilityDrawerOpen = false
                     showCameraPicker = true
+                }
+                .disabled(!draft.isLoaded || draft.processingAttachments > 0)
+
+                drawerTile(title: String(localized: "扫描文档"), systemImage: "doc.viewfinder") {
+                    isCapabilityDrawerOpen = false
+                    if DocumentScannerView.isSupported {
+                        showDocumentScanner = true
+                    } else {
+                        draft.attachmentError = String(localized: "当前设备不支持文档相机扫描，可通过「相册」或「拍照」导入图片后点击本地 OCR 转文字。")
+                    }
                 }
                 .disabled(!draft.isLoaded || draft.processingAttachments > 0)
 
@@ -1000,6 +1068,8 @@ struct ComposerBarView: View {
                 Text(title)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
             }
             .frame(maxWidth: .infinity, minHeight: 48)
             .background(DS.Surface.canvas, in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
@@ -1208,6 +1278,27 @@ struct ComposerBarView: View {
     }
 
     private func appendAttachment(_ attachment: MessageAttachment) { draft.append(attachment) }
+
+    private func convertPendingImagesWithLocalOCR() {
+        guard !isRunningLocalOCR else { return }
+        let snapshot = draft.attachments
+        guard snapshot.contains(where: { $0.kind == .image }) else { return }
+        isRunningLocalOCR = true
+        draft.attachmentError = nil
+        Task {
+            let result = await DocumentOCRService.convertImageAttachmentsToOCRDocument(snapshot)
+            await MainActor.run {
+                isRunningLocalOCR = false
+                if let doc = result.document, !result.convertedIDs.isEmpty {
+                    let convertedSet = Set(result.convertedIDs)
+                    draft.attachments.removeAll { convertedSet.contains($0.id) }
+                    appendAttachment(doc)
+                } else {
+                    draft.attachmentError = String(localized: "未从所选图片中识别出可读文字，可直接保留原图发送。")
+                }
+            }
+        }
+    }
 
     @ViewBuilder
     private func pendingAttachmentChip(_ item: MessageAttachment) -> some View {

@@ -55,6 +55,7 @@ import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.FormatQuote
@@ -140,6 +141,8 @@ import com.iosbox.app.core.storage.ConversationSearch
 import com.iosbox.app.core.storage.ModelMentionParser
 import com.iosbox.app.core.storage.SlashPromptCommand
 import com.iosbox.app.core.system.CalendarIntentLauncher
+import com.iosbox.app.core.system.DocumentImageEnhancer
+import com.iosbox.app.core.system.DocumentScanFilter
 import com.iosbox.app.core.system.MessageExportRenderer
 import com.iosbox.app.core.system.PlainTextFormatter
 import com.iosbox.app.core.system.WebLinkHandoff
@@ -267,17 +270,62 @@ fun ChatDetailScreen(
 
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
     var pendingCameraFile by remember { mutableStateOf<File?>(null) }
+    var pendingEnhanceDocumentScan by remember { mutableStateOf(false) }
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { captured ->
         val uri = pendingCameraUri
         val file = pendingCameraFile
+        val shouldEnhance = pendingEnhanceDocumentScan
         pendingCameraUri = null
         pendingCameraFile = null
+        pendingEnhanceDocumentScan = false
         if (captured && uri != null) {
-            vm.attachUris(context.contentResolver, listOf(uri), imageOnly = true)
+            if (shouldEnhance && file != null) {
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        DocumentImageEnhancer.enhanceCapturedFile(file)
+                    }
+                    vm.attachUris(context.contentResolver, listOf(uri), imageOnly = true)
+                }
+            } else {
+                vm.attachUris(context.contentResolver, listOf(uri), imageOnly = true)
+            }
         } else {
             runCatching { file?.delete() }
+        }
+    }
+
+    fun launchCameraCapture(enhanceAsDocument: Boolean) {
+        runCatching {
+            val cameraDir = File(context.cacheDir, "camera").apply { mkdirs() }
+            val now = System.currentTimeMillis()
+            cameraDir.listFiles()?.forEach { stale ->
+                if (now - stale.lastModified() > 10 * 60 * 1000L) {
+                    stale.delete()
+                }
+            }
+            val captureFile = File.createTempFile("capture_", ".jpg", cameraDir)
+            val captureUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                captureFile
+            )
+            pendingCameraFile = captureFile
+            pendingCameraUri = captureUri
+            pendingEnhanceDocumentScan = enhanceAsDocument
+            cameraLauncher.launch(captureUri)
+        }.onFailure {
+            runCatching { pendingCameraFile?.delete() }
+            pendingCameraFile = null
+            pendingCameraUri = null
+            pendingEnhanceDocumentScan = false
+            vm.reportBannerError(
+                L10n.text(
+                    "无法启动系统相机应用。",
+                    "Unable to open a camera app on this device."
+                )
+            )
         }
     }
 
@@ -1242,6 +1290,40 @@ fun ChatDetailScreen(
                         AttachmentChip(attachment = att, onRemove = { vm.removeDraftAttachment(att.id) })
                     }
                 }
+                if (state.draftAttachments.any { it.kind == AttachmentKind.IMAGE }) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = DS.Spacing.md, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            onClick = {
+                                vm.updateDraftText(DocumentScanFilter.buildDocumentScanPrompt(state.draftText))
+                            },
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.78f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.DocumentScanner,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = L10n.text("扫图提文字", "Extract Text from Images"),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             Row(
@@ -1267,34 +1349,15 @@ fun ChatDetailScreen(
                             text = { Text(L10n.text("拍照提问", "Take Photo")) },
                             onClick = {
                                 showAttachMenu = false
-                                runCatching {
-                                    val cameraDir = File(context.cacheDir, "camera").apply { mkdirs() }
-                                    val now = System.currentTimeMillis()
-                                    cameraDir.listFiles()?.forEach { stale ->
-                                        if (now - stale.lastModified() > 10 * 60 * 1000L) {
-                                            stale.delete()
-                                        }
-                                    }
-                                    val captureFile = File.createTempFile("capture_", ".jpg", cameraDir)
-                                    val captureUri = FileProvider.getUriForFile(
-                                        context,
-                                        "${context.packageName}.fileprovider",
-                                        captureFile
-                                    )
-                                    pendingCameraFile = captureFile
-                                    pendingCameraUri = captureUri
-                                    cameraLauncher.launch(captureUri)
-                                }.onFailure {
-                                    runCatching { pendingCameraFile?.delete() }
-                                    pendingCameraFile = null
-                                    pendingCameraUri = null
-                                    vm.reportBannerError(
-                                        L10n.text(
-                                            "无法启动系统相机应用。",
-                                            "Unable to open a camera app on this device."
-                                        )
-                                    )
-                                }
+                                launchCameraCapture(enhanceAsDocument = false)
+                            }
+                        )
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Filled.DocumentScanner, contentDescription = null) },
+                            text = { Text(L10n.text("拍文档（清晰增强）", "Scan Document (Enhanced)")) },
+                            onClick = {
+                                showAttachMenu = false
+                                launchCameraCapture(enhanceAsDocument = true)
                             }
                         )
                         DropdownMenuItem(
