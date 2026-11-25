@@ -536,7 +536,7 @@ fun ChatDetailScreen(
                             )
                             DropdownMenuItem(
                                 leadingIcon = { Icon(Icons.Filled.ClearAll, contentDescription = null) },
-                                text = { Text(L10n.text("插入上下文清空分隔线", "Insert Context Divider")) },
+                                text = { Text(L10n.text("开始新话题（保留历史消息）", "Start a New Topic (Keep History)")) },
                                 enabled = !state.isGenerating && state.messages.isNotEmpty(),
                                 onClick = {
                                     showMoreMenu = false
@@ -596,8 +596,8 @@ fun ChatDetailScreen(
                 ) {
                     Text(
                         text = L10n.text(
-                            "尚未配置可用模型，点击前往「服务商」填入 API Key。",
-                            "No ready model yet. Tap to configure an API key in Providers."
+                            "尚未配置可用模型，点击前往「设置」填入 API Key。",
+                            "No ready model yet. Tap to configure an API key in Settings."
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onErrorContainer,
@@ -993,6 +993,11 @@ fun ChatDetailScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Text(
+                        text = L10n.text("本次", "This request"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     FilterChip(
                         selected = state.useWebSearchOnce,
                         onClick = vm::toggleUseWebSearchOnce,
@@ -1002,26 +1007,17 @@ fun ChatDetailScreen(
                         },
                         label = {
                             Text(
-                                text = L10n.text("联网搜索", "Web Search"),
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        }
-                    )
-                    FilterChip(
-                        selected = false,
-                        onClick = { showAudioSheet = true },
-                        enabled = !state.isGenerating,
-                        leadingIcon = {
-                            Icon(Icons.Filled.GraphicEq, contentDescription = null, modifier = Modifier.size(15.dp))
-                        },
-                        label = {
-                            Text(
-                                text = L10n.text("音频纪要", "Audio Notes"),
+                                text = L10n.text("联网搜索", "Web search"),
                                 style = MaterialTheme.typography.labelSmall
                             )
                         }
                     )
                     if (!prefs.simpleDailyMode) {
+                    Text(
+                        text = L10n.text("本会话", "This chat"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     if (!conv.isArenaMode) {
                         FilterChip(
                             selected = conv.assistanceSettings.enableAgentTools,
@@ -1344,6 +1340,16 @@ fun ChatDetailScreen(
                         expanded = showAttachMenu,
                         onDismissRequest = { showAttachMenu = false }
                     ) {
+                        if (conv != null && !conv.isGroupMode) {
+                            DropdownMenuItem(
+                                leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null) },
+                                text = { Text(L10n.text("音频纪要", "Audio notes")) },
+                                onClick = {
+                                    showAttachMenu = false
+                                    showAudioSheet = true
+                                }
+                            )
+                        }
                         DropdownMenuItem(
                             leadingIcon = { Icon(Icons.Filled.PhotoCamera, contentDescription = null) },
                             text = { Text(L10n.text("拍照提问", "Take Photo")) },

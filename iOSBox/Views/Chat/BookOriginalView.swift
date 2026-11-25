@@ -17,6 +17,7 @@ struct BookOriginalView: View {
     @ScaledMetric(relativeTo: .body) private var readingSize: CGFloat = 25
     @Environment(\.horizontalSizeClass) private var widthClass
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var chapters: [BookChapter] = []
     @State private var page: BookReadingPage?
     @State private var error: String?
@@ -50,7 +51,11 @@ struct BookOriginalView: View {
                             .frame(minHeight: 44)
                             .accessibilityIdentifier("reading.bookshelf")
                     } else {
-                        Label(book.title, systemImage: "book.pages").lineLimit(1)
+                        if page == nil {
+                            Label(book.title, systemImage: "book.pages").lineLimit(1)
+                        } else {
+                            Image(systemName: "book.pages").accessibilityHidden(true)
+                        }
                     }
                     Spacer()
                     if !chapters.isEmpty {
@@ -64,6 +69,15 @@ struct BookOriginalView: View {
                     }
                 }
                 .font(.subheadline.weight(.medium)).padding(.horizontal, 20).frame(minHeight: 48)
+                if let page, chapters.indices.contains(page.chapterIndex) {
+                    Text(verbatim: "\(book.title) · \(chapters[page.chapterIndex].title)")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(typeSize.isAccessibilitySize ? nil : 2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20).padding(.bottom, 8)
+                        .accessibilityIdentifier("reading.location")
+                }
                 Divider()
             }
             if let error {
@@ -128,7 +142,7 @@ struct BookOriginalView: View {
             } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(scheme == .dark ? Color(uiColor: .secondarySystemBackground) : Color(red: 0.985, green: 0.976, blue: 0.953))
+        .background(DS.Surface.canvas)
         .onChange(of: place.paragraph) { _, _ in recordPosition() }
         .onChange(of: place.chapter) { _, _ in recordPosition() }
         .onDisappear { flushPosition() }

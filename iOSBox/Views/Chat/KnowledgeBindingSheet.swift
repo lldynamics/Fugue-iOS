@@ -39,6 +39,12 @@ struct KnowledgeBindingSheet: View {
                             Label("清空本会话已绑定的知识库", systemImage: "xmark.circle")
                         }
                     }
+
+                    NavigationLink {
+                        KnowledgeSearchSettingsView()
+                    } label: {
+                        Label("混合向量检索与索引设置", systemImage: "magnifyingglass.circle")
+                    }
                 } footer: {
                     Text("绑定参考资料后，单聊、Arena 并发对比与圆桌群聊会自动检索高相关原文片段并带精确章节/页码作答；开启「工具」时模型也可主动调用 search_documents 深入查阅。")
                 }

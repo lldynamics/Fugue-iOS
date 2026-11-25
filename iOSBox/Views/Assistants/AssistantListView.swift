@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct AssistantListView: View {
     enum WorkshopSection: String, CaseIterable, Identifiable {
+        case projects
         case friends
         case books
         case presets
@@ -14,16 +15,18 @@ struct AssistantListView: View {
 
         var title: String {
             switch self {
+            case .projects: return String(localized: "项目")
             case .friends: return String(localized: "好友")
             case .presets: return String(localized: "助手预设")
             case .roundtables: return String(localized: "圆桌")
             case .books: return String(localized: "书架")
-            case .study: return String(localized: "闪卡")
+            case .study: return String(localized: "学习")
             }
         }
     }
 
     @Binding var activeSection: WorkshopSection
+    var onClose: (() -> Void)? = nil
     var onStartChatWithPreset: (AssistantPreset) -> Void
 
     @Environment(\.modelContext) private var modelContext
@@ -41,12 +44,15 @@ struct AssistantListView: View {
     @State private var preselectedBookID: UUID?
     @State private var editingPreset: AssistantPreset?
     @State private var showCreateSheet = false
+    @State private var editingWorkspace: ProjectWorkspace?
+    @State private var showCreateWorkspace = false
     @State private var showGroupSetup = false
     @State private var pickingBookFile = false
     @State private var importingBook = false
     @State private var bookToRemove: BookVolume?
     @State private var bookError: String?
     @State private var preferences = AppPreferences.shared
+    @State private var ocrQueue = BackgroundPDFOCRQueue.shared
     @State private var cardError: String?
     @State private var confirmRebuildCards = false
     @State private var flashcardStore = FlashcardStore.shared
@@ -55,6 +61,7 @@ struct AssistantListView: View {
     @State private var activeReviewBatch: IdentifiableCardBatch?
     @State private var editingFlashcard: StudyFlashcard?
     @State private var showCreateFlashcard = false
+    @State private var showEnglishCoach = false
     @State private var ankiExportURL: URL?
 
     private struct IdentifiableCardBatch: Identifiable {
@@ -64,9 +71,23 @@ struct AssistantListView: View {
     }
 
     private var visibleSections: [WorkshopSection] {
-        preferences.simpleDailyMode
-            ? WorkshopSection.allCases.filter { $0 != .roundtables }
-            : WorkshopSection.allCases
+        let sections = WorkshopSection.allCases.filter { section in
+            switch section {
+            case .projects: return preferences.showsProjects
+            case .friends: return preferences.showsBookFriends
+            case .books: return true
+            case .presets: return true
+            case .roundtables: return preferences.showsGroupChat
+            case .study: return preferences.showsStudyFlashcards || preferences.showsEnglishCoach
+            }
+        }
+        return sections.isEmpty ? [.presets, .books] : sections
+    }
+
+    private func reconcileVisibleSection() {
+        if !visibleSections.contains(activeSection), let first = visibleSections.first {
+            activeSection = first
+        }
     }
 
     var body: some View {
@@ -89,8 +110,16 @@ struct AssistantListView: View {
                 }
 
                 switch activeSection {
+                case .projects:
+                    ProjectWorkspaceListSection(
+                        providers: providers,
+                        books: books,
+                        conversations: conversations,
+                        editingWorkspace: $editingWorkspace,
+                        showCreateWorkspace: $showCreateWorkspace
+                    )
                 case .friends:
-                    PersonaDirectorySection { invitedProfile = $0 }
+                    PersonaDirectorySection(invite: { invitedProfile = $0 }, allowsGroupInvitations: preferences.showsGroupChat)
                     bookFriendsSection
                 case .presets:
                     presetsSection
@@ -99,28 +128,36 @@ struct AssistantListView: View {
                 case .books:
                     bookshelfSection
                 case .study:
-                    studySection
+                    if preferences.showsEnglishCoach {
+                        Section {
+                            Button { showEnglishCoach = true } label: {
+                                Label("AI 英语私教", systemImage: "waveform.and.mic")
+                            }
+                        }
+                    }
+                    if preferences.showsStudyFlashcards { studySection }
                 }
             }
-            .onAppear {
-                if preferences.simpleDailyMode && activeSection == .roundtables {
-                    activeSection = .friends
-                }
-            }
-            .onChange(of: preferences.simpleDailyMode) { _, isSimple in
-                if isSimple && activeSection == .roundtables {
-                    activeSection = .friends
-                }
-            }
-            .navigationTitle("好友与书架")
+            .scrollContentBackground(.hidden)
+            .background(DS.Surface.grouped)
+            .onAppear { reconcileVisibleSection() }
+            .onChange(of: visibleSections) { _, _ in reconcileVisibleSection() }
+            .navigationTitle("工作台")
             .toolbar {
-                if activeSection == .presets {
+                if let onClose {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("完成", action: onClose)
+                            .tint(.primary)
+                    }
+                } else if activeSection == .presets {
                     ToolbarItem(placement: .topBarLeading) {
                         EditButton()
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     switch activeSection {
+                    case .projects:
+                        Button { showCreateWorkspace = true } label: { Label("新建项目空间", systemImage: "plus") }
                     case .friends: EmptyView()
                     case .presets:
                         Button { showCreateSheet = true } label: { Label("新建助手", systemImage: "plus") }
@@ -130,9 +167,17 @@ struct AssistantListView: View {
                         Button { pickingBookFile = true } label: { Label("从文件导入书籍", systemImage: "plus") }
                             .disabled(importingBook)
                     case .study:
-                        Button { showCreateFlashcard = true } label: { Label("新建闪卡", systemImage: "plus") }
+                        if preferences.showsStudyFlashcards {
+                            Button { showCreateFlashcard = true } label: { Label("新建闪卡", systemImage: "plus") }
+                        }
                     }
                 }
+            }
+            .sheet(item: $editingWorkspace) { workspace in
+                ProjectWorkspaceEditorSheet(existing: workspace)
+            }
+            .sheet(isPresented: $showCreateWorkspace) {
+                ProjectWorkspaceEditorSheet(existing: nil)
             }
             .sheet(isPresented: $showBookFriends) {
                 BookFriendSetupSheet(initialBookID: preselectedBookID) { chat in
@@ -171,6 +216,9 @@ struct AssistantListView: View {
             }
             .sheet(isPresented: $showCreateFlashcard) {
                 FlashcardEditorSheet(existingCard: nil, defaultDeckName: selectedStudyDeck)
+            }
+            .sheet(isPresented: $showEnglishCoach) {
+                EnglishCoachHubView(onClose: { showEnglishCoach = false })
             }
             .confirmationDialog(
                 "从书架移除这本书？",
@@ -222,6 +270,18 @@ struct AssistantListView: View {
 
     private var presetsSection: some View {
         Section {
+            if presets.isEmpty {
+                VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+                    Label("暂无助手预设", systemImage: "sparkles")
+                        .font(.headline)
+                    Text("创建助手预设后，可以从这里开始对话。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Button("新建助手") { showCreateSheet = true }
+                }
+                .padding(.vertical, DS.Spacing.sm)
+                .accessibilityIdentifier("assistants.emptyPresets")
+            }
             ForEach(presets) { preset in
                 HStack(spacing: DS.Spacing.md) {
                     Button {
@@ -279,6 +339,9 @@ struct AssistantListView: View {
                             try PresetKnowledgeStore.shared.setVolumeIDs([], for: deletedPresetID) {
                                 try modelContext.transaction { modelContext.delete(preset); try modelContext.save() }
                             }
+                            if !modelContext.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
+                                SyncTombstoneStore.shared.recordDeletion(kind: .preset, id: deletedPresetID)
+                            }
                         } catch {
                             modelContext.rollback()
                             bookError = error.localizedDescription
@@ -297,7 +360,9 @@ struct AssistantListView: View {
             }
             .onMove(perform: movePresets)
         } header: {
-            Text("点击卡片可编辑提示词与采样参数，点击「对话」立即创建专属会话")
+            if !presets.isEmpty {
+                Text("点击卡片可编辑提示词与采样参数，点击「对话」立即创建专属会话")
+            }
         }
     }
 
@@ -332,24 +397,35 @@ struct AssistantListView: View {
     }
 
     private func roundtableRow(_ template: GroupRoomTemplate) -> some View {
-        HStack(spacing: DS.Spacing.md) {
-            AssistantEmojiIcon(emoji: template.roomEmoji, font: .system(size: 26))
-                .frame(width: 44, height: 44)
-                .background(theme.softFill, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
+        let large = dynamicTypeSize.isAccessibilitySize
+        let layout = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout(spacing: DS.Spacing.md))
+        return layout {
+            HStack(alignment: .top, spacing: DS.Spacing.md) {
+                AssistantEmojiIcon(emoji: template.roomEmoji, font: .system(size: 26))
+                    .frame(width: 44, height: 44)
+                    .background(theme.softFill, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
 
-            VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
-                HStack(spacing: DS.Spacing.xs) {
-                    Text(template.roomTitle)
-                        .font(.body.weight(.semibold))
-                    DSBadge(text: String(localized: "\(template.seats.count) 人 · \(template.speakingMode.shortBadge)"), style: .neutral)
+                VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                    if large {
+                        Text(template.roomTitle).font(.body.weight(.semibold))
+                        Text("\(template.seats.count) 人 · \(template.speakingMode.shortBadge)")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        HStack(spacing: DS.Spacing.xs) {
+                            Text(template.roomTitle).font(.body.weight(.semibold))
+                            DSBadge(text: String(localized: "\(template.seats.count) 人 · \(template.speakingMode.shortBadge)"), style: .neutral)
+                        }
+                    }
+                    Text(template.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(large ? nil : 2)
+                        .fixedSize(horizontal: false, vertical: large)
                 }
-                Text(template.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Spacer()
 
             Button {
                 startGroupChat(from: template)
@@ -364,6 +440,7 @@ struct AssistantListView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text("开始 \(template.roomTitle) 圆桌对话"))
         }
         .padding(.vertical, 3)
     }
@@ -445,10 +522,14 @@ struct AssistantListView: View {
                         Button { SystemEntryRouter.shared.conversationID = chat.id } label: {
                             FriendActionLabel(title: "私聊", icon: "bubble.left")
                         }
-                        Button { inviting = chat } label: {
-                            FriendActionLabel(title: "邀请进群", icon: "person.2.badge.plus")
+                        .accessibilityLabel(Text("与 \(friend.name) 私聊"))
+                        if !preferences.simpleDailyMode {
+                            Button { inviting = chat } label: {
+                                FriendActionLabel(title: "邀请进群", icon: "person.2.badge.plus")
+                            }
+                            .accessibilityLabel(Text("邀请 \(friend.name) 进群"))
+                            .accessibilityIdentifier("friend.invite.\(chat.id)")
                         }
-                        .accessibilityIdentifier("friend.invite.\(chat.id)")
                     }
                     .buttonStyle(.plain)
                 }
@@ -471,6 +552,35 @@ struct AssistantListView: View {
                 }
             }
             .disabled(importingBook)
+
+            ForEach(ocrQueue.orderedJobs) { job in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Image(systemName: job.isFinished ? "checkmark.circle.fill" : "doc.text.viewfinder")
+                            .foregroundStyle(job.isFinished ? .green : theme.readableText)
+                        Text(verbatim: job.bookTitle)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        Spacer()
+                        if job.isFinished {
+                            Button("完成") { ocrQueue.dismissFinished(bookID: job.id) }
+                                .font(.caption)
+                        } else {
+                            Button("取消") { ocrQueue.cancel(bookID: job.id) }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    ProgressView(value: job.fractionCompleted)
+                        .tint(job.isFinished ? .green : theme.readableText)
+                    Text(job.isFinished
+                         ? String(localized: "后台 OCR 已完成，新增识别 \(job.recognizedNewPages) 页")
+                         : String(localized: "后台渐进 OCR：\(job.completedPages)/\(job.totalPages) 页（可随时开始阅读）"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
 
             let positions = Dictionary(readingStates.map { ($0.bookID, $0.chapter) }, uniquingKeysWith: { first, _ in first })
             ForEach(books) { book in
@@ -511,11 +621,11 @@ struct AssistantListView: View {
                         let index = min(max(0, chapter), book.chapterTitles.count - 1)
                         let title = book.chapterTitles[index]
                         Text("上次读到 \(title.isEmpty ? String(localized: "第 \(index + 1) 节") : title)")
+                            .foregroundStyle(.secondary)
                             .accessibilityIdentifier("shelf.progress")
-                    } else { Text("共 \(book.chapterTitles.count) 节") }
+                    } else { Text("共 \(book.chapterTitles.count) 节").foregroundStyle(.secondary) }
                 }
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if large { shelfMenu(book) }
             }
@@ -530,6 +640,7 @@ struct AssistantListView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(savedChapter == nil ? Text("开始阅读《\(book.title)》") : Text("继续阅读《\(book.title)》"))
             if !large { shelfMenu(book) }
         }
     }
@@ -546,7 +657,7 @@ struct AssistantListView: View {
         } label: {
             Image(systemName: "ellipsis.circle").frame(width: DS.TouchTarget.minimum, height: DS.TouchTarget.minimum)
         }
-        .accessibilityLabel("书籍操作")
+        .accessibilityLabel(Text("《\(book.title)》的书籍操作"))
     }
 
     // MARK: - Section 4: Study Coach & Spaced-Repetition Flashcards
@@ -581,11 +692,17 @@ struct AssistantListView: View {
                 HStack(spacing: DS.Spacing.sm) {
                     DSMetricTile(title: String(localized: "待复习"), value: "\(dueList.count)", valueTint: theme.readableText)
                     DSMetricTile(title: String(localized: "总卡片"), value: "\(flashcardStore.cards.count)")
-                    DSMetricTile(title: String(localized: "已熟记"), value: "\(flashcardStore.masteredCount)", valueTint: .green)
+                    DSMetricTile(title: String(localized: "已熟记"), value: "\(flashcardStore.masteredCount)", valueTint: DS.StatusText.success)
                 }
 
                 HStack(spacing: DS.Spacing.sm) {
+                    let hasCards = !flashcardStore.cards.isEmpty
+                    let canUsePrimary = hasCards ? (!dueList.isEmpty || !visibleCards.isEmpty) : flashcardStore.loadIssue == nil
                     Button {
+                        if !hasCards {
+                            showCreateFlashcard = true
+                            return
+                        }
                         let targetCards = dueList.isEmpty ? Array(visibleCards.shuffled().prefix(15)) : dueList
                         guard !targetCards.isEmpty else { return }
                         activeReviewBatch = IdentifiableCardBatch(
@@ -594,16 +711,16 @@ struct AssistantListView: View {
                         )
                     } label: {
                         Label(
-                            dueList.isEmpty ? String(localized: "随机抽查巩固") : String(localized: "开始今日复习 (\(dueList.count))"),
-                            systemImage: "play.fill"
+                            !hasCards ? String(localized: "手动创建闪卡") : (dueList.isEmpty ? String(localized: "随机抽查巩固") : String(localized: "开始今日复习 (\(dueList.count))")),
+                            systemImage: hasCards ? "play.fill" : "plus"
                         )
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(theme.solidForeground)
                         .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum)
-                        .background(flashcardStore.cards.isEmpty ? Color.secondary.opacity(0.35) : theme.solidFill, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
+                        .background(canUsePrimary ? theme.solidFill : Color.secondary.opacity(0.35), in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
                     }
                     .buttonStyle(.plain)
-                    .disabled(flashcardStore.cards.isEmpty)
+                    .disabled(!canUsePrimary)
 
                     if !visibleCards.isEmpty {
                         Button {
@@ -635,7 +752,7 @@ struct AssistantListView: View {
         } header: {
             Text("间隔重复记忆舱")
         } footer: {
-            Text("在任意对话消息底部点击「助学」即可一键提炼闪卡与随堂测验；导出的 .tsv 文件可直接导入 Anki。")
+            Text("在助手回复下选择「更多 → 助学」即可提炼闪卡与随堂测验；导出的 .tsv 文件可直接导入 Anki。")
         }
 
         Section {
@@ -736,10 +853,15 @@ struct AssistantListView: View {
             }
 
             if visibleCards.isEmpty {
-                Text("暂无闪卡。可在任意对话回复底部点按「助学 → 生成记忆闪卡」，或点击右上角 + 手动创建。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 6)
+                if flashcardStore.cards.isEmpty {
+                    Text("暂无闪卡。可在助手回复下选择「更多 → 助学 → 生成记忆闪卡」，或手动创建。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("没有匹配的闪卡，请调整搜索或卡组。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 ForEach(visibleCards) { card in
                     Button {
@@ -844,9 +966,21 @@ struct AssistantListView: View {
         Task { @MainActor in
             defer { importingBook = false }
             do {
-                let prepared = try await Task.detached(priority: .userInitiated) { try BookImporter.read(url) }.value
-                let stored = try BookLibrary.store(prepared, in: modelContext)
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try BookImporter.readProgressive(url)
+                }.value
+                let stored = try BookLibrary.store(result.prepared, in: modelContext)
                 preselectedBookID = stored.id
+                if let pdfData = result.pdfDataForContinuation, !result.remainingPDFPageIndices.isEmpty {
+                    ocrQueue.enqueue(
+                        bookID: stored.id,
+                        bookTitle: stored.title,
+                        pdfData: pdfData,
+                        remainingPageIndices: result.remainingPDFPageIndices,
+                        totalPDFPages: result.totalPDFPages,
+                        modelContext: modelContext
+                    )
+                }
             } catch {
                 bookError = error.localizedDescription
             }

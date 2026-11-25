@@ -10,6 +10,7 @@ enum WebDAVSyncError: LocalizedError, Equatable {
     case crossHostRedirect
     case payloadTooLarge
     case notEncryptedBackup
+    case shardedBlobMissing(String)
     case httpError(Int)
 
     var errorDescription: String? {
@@ -32,6 +33,8 @@ enum WebDAVSyncError: LocalizedError, Equatable {
             return String(localized: "备份文件超过安全体积上限，无法同步。")
         case .notEncryptedBackup:
             return String(localized: "云端文件不是有效的夜奔加密备份格式。")
+        case .shardedBlobMissing(let hash):
+            return String(localized: "云端缺少分片资产（\(String(hash.prefix(12)))），请重新执行一次完整上传。")
         case .httpError(let code):
             return String(localized: "WebDAV 请求失败（HTTP \(code)）。")
         }
@@ -247,6 +250,27 @@ enum WebDAVSyncService {
         password: String,
         session: URLSession? = nil
     ) async throws -> WebDAVRemoteMetadata {
+        try await uploadRawData(
+            data,
+            contentType: "application/json; charset=utf-8",
+            serverURL: rawServerURL,
+            remotePath: remotePath,
+            username: username,
+            password: password,
+            session: session
+        )
+    }
+
+    @discardableResult
+    static func uploadRawData(
+        _ data: Data,
+        contentType: String,
+        serverURL rawServerURL: String,
+        remotePath: String,
+        username: String,
+        password: String,
+        session: URLSession? = nil
+    ) async throws -> WebDAVRemoteMetadata {
         guard data.count <= BackupService.maximumFileBytes else {
             throw WebDAVSyncError.payloadTooLarge
         }
@@ -277,7 +301,7 @@ enum WebDAVSyncService {
         var put = URLRequest(url: resolved.targetURL)
         put.httpMethod = "PUT"
         put.setValue(auth, forHTTPHeaderField: "Authorization")
-        put.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        put.setValue(contentType, forHTTPHeaderField: "Content-Type")
         put.httpBody = data
 
         let (_, response) = try await activeSession.data(for: put)
@@ -288,13 +312,13 @@ enum WebDAVSyncService {
         return metadata(from: http, exists: true)
     }
 
-    static func downloadEncryptedData(
+    static func downloadRawData(
         serverURL rawServerURL: String,
         remotePath: String,
         username: String,
         password: String,
         session: URLSession? = nil
-    ) async throws -> Data {
+    ) async throws -> (Data, WebDAVRemoteMetadata) {
         let resolved = try resolvedTarget(serverURL: rawServerURL, remotePath: remotePath)
         let cleanUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanUser.isEmpty, !password.isEmpty else {
@@ -316,10 +340,113 @@ enum WebDAVSyncService {
         guard data.count <= BackupService.maximumFileBytes else {
             throw WebDAVSyncError.payloadTooLarge
         }
+        return (data, metadata(from: http, exists: true))
+    }
+
+    static func downloadEncryptedData(
+        serverURL rawServerURL: String,
+        remotePath: String,
+        username: String,
+        password: String,
+        session: URLSession? = nil
+    ) async throws -> Data {
+        let (data, _) = try await downloadRawData(
+            serverURL: rawServerURL,
+            remotePath: remotePath,
+            username: username,
+            password: password,
+            session: session
+        )
         guard EncryptedBackupService.isEncryptedBackup(data) else {
             throw WebDAVSyncError.notEncryptedBackup
         }
         return data
+    }
+
+    static func listDirectoryFilenames(
+        serverURL rawServerURL: String,
+        directoryPath: String,
+        username: String,
+        password: String,
+        session: URLSession? = nil
+    ) async throws -> [String] {
+        let resolved = try resolvedTarget(serverURL: rawServerURL, remotePath: directoryPath)
+        let cleanUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanUser.isEmpty, !password.isEmpty else {
+            throw WebDAVSyncError.missingCredentials
+        }
+
+        var dirURLString = resolved.targetURL.absoluteString
+        if !dirURLString.hasSuffix("/") { dirURLString += "/" }
+        guard let dirURL = URL(string: dirURLString) else { throw WebDAVSyncError.invalidRemotePath }
+
+        var req = URLRequest(url: dirURL)
+        req.httpMethod = "PROPFIND"
+        req.setValue(basicAuthHeader(username: cleanUser, password: password), forHTTPHeaderField: "Authorization")
+        req.setValue("1", forHTTPHeaderField: "Depth")
+        req.setValue("application/xml; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("""
+        <?xml version="1.0" encoding="utf-8"?>
+        <d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>
+        """.utf8)
+
+        let (data, response) = try await (session ?? defaultSession).data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw WebDAVSyncError.httpError(0)
+        }
+        if http.statusCode == 404 {
+            return []
+        }
+        try validateStatusCode(http.statusCode, allow207: true)
+        return parsePropfindChildNames(xmlData: data, directoryPath: dirURL.path)
+    }
+
+    static func deleteFile(
+        serverURL rawServerURL: String,
+        remotePath: String,
+        username: String,
+        password: String,
+        session: URLSession? = nil
+    ) async throws {
+        let resolved = try resolvedTarget(serverURL: rawServerURL, remotePath: remotePath)
+        let cleanUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanUser.isEmpty, !password.isEmpty else {
+            throw WebDAVSyncError.missingCredentials
+        }
+        var req = URLRequest(url: resolved.targetURL)
+        req.httpMethod = "DELETE"
+        req.setValue(basicAuthHeader(username: cleanUser, password: password), forHTTPHeaderField: "Authorization")
+
+        let (_, response) = try await (session ?? defaultSession).data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw WebDAVSyncError.httpError(0)
+        }
+        if http.statusCode == 404 { return }
+        try validateStatusCode(http.statusCode, allow207: false)
+    }
+
+    static func parsePropfindChildNames(xmlData: Data, directoryPath: String) -> [String] {
+        guard let xml = String(data: xmlData, encoding: .utf8), !xml.isEmpty else { return [] }
+        let normalizedDir = directoryPath.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+        let pattern = #"<(?:[A-Za-z0-9_-]+:)?href[^>]*>([^<]+)</(?:[A-Za-z0-9_-]+:)?href>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
+        let ns = xml as NSString
+        var seen = Set<String>()
+        var names: [String] = []
+        for match in regex.matches(in: xml, range: NSRange(location: 0, length: ns.length)) {
+            let rawHref = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rawHref.isEmpty else { continue }
+            let path = URLComponents(string: rawHref)?.path ?? rawHref
+            let decoded = path.removingPercentEncoding ?? path
+            let trimmed = decoded.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !trimmed.isEmpty, trimmed.lowercased() != normalizedDir else { continue }
+            if let last = trimmed.split(separator: "/").last.map(String.init),
+               !last.isEmpty,
+               seen.insert(last).inserted {
+                names.append(last)
+            }
+        }
+        return names.sorted()
     }
 
     private static func validateStatusCode(_ code: Int, allow207: Bool) throws {

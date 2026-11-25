@@ -1,6 +1,8 @@
 package com.iosbox.app.core.storage
 
 import androidx.room.withTransaction
+import com.iosbox.app.core.backup.SyncEntityKinds
+import com.iosbox.app.core.backup.SyncTombstoneStore
 import com.iosbox.app.core.model.APIProtocolType
 import com.iosbox.app.core.model.AttachmentKind
 import com.iosbox.app.core.model.BookChapter
@@ -306,7 +308,8 @@ class ChatRepository(
     private val db: FugueDatabase,
     private val blobStore: ExternalBlobStore,
     private val secretStore: SecretStore,
-    private val draftStore: ChatDraftStore? = null
+    private val draftStore: ChatDraftStore? = null,
+    private val tombstoneStore: SyncTombstoneStore? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
 
@@ -347,6 +350,7 @@ class ChatRepository(
     suspend fun deleteProvider(item: ProviderItem) = withContext(Dispatchers.IO) {
         secretStore.deleteProviderSecrets(item.id, item.customHeaders.map { it.id })
         db.providerDao().deleteById(item.id.uppercase())
+        tombstoneStore?.recordDeletion(SyncEntityKinds.PROVIDER, item.id)
     }
 
     fun observePresets(): Flow<List<PresetItem>> =
@@ -382,6 +386,7 @@ class ChatRepository(
 
     suspend fun deletePreset(id: String) = withContext(Dispatchers.IO) {
         db.assistantPresetDao().deleteById(id.uppercase())
+        tombstoneStore?.recordDeletion(SyncEntityKinds.PRESET, id)
     }
 
     fun observeConversations(): Flow<List<ConversationItem>> =
@@ -560,6 +565,7 @@ class ChatRepository(
         val pid = id.uppercase()
         db.personaProfileDao().getById(pid)?.payloadBlobKey?.let { blobStore.delete(it) }
         db.personaProfileDao().deleteById(pid)
+        tombstoneStore?.recordDeletion(SyncEntityKinds.PERSONA_PROFILE, pid)
     }
 
     suspend fun openOrCreatePrivatePersonaChat(profile: GroupMember): ConversationItem = withContext(Dispatchers.IO) {
@@ -674,6 +680,7 @@ class ChatRepository(
 
     suspend fun deletePersonalMemory(id: String) = withContext(Dispatchers.IO) {
         db.personalMemoryDao().deleteById(id.uppercase())
+        tombstoneStore?.recordDeletion(SyncEntityKinds.MEMORY, id)
     }
 
     fun observeBooks(): Flow<List<BookVolumeItem>> =
@@ -723,6 +730,7 @@ class ChatRepository(
                 importedAtEpochMs = System.currentTimeMillis()
             )
             db.bookVolumeDao().upsert(entity)
+            tombstoneStore?.removeTombstone(SyncEntityKinds.BOOK, id)
             toBookVolumeItem(entity)
         }
     }
@@ -749,6 +757,7 @@ class ChatRepository(
                 }
             }
         }
+        tombstoneStore?.recordDeletion(SyncEntityKinds.BOOK, bid)
         ProjectKnowledgeSearch.invalidate(bid)
     }
 
@@ -1060,6 +1069,7 @@ class ChatRepository(
         conv?.assistanceSettingsBlobKey?.let { blobStore.delete(it) }
         draftStore?.remove(cid)
         db.conversationDao().deleteById(cid)
+        tombstoneStore?.recordDeletion(SyncEntityKinds.CONVERSATION, cid)
     }
 
     fun observeMessages(conversationID: String): Flow<List<ChatMessageItem>> =

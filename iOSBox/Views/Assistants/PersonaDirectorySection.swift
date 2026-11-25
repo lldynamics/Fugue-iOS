@@ -3,6 +3,7 @@ import SwiftData
 
 struct PersonaDirectorySection: View {
     let invite: (GroupMember) -> Void
+    let allowsGroupInvitations: Bool
     @Environment(\.modelContext) private var context
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Query(sort: \PersonaProfile.name) private var profiles: [PersonaProfile]
@@ -43,7 +44,7 @@ struct PersonaDirectorySection: View {
                             Button("编辑人物档案") { do { editing = try profile.member() } catch { self.error = error.localizedDescription } }
                             Button("删除人物档案", role: .destructive) { removing = profile }
                         } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
-                        .accessibilityLabel("人物操作")
+                        .accessibilityLabel(Text("\(profile.name) 的人物操作"))
                     }
                     let layout = dynamicTypeSize.isAccessibilitySize
                         ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
@@ -57,8 +58,12 @@ struct PersonaDirectorySection: View {
         .confirmationDialog("删除人物档案？", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { profile in
             Button("删除人物档案", role: .destructive) {
                 do {
+                    let deletedProfileID = profile.id
                     try context.save()
                     try context.transaction { context.delete(profile); try context.save() }
+                    if !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
+                        SyncTombstoneStore.shared.recordDeletion(kind: .personaProfile, id: deletedProfileID)
+                    }
                 } catch { context.rollback(); self.error = error.localizedDescription }
             }
         } message: { _ in Text("已有聊天会保留人物资料和历史回答。") }
@@ -82,11 +87,15 @@ struct PersonaDirectorySection: View {
         Button { openPrivateChat(profile) } label: {
             FriendActionLabel(title: "私聊", icon: "bubble.left")
         }.buttonStyle(.plain)
-        Button {
-            do { invite(try profile.member()) } catch { self.error = error.localizedDescription }
-        } label: {
-            FriendActionLabel(title: "邀请进群", icon: "person.2.badge.plus")
-        }.buttonStyle(.plain)
+        .accessibilityLabel(Text("与 \(profile.name) 私聊"))
+        if allowsGroupInvitations {
+            Button {
+                do { invite(try profile.member()) } catch { self.error = error.localizedDescription }
+            } label: {
+                FriendActionLabel(title: "邀请进群", icon: "person.2.badge.plus")
+            }.buttonStyle(.plain)
+            .accessibilityLabel(Text("邀请 \(profile.name) 进群"))
+        }
     }
 }
 

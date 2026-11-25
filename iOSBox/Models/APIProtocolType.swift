@@ -2,6 +2,7 @@ import Foundation
 
 enum APIProtocolType: String, Codable, CaseIterable, Identifiable {
     case openAICompatible = "openai_compatible"
+    case openAIResponses = "openai_responses"
     case anthropic = "anthropic"
     case gemini = "gemini"
 
@@ -11,6 +12,8 @@ enum APIProtocolType: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .openAICompatible:
             return String(localized: "OpenAI 兼容协议")
+        case .openAIResponses:
+            return String(localized: "OpenAI Responses API")
         case .anthropic:
             return String(localized: "Anthropic Claude 原生")
         case .gemini:
@@ -22,6 +25,8 @@ enum APIProtocolType: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .openAICompatible:
             return "OpenAI"
+        case .openAIResponses:
+            return "Responses"
         case .anthropic:
             return "Claude"
         case .gemini:
@@ -33,6 +38,8 @@ enum APIProtocolType: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .openAICompatible:
             return String(localized: "支持 OpenAI / DeepSeek / OpenRouter / 硅基流动 / Ollama / 各类中转站")
+        case .openAIResponses:
+            return String(localized: "使用 /v1/responses 新一代接口，支持推理摘要、原生联网检索与多轮工具调用")
         case .anthropic:
             return String(localized: "使用 /v1/messages 接口，原生支持 Extended Thinking 与 PDF 文档")
         case .gemini:
@@ -42,7 +49,7 @@ enum APIProtocolType: String, Codable, CaseIterable, Identifiable {
 
     var defaultBaseURL: String {
         switch self {
-        case .openAICompatible:
+        case .openAICompatible, .openAIResponses:
             return "https://api.openai.com/v1"
         case .anthropic:
             return "https://api.anthropic.com/v1"
@@ -55,6 +62,8 @@ enum APIProtocolType: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .openAICompatible:
             return "point.3.connected.trianglepath.dotted"
+        case .openAIResponses:
+            return "bolt.horizontal.circle"
         case .anthropic:
             return "sparkles"
         case .gemini:

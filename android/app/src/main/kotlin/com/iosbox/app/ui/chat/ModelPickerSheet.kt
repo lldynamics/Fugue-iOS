@@ -28,6 +28,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -40,9 +41,59 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.model.ModelSpec
+import com.iosbox.app.core.model.RequestMetrics
 import com.iosbox.app.core.model.ResolvedModelTarget
 import com.iosbox.app.core.storage.ProviderItem
 import com.iosbox.app.ui.theme.DS
+import java.math.BigDecimal
+import java.math.MathContext
+
+internal data class ModelPriceRates(val currency: String, val input: Double, val output: Double)
+
+internal fun configuredModelRates(model: ModelSpec): ModelPriceRates? {
+    val input = RequestMetrics.validPrice(model.inputPricePerMillion) ?: return null
+    val output = RequestMetrics.validPrice(model.outputPricePerMillion) ?: return null
+    val currency = model.priceCurrency?.takeIf { it in RequestMetrics.supportedCurrencies } ?: return null
+    return ModelPriceRates(currency, input, output)
+}
+
+internal fun displayRate(value: Double): String {
+    val decimal = BigDecimal.valueOf(value).round(MathContext(6)).stripTrailingZeros()
+    return if (decimal.scale() > 9) decimal.toString() else decimal.toPlainString()
+}
+
+@Composable
+private fun ModelDetails(model: ModelSpec) {
+    val capabilities = buildList {
+        if (model.supportsReasoning) add(L10n.text("思考", "Reasoning"))
+        if (model.supportsVision) add(L10n.text("识图", "Vision"))
+    }
+    if (capabilities.isNotEmpty()) {
+        Text(capabilities.joinToString(" · "), style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary)
+    }
+    val rates = configuredModelRates(model)
+    val price = if (rates == null) L10n.text("单价未完整设置", "Price not fully set") else {
+        val input = displayRate(rates.input)
+        val output = displayRate(rates.output)
+        L10n.text("${rates.currency} 输入 $input / 输出 $output · 每百万 Token",
+            "${rates.currency} input $input / output $output · per 1M tokens")
+    }
+    Text(price, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+private fun ModelDetailsExplanation() {
+    Text(
+        text = L10n.text(
+            "显示已保存的模型。能力是本地标记，可能按名称推测；基础单价不含服务商倍率。",
+            "Showing saved models. Capability labels are local and may be inferred from names; base prices exclude provider multipliers."
+        ),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,6 +105,7 @@ fun ModelPickerSheet(
     title: String = L10n.text("选择回答模型", "Select Model")
 ) {
     var query by remember { mutableStateOf("") }
+    val hasReadyModels = remember(providers) { providers.any { it.isReadyForChat } }
     val readyProviders = remember(providers, query) {
         val q = query.trim().lowercase()
         providers.filter { it.isReadyForChat }.mapNotNull { provider ->
@@ -98,17 +150,24 @@ fun ModelPickerSheet(
             )
 
             if (readyProviders.isEmpty()) {
-                Text(
-                    text = L10n.text(
-                        "暂无可用模型，请先在「服务商」配置 API Key 并启用模型。",
-                        "No ready models. Configure an API key and enable models in Providers."
-                    ),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = DS.Spacing.xl)
-                )
+                Column(modifier = Modifier.padding(vertical = DS.Spacing.xl)) {
+                    Text(
+                        text = if (query.isNotBlank() && hasReadyModels) {
+                            L10n.text("没有匹配的模型", "No matching models")
+                        } else {
+                            L10n.text("暂无可用模型，请在「设置」中连接服务商并启用模型。",
+                                "No ready models. Connect a provider and enable models in Settings.")
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (query.isNotBlank() && hasReadyModels) {
+                        TextButton(onClick = { query = "" }) { Text(L10n.text("清除搜索", "Clear search")) }
+                    }
+                }
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(DS.Spacing.xs)) {
+                    item { ModelDetailsExplanation() }
                     for ((provider, models) in readyProviders) {
                         item(key = "hdr_${provider.id}") {
                             Text(
@@ -148,14 +207,7 @@ fun ModelPickerSheet(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
-                                    }
-                                    if (spec.supportsReasoning) {
-                                        Text(
-                                            text = L10n.text("推理", "Think"),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.padding(end = 8.dp)
-                                        )
+                                        ModelDetails(spec)
                                     }
                                     if (isSelected) {
                                         Icon(
@@ -190,6 +242,7 @@ fun ArenaConfigSheet(
     var arenaEnabled by remember(isArenaMode) { mutableStateOf(isArenaMode) }
     var blindEnabled by remember(blindArenaMode) { mutableStateOf(blindArenaMode) }
     var query by remember { mutableStateOf("") }
+    val hasReadyModels = remember(providers) { providers.any { it.isReadyForChat } }
     val chosen = remember(selectedTargets) {
         mutableStateListOf<ResolvedModelTarget>().apply {
             addAll(selectedTargets)
@@ -291,20 +344,27 @@ fun ArenaConfigSheet(
                 )
 
                 if (readyProviders.isEmpty()) {
-                    Text(
-                        text = L10n.text(
-                            "暂无可用模型，请先在「服务商」配置 API Key。",
-                            "No ready models available."
-                        ),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = DS.Spacing.lg)
-                    )
+                    Column(modifier = Modifier.padding(vertical = DS.Spacing.lg)) {
+                        Text(
+                            text = if (query.isNotBlank() && hasReadyModels) {
+                                L10n.text("没有匹配的模型", "No matching models")
+                            } else {
+                                L10n.text("暂无可用模型，请在「设置」中连接服务商并启用模型。",
+                                    "No ready models. Connect a provider and enable models in Settings.")
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (query.isNotBlank() && hasReadyModels) {
+                            TextButton(onClick = { query = "" }) { Text(L10n.text("清除搜索", "Clear search")) }
+                        }
+                    }
                 } else {
                     LazyColumn(
                         modifier = Modifier.weight(1f, fill = false),
                         verticalArrangement = Arrangement.spacedBy(DS.Spacing.xs)
                     ) {
+                        item { ModelDetailsExplanation() }
                         for ((provider, models) in readyProviders) {
                             item(key = "arena_hdr_${provider.id}") {
                                 Text(
@@ -348,6 +408,7 @@ fun ArenaConfigSheet(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
+                                        ModelDetails(spec)
                                     }
                                 }
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))

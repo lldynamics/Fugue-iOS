@@ -4,6 +4,7 @@ enum GeminiAdapter {
     private struct WireOptions: Sendable {
         var includeNativeSearch: Bool
         var includeThinkingConfig: Bool
+        var includeSamplingParams: Bool
     }
 
     static func streamChat(
@@ -12,6 +13,7 @@ enum GeminiAdapter {
         keyRouter: APIKeyPoolRouter = .shared,
         session: URLSession
     ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
+        let hasThinkingConfig = thinkingConfig(for: request) != nil
         let initial = WireOptions(
             includeNativeSearch: request.enableNativeSearch && !capabilityCache.isUnsupported(
                 .nativeSearch,
@@ -21,6 +23,12 @@ enum GeminiAdapter {
             ),
             includeThinkingConfig: !capabilityCache.isUnsupported(
                 .thinkingConfig,
+                protocolType: .gemini,
+                baseURL: request.baseURL,
+                modelID: request.modelID
+            ),
+            includeSamplingParams: !capabilityCache.isUnsupported(
+                .samplingParams,
                 protocolType: .gemini,
                 baseURL: request.baseURL,
                 modelID: request.modelID
@@ -49,14 +57,19 @@ enum GeminiAdapter {
                 let payload = buildRequestBody(
                     request,
                     includeNativeSearch: state.includeNativeSearch,
-                    includeThinkingConfig: state.includeThinkingConfig
+                    includeThinkingConfig: state.includeThinkingConfig,
+                    includeSamplingParams: state.includeSamplingParams
                 )
                 urlRequest.httpBody = try JSONSerialization.data(withJSONObject: payload)
                 return urlRequest
             },
             degradeOn400: { _, detail, state, newlyDisabled in
                 let lower = detail.lowercased()
-                if state.includeThinkingConfig && (lower.contains("thinkingconfig") || lower.contains("thinking_config") || lower.contains("thinkingbudget") || lower.contains("thinkinglevel")) {
+                if LLMClient.isUnrecoverable400(lower) {
+                    return false
+                }
+                if hasThinkingConfig && state.includeThinkingConfig
+                    && (lower.contains("thinking") || lower.contains("budget") || lower.contains("thinkinglevel")) {
                     state.includeThinkingConfig = false
                     newlyDisabled.insert(.thinkingConfig)
                     return true
@@ -64,6 +77,16 @@ enum GeminiAdapter {
                 if state.includeNativeSearch && (lower.contains("google_search") || lower.contains("tools")) {
                     state.includeNativeSearch = false
                     newlyDisabled.insert(.nativeSearch)
+                    return true
+                }
+                if state.includeSamplingParams && (lower.contains("temperature") || lower.contains("topp") || lower.contains("top_p")) {
+                    state.includeSamplingParams = false
+                    newlyDisabled.insert(.samplingParams)
+                    return true
+                }
+                if LLMClient.isGenericParameterRejection400(lower) && hasThinkingConfig && state.includeThinkingConfig {
+                    state.includeThinkingConfig = false
+                    newlyDisabled.insert(.thinkingConfig)
                     return true
                 }
                 return false
@@ -219,7 +242,8 @@ enum GeminiAdapter {
     static func buildRequestBody(
         _ request: LLMChatRequest,
         includeNativeSearch: Bool? = nil,
-        includeThinkingConfig: Bool = true
+        includeThinkingConfig: Bool = true,
+        includeSamplingParams: Bool = true
     ) -> [String: Any] {
         let useNativeSearch = includeNativeSearch ?? request.enableNativeSearch
         let sanitizedMessages = LLMClient.sanitizeToolHistory(request.messages)
@@ -323,11 +347,12 @@ enum GeminiAdapter {
             ]
         }
 
-        var generationConfig: [String: Any] = [
-            "topP": request.topP
-        ]
-        if let temp = request.temperature {
-            generationConfig["temperature"] = temp
+        var generationConfig: [String: Any] = [:]
+        if includeSamplingParams {
+            generationConfig["topP"] = request.topP
+            if let temp = request.temperature {
+                generationConfig["temperature"] = temp
+            }
         }
         if let maxTokens = request.maxOutputTokens, maxTokens > 0 {
             generationConfig["maxOutputTokens"] = maxTokens
@@ -335,7 +360,9 @@ enum GeminiAdapter {
         if includeThinkingConfig, let thinkingConfig = thinkingConfig(for: request) {
             generationConfig["thinkingConfig"] = thinkingConfig
         }
-        body["generationConfig"] = generationConfig
+        if !generationConfig.isEmpty {
+            body["generationConfig"] = generationConfig
+        }
         if !request.tools.isEmpty {
             body["tools"] = [[
                 "functionDeclarations": request.tools.map { tool in

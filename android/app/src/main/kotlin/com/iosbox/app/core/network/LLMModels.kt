@@ -26,8 +26,8 @@ sealed class LLMError(override val message: String) : Exception(message) {
 
     class MissingAPIKey(provider: String) : LLMError(
         L10n.text(
-            "请先在「服务商」页面为「$provider」配置 API Key（本地服务若免鉴权可忽略）",
-            "Configure an API key for \"$provider\" in Providers first (local auth-free servers can omit it)."
+            "请先在「设置」页面为「$provider」配置 API Key（本地服务若免鉴权可忽略）",
+            "Configure an API key for \"$provider\" in Settings first (local auth-free servers can omit it)."
         )
     )
 
@@ -142,7 +142,7 @@ data class LLMChatRequest(
             val result = mutableListOf<String>()
             val seen = HashSet<String>()
             for (raw in listOf(apiKey) + apiKeys) {
-                val trimmed = raw.trim()
+                val trimmed = LLMClient.sanitizedAPIKey(raw)
                 if (trimmed.isNotEmpty() && seen.add(trimmed)) {
                     result.add(trimmed)
                 }
@@ -220,5 +220,17 @@ enum class GatewayUnsupportedFeature(val rawValue: String) {
     THINKING_CONFIG("thinking_config"),
 
     @SerialName("reasoning_content")
-    REASONING_CONTENT("reasoning_content")
+    REASONING_CONTENT("reasoning_content"),
+
+    @SerialName("reasoning_params")
+    REASONING_PARAMS("reasoning_params"),
+
+    @SerialName("max_completion_tokens")
+    MAX_COMPLETION_TOKENS("max_completion_tokens"),
+
+    @SerialName("requires_max_completion_tokens")
+    REQUIRES_MAX_COMPLETION_TOKENS("requires_max_completion_tokens"),
+
+    @SerialName("sampling_params")
+    SAMPLING_PARAMS("sampling_params")
 }

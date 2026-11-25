@@ -32,7 +32,9 @@ object AnthropicAdapter {
 
     private data class WireOptions(
         val useCache: Boolean,
-        val useNativeSearch: Boolean
+        val useNativeSearch: Boolean,
+        val useThinking: Boolean,
+        val clampMaxTokensTo4096: Boolean
     )
 
     private data class PendingToolBlock(
@@ -61,7 +63,14 @@ object AnthropicAdapter {
                 APIProtocolType.ANTHROPIC,
                 request.baseURL,
                 request.modelID
-            )
+            ),
+            useThinking = request.enableThinking && request.supportsReasoning && !cache.isUnsupported(
+                GatewayUnsupportedFeature.THINKING_CONFIG,
+                APIProtocolType.ANTHROPIC,
+                request.baseURL,
+                request.modelID
+            ),
+            clampMaxTokensTo4096 = false
         )
 
         return client.streamWithResilience(
@@ -72,7 +81,9 @@ object AnthropicAdapter {
                 val payload = buildRequestBody(
                     request = request,
                     includeCacheControl = state.useCache,
-                    includeNativeSearch = state.useNativeSearch
+                    includeNativeSearch = state.useNativeSearch,
+                    includeThinking = state.useThinking,
+                    maxTokensCap = if (state.clampMaxTokensTo4096) 4096 else null
                 )
                 val bodyStr = compactJson.encodeToString(JsonObject.serializer(), payload)
                 val builder = Request.Builder()
@@ -90,13 +101,21 @@ object AnthropicAdapter {
             degradeOn400 = { _, detail, state, newlyDisabled ->
                 val lower = detail.lowercase()
                 when {
+                    LLMClient.isUnrecoverable400(lower) -> false to state
                     state.useCache && lower.contains("cache_control") -> {
                         newlyDisabled.add(GatewayUnsupportedFeature.PROMPT_CACHING)
                         true to state.copy(useCache = false)
                     }
+                    state.useThinking && (lower.contains("thinking") || lower.contains("budget_tokens") || lower.contains("adaptive") || lower.contains("display")) -> {
+                        newlyDisabled.add(GatewayUnsupportedFeature.THINKING_CONFIG)
+                        true to state.copy(useThinking = false)
+                    }
                     state.useNativeSearch && (lower.contains("web_search") || lower.contains("tools")) -> {
                         newlyDisabled.add(GatewayUnsupportedFeature.NATIVE_SEARCH)
                         true to state.copy(useNativeSearch = false)
+                    }
+                    !state.clampMaxTokensTo4096 && lower.contains("max_tokens") -> {
+                        true to state.copy(clampMaxTokensTo4096 = true)
                     }
                     else -> false to state
                 }
@@ -296,7 +315,9 @@ object AnthropicAdapter {
     fun buildRequestBody(
         request: LLMChatRequest,
         includeCacheControl: Boolean? = null,
-        includeNativeSearch: Boolean? = null
+        includeNativeSearch: Boolean? = null,
+        includeThinking: Boolean = true,
+        maxTokensCap: Int? = null
     ): JsonObject {
         val useCache = includeCacheControl ?: request.enablePromptCaching
         val useNativeSearch = includeNativeSearch ?: request.enableNativeSearch
@@ -311,7 +332,7 @@ object AnthropicAdapter {
                     }
                 }
         }
-        val shouldEnableThinking = request.enableThinking && request.supportsReasoning && !hasUnsignedAssistantToolTurn
+        val shouldEnableThinking = includeThinking && request.enableThinking && request.supportsReasoning && !hasUnsignedAssistantToolTurn
         val model = request.modelID.lowercase()
         val usesAdaptiveThinking = listOf(
             "claude-sonnet-5", "claude-opus-5", "claude-haiku-5",
@@ -497,9 +518,11 @@ object AnthropicAdapter {
             }
         }
 
+        val cappedMaxTokens = maxTokensCap?.let { minOf(finalMaxTokens, it) } ?: finalMaxTokens
+
         return buildJsonObject {
             put("model", request.modelID)
-            put("max_tokens", finalMaxTokens)
+            put("max_tokens", cappedMaxTokens)
             put("messages", buildJsonArray {
                 for ((role, blocks) in wireMessages) {
                     add(buildJsonObject {

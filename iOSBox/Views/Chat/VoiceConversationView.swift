@@ -15,19 +15,32 @@ struct VoiceConversationView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var controller = VoiceConversationController()
     @State private var speech = SpeechService.shared
+    @State private var preferences = AppPreferences.shared
     @State private var pulseActive = false
+
+    private let vermilionGlow = Color(red: 0.86, green: 0.35, blue: 0.23)
+    private let pineTealGlow = Color(red: 0.24, green: 0.72, blue: 0.66)
+    private let amberGlow = Color(red: 0.90, green: 0.58, blue: 0.28)
 
     var body: some View {
         NavigationStack {
             ZStack {
                 LinearGradient(
                     colors: [
-                        Color(red: 0.06, green: 0.08, blue: 0.15),
-                        Color(red: 0.10, green: 0.13, blue: 0.24),
-                        Color(red: 0.07, green: 0.10, blue: 0.18)
+                        Color(red: 0.055, green: 0.063, blue: 0.082),
+                        Color(red: 0.082, green: 0.090, blue: 0.118),
+                        Color(red: 0.059, green: 0.067, blue: 0.086)
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
+                )
+                .ignoresSafeArea()
+
+                RadialGradient(
+                    colors: [orbTint.opacity(0.18), Color.clear],
+                    center: .center,
+                    startRadius: 20,
+                    endRadius: 280
                 )
                 .ignoresSafeArea()
 
@@ -78,38 +91,30 @@ struct VoiceConversationView: View {
             UIApplication.shared.isIdleTimerDisabled = false
             controller.stopSession()
         }
+        .onChange(of: latestAssistantMessage?.content ?? "") { _, newContent in
+            guard isGenerating,
+                  let msg = latestAssistantMessage,
+                  !newContent.isEmpty else { return }
+            let cloudSynthesizer: CloudSpeechSynthesizerHandler? = makeCloudSynthesizer()
+            controller.handleStreamingTextUpdate(
+                newContent,
+                messageID: msg.id,
+                cloudSynthesizer: cloudSynthesizer
+            )
+        }
         .onChange(of: isGenerating) { wasGenerating, nowGenerating in
-            guard wasGenerating && !nowGenerating, controller.phase == .thinking else { return }
+            guard wasGenerating && !nowGenerating,
+                  controller.phase == .thinking || controller.phase == .speaking else { return }
             let replyText = latestAssistantMessage?.content ?? ""
             let replyError = latestAssistantMessage?.errorMessage
             let messageID = latestAssistantMessage?.id ?? UUID()
-            if let tpl = cloudTTSTemplateProvider() {
-                controller.handleGenerationFinished(
-                    replyText: replyText,
-                    errorMessage: replyError,
-                    messageID: messageID,
-                    cloudSynthesizer: { [tpl] cleanedText in
-                        try await CloudSpeechSynthesizer.synthesize(
-                            CloudTTSRequest(
-                                baseURL: tpl.baseURL,
-                                apiKey: tpl.apiKey,
-                                apiKeys: tpl.apiKeys,
-                                customHeaders: tpl.customHeaders,
-                                model: tpl.model,
-                                voice: tpl.voice,
-                                input: cleanedText
-                            )
-                        )
-                    }
-                )
-            } else {
-                controller.handleGenerationFinished(
-                    replyText: replyText,
-                    errorMessage: replyError,
-                    messageID: messageID,
-                    cloudSynthesizer: nil
-                )
-            }
+            let cloudSynthesizer: CloudSpeechSynthesizerHandler? = makeCloudSynthesizer()
+            controller.handleGenerationFinished(
+                replyText: replyText,
+                errorMessage: replyError,
+                messageID: messageID,
+                cloudSynthesizer: cloudSynthesizer
+            )
         }
         .onChange(of: speech.speechError) { _, newError in
             if let newError, !newError.isEmpty {
@@ -163,11 +168,11 @@ struct VoiceConversationView: View {
                     systemImage: controller.autoResumeListening ? "repeat" : "pause.circle"
                 )
                 .font(.caption.weight(.medium))
-                .foregroundStyle(controller.autoResumeListening ? Color.cyan : Color.white.opacity(0.72))
+                .foregroundStyle(controller.autoResumeListening ? vermilionGlow : Color.white.opacity(0.72))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(
-                    (controller.autoResumeListening ? Color.cyan.opacity(0.18) : Color.white.opacity(0.1)),
+                    (controller.autoResumeListening ? vermilionGlow.opacity(0.18) : Color.white.opacity(0.08)),
                     in: Capsule()
                 )
             }
@@ -228,10 +233,10 @@ struct VoiceConversationView: View {
                     if controller.turnCount > 0 {
                         Text("第 \(controller.turnCount) 轮")
                             .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.cyan)
+                            .foregroundStyle(vermilionGlow)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
-                            .background(.cyan.opacity(0.16), in: Capsule())
+                            .background(vermilionGlow.opacity(0.18), in: Capsule())
                     }
                 }
 
@@ -249,46 +254,47 @@ struct VoiceConversationView: View {
                 if controller.phase == .listening {
                     Text("实时语音识别")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.cyan)
+                        .foregroundStyle(vermilionGlow)
                     Text(controller.liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                          ? String(localized: "请直接说话，我会实时转为文字…")
                          : controller.liveTranscript)
-                        .font(.body)
+                        .font(DS.Typography.prose(size: 17, serif: preferences.literarySerifBody))
                         .foregroundStyle(controller.liveTranscript.isEmpty ? .white.opacity(0.58) : .white)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else if controller.phase == .thinking {
                     Text("你的问题")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.cyan)
+                        .foregroundStyle(amberGlow)
                     Text(controller.lastUserUtterance)
-                        .font(.body)
+                        .font(DS.Typography.prose(size: 17, serif: preferences.literarySerifBody))
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else if !controller.latestAssistantReply.isEmpty {
                     Text("助手回复")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.cyan)
+                        .foregroundStyle(pineTealGlow)
                     Text(PlainTextFormatter.format(controller.latestAssistantReply))
-                        .font(.subheadline)
+                        .font(DS.Typography.prose(size: 15.5, serif: preferences.literarySerifBody))
+                        .lineSpacing(4.5)
                         .foregroundStyle(.white.opacity(0.92))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     Text("免手操作语音对谈")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.cyan)
+                        .foregroundStyle(vermilionGlow)
                     Text("点击中央麦克风或直接开口提问，说完短暂停顿即会自动发送并在答复后为你朗读。")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.78))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .padding(14)
+            .padding(16)
         }
-        .frame(maxWidth: .infinity, minHeight: 108, maxHeight: 170)
-        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .frame(maxWidth: .infinity, minHeight: 108, maxHeight: 176)
+        .background(Color(red: 0.10, green: 0.11, blue: 0.14).opacity(0.88), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(.white.opacity(0.10), lineWidth: 1)
         )
     }
 
@@ -330,23 +336,8 @@ struct VoiceConversationView: View {
     private var bottomDock: some View {
         HStack(spacing: 12) {
             Button {
-                if let tpl = cloudTTSTemplateProvider() {
-                    controller.replayLastReply { [tpl] cleanedText in
-                        try await CloudSpeechSynthesizer.synthesize(
-                            CloudTTSRequest(
-                                baseURL: tpl.baseURL,
-                                apiKey: tpl.apiKey,
-                                apiKeys: tpl.apiKeys,
-                                customHeaders: tpl.customHeaders,
-                                model: tpl.model,
-                                voice: tpl.voice,
-                                input: cleanedText
-                            )
-                        )
-                    }
-                } else {
-                    controller.replayLastReply(cloudSynthesizer: nil)
-                }
+                let cloudSynthesizer: CloudSpeechSynthesizerHandler? = makeCloudSynthesizer()
+                controller.replayLastReply(cloudSynthesizer: cloudSynthesizer)
             } label: {
                 Label("重播", systemImage: "speaker.wave.2")
                     .font(.subheadline.weight(.medium))
@@ -370,6 +361,7 @@ struct VoiceConversationView: View {
 
             if controller.phase == .speaking {
                 Button {
+                    if isGenerating { onStopGeneration() }
                     controller.interruptAndListen()
                 } label: {
                     Label("打断说话", systemImage: "mic.fill")
@@ -384,10 +376,10 @@ struct VoiceConversationView: View {
 
     private var orbTint: Color {
         switch controller.phase {
-        case .idle: return .blue
-        case .listening: return .teal
-        case .thinking: return .indigo
-        case .speaking: return .purple
+        case .idle: return Color(red: 0.45, green: 0.48, blue: 0.56)
+        case .listening: return vermilionGlow
+        case .thinking: return amberGlow
+        case .speaking: return pineTealGlow
         }
     }
 
@@ -473,6 +465,7 @@ struct VoiceConversationView: View {
             onStopGeneration()
             controller.pauseSession()
         case .speaking:
+            if isGenerating { onStopGeneration() }
             controller.interruptAndListen()
         }
     }
@@ -491,7 +484,25 @@ struct VoiceConversationView: View {
             onStopGeneration()
             controller.pauseSession()
         case .speaking:
+            if isGenerating { onStopGeneration() }
             controller.pauseSession()
+        }
+    }
+
+    private func makeCloudSynthesizer() -> CloudSpeechSynthesizerHandler? {
+        guard let template = cloudTTSTemplateProvider() else { return nil }
+        return { @Sendable [template] cleanedText in
+            try await CloudSpeechSynthesizer.synthesize(
+                CloudTTSRequest(
+                    baseURL: template.baseURL,
+                    apiKey: template.apiKey,
+                    apiKeys: template.apiKeys,
+                    customHeaders: template.customHeaders,
+                    model: template.model,
+                    voice: template.voice,
+                    input: cleanedText
+                )
+            )
         }
     }
 

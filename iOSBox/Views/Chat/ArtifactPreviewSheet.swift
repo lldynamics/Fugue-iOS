@@ -9,6 +9,24 @@ enum ArtifactDocumentBuilder {
         previewableLanguages.contains(language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
+    static func supportedMermaidDiagramKind(in code: String) -> String? {
+        let firstLine = code
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty && !$0.hasPrefix("%%") }
+            ?? ""
+        let lower = firstLine.lowercased()
+        if lower.hasPrefix("sequencediagram") { return "sequenceDiagram" }
+        if lower.hasPrefix("statediagram") { return "stateDiagram" }
+        if lower.hasPrefix("classdiagram") { return "classDiagram" }
+        if lower.hasPrefix("flowchart") || lower.hasPrefix("graph ") { return "flowchart" }
+        if lower == "pie" || lower.hasPrefix("pie ") { return "pie" }
+        if lower == "gantt" || lower.hasPrefix("gantt ") { return "gantt" }
+        if lower.hasPrefix("erdiagram") { return "erDiagram" }
+        if lower == "mindmap" || lower.hasPrefix("mindmap ") { return "mindmap" }
+        return nil
+    }
+
     private static let scriptCSP = #"<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; media-src data:; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; worker-src 'none'; child-src 'none'; base-uri 'none';"><meta http-equiv="x-dns-prefetch-control" content="off">"#
     private static let noScriptCSP = #"<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; media-src data:; connect-src 'none'; form-action 'none'; worker-src 'none'; child-src 'none'; base-uri 'none';"><meta http-equiv="x-dns-prefetch-control" content="off">"#
     static let webrtcGuardJS = #"try{Object.defineProperty(window,'RTCPeerConnection',{value:undefined,configurable:false,writable:false});Object.defineProperty(window,'webkitRTCPeerConnection',{value:undefined,configurable:false,writable:false});}catch(_){}"#
@@ -122,6 +140,8 @@ enum ArtifactDocumentBuilder {
               .edge-bg { fill: #1c1c1e !important; }
               .seq-actor { fill: #2c2c2e !important; stroke: #6e6eff !important; }
               .seq-life { stroke: #636366 !important; }
+              .subgraph-box { fill: rgba(110,110,255,0.08) !important; stroke: #6e6eff !important; }
+              .gantt-row-alt { fill: rgba(255,255,255,0.04) !important; }
               .fallback { background: #2c2c2e !important; color: #f2f2f7 !important; }
             }
             svg { width: 100%; height: auto; overflow: visible; }
@@ -134,15 +154,26 @@ enum ArtifactDocumentBuilder {
             <script>
             (function() {
               const src = document.getElementById('raw').textContent.trim();
-              const lines = src.split(/\\r?\\n/).map(l => l.trim()).filter(l => l && !l.startsWith('%%'));
+              const rawLines = src.split(/\\r?\\n/).filter(l => l.trim() && !l.trim().startsWith('%%'));
+              const lines = rawLines.map(l => l.trim());
               const mount = document.getElementById('diagram');
               const svgNS = 'http://www.w3.org/2000/svg';
+              const palette = ['#4f46e5', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#ef4444'];
 
               function el(tag, attrs, text) {
                 const n = document.createElementNS(svgNS, tag);
+                if (tag === 'svg') {
+                  n.setAttribute('xmlns', svgNS);
+                }
                 for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, String(v));
                 if (text !== undefined) n.textContent = text;
                 return n;
+              }
+
+              function measureTextWidth(str) {
+                let w = 0;
+                for (const ch of String(str || '')) { w += ch.charCodeAt(0) > 0x2E7F ? 13.5 : 7.5; }
+                return w;
               }
 
               function renderFallback() {
@@ -154,6 +185,162 @@ enum ArtifactDocumentBuilder {
 
               if (!lines.length) { renderFallback(); return; }
 
+              // 1. Pie Chart
+              if (/^pie\\b/i.test(lines[0])) {
+                let title = '';
+                const items = [];
+                for (const line of lines.slice(1)) {
+                  const tm = line.match(/^title\\s+(.+)$/i);
+                  if (tm) { title = tm[1].trim(); continue; }
+                  const kv = line.match(/^"([^"]+)"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)$/);
+                  if (kv) {
+                    const val = parseFloat(kv[2]);
+                    if (isFinite(val) && val > 0) items.push({ label: kv[1], value: val });
+                  }
+                }
+                if (!items.length) { renderFallback(); return; }
+                const total = items.reduce((s, x) => s + x.value, 0);
+                const r = 92, cx = 128, cy = (title ? 136 : 114);
+                const legendX = 246;
+                const width = 460;
+                const height = Math.max(cy + r + 24, (title ? 58 : 34) + items.length * 24 + 24);
+                const svg = el('svg', { viewBox: `0 0 ${width} ${height}` });
+                if (title) {
+                  svg.appendChild(el('text', { class: 'node-text', x: width / 2, y: 24, 'text-anchor': 'middle', 'font-size': 14, 'font-weight': 600, fill: '#1c1c1e' }, title.slice(0, 42)));
+                }
+                let angle = -Math.PI / 2;
+                items.forEach((item, idx) => {
+                  const frac = item.value / total;
+                  const sweep = frac * Math.PI * 2;
+                  const color = palette[idx % palette.length];
+                  if (items.length === 1) {
+                    svg.appendChild(el('circle', { cx, cy, r, fill: color }));
+                  } else {
+                    const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle);
+                    const x2 = cx + r * Math.cos(angle + sweep), y2 = cy + r * Math.sin(angle + sweep);
+                    const large = sweep > Math.PI ? 1 : 0;
+                    const d = `M ${cx} ${cy} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} Z`;
+                    svg.appendChild(el('path', { d, fill: color, stroke: '#ffffff', 'stroke-width': 1.5 }));
+                  }
+                  const ly = (title ? 54 : 30) + idx * 24;
+                  svg.appendChild(el('rect', { x: legendX, y: ly - 10, width: 12, height: 12, rx: 3, fill: color }));
+                  const pct = Math.round(frac * 100);
+                  svg.appendChild(el('text', { class: 'node-text', x: legendX + 18, y: ly, 'font-size': 11.5, fill: '#1c1c1e' }, `${item.label.slice(0, 18)} (${pct}%)`));
+                  angle += sweep;
+                });
+                mount.appendChild(svg);
+                return;
+              }
+
+              // 2. Gantt Chart
+              if (/^gantt\\b/i.test(lines[0])) {
+                let title = '';
+                let section = '';
+                const tasks = [];
+                let cursorDay = 0;
+                for (const line of lines.slice(1)) {
+                  const tm = line.match(/^title\\s+(.+)$/i);
+                  if (tm) { title = tm[1].trim(); continue; }
+                  const sm = line.match(/^section\\s+(.+)$/i);
+                  if (sm) { section = sm[1].trim(); continue; }
+                  if (/^(?:dateFormat|axisFormat|excludes|todayMarker|tickInterval)\\b/i.test(line)) continue;
+                  const colon = line.indexOf(':');
+                  if (colon > 0) {
+                    const name = line.slice(0, colon).trim();
+                    const rest = line.slice(colon + 1).trim();
+                    const durMatch = rest.match(/(\\d+)\\s*([dwmh])/i);
+                    let dur = durMatch ? parseInt(durMatch[1], 10) : 3;
+                    if (durMatch && durMatch[2].toLowerCase() === 'w') dur *= 7;
+                    dur = Math.max(1, Math.min(dur, 60));
+                    const isDone = /\\bdone\\b/i.test(rest);
+                    const isCrit = /\\bcrit\\b/i.test(rest);
+                    tasks.push({ section, name, start: cursorDay, duration: dur, isDone, isCrit });
+                    cursorDay += Math.max(1, Math.round(dur * 0.75));
+                  }
+                }
+                if (!tasks.length) { renderFallback(); return; }
+                const maxEnd = Math.max(...tasks.map(t => t.start + t.duration), 5);
+                const labelW = 136, chartW = 290, pad = 18, rowH = 28;
+                const topY = title ? 42 : 18;
+                const width = pad * 2 + labelW + chartW;
+                const height = topY + tasks.length * rowH + 24;
+                const svg = el('svg', { viewBox: `0 0 ${width} ${height}` });
+                if (title) {
+                  svg.appendChild(el('text', { class: 'node-text', x: width / 2, y: 22, 'text-anchor': 'middle', 'font-size': 14, 'font-weight': 600, fill: '#1c1c1e' }, title.slice(0, 44)));
+                }
+                tasks.forEach((t, idx) => {
+                  const y = topY + idx * rowH;
+                  if (idx % 2 === 1) {
+                    svg.appendChild(el('rect', { class: 'gantt-row-alt', x: pad, y, width: labelW + chartW, height: rowH, rx: 4, fill: '#f7f7fa' }));
+                  }
+                  svg.appendChild(el('text', { class: 'node-text', x: pad + 6, y: y + 18, 'font-size': 11, fill: '#1c1c1e' }, t.name.slice(0, 18)));
+                  const bx = pad + labelW + (t.start / maxEnd) * chartW;
+                  const bw = Math.max(14, (t.duration / maxEnd) * chartW);
+                  const fill = t.isCrit ? '#ef4444' : (t.isDone ? '#10b981' : palette[idx % palette.length]);
+                  svg.appendChild(el('rect', { x: bx, y: y + 5, width: bw, height: 18, rx: 5, fill }));
+                });
+                mount.appendChild(svg);
+                return;
+              }
+
+              // 3. Mindmap
+              if (/^mindmap\\b/i.test(lines[0])) {
+                const nodes = [];
+                const stack = [];
+                for (const raw of rawLines.slice(1)) {
+                  const indent = raw.match(/^(\\s*)/)[1].length;
+                  let text = raw.trim().replace(/^root\\s*/i, '').replace(/^[(\\[\\{]+|[)\\]\\}]+$/g, '').trim();
+                  if (!text) continue;
+                  while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
+                  const parent = stack.length ? stack[stack.length - 1] : null;
+                  const node = { text, indent, depth: parent ? parent.depth + 1 : 0, parent, children: [], branchIdx: 0 };
+                  if (parent) {
+                    if (parent.depth === 0) node.branchIdx = parent.children.length;
+                    else node.branchIdx = parent.branchIdx;
+                    parent.children.push(node);
+                  }
+                  stack.push(node);
+                  nodes.push(node);
+                }
+                if (!nodes.length) { renderFallback(); return; }
+                const root = nodes[0];
+                let leafY = 0;
+                const rowGap = 36, colGap = 150, pad = 24;
+                function layout(n) {
+                  if (!n.children.length) {
+                    n.y = pad + leafY * rowGap;
+                    leafY++;
+                  } else {
+                    n.children.forEach(layout);
+                    n.y = (n.children[0].y + n.children[n.children.length - 1].y) / 2;
+                  }
+                  n.w = Math.max(76, Math.min(136, measureTextWidth(n.text) + 22));
+                  n.x = pad + n.depth * colGap;
+                }
+                layout(root);
+                const maxDepth = Math.max(...nodes.map(n => n.depth));
+                const width = pad * 2 + (maxDepth + 1) * colGap;
+                const height = Math.max(120, pad * 2 + Math.max(1, leafY) * rowGap);
+                const svg = el('svg', { viewBox: `0 0 ${width} ${height}` });
+                for (const n of nodes) {
+                  if (n.parent) {
+                    const x1 = n.parent.x + n.parent.w, y1 = n.parent.y + 14;
+                    const x2 = n.x, y2 = n.y + 14;
+                    const mx = (x1 + x2) / 2;
+                    const col = palette[n.branchIdx % palette.length];
+                    svg.appendChild(el('path', { d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, fill: 'none', stroke: col, 'stroke-width': 2 }));
+                  }
+                }
+                for (const n of nodes) {
+                  const col = n.depth === 0 ? '#4f46e5' : palette[n.branchIdx % palette.length];
+                  svg.appendChild(el('rect', { class: n.depth === 0 ? '' : 'node-box', x: n.x, y: n.y, width: n.w, height: 28, rx: 14, fill: n.depth === 0 ? col : '#eef2ff', stroke: col, 'stroke-width': 1.5 }));
+                  svg.appendChild(el('text', { class: n.depth === 0 ? '' : 'node-text', x: n.x + n.w / 2, y: n.y + 18, 'text-anchor': 'middle', 'font-size': 11.5, 'font-weight': n.depth === 0 ? 600 : 500, fill: n.depth === 0 ? '#ffffff' : '#1c1c1e' }, n.text.slice(0, 18)));
+                }
+                mount.appendChild(svg);
+                return;
+              }
+
+              // 4. Sequence Diagram
               if (/^sequenceDiagram\\b/i.test(lines[0])) {
                 const actors = [];
                 const actorLabels = {};
@@ -202,45 +389,68 @@ enum ArtifactDocumentBuilder {
                 return;
               }
 
+              // 5. Flowchart / State / Class / ER Diagram
               const stateHeader = /^stateDiagram(?:-v2)?\\b/i.test(lines[0]);
               const classHeader = /^classDiagram\\b/i.test(lines[0]);
+              const erHeader = /^erDiagram\\b/i.test(lines[0]);
               const headerMatch = lines[0].match(/^(?:flowchart|graph)\\s+(TD|TB|LR|RL|BT)\\b/i);
-              if (!headerMatch && !stateHeader && !classHeader) { renderFallback(); return; }
-              const dir = headerMatch ? headerMatch[1].toUpperCase() : 'TD';
+              if (!headerMatch && !stateHeader && !classHeader && !erHeader) { renderFallback(); return; }
+              const dir = headerMatch ? headerMatch[1].toUpperCase() : (erHeader ? 'LR' : 'TD');
               const horizontal = dir === 'LR' || dir === 'RL';
               const nodes = new Map();
               const edges = [];
+              const subgraphs = [];
+              let activeSubgraph = null;
 
-              function measureTextWidth(str) {
-                let w = 0;
-                for (const ch of str) { w += ch.charCodeAt(0) > 0x2E7F ? 13.5 : 7.5; }
-                return w;
-              }
-
-              function ensureNode(id, label, members) {
+              function ensureNode(id, label, members, shape) {
                 const cleanID = id.trim();
                 if (!cleanID) return '';
                 if (!nodes.has(cleanID)) {
-                  nodes.set(cleanID, { id: cleanID, label: label || cleanID, members: members || [], level: 0 });
+                  nodes.set(cleanID, { id: cleanID, label: label || cleanID, members: members || [], shape: shape || 'rect', level: 0 });
                 } else {
                   const cur = nodes.get(cleanID);
                   if (label && label !== cleanID) cur.label = label;
                   if (members && members.length) cur.members.push(...members);
+                  if (shape && shape !== 'rect') cur.shape = shape;
+                }
+                if (activeSubgraph && !activeSubgraph.nodes.includes(cleanID)) {
+                  activeSubgraph.nodes.push(cleanID);
                 }
                 return cleanID;
               }
 
               function parseNode(token) {
                 const t = token.trim();
-                if (stateHeader && t === '[*]') return ensureNode('__start_end__', '●');
+                if (stateHeader && t === '[*]') return ensureNode('__start_end__', '●', [], 'pill');
+                const stadium = t.match(/^([A-Za-z0-9_\\u4e00-\\u9fa5]+)\\s*\\(\\[(.*?)\\]\\)$/);
+                if (stadium) return ensureNode(stadium[1], stadium[2].replace(/^["']|["']$/g, ''), [], 'pill');
                 const m = t.match(/^([A-Za-z0-9_\\u4e00-\\u9fa5]+)\\s*(?:\\[(.*?)\\]|\\((.*?)\\)|\\{(.*?)\\})?$/);
                 const id = m ? m[1] : t.replace(/[^A-Za-z0-9_\\u4e00-\\u9fa5]/g, '_');
+                const shape = (m && m[4]) ? 'diamond' : ((m && m[3]) ? 'pill' : 'rect');
                 const rawLabel = (m && (m[2] || m[3] || m[4])) ? (m[2] || m[3] || m[4]) : id;
                 const label = rawLabel.replace(/^["']|["']$/g, '');
-                return ensureNode(id, label);
+                return ensureNode(id, label, [], shape);
               }
 
-              if (classHeader) {
+              if (erHeader) {
+                let activeEntity = null;
+                for (const line of lines.slice(1)) {
+                  if (activeEntity) {
+                    if (line === '}') { activeEntity = null; continue; }
+                    ensureNode(activeEntity, activeEntity, [line]);
+                    continue;
+                  }
+                  const blockStart = line.match(/^([A-Za-z0-9_\\u4e00-\\u9fa5-]+)\\s*\\{$/);
+                  if (blockStart) { activeEntity = ensureNode(blockStart[1], blockStart[1]); continue; }
+                  const rel = line.match(/^([A-Za-z0-9_\\u4e00-\\u9fa5-]+)\\s+([|o}{]{1,2}[.-]{2}[|o}{]{1,2})\\s+([A-Za-z0-9_\\u4e00-\\u9fa5-]+)(?:\\s*:\\s*(.+))?$/);
+                  if (rel) {
+                    const f = ensureNode(rel[1], rel[1]);
+                    const t = ensureNode(rel[3], rel[3]);
+                    const lbl = (rel[4] || rel[2]).replace(/^["']|["']$/g, '').trim();
+                    edges.push({ from: f, to: t, label: lbl, dashed: rel[2].includes('..') });
+                  }
+                }
+              } else if (classHeader) {
                 let activeClass = null;
                 for (const line of lines.slice(1)) {
                   if (activeClass) {
@@ -255,11 +465,11 @@ enum ArtifactDocumentBuilder {
                     ensureNode(memberLine[1], memberLine[1], [memberLine[2].trim()]);
                     continue;
                   }
-                  const rel = line.match(/^([A-Za-z0-9_\\u4e00-\\u9fa5]+)\\s*(?:<\\|--|--\\|>|\\*--|o--|-->|\\.\\.>|--|\\.\\.)\\s*([A-Za-z0-9_\\u4e00-\\u9fa5]+)(?:\\s*:\\s*(.+))?$/);
+                  const rel = line.match(/^([A-Za-z0-9_\\u4e00-\\u9fa5]+)\\s*(<\\|--|--\\|>|\\*--|o--|-->|\\.\\.>|--|\\.\\.)\\s*([A-Za-z0-9_\\u4e00-\\u9fa5]+)(?:\\s*:\\s*(.+))?$/);
                   if (rel) {
                     const f = ensureNode(rel[1], rel[1]);
-                    const t = ensureNode(rel[2], rel[2]);
-                    edges.push({ from: f, to: t, label: (rel[3] || '').trim() });
+                    const t = ensureNode(rel[3], rel[3]);
+                    edges.push({ from: f, to: t, label: (rel[4] || '').trim(), dashed: rel[2].includes('..') });
                   }
                 }
               } else if (stateHeader) {
@@ -270,17 +480,25 @@ enum ArtifactDocumentBuilder {
                   if (tr) {
                     const f = parseNode(tr[1]);
                     const t = parseNode(tr[2]);
-                    if (f && t) edges.push({ from: f, to: t, label: (tr[3] || '').trim() });
+                    if (f && t) edges.push({ from: f, to: t, label: (tr[3] || '').trim(), dashed: false });
                   }
                 }
               } else {
                 for (const line of lines.slice(1)) {
-                  if (/^(?:subgraph|end|style|classDef|class|click|linkStyle|direction)\\b/i.test(line)) continue;
-                  const e = line.match(/^(.+?)\\s*(?:-->|---|==>|-\\.->)\\s*(?:\\|([^|]+)\\|\\s*)?(.+)$/);
+                  const sg = line.match(/^subgraph\\s+(.+)$/i);
+                  if (sg) {
+                    const title = sg[1].replace(/^[^\\[]*\\[|\\]$/g, '').replace(/^["']|["']$/g, '').trim();
+                    activeSubgraph = { title, nodes: [] };
+                    subgraphs.push(activeSubgraph);
+                    continue;
+                  }
+                  if (/^end\\b/i.test(line)) { activeSubgraph = null; continue; }
+                  if (/^(?:style|classDef|class|click|linkStyle|direction)\\b/i.test(line)) continue;
+                  const e = line.match(/^(.+?)\\s*(-->|---|==>|-\\.->)\\s*(?:\\|([^|]+)\\|\\s*)?(.+)$/);
                   if (e) {
                     const from = parseNode(e[1]);
-                    const to = parseNode(e[3]);
-                    if (from && to) edges.push({ from, to, label: (e[2] || '').trim() });
+                    const to = parseNode(e[4]);
+                    if (from && to) edges.push({ from, to, label: (e[3] || '').trim(), dashed: e[2] === '-.->' });
                   } else if (/^[A-Za-z0-9_\\u4e00-\\u9fa5]+\\s*[\\[\\(\\{]/.test(line)) {
                     parseNode(line);
                   }
@@ -307,8 +525,8 @@ enum ArtifactDocumentBuilder {
               }
               const maxPerLevel = Math.max(...[...levels.values()].map(a => a.length));
               const boxW = Math.round(maxLabelWidth);
-              const boxH = 42 + Math.min(maxMemberCount, 5) * 16;
-              const gapX = 52, gapY = 48, pad = 24;
+              const boxH = 44 + Math.min(maxMemberCount, 5) * 16;
+              const gapX = 54, gapY = 50, pad = 28;
               const sortedLevels = [...levels.keys()].sort((a, b) => a - b);
               const totalCols = horizontal ? sortedLevels.length : maxPerLevel;
               const totalRows = horizontal ? maxPerLevel : sortedLevels.length;
@@ -340,6 +558,18 @@ enum ArtifactDocumentBuilder {
               defs.appendChild(marker);
               svg.appendChild(defs);
 
+              // Render subgraph backdrop frames
+              for (const sg of subgraphs) {
+                const members = sg.nodes.map(id => nodes.get(id)).filter(Boolean);
+                if (!members.length) continue;
+                const minX = Math.min(...members.map(m => m.x)) - 14;
+                const minY = Math.min(...members.map(m => m.y)) - 22;
+                const maxX = Math.max(...members.map(m => m.x + boxW)) + 14;
+                const maxY = Math.max(...members.map(m => m.y + boxH)) + 14;
+                svg.appendChild(el('rect', { class: 'subgraph-box', x: minX, y: minY, width: maxX - minX, height: maxY - minY, rx: 12, fill: 'rgba(79,70,229,0.05)', stroke: '#818cf8', 'stroke-width': 1.2, 'stroke-dasharray': '5,4' }));
+                svg.appendChild(el('text', { class: 'edge-label', x: minX + 10, y: minY + 14, 'font-size': 10.5, 'font-weight': 600, fill: '#4f46e5' }, sg.title.slice(0, 28)));
+              }
+
               for (const e of edges) {
                 const f = nodes.get(e.from), t = nodes.get(e.to);
                 if (!f || !t) continue;
@@ -347,7 +577,7 @@ enum ArtifactDocumentBuilder {
                 const y1 = horizontal ? f.y + boxH / 2 : f.y + boxH;
                 const x2 = horizontal ? t.x : t.x + boxW / 2;
                 const y2 = horizontal ? t.y + boxH / 2 : t.y;
-                svg.appendChild(el('line', { class: 'edge-line', x1, y1, x2, y2, stroke: '#636366', 'stroke-width': 1.6, 'marker-end': 'url(#m-arrow)' }));
+                svg.appendChild(el('line', { class: 'edge-line', x1, y1, x2, y2, stroke: '#636366', 'stroke-width': 1.6, 'stroke-dasharray': e.dashed ? '5,4' : '', 'marker-end': 'url(#m-arrow)' }));
                 if (e.label) {
                   const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
                   const lbl = e.label.slice(0, 26);
@@ -358,7 +588,14 @@ enum ArtifactDocumentBuilder {
               }
 
               for (const n of nodes.values()) {
-                svg.appendChild(el('rect', { class: 'node-box', x: n.x, y: n.y, width: boxW, height: boxH, rx: 10, fill: '#eef2ff', stroke: '#4f46e5', 'stroke-width': 1.5 }));
+                if (n.shape === 'diamond') {
+                  const cx = n.x + boxW / 2, cy = n.y + boxH / 2;
+                  const pts = `${cx},${n.y - 4} ${n.x + boxW + 6},${cy} ${cx},${n.y + boxH + 4} ${n.x - 6},${cy}`;
+                  svg.appendChild(el('polygon', { class: 'node-box', points: pts, fill: '#eef2ff', stroke: '#4f46e5', 'stroke-width': 1.5 }));
+                } else {
+                  const rx = n.shape === 'pill' ? boxH / 2 : 10;
+                  svg.appendChild(el('rect', { class: 'node-box', x: n.x, y: n.y, width: boxW, height: boxH, rx, fill: '#eef2ff', stroke: '#4f46e5', 'stroke-width': 1.5 }));
+                }
                 const hasMembers = n.members && n.members.length > 0;
                 const titleY = hasMembers ? (n.y + 20) : (n.y + boxH / 2 + 4);
                 svg.appendChild(el('text', { class: 'node-text', x: n.x + boxW / 2, y: titleY, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': hasMembers ? 600 : 500, fill: '#1c1c1e' }, n.label.slice(0, 34)));
@@ -387,6 +624,7 @@ struct ArtifactPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showSource = false
     @State private var snapshotFileURL: URL?
+    @State private var svgExportURL: URL?
 
     var body: some View {
         NavigationStack {
@@ -402,12 +640,22 @@ struct ArtifactPreviewSheet: View {
                     SandboxedArtifactWebView(
                         html: ArtifactDocumentBuilder.htmlDocument(language: language, code: code),
                         allowsJavaScript: ArtifactDocumentBuilder.allowsJavaScript(for: language),
-                        onSnapshotURL: { url in snapshotFileURL = url }
+                        onSnapshotURL: { url in snapshotFileURL = url },
+                        onSVGExportURL: { url in svgExportURL = url }
                     )
                 }
             }
             .navigationTitle(language.uppercased())
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                if language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "svg",
+                   let data = code.data(using: .utf8) {
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("Fugue-Artifact-\(UUID().uuidString.prefix(8)).svg")
+                    try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                    svgExportURL = url
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }
@@ -421,10 +669,22 @@ struct ArtifactPreviewSheet: View {
                     .frame(width: 140)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if let snapshotFileURL {
-                        ShareLink(item: snapshotFileURL) {
+                    if snapshotFileURL != nil || svgExportURL != nil {
+                        Menu {
+                            if let snapshotFileURL {
+                                ShareLink(item: snapshotFileURL) {
+                                    Label("导出 PNG 图片", systemImage: "photo")
+                                }
+                            }
+                            if let svgExportURL {
+                                ShareLink(item: svgExportURL) {
+                                    Label("导出 SVG 矢量图", systemImage: "doc.richtext")
+                                }
+                            }
+                        } label: {
                             Image(systemName: "square.and.arrow.up")
                         }
+                        .accessibilityLabel("导出图表")
                     }
                 }
             }
@@ -436,9 +696,10 @@ struct SandboxedArtifactWebView: UIViewRepresentable {
     let html: String
     let allowsJavaScript: Bool
     var onSnapshotURL: ((URL?) -> Void)? = nil
+    var onSVGExportURL: ((URL?) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onSnapshotURL: onSnapshotURL)
+        Coordinator(onSnapshotURL: onSnapshotURL, onSVGExportURL: onSVGExportURL)
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -494,13 +755,15 @@ struct SandboxedArtifactWebView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         let onSnapshotURL: ((URL?) -> Void)?
+        let onSVGExportURL: ((URL?) -> Void)?
         var ruleListInstalled = false
         var loadedHTML: String?
         var pendingHTML: String?
         var allowNextLoadHTML = false
 
-        init(onSnapshotURL: ((URL?) -> Void)?) {
+        init(onSnapshotURL: ((URL?) -> Void)?, onSVGExportURL: ((URL?) -> Void)?) {
             self.onSnapshotURL = onSnapshotURL
+            self.onSVGExportURL = onSVGExportURL
         }
 
         static func shouldAllowNavigation(
@@ -538,14 +801,41 @@ struct SandboxedArtifactWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            guard let onSnapshotURL else { return }
-            webView.takeSnapshot(with: nil) { image, _ in
-                guard let data = image?.pngData() else { return }
-                let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("Fugue-Artifact-\(UUID().uuidString.prefix(8)).png")
-                try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-                Task { @MainActor in
-                    onSnapshotURL(url)
+            if let onSnapshotURL {
+                webView.takeSnapshot(with: nil) { image, _ in
+                    guard let data = image?.pngData() else { return }
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("Fugue-Artifact-\(UUID().uuidString.prefix(8)).png")
+                    try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                    Task { @MainActor in
+                        onSnapshotURL(url)
+                    }
+                }
+            }
+            if let onSVGExportURL {
+                let serializerJS = """
+                (function() {
+                  const svg = document.querySelector('svg');
+                  if (!svg) return '';
+                  if (!svg.getAttribute('xmlns')) svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+                  const vb = (svg.getAttribute('viewBox') || '').trim().split(/\\s+/);
+                  if (vb.length === 4) {
+                    if (!svg.getAttribute('width')) svg.setAttribute('width', vb[2]);
+                    if (!svg.getAttribute('height')) svg.setAttribute('height', vb[3]);
+                  }
+                  return '<?xml version="1.0" encoding="UTF-8"?>\\n' + new XMLSerializer().serializeToString(svg);
+                })();
+                """
+                webView.evaluateJavaScript(serializerJS) { result, _ in
+                    guard let svgMarkup = result as? String,
+                          svgMarkup.contains("<svg"),
+                          let data = svgMarkup.data(using: .utf8) else { return }
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("Fugue-Diagram-\(UUID().uuidString.prefix(8)).svg")
+                    try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                    Task { @MainActor in
+                        onSVGExportURL(url)
+                    }
                 }
             }
         }

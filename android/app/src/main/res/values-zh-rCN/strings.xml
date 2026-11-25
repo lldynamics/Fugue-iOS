@@ -1,8 +1,8 @@
 <resources>
     <string name="app_name">夜奔</string>
     <string name="tab_chats">对话</string>
-    <string name="tab_assistants">助手</string>
-    <string name="tab_providers">服务商</string>
+    <string name="tab_assistants">工作台</string>
+    <string name="tab_providers">设置</string>
     <string name="tab_usage">用量</string>
     <string name="process_text_label">用夜奔解读</string>
     <string name="quick_tile_label">夜奔对话</string>

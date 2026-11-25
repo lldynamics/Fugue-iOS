@@ -33,7 +33,12 @@ enum AgentToolRunner {
         URLReader.requestIdentity(url)
     }
 
-    static func definitions(hasTavilyKey: Bool, hasKnowledgeBase: Bool = false) -> [LLMToolDefinition] {
+    static func definitions(
+        hasTavilyKey: Bool,
+        hasKnowledgeBase: Bool = false,
+        hasImageGeneration: Bool = false,
+        extraTools: [LLMToolDefinition] = []
+    ) -> [LLMToolDefinition] {
         var tools: [LLMToolDefinition] = [
             LLMToolDefinition(
                 name: "read_webpage",
@@ -57,6 +62,18 @@ enum AgentToolRunner {
                 """
             )
         ]
+
+        if hasImageGeneration {
+            tools.append(
+                LLMToolDefinition(
+                    name: "generate_image",
+                    description: "Generate a new image from a rich visual description, or edit the latest image in this conversation when edit_latest_image is true. The resulting image is automatically attached to your reply.",
+                    parametersSchemaJSON: """
+                    {"type":"object","properties":{"prompt":{"type":"string","description":"Detailed visual description for image generation or editing instruction (max 1500 chars)"},"size":{"type":"string","enum":["1024x1024","1536x1024","1024x1536","1792x1024"],"description":"Target aspect ratio and dimensions (default 1024x1024)"},"edit_latest_image":{"type":"boolean","description":"Set true to edit or iterate on the most recent image in the conversation instead of creating a brand new image"}},"required":["prompt"]}
+                    """
+                )
+            )
+        }
 
         if hasKnowledgeBase {
             tools.insert(
@@ -83,7 +100,17 @@ enum AgentToolRunner {
                 at: 0
             )
         }
+        if !extraTools.isEmpty {
+            tools.append(contentsOf: extraTools)
+        }
         return tools
+    }
+
+    struct GeneratedImageToolOutput: Sendable {
+        let attachment: MessageAttachment
+        let providerName: String
+        let modelID: String
+        let revisedPrompt: String?
     }
 
     struct ExecutionOutput {
@@ -93,6 +120,7 @@ enum AgentToolRunner {
         let knowledgeEvidence: KnowledgeEvidence?
         let proposedMemory: String?
         let proposedSchedule: ProposedScheduleItem?
+        let generatedAttachment: MessageAttachment?
         let error: Error?
 
         init(
@@ -102,6 +130,7 @@ enum AgentToolRunner {
             knowledgeEvidence: KnowledgeEvidence? = nil,
             proposedMemory: String? = nil,
             proposedSchedule: ProposedScheduleItem? = nil,
+            generatedAttachment: MessageAttachment? = nil,
             error: Error? = nil
         ) {
             self.toolOutputJSON = toolOutputJSON
@@ -110,6 +139,7 @@ enum AgentToolRunner {
             self.knowledgeEvidence = knowledgeEvidence
             self.proposedMemory = proposedMemory
             self.proposedSchedule = proposedSchedule
+            self.generatedAttachment = generatedAttachment
             self.error = error
         }
     }
@@ -119,7 +149,9 @@ enum AgentToolRunner {
         searchHandler: @Sendable (String) async throws -> SearchEvidence,
         webpageHandler: (@Sendable (URL) async throws -> ReadablePage)? = nil,
         webpageApproval: (@Sendable (URL) async -> WebpageApprovalDecision)? = nil,
-        knowledgeHandler: (@Sendable (String) async throws -> KnowledgeEvidence)? = nil
+        knowledgeHandler: (@Sendable (String) async throws -> KnowledgeEvidence)? = nil,
+        imageGeneratorHandler: (@Sendable (_ prompt: String, _ size: ImageAspectSize, _ editLatestImage: Bool) async throws -> GeneratedImageToolOutput)? = nil,
+        mcpHandler: (@Sendable (LLMToolCall) async throws -> (serverName: String, toolName: String, output: String))? = nil
     ) async -> ExecutionOutput {
         let args = call.argumentsDictionary
 
@@ -221,10 +253,31 @@ enum AgentToolRunner {
                     page = try await webpageHandler(url)
                 } else {
                     try AppCompliance.requireConsent()
-                    page = try await URLReader.read(url, authorizeRedirect: {
+                    let directPage = try? await URLReader.read(url, authorizeRedirect: {
                         guard let webpageApproval else { return false }
                         return await webpageApproval($0) == .allow
                     })
+                    let allowJina = UserDefaults.standard.bool(forKey: WebSearchService.jinaFallbackDefaultsKey)
+                    if let directPage, !allowJina || directPage.text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 80 {
+                        page = directPage
+                    } else if allowJina {
+                        let jinaKey = KeychainService.shared.loadSecret(account: WebSearchService.jinaKeychainAccount)
+                        if let jinaPage = try? await JinaReaderClient.read(url: url, apiKey: jinaKey.isEmpty ? nil : jinaKey) {
+                            page = jinaPage
+                        } else if let directPage {
+                            page = directPage
+                        } else {
+                            page = try await URLReader.read(url, authorizeRedirect: {
+                                guard let webpageApproval else { return false }
+                                return await webpageApproval($0) == .allow
+                            })
+                        }
+                    } else {
+                        page = try await URLReader.read(url, authorizeRedirect: {
+                            guard let webpageApproval else { return false }
+                            return await webpageApproval($0) == .allow
+                        })
+                    }
                 }
                 let payload: [String: Any] = [
                     "url": page.url.absoluteString,
@@ -306,7 +359,100 @@ enum AgentToolRunner {
                 proposedSchedule: item
             )
 
+        case "generate_image":
+            let prompt = (args["prompt"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !prompt.isEmpty else {
+                return ExecutionOutput(
+                    toolOutputJSON: jsonError("Missing image generation prompt"),
+                    record: ToolCallRecord(id: call.id, name: call.name, argumentsSummary: "", resultSummary: String(localized: "缺少绘图描述"), succeeded: false)
+                )
+            }
+            guard let imageGeneratorHandler else {
+                return ExecutionOutput(
+                    toolOutputJSON: jsonError("No image generation provider is currently configured"),
+                    record: ToolCallRecord(id: call.id, name: call.name, argumentsSummary: String(prompt.prefix(80)), resultSummary: String(localized: "未配置生图服务商"), succeeded: false)
+                )
+            }
+            let boundedPrompt = String(prompt.prefix(1_500))
+            let size = (args["size"] as? String).flatMap(ImageAspectSize.init(rawValue:)) ?? .square
+            let editLatest: Bool = {
+                if let b = args["edit_latest_image"] as? Bool { return b }
+                if let n = args["edit_latest_image"] as? NSNumber { return n.boolValue }
+                if let s = args["edit_latest_image"] as? String { return s.lowercased() == "true" }
+                return false
+            }()
+            do {
+                let result = try await imageGeneratorHandler(boundedPrompt, size, editLatest)
+                var payload: [String: Any] = [
+                    "status": "generated",
+                    "fileName": result.attachment.fileName,
+                    "provider": result.providerName,
+                    "model": result.modelID,
+                    "size": size.rawValue,
+                    "editedLatestImage": editLatest,
+                    "note": "The image is already attached directly to this assistant message and visible to the user. Describe it naturally without fabricating URLs or Markdown image links."
+                ]
+                if let revised = result.revisedPrompt, !revised.isEmpty {
+                    payload["revisedPrompt"] = revised
+                }
+                let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+                let json = String(decoding: data, as: UTF8.self)
+                let summary = editLatest
+                    ? String(localized: "修图完成 · \(result.modelID)")
+                    : String(localized: "已生成图片 · \(result.modelID)")
+                return ExecutionOutput(
+                    toolOutputJSON: json,
+                    record: ToolCallRecord(
+                        id: call.id,
+                        name: call.name,
+                        argumentsSummary: String(boundedPrompt.prefix(80)),
+                        resultSummary: summary,
+                        succeeded: true
+                    ),
+                    generatedAttachment: result.attachment
+                )
+            } catch {
+                return ExecutionOutput(
+                    toolOutputJSON: jsonError(error.localizedDescription),
+                    record: ToolCallRecord(
+                        id: call.id,
+                        name: call.name,
+                        argumentsSummary: String(boundedPrompt.prefix(80)),
+                        resultSummary: error.localizedDescription,
+                        succeeded: false
+                    ),
+                    error: error
+                )
+            }
+
         default:
+            if call.name.hasPrefix("mcp__"), let mcpHandler {
+                do {
+                    let result = try await mcpHandler(call)
+                    return ExecutionOutput(
+                        toolOutputJSON: result.output,
+                        record: ToolCallRecord(
+                            id: call.id,
+                            name: "\(result.serverName):\(result.toolName)",
+                            argumentsSummary: String(call.argumentsJSON.prefix(120)),
+                            resultSummary: String(localized: "已完成"),
+                            succeeded: true
+                        )
+                    )
+                } catch {
+                    return ExecutionOutput(
+                        toolOutputJSON: jsonError(error.localizedDescription),
+                        record: ToolCallRecord(
+                            id: call.id,
+                            name: call.name,
+                            argumentsSummary: String(call.argumentsJSON.prefix(120)),
+                            resultSummary: error.localizedDescription,
+                            succeeded: false
+                        ),
+                        error: error
+                    )
+                }
+            }
             return ExecutionOutput(
                 toolOutputJSON: jsonError("Unsupported tool: \(call.name)"),
                 record: ToolCallRecord(id: call.id, name: call.name, argumentsSummary: call.argumentsJSON, resultSummary: String(localized: "不支持的工具"), succeeded: false)

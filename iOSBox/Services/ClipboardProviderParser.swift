@@ -18,7 +18,11 @@ enum ClipboardProviderParser {
 
     private static let nonChatFragments = [
         "whisper", "tts", "dall-e", "embedding", "moderation",
-        "sora", "realtime", "transcribe", "gpt-image"
+        "sora", "realtime", "transcribe", "gpt-image",
+        "-image", "image-", "imagen", "flux", "kolors",
+        "rerank", "bge-", "audio", "speech", "asr", "ocr",
+        "video", "veo", "lyria", "davinci", "babbage",
+        "codex", "aqa", "computer-use", "search-preview"
     ]
 
     private static let preferredModelPatterns = [

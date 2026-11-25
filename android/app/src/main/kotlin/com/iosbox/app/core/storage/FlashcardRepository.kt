@@ -1,6 +1,8 @@
 package com.iosbox.app.core.storage
 
 import com.iosbox.app.core.backup.BackupJson
+import com.iosbox.app.core.backup.SyncEntityKinds
+import com.iosbox.app.core.backup.SyncTombstoneStore
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.model.StudyCardDraft
 import com.iosbox.app.core.model.StudyFlashcard
@@ -12,7 +14,8 @@ import kotlinx.serialization.encodeToString
 import java.util.UUID
 
 class FlashcardRepository(
-    private val blobStore: ExternalBlobStore
+    private val blobStore: ExternalBlobStore,
+    private val tombstoneStore: SyncTombstoneStore? = null
 ) {
     private val lock = Any()
     private val _cards = MutableStateFlow(loadFromStore())
@@ -173,15 +176,36 @@ class FlashcardRepository(
     }
 
     fun deleteCard(id: String) {
-        change { list ->
+        val removed = change { list ->
             list.removeAll { it.id.equals(id, ignoreCase = true) }
+        }
+        if (removed) {
+            tombstoneStore?.recordDeletion(SyncEntityKinds.FLASHCARD, id)
         }
     }
 
     fun deleteDeck(deckName: String) {
         val target = normalizeDeckName(deckName)
-        change { list ->
-            list.removeAll { normalizeDeckName(it.deckName) == target }
+        val removedIDs = change { list ->
+            val matching = list.filter { normalizeDeckName(it.deckName) == target }.map { it.id }
+            if (matching.isNotEmpty()) {
+                list.removeAll { normalizeDeckName(it.deckName) == target }
+            }
+            matching
+        }
+        if (removedIDs.isNotEmpty()) {
+            tombstoneStore?.recordDeletions(SyncEntityKinds.FLASHCARD, removedIDs)
+        }
+    }
+
+    /** Removes cards by ID without recording new tombstones (used when propagating remote tombstones). */
+    fun deleteCards(ids: Set<String>): Int {
+        if (ids.isEmpty()) return 0
+        val normalized = ids.mapTo(HashSet()) { it.uppercase() }
+        return change(requireReadableStore = true) { list ->
+            val before = list.size
+            list.removeAll { it.id.uppercase() in normalized }
+            before - list.size
         }
     }
 

@@ -54,6 +54,61 @@ extension ChatEngine {
         }
     }
 
+    // MARK: - Remote MCP Tool Approval Gate
+
+    func pendingMCPApproval(in conversationID: UUID) -> PendingMCPApproval? {
+        pendingMCPApprovals.first { $0.conversationID == conversationID }
+    }
+
+    func cancelMCPApprovals(in conversationID: UUID) {
+        for request in pendingMCPApprovals where request.conversationID == conversationID {
+            resolvePendingMCPApproval(id: request.id, decision: .deny, rememberServer: false)
+        }
+    }
+
+    func resolvePendingMCPApproval(id: UUID, decision: WebpageApprovalDecision, rememberServer: Bool) {
+        guard let index = pendingMCPApprovals.firstIndex(where: { $0.id == id }) else { return }
+        let pending = pendingMCPApprovals.remove(at: index)
+        if rememberServer, decision == .allow {
+            approvedMCPServersByConversation[pending.conversationID, default: []].insert(pending.serverID)
+        }
+        pending.continuation.resume(returning: decision)
+    }
+
+    func requestMCPApproval(
+        serverID: UUID,
+        serverName: String,
+        toolName: String,
+        argumentsSummary: String,
+        conversationID: UUID
+    ) async -> WebpageApprovalDecision {
+        if approvedMCPServersByConversation[conversationID]?.contains(serverID) == true {
+            return .allow
+        }
+        let promptID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: .deny)
+                    return
+                }
+                pendingMCPApprovals.append(PendingMCPApproval(
+                    id: promptID,
+                    conversationID: conversationID,
+                    serverID: serverID,
+                    serverName: serverName,
+                    toolName: toolName,
+                    argumentsSummary: argumentsSummary,
+                    continuation: continuation
+                ))
+            }
+        } onCancel: {
+            Task { @MainActor in
+                self.resolvePendingMCPApproval(id: promptID, decision: .deny, rememberServer: false)
+            }
+        }
+    }
+
     private func reloadKnowledgeSnapshots(
         volumeIDs: [UUID],
         conversationID: UUID
@@ -87,12 +142,15 @@ extension ChatEngine {
                     guard let id = message.comparisonGroupID, groupIDs.contains(id), !message.isSynthesis else { return false }
                     return !message.assistanceMetadata.blindArenaRevealed
                 }
+            let isDeepResearchRun = slots.count == 1 && slots[0].isDeepResearch
             LiveActivityCoordinator.shared.start(
                 conversationID: convID,
                 chatTitle: conversation.title,
-                modeBadge: slots.count > 1 ? String(localized: "并发对比") : String(localized: "对话"),
+                modeBadge: isDeepResearchRun
+                    ? String(localized: "深度研究")
+                    : (slots.count > 1 ? String(localized: "并发对比") : String(localized: "对话")),
                 speakerOrModel: firstLabel,
-                phaseText: String(localized: "正在生成…"),
+                phaseText: isDeepResearchRun ? String(localized: "正在规划研究方向…") : String(localized: "正在生成…"),
                 totalTurns: slots.count,
                 isBlind: hideIdentity
             )
@@ -100,13 +158,16 @@ extension ChatEngine {
             let limits = conversation.readingChapterLimits
             let usesKnowledge = !slots.contains { $0.message.assistanceMetadata.omittedKnowledge } && !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty
             let isSynthesisTurn = slots.allSatisfy { $0.kind == .synthesis }
+            let activeEmbeddingConfig = EmbeddingClient.authorizedConfig(providers: providers)
             if !isSynthesisTurn && usesKnowledge {
                 let question = workingHistory.last(where: { $0.role == .user })?.content ?? ""
                 if let kbEv = try? await ProjectKnowledgeSearch.retrieve(
                     volumeIDs: conversation.assistanceSettings.knowledgeVolumeIDs,
                     in: context,
                     query: question,
-                    maxPassages: 4, chapterLimits: limits
+                    maxPassages: 4,
+                    chapterLimits: limits,
+                    embeddingConfig: activeEmbeddingConfig
                 ) {
                     for slot in slots where Self.isAlive(slot.message) {
                         var meta = slot.message.assistanceMetadata
@@ -124,10 +185,166 @@ extension ChatEngine {
                 }
             }
 
-            if let searchQuery, let primaryMessage = slots.first?.message {
+            var workingSlots = slots
+
+            if workingSlots.count == 1 && workingSlots[0].isDeepResearch {
+                let primarySlot = workingSlots[0]
+                let primaryMessage = primarySlot.message
+                let topic = workingHistory.last(where: { $0.role == .user })?.content
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let hasExternalSearch = self.hasCustomSearchHandler || WebSearchService.isConfigured()
+
+                let primaryTarget = primarySlot.candidates.first
+                let primaryProvider = primaryTarget.flatMap { target in
+                    providers.first(where: { $0.id == target.providerID && $0.isEnabled && !$0.isDeleted })
+                }
+                let supportsNativeGrounding: Bool = {
+                    guard let proto = primaryProvider?.protocolType else { return false }
+                    return proto == .gemini || proto == .anthropic || proto == .openAIResponses
+                }()
+
+                let plannerRequest: LLMChatRequest? = {
+                    guard let target = primaryTarget, let provider = primaryProvider,
+                          provider.hasAuthentication || NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL) else {
+                        return nil
+                    }
+                    let effectiveReasoning = ModelSpec.inferReasoningSupport(modelID: target.modelID)
+                    var req = LLMChatRequest(
+                        providerName: provider.name,
+                        protocolType: provider.protocolType,
+                        baseURL: provider.baseURL,
+                        apiKey: provider.apiKey,
+                        apiKeys: provider.extraAPIKeys,
+                        customHeaders: provider.resolvedCustomHeaders,
+                        modelID: target.modelID,
+                        supportsReasoning: effectiveReasoning,
+                        systemPrompt: DeepResearchService.plannerSystemPrompt(),
+                        messages: [LLMPromptMessage(role: .user, content: topic)],
+                        temperature: effectiveReasoning ? nil : 0.2,
+                        topP: 1.0,
+                        maxOutputTokens: effectiveReasoning ? 1536 : 380,
+                        enableThinking: false,
+                        thinkingBudgetTokens: 1024,
+                        enablePromptCaching: false,
+                        enableNativeSearch: false,
+                        idleTimeoutSeconds: provider.customIdleTimeout,
+                        tools: []
+                    )
+                    req.validateBeforeSending = provider.transmissionCheck(for: target.modelID)
+                    return req
+                }()
+
+                let researchStart = ContinuousClock.now
+                let researchSearchRecord: RequestRecord?
+                if hasExternalSearch {
+                    let rec = RequestRecord(
+                        target: WebSearchService.activeLedgerTarget(),
+                        spec: nil,
+                        conversationID: convID,
+                        messageID: primaryMessage.id,
+                        kind: .webSearch
+                    )
+                    context.insert(rec)
+                    researchSearchRecord = rec
+                } else {
+                    researchSearchRecord = nil
+                }
+
+                do {
+                    let outcome = try await DeepResearchService.run(
+                        topic: topic,
+                        plannerRequest: plannerRequest,
+                        plannerStream: self.stream,
+                        hasExternalSearch: hasExternalSearch,
+                        supportsNativeGrounding: supportsNativeGrounding,
+                        searchHandler: self.search,
+                        pageReader: self.webpageReader,
+                        onProgress: { [weak primaryMessage] liveTrace in
+                            guard let primaryMessage, Self.isAlive(primaryMessage) else { return }
+                            var meta = primaryMessage.assistanceMetadata
+                            meta.deepResearchTrace = liveTrace
+                            primaryMessage.assistanceMetadata = meta
+                            let phaseLabel = liveTrace.steps.last?.title ?? String(localized: "正在深度研究…")
+                            LiveActivityCoordinator.shared.update(
+                                conversationID: convID,
+                                phaseText: phaseLabel
+                            )
+                        }
+                    )
+                    try Task.checkCancellation()
+                    if let researchSearchRecord {
+                        researchSearchRecord.finish(
+                            outcome.usedExternalSearch ? .succeeded : .failed,
+                            elapsedMs: Self.milliseconds(researchStart.duration(to: .now))
+                        )
+                    }
+                    if Self.isAlive(primaryMessage) {
+                        var meta = primaryMessage.assistanceMetadata
+                        meta.deepResearchTrace = outcome.trace
+                        if let evidence = outcome.evidence, !evidence.sources.isEmpty {
+                            meta.search = evidence
+                        }
+                        primaryMessage.assistanceMetadata = meta
+                    }
+                    if let lastIdx = workingHistory.indices.last {
+                        let oldLast = workingHistory[lastIdx]
+                        let augmented = oldLast.content.isEmpty
+                            ? outcome.dossierPrompt
+                            : (oldLast.content + "\n\n" + outcome.dossierPrompt)
+                        workingHistory[lastIdx] = LLMPromptMessage(
+                            role: oldLast.role,
+                            content: augmented,
+                            attachments: oldLast.attachments
+                        )
+                    }
+                    let basePrompt = workingSlots[0].systemPromptOverride ?? conversation.systemPrompt
+                    workingSlots[0].systemPromptOverride = [basePrompt, outcome.synthesisSystemAddendum]
+                        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                        .joined(separator: "\n\n")
+                    if !outcome.usedExternalSearch && supportsNativeGrounding {
+                        workingSlots[0].forceNativeSearch = true
+                    }
+                } catch {
+                    let elapsed = Self.milliseconds(researchStart.duration(to: .now))
+                    if Self.isCancellation(error) {
+                        researchSearchRecord?.finish(.cancelled, elapsedMs: elapsed)
+                        if Self.isAlive(primaryMessage) {
+                            var meta = primaryMessage.assistanceMetadata
+                            meta.deepResearchTrace?.isRunning = false
+                            meta.deepResearchTrace?.completedAt = Date()
+                            primaryMessage.assistanceMetadata = meta
+                            primaryMessage.errorMessage = String(localized: "已停止生成")
+                            primaryMessage.isStreaming = false
+                        }
+                    } else {
+                        if case SearchError.http(let code) = error {
+                            researchSearchRecord?.httpStatus = code
+                        }
+                        researchSearchRecord?.finish(.failed, elapsedMs: elapsed)
+                        if Self.isAlive(primaryMessage) {
+                            var meta = primaryMessage.assistanceMetadata
+                            meta.deepResearchTrace?.isRunning = false
+                            meta.deepResearchTrace?.completedAt = Date()
+                            primaryMessage.assistanceMetadata = meta
+                            primaryMessage.errorMessage = error.localizedDescription
+                            primaryMessage.isStreaming = false
+                        }
+                    }
+                    if Self.isAlive(conversation) {
+                        conversation.updatedAt = Date()
+                        try? context.save()
+                    }
+                    self.finishGeneration(
+                        conversationID: convID,
+                        token: token,
+                        statuses: [researchSearchRecord?.status ?? .failed]
+                    )
+                    return
+                }
+            } else if let searchQuery, let primaryMessage = workingSlots.first?.message {
                 let searchStart = ContinuousClock.now
                 let searchRecord = RequestRecord(
-                    target: TavilySearchClient.ledgerTarget,
+                    target: WebSearchService.activeLedgerTarget(),
                     spec: nil,
                     conversationID: convID,
                     messageID: primaryMessage.id,
@@ -186,7 +403,7 @@ extension ChatEngine {
 
             let finalHistory = workingHistory
             await withTaskGroup(of: Void.self) { group in
-                for var slot in slots {
+                for var slot in workingSlots {
                     if usesKnowledge { slot.knowledgeChapterLimits = limits }
                     group.addTask { @MainActor [slot] in
                         _ = await self.runSlotWithFallback(
@@ -197,6 +414,24 @@ extension ChatEngine {
                             context: context
                         )
                     }
+                }
+            }
+
+            for slot in workingSlots where slot.isDeepResearch && Self.isAlive(slot.message) {
+                var meta = slot.message.assistanceMetadata
+                if var trace = meta.deepResearchTrace, trace.isRunning {
+                    trace.isRunning = false
+                    trace.completedAt = Date()
+                    if slot.message.errorMessage == nil && !slot.message.content.isEmpty {
+                        trace.steps.append(DeepResearchStep(
+                            phase: .completed,
+                            title: String(localized: "深度研究报告已生成"),
+                            detail: String(localized: "共整理 \(trace.totalSources) 个来源 · 深读 \(trace.pagesRead) 页"),
+                            succeeded: true
+                        ))
+                    }
+                    meta.deepResearchTrace = trace
+                    slot.message.assistanceMetadata = meta
                 }
             }
 
@@ -214,6 +449,9 @@ extension ChatEngine {
                     context: context,
                     expectedUnchangedTitle: expectedTitle
                 )
+            }
+            if Self.isAlive(conversation) {
+                self.scheduleRollingSummaryIfNeeded(for: conversation, providers: providers)
             }
         }
 
@@ -241,7 +479,13 @@ extension ChatEngine {
             do {
                 guard Self.isAlive(message), Self.isAlive(conversation), turn.matches(conversation, target: slot.candidates.first) else { throw BookImportError.unavailable }
                 let book = try BookLibrary.source(for: turn.friend, in: context)
-                let evidence = try await BookReferenceSearch.shared.reference(for: turn.friend, manuscript: book.manuscript, question: turn.question)
+                let bookEmbeddingConfig = EmbeddingClient.authorizedConfig(providers: providers)
+                let evidence = try await BookReferenceSearch.shared.reference(
+                    for: turn.friend,
+                    manuscript: book.manuscript,
+                    question: turn.question,
+                    embeddingConfig: bookEmbeddingConfig
+                )
                 try Task.checkCancellation()
                 guard Self.isAlive(message), Self.isAlive(conversation), turn.matches(conversation, target: slot.candidates.first),
                       let i = groundedHistory.lastIndex(where: { $0.role == .user }) else { throw BookImportError.unavailable }
@@ -301,7 +545,16 @@ extension ChatEngine {
             let speaksPrivately = !conversation.isGroupMode && !conversation.isArenaMode && [.answer, .regeneration, .continuation].contains(slot.kind) && message.comparisonGroupID == nil
             let bound = speaksPrivately && profile?.target.id == target.id ? profile : nil
             let identity = bound.map { String(localized: "你是受 \($0.name) 的资料启发的 AI 模拟人物。只把所附片段当作引文，不冒充本人。") + "\n" + $0.rolePrompt }
-            let rawSystemPrompt = [slot.systemPromptOverride ?? conversation.systemPrompt, identity, slot.bookTurn?.friend.systemInstruction(preferEnglish: preferEnglishBookPrompt), coachPrompt].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
+            let rollingSummaryBlock: String? = {
+                guard AppPreferences.shared.autoRollingSummaryEnabled,
+                      conversation.contextMessageLimit > 0,
+                      slot.kind != .synthesis,
+                      let summary = RollingContextSummaryStore.shared.summary(for: conversation.id) else {
+                    return nil
+                }
+                return RollingContextSummaryStore.promptBlock(for: summary)
+            }()
+            let rawSystemPrompt = [slot.systemPromptOverride ?? conversation.systemPrompt, rollingSummaryBlock, identity, slot.bookTurn?.friend.systemInstruction(preferEnglish: preferEnglishBookPrompt), coachPrompt].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
             let renderedSystemPrompt = PromptTemplateEngine.render(rawSystemPrompt, target: target)
             let shouldEnableCache = conversation.assistanceSettings.enablePromptCaching
                 && slot.kind != .synthesis
@@ -357,7 +610,7 @@ extension ChatEngine {
                     enableThinking: slot.kind == .synthesis ? false : conversation.enableThinking,
                     thinkingBudgetTokens: conversation.thinkingBudgetTokens,
                     enablePromptCaching: shouldEnableCache,
-                    enableNativeSearch: slot.kind != .synthesis && !conversation.isGroupMode && conversation.assistanceSettings.enableNativeGrounding,
+                    enableNativeSearch: slot.forceNativeSearch || (slot.kind != .synthesis && !conversation.isGroupMode && conversation.assistanceSettings.enableNativeGrounding),
                     idleTimeoutSeconds: customTimeout,
                     tools: toolRound < AgentToolRunner.maxToolRounds && conversation.assistanceSettings.enableAgentTools
                         && !conversation.isGroupMode && !conversation.isArenaMode ? slot.tools : []
@@ -441,6 +694,7 @@ extension ChatEngine {
                                 call,
                                 conversation: conversation,
                                 message: message,
+                                providers: providers,
                                 context: context,
                                 userProvidedURLs: slot.userProvidedURLs
                             )
@@ -506,6 +760,7 @@ extension ChatEngine {
         _ call: LLMToolCall,
         conversation: Conversation,
         message: ChatMessage,
+        providers: [ProviderConfig],
         context: ModelContext,
         userProvidedURLs: Set<String>
     ) async -> AgentToolRunner.ExecutionOutput {
@@ -514,7 +769,7 @@ extension ChatEngine {
         var searchRecord: RequestRecord?
         if call.name == "web_search" {
             let r = RequestRecord(
-                target: TavilySearchClient.ledgerTarget,
+                target: WebSearchService.activeLedgerTarget(),
                 spec: nil,
                 conversationID: conversationID,
                 messageID: message.id,
@@ -543,11 +798,17 @@ extension ChatEngine {
                         KnowledgeEvidence(query: query, passages: [])
                     }
                 } else {
+                    let fetchedProviders = AppPreferences.shared.ragHybridEmbeddingEnabled
+                        ? ((try? context.fetch(FetchDescriptor<ProviderConfig>(sortBy: [SortDescriptor(\.sortOrder)]))) ?? [])
+                        : []
+                    let toolEmbeddingConfig = EmbeddingClient.authorizedConfig(providers: fetchedProviders)
                     knowledgeHandler = { [weak self] query in
                         let firstPass = try await ProjectKnowledgeSearch.shared.retrieveCheckingCache(
                             from: initialSnapshots,
                             query: query,
-                            maxPassages: 5, chapterLimits: limits
+                            maxPassages: 5,
+                            chapterLimits: limits,
+                            embeddingConfig: toolEmbeddingConfig
                         )
                         guard !firstPass.missingVolumeIDs.isEmpty else {
                             return firstPass.evidence
@@ -570,7 +831,9 @@ extension ChatEngine {
                         return try await ProjectKnowledgeSearch.shared.retrieve(
                             from: merged,
                             query: query,
-                            maxPassages: 5, chapterLimits: limits
+                            maxPassages: 5,
+                            chapterLimits: limits,
+                            embeddingConfig: toolEmbeddingConfig
                         )
                     }
                 }
@@ -592,12 +855,111 @@ extension ChatEngine {
             webpageApprovalGate = nil
         }
 
+        let mcpHandler: (@Sendable (LLMToolCall) async throws -> (serverName: String, toolName: String, output: String))?
+        if call.name.hasPrefix("mcp__"),
+           let resolved = MCPServerStore.shared.resolveToolCall(namespacedName: call.name) {
+            let server = resolved.server
+            let tool = resolved.tool
+            let argsSummary = String(call.argumentsJSON.prefix(240))
+            mcpHandler = { [weak self] toolCall in
+                guard let self else { throw MCPClientError.rpcError("Cancelled") }
+                let decision = await self.requestMCPApproval(
+                    serverID: server.id,
+                    serverName: server.name,
+                    toolName: tool.name,
+                    argumentsSummary: argsSummary,
+                    conversationID: conversationID
+                )
+                guard decision == .allow else {
+                    throw MCPClientError.rpcError(String(localized: "用户已拒绝调用此 MCP 工具"))
+                }
+                try AppCompliance.requireConsent()
+                let secret = KeychainService.shared.loadSecret(account: server.keychainAccount)
+                let output = try await MCPClient.callTool(
+                    endpointURL: server.endpointURL,
+                    authHeaderName: server.authHeaderName,
+                    authHeaderValue: secret,
+                    toolName: tool.name,
+                    arguments: toolCall.argumentsDictionary
+                )
+                return (serverName: server.name, toolName: tool.name, output: output)
+            }
+        } else {
+            mcpHandler = nil
+        }
+
+        let imageGeneratorHandler: (@Sendable (_ prompt: String, _ size: ImageAspectSize, _ editLatestImage: Bool) async throws -> AgentToolRunner.GeneratedImageToolOutput)?
+        if call.name == "generate_image" {
+            let latestImagePayload: (data: Data, mimeType: String)? = {
+                let active = ConversationTree.activeMessages(in: conversation)
+                let allCandidates = (active + [message]).reversed()
+                for msg in allCandidates {
+                    if let img = msg.attachments.reversed().first(where: { $0.kind == .image }),
+                       let b64 = img.dataBase64,
+                       let raw = Data(base64Encoded: b64),
+                       !raw.isEmpty {
+                        return (raw, img.mimeType.isEmpty ? "image/png" : img.mimeType)
+                    }
+                }
+                return nil
+            }()
+
+            if let injected = self.imageGenerator {
+                imageGeneratorHandler = { prompt, size, editLatest in
+                    try await injected(prompt, size, editLatest ? latestImagePayload : nil)
+                }
+            } else if let chosen = ImageGenerationService.preferredAgentProvider(from: providers) {
+                let providerName = chosen.provider.name
+                let protocolType = chosen.provider.protocolType
+                let baseURL = chosen.provider.baseURL
+                let apiKey = chosen.provider.apiKey
+                let extraKeys = chosen.provider.extraAPIKeys
+                let customHeaders = chosen.provider.resolvedCustomHeaders
+                let modelID = chosen.modelID
+                LiveActivityCoordinator.shared.update(
+                    conversationID: conversationID,
+                    phaseText: String(localized: "正在生成图片…")
+                )
+                imageGeneratorHandler = { prompt, size, editLatest in
+                    let ref = editLatest ? latestImagePayload : nil
+                    let req = ImageGenerationRequest(
+                        providerName: providerName,
+                        protocolType: protocolType,
+                        baseURL: baseURL,
+                        apiKey: apiKey,
+                        apiKeys: extraKeys,
+                        customHeaders: customHeaders,
+                        modelID: modelID,
+                        prompt: prompt,
+                        size: size,
+                        quality: "auto",
+                        referenceImageData: ref?.data,
+                        referenceImageMimeType: ref?.mimeType
+                    )
+                    let generated = try await ImageGenerationService.generate(req)
+                    let attachment = ImageGenerationService.makeAttachment(from: generated)
+                    return AgentToolRunner.GeneratedImageToolOutput(
+                        attachment: attachment,
+                        providerName: providerName,
+                        modelID: modelID,
+                        revisedPrompt: generated.revisedPrompt
+                    )
+                }
+            } else {
+                imageGeneratorHandler = nil
+            }
+        } else {
+            imageGeneratorHandler = nil
+        }
+
         let output = await AgentToolRunner.execute(
             call,
             searchHandler: self.search,
             webpageHandler: self.webpageReader,
             webpageApproval: webpageApprovalGate,
-            knowledgeHandler: knowledgeHandler
+            knowledgeHandler: knowledgeHandler,
+            imageGeneratorHandler: imageGeneratorHandler,
+            mcpHandler: mcpHandler
         )
 
         if let searchRecord {
@@ -645,6 +1007,11 @@ extension ChatEngine {
                !meta.proposedSchedules.contains(where: { $0.title == schedule.title && $0.kind == schedule.kind }) {
                 meta.proposedSchedules.append(schedule)
             }
+            if let generatedAttachment = output.generatedAttachment, message.attachments.count < 8 {
+                var updatedAttachments = message.attachments
+                updatedAttachments.append(generatedAttachment)
+                message.attachments = updatedAttachments
+            }
             message.assistanceMetadata = meta
         }
         return output
@@ -659,6 +1026,19 @@ extension ChatEngine {
             groupDirective: GroupTurnDirective?
         )
         case failed(error: Error, receivedOutput: Bool, abnormalFinish: Bool)
+    }
+
+    /// Adapts streaming UI flush cadence to message length so short replies feel instant
+    /// while 6K–20K+ character long-form responses avoid starving SwiftUI layout & TextKit.
+    nonisolated static func streamingFlushInterval(forContentLength length: Int) -> Duration {
+        switch length {
+        case ..<1_500:
+            return .milliseconds(35)
+        case 1_500..<6_000:
+            return .milliseconds(60)
+        default:
+            return .milliseconds(95)
+        }
     }
 
     private func runCandidateStream(
@@ -762,7 +1142,8 @@ extension ChatEngine {
                         thinkingStartTime = ContinuousClock.now
                     }
                     pendingReasoning.append(delta)
-                    if lastFlush.duration(to: ContinuousClock.now) >= .milliseconds(35) {
+                    let reasoningLen = (Self.isAlive(message) ? message.reasoningContent.count : 0) + pendingReasoning.count
+                    if lastFlush.duration(to: ContinuousClock.now) >= Self.streamingFlushInterval(forContentLength: reasoningLen) {
                         flushBuffers()
                         LiveActivityCoordinator.shared.update(
                             conversationID: conversationID,
@@ -788,7 +1169,8 @@ extension ChatEngine {
                     let visibleDelta = sanitizer != nil ? sanitizer!.ingest(delta) : delta
                     if !visibleDelta.isEmpty {
                         pendingContent.append(visibleDelta)
-                        if lastFlush.duration(to: ContinuousClock.now) >= .milliseconds(35) {
+                        let visibleLen = (Self.isAlive(message) ? message.content.count : 0) + pendingContent.count
+                        if lastFlush.duration(to: ContinuousClock.now) >= Self.streamingFlushInterval(forContentLength: visibleLen) {
                             flushBuffers()
                             LiveActivityCoordinator.shared.update(
                                 conversationID: conversationID,
@@ -943,5 +1325,106 @@ extension ChatEngine {
             record.finish(Self.isCancellation(error) ? .cancelled : .failed, elapsedMs: totalElapsed)
             return .failed(error: error, receivedOutput: receivedOutput, abnormalFinish: finishReason != nil)
         }
+    }
+
+    func scheduleRollingSummaryIfNeeded(for conversation: Conversation, providers: [ProviderConfig]) {
+        guard AppPreferences.shared.autoRollingSummaryEnabled,
+              conversation.contextMessageLimit > 0,
+              !conversation.isArenaMode,
+              !conversation.isGroupMode else { return }
+
+        let active = ConversationTree.activeMessages(in: conversation)
+        let collapsed = eligiblePromptContext(active)
+        let dropped = RollingContextSummaryStore.droppedMessages(from: collapsed, limit: conversation.contextMessageLimit)
+        guard dropped.count >= 2, let lastDropped = dropped.last else { return }
+
+        let existing = RollingContextSummaryStore.shared.summary(for: conversation.id)
+        if existing?.lastCoveredMessageID == lastDropped.id && existing?.coveredMessageCount == dropped.count {
+            return
+        }
+
+        let newDroppedSlice: [ChatMessage]
+        if let prevID = existing?.lastCoveredMessageID,
+           let prevIdx = dropped.firstIndex(where: { $0.id == prevID }) {
+            newDroppedSlice = Array(dropped[dropped.index(after: prevIdx)...])
+        } else {
+            newDroppedSlice = dropped
+        }
+        guard !newDroppedSlice.isEmpty else { return }
+
+        guard let target = conversation.primaryTarget,
+              let provider = providers.first(where: { $0.id == target.providerID && $0.isEnabled && !$0.isDeleted }),
+              provider.hasAuthentication || NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL) else {
+            return
+        }
+
+        let convID = conversation.id
+        let contextLimit = conversation.contextMessageLimit
+        let coveredCount = dropped.count
+        let lastID = lastDropped.id
+        let promptInput = RollingContextSummaryStore.buildSummarizationPrompt(
+            previousSummary: existing?.summaryText,
+            newlyTruncatedMessages: newDroppedSlice.map { ($0.role, $0.content) }
+        )
+        let effectiveReasoning = ModelSpec.inferReasoningSupport(modelID: target.modelID)
+        var request = LLMChatRequest(
+            providerName: provider.name,
+            protocolType: provider.protocolType,
+            baseURL: provider.baseURL,
+            apiKey: provider.apiKey,
+            apiKeys: provider.extraAPIKeys,
+            customHeaders: provider.resolvedCustomHeaders,
+            modelID: target.modelID,
+            supportsReasoning: effectiveReasoning,
+            systemPrompt: "Summarize the earlier conversation turns into concise bullet points preserving key facts, decisions, user preferences, names, and open tasks. Output only the summary in the same language as the conversation, under 350 words.",
+            messages: [LLMPromptMessage(role: .user, content: promptInput)],
+            temperature: effectiveReasoning ? nil : 0.2,
+            topP: 1.0,
+            maxOutputTokens: effectiveReasoning ? 2048 : 600,
+            enableThinking: false,
+            thinkingBudgetTokens: 1024,
+            idleTimeoutSeconds: provider.customIdleTimeout
+        )
+        let validateTarget = provider.transmissionCheck(for: target.modelID)
+        request.validateBeforeSending = { [weak conversation] in
+            try validateTarget()
+            guard let conversation, Self.isAlive(conversation),
+                  AppPreferences.shared.autoRollingSummaryEnabled,
+                  conversation.contextMessageLimit == contextLimit,
+                  conversation.primaryTarget?.id == target.id,
+                  !conversation.isArenaMode, !conversation.isGroupMode else {
+                throw AppCompliance.RequestChanged()
+            }
+        }
+        let streamFn = self.stream
+        activeSummaryTasks[convID]?.cancel()
+        let summaryTask = Task { @MainActor [weak self] in
+            defer { self?.activeSummaryTasks.removeValue(forKey: convID) }
+            var collected = ""
+            do {
+                try request.validateBeforeSending?()
+                for try await event in streamFn(request) {
+                    try Task.checkCancellation()
+                    if case .contentDelta(let chunk) = event {
+                        collected += chunk
+                    }
+                }
+                try request.validateBeforeSending?()
+            } catch {
+                return
+            }
+            let clean = collected.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty, RollingContextSummaryStore.shared.summary(for: convID) == existing else { return }
+            RollingContextSummaryStore.shared.save(
+                RollingContextSummary(
+                    conversationID: convID,
+                    summaryText: clean,
+                    coveredMessageCount: coveredCount,
+                    lastCoveredMessageID: lastID,
+                    updatedAt: Date()
+                )
+            )
+        }
+        activeSummaryTasks[convID] = summaryTask
     }
 }

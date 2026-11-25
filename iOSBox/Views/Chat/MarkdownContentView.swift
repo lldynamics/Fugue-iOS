@@ -23,13 +23,19 @@ struct MarkdownContentView: View {
     @ScaledMetric(relativeTo: .body) private var baseBodySize: CGFloat = 17
 
     var body: some View {
-        let blocks = isStreaming ? MarkdownBlockParser.parse(text) : MarkdownBlockParser.parseCached(text)
+        let blocks = isStreaming ? MarkdownBlockParser.parseStreaming(text) : MarkdownBlockParser.parseCached(text)
         let lastIndex = blocks.count - 1
         let effectiveBodySize = baseBodySize * preferences.fontScale * textScale
-        VStack(alignment: .leading, spacing: 10) {
+        let useSerif = preferences.literarySerifBody
+        VStack(alignment: .leading, spacing: 11) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-                MarkdownBlockView(block: block, isStreaming: isStreaming && index == lastIndex, bodySize: effectiveBodySize)
-                    .equatable()
+                MarkdownBlockView(
+                    block: block,
+                    isStreaming: isStreaming && index == lastIndex,
+                    bodySize: effectiveBodySize,
+                    useSerif: useSerif
+                )
+                .equatable()
             }
         }
         .textSelection(.enabled)
@@ -49,21 +55,22 @@ private struct MarkdownBlockView: View, Equatable {
     let block: MarkdownBlock
     var isStreaming: Bool = false
     var bodySize: CGFloat = 17
+    var useSerif: Bool = true
 
     var body: some View {
-        let bodyFont = Font.system(size: bodySize)
+        let bodyFont = DS.Typography.prose(size: bodySize, serif: useSerif)
         switch block {
         case .heading(let level, let content):
-            InlineMarkdownText(raw: content)
+            InlineMarkdownText(raw: content, cacheable: !isStreaming)
                 .font(headingFont(for: level, baseSize: bodySize))
                 .fontWeight(.bold)
-                .padding(.top, level == 1 ? 6 : 3)
+                .padding(.top, level == 1 ? 7 : 4)
                 .accessibilityAddTraits(.isHeader)
 
         case .paragraph(let content):
-            InlineMarkdownText(raw: content)
+            InlineMarkdownText(raw: content, cacheable: !isStreaming)
                 .font(bodyFont)
-                .lineSpacing(4)
+                .lineSpacing(useSerif ? 5.5 : 4)
 
         case .codeBlock(let language, let code):
             CodeBlockCard(language: language, code: code, cacheable: !isStreaming)
@@ -72,50 +79,87 @@ private struct MarkdownBlockView: View, Equatable {
             MathBlockCard(tex: tex, isStreaming: isStreaming)
 
         case .table(let table):
-            MarkdownTableView(table: table)
+            MarkdownTableView(table: table, cacheable: !isStreaming)
 
         case .blockquote(let content):
             HStack(alignment: .top, spacing: 10) {
                 RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.accentColor.opacity(0.65))
-                    .frame(width: 3.5)
-                InlineMarkdownText(raw: content)
-                    .font(.system(size: max(13, bodySize - 1)))
+                    .fill(Color.accentColor.opacity(0.75))
+                    .frame(width: 3)
+                InlineMarkdownText(raw: content, cacheable: !isStreaming)
+                    .font(DS.Typography.prose(size: max(13, bodySize - 0.5), serif: useSerif))
                     .foregroundStyle(.secondary)
-                    .lineSpacing(3)
+                    .lineSpacing(4)
             }
-            .padding(.vertical, 4)
-            .padding(.horizontal, 8)
-            .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
         case .listItem(let marker, let content, let level):
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(marker)
-                    .font(bodyFont.monospacedDigit().weight(.semibold))
+                    .font(.system(size: bodySize).monospacedDigit().weight(.semibold))
                     .foregroundStyle(.secondary)
-                InlineMarkdownText(raw: content)
+                InlineMarkdownText(raw: content, cacheable: !isStreaming)
                     .font(bodyFont)
-                    .lineSpacing(3)
+                    .lineSpacing(useSerif ? 4.5 : 3)
             }
             .padding(.leading, CGFloat(level) * 18)
 
         case .divider:
             Divider()
+                .overlay(DS.Surface.hairline)
                 .padding(.vertical, 4)
         }
     }
 
     private func headingFont(for level: Int, baseSize: CGFloat) -> Font {
         switch level {
-        case 1: return .system(size: baseSize * 1.24, weight: .bold)
-        case 2: return .system(size: baseSize * 1.12, weight: .bold)
-        default: return .system(size: baseSize * 1.02, weight: .semibold)
+        case 1: return DS.Typography.prose(size: baseSize * 1.24, serif: useSerif, weight: .bold)
+        case 2: return DS.Typography.prose(size: baseSize * 1.12, serif: useSerif, weight: .bold)
+        default: return DS.Typography.prose(size: baseSize * 1.03, serif: useSerif, weight: .semibold)
         }
+    }
+}
+
+enum InlineMarkdownCache {
+    private nonisolated(unsafe) static let cache: NSCache<NSString, HighlightedBox> = {
+        let c = NSCache<NSString, HighlightedBox>()
+        c.countLimit = 512
+        return c
+    }()
+
+    static let maximumCachedLength = 16_000
+
+    static func attributedString(for raw: String, cacheable: Bool = true) -> AttributedString? {
+        if cacheable && raw.count <= maximumCachedLength {
+            let key = raw as NSString
+            if let hit = cache.object(forKey: key) {
+                return hit.value
+            }
+            guard let parsed = try? AttributedString(
+                markdown: raw,
+                options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+            ) else {
+                return nil
+            }
+            cache.setObject(HighlightedBox(parsed), forKey: key)
+            return parsed
+        }
+        return try? AttributedString(
+            markdown: raw,
+            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )
+    }
+
+    static func clear() {
+        cache.removeAllObjects()
     }
 }
 
 private struct InlineMarkdownText: View {
     let raw: String
+    var cacheable: Bool = true
     @Environment(\.readingReferences) private var references
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -149,10 +193,10 @@ private struct InlineMarkdownText: View {
     }
 
     private func markdownText(_ raw: String) -> Text {
-        if let attributed = try? AttributedString(
-            markdown: raw,
-            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
+        if let attributed = InlineMarkdownCache.attributedString(for: raw, cacheable: cacheable) {
+            if references.sources.isEmpty {
+                return Text(attributed)
+            }
             return Text(references.linkingMarkers(in: attributed))
         }
         return Text(verbatim: raw)
@@ -426,6 +470,7 @@ private struct MathBlockCard: View {
 
 private struct MarkdownTableView: View {
     let table: MarkdownTable
+    var cacheable: Bool = true
 
     var body: some View {
         let widths = table.estimatedColumnWidths()
@@ -463,7 +508,7 @@ private struct MarkdownTableView: View {
             ForEach(widths.indices, id: \.self) { column in
                 let text = column < cells.count ? cells[column] : ""
                 let alignment = table.alignment(of: column)
-                InlineMarkdownText(raw: text)
+                InlineMarkdownText(raw: text, cacheable: cacheable)
                     .font(isHeader ? .subheadline.weight(.semibold) : .subheadline)
                     .multilineTextAlignment(alignment.textAlignment)
                     .fixedSize(horizontal: false, vertical: true)
@@ -562,12 +607,65 @@ private final class CachedBlocksBox: NSObject {
     init(_ blocks: [MarkdownBlock]) { self.blocks = blocks }
 }
 
+private struct StreamingPrefixEntry {
+    var committedPrefix: String
+    var committedBlocks: [MarkdownBlock]
+    var remainingTableCells: Int
+}
+
+private final class StreamingPrefixCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [StreamingPrefixEntry] = []
+    private let maxEntries = 8
+
+    func matchLongestPrefix(for source: String) -> StreamingPrefixEntry? {
+        lock.lock()
+        defer { lock.unlock() }
+        var best: StreamingPrefixEntry?
+        for entry in entries where source.count >= entry.committedPrefix.count && source.hasPrefix(entry.committedPrefix) {
+            if best == nil || entry.committedPrefix.count > best!.committedPrefix.count {
+                best = entry
+            }
+        }
+        return best
+    }
+
+    func store(_ entry: StreamingPrefixEntry) {
+        guard !entry.committedPrefix.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        if let idx = entries.firstIndex(where: { entry.committedPrefix.hasPrefix($0.committedPrefix) }) {
+            if entry.committedPrefix.count > entries[idx].committedPrefix.count {
+                entries[idx] = entry
+            }
+            return
+        }
+        if entries.count >= maxEntries {
+            entries.removeFirst()
+        }
+        entries.append(entry)
+    }
+
+    func clear() {
+        lock.lock()
+        entries.removeAll()
+        lock.unlock()
+    }
+}
+
 enum MarkdownBlockParser {
     private nonisolated(unsafe) static let parseCache: NSCache<NSString, CachedBlocksBox> = {
         let c = NSCache<NSString, CachedBlocksBox>()
         c.countLimit = 256
         return c
     }()
+
+    private static let streamingCache = StreamingPrefixCache()
+    static let streamingIncrementalThreshold = 320
+
+    static func resetStreamingCache() {
+        streamingCache.clear()
+    }
 
     static func parseCached(_ source: String) -> [MarkdownBlock] {
         guard !source.isEmpty else { return [] }
@@ -580,13 +678,97 @@ enum MarkdownBlockParser {
         return parsed
     }
 
-    static func parse(_ source: String) -> [MarkdownBlock] {
+    /// Incrementally parses a growing streaming Markdown string by caching closed prefix blocks
+    /// and re-parsing only the active trailing slice on each token flush. Guaranteed to produce
+    /// the exact same `[MarkdownBlock]` output as `parse(_:)`.
+    static func parseStreaming(_ source: String) -> [MarkdownBlock] {
         guard !source.isEmpty else { return [] }
-        let lines = source.components(separatedBy: "\n")
+        guard source.count >= streamingIncrementalThreshold else {
+            return parse(source)
+        }
+
+        if let cached = streamingCache.matchLongestPrefix(for: source) {
+            let tailStart = source.index(source.startIndex, offsetBy: cached.committedPrefix.count)
+            let tail = String(source[tailStart...])
+            let result = parseWithCheckpoint(tail, initialRemainingTableCells: cached.remainingTableCells)
+            if let cpEnd = result.checkpointEndIndex, cpEnd > tail.startIndex {
+                let newPrefix = cached.committedPrefix + String(tail[..<cpEnd])
+                var mergedCommitted = cached.committedBlocks
+                mergedCommitted.append(contentsOf: result.blocks.prefix(result.checkpointBlockCount))
+                streamingCache.store(StreamingPrefixEntry(
+                    committedPrefix: newPrefix,
+                    committedBlocks: mergedCommitted,
+                    remainingTableCells: result.checkpointRemainingTableCells
+                ))
+            }
+            if result.blocks.isEmpty {
+                return cached.committedBlocks
+            }
+            var combined = cached.committedBlocks
+            combined.reserveCapacity(cached.committedBlocks.count + result.blocks.count)
+            combined.append(contentsOf: result.blocks)
+            return combined
+        }
+
+        let result = parseWithCheckpoint(source, initialRemainingTableCells: 2_048)
+        if let cpEnd = result.checkpointEndIndex, cpEnd > source.startIndex {
+            streamingCache.store(StreamingPrefixEntry(
+                committedPrefix: String(source[..<cpEnd]),
+                committedBlocks: Array(result.blocks.prefix(result.checkpointBlockCount)),
+                remainingTableCells: result.checkpointRemainingTableCells
+            ))
+        }
+        return result.blocks
+    }
+
+    private struct CheckpointParseResult {
+        let blocks: [MarkdownBlock]
+        let checkpointEndIndex: String.Index?
+        let checkpointBlockCount: Int
+        let checkpointRemainingTableCells: Int
+    }
+
+    private static func splitLinesWithNextStarts(_ source: String) -> [(text: String, nextStart: String.Index)] {
+        var entries: [(String, String.Index)] = []
+        var start = source.startIndex
+        var idx = start
+        let scalars = source.unicodeScalars
+        while idx < scalars.endIndex {
+            if scalars[idx] == "\n" {
+                let next = scalars.index(after: idx)
+                entries.append((String(source[start..<idx]), next))
+                start = next
+                idx = next
+            } else {
+                idx = scalars.index(after: idx)
+            }
+        }
+        entries.append((String(source[start..<source.endIndex]), source.endIndex))
+        return entries
+    }
+
+    private static func parseWithCheckpoint(
+        _ source: String,
+        initialRemainingTableCells: Int
+    ) -> CheckpointParseResult {
+        guard !source.isEmpty else {
+            return CheckpointParseResult(
+                blocks: [],
+                checkpointEndIndex: nil,
+                checkpointBlockCount: 0,
+                checkpointRemainingTableCells: initialRemainingTableCells
+            )
+        }
+        let lineEntries = splitLinesWithNextStarts(source)
+        let lines = lineEntries.map(\.text)
         var blocks: [MarkdownBlock] = []
         var paragraphBuffer: [String] = []
         var index = 0
-        var remainingTableCells = 2_048
+        var remainingTableCells = initialRemainingTableCells
+
+        var checkpointEndIndex: String.Index?
+        var checkpointBlockCount = 0
+        var checkpointRemainingTableCells = initialRemainingTableCells
 
         func flushParagraph() {
             guard !paragraphBuffer.isEmpty else { return }
@@ -594,7 +776,24 @@ enum MarkdownBlockParser {
             paragraphBuffer.removeAll()
         }
 
+        func isLastBlockBlockquote() -> Bool {
+            if case .blockquote = blocks.last { return true }
+            return false
+        }
+
         while index < lines.count {
+            if index > 0 && paragraphBuffer.isEmpty && !blocks.isEmpty && !isLastBlockBlockquote() {
+                let prevLine = lines[index - 1]
+                let safeFromTableLookahead = (index + 1 < lines.count)
+                    || prevLine.trimmingCharacters(in: .whitespaces).isEmpty
+                    || !prevLine.contains("|")
+                if safeFromTableLookahead {
+                    checkpointEndIndex = lineEntries[index - 1].nextStart
+                    checkpointBlockCount = blocks.count
+                    checkpointRemainingTableCells = remainingTableCells
+                }
+            }
+
             let line = lines[index]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
@@ -684,7 +883,16 @@ enum MarkdownBlockParser {
         }
 
         flushParagraph()
-        return blocks
+        return CheckpointParseResult(
+            blocks: blocks,
+            checkpointEndIndex: checkpointEndIndex,
+            checkpointBlockCount: checkpointBlockCount,
+            checkpointRemainingTableCells: checkpointRemainingTableCells
+        )
+    }
+
+    static func parse(_ source: String) -> [MarkdownBlock] {
+        parseWithCheckpoint(source, initialRemainingTableCells: 2_048).blocks
     }
 
     private static func fenceMarker(_ trimmed: String) -> String? {

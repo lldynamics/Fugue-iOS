@@ -206,7 +206,7 @@ class LLMClient(
             throw LLMError.InsecurePublicHttp(baseURL)
         }
         val orderedKeys = keyRouter.orderedKeys(
-            rawKeys = listOf(apiKey) + apiKeys,
+            rawKeys = (listOf(apiKey) + apiKeys).map { sanitizedAPIKey(it) },
             protocolType = protocolType,
             baseURL = baseURL
         )
@@ -544,24 +544,92 @@ class LLMClient(
             return if (message.contains(reqID)) message else "$message [Request ID: $reqID]"
         }
 
+        fun sanitizedAPIKey(raw: String): String {
+            val trimmed = raw.trim()
+            return if (trimmed.lowercase().startsWith("bearer ")) {
+                trimmed.drop(7).trim()
+            } else {
+                trimmed
+            }
+        }
+
+        fun isUnrecoverable400(lower: String): Boolean {
+            val patterns = listOf(
+                "model not exist", "model_not_found", "model not found", "does not exist",
+                "no such model", "invalid model", "unknown model", "模型不存在",
+                "api key not valid", "invalid_api_key", "incorrect api key", "invalid api key",
+                "insufficient_quota", "insufficient balance", "quota exceeded", "余额不足",
+                "context_length_exceeded", "maximum context length", "too many tokens",
+                "content_policy", "safety"
+            )
+            return patterns.any { lower.contains(it) }
+        }
+
+        fun isGenericParameterRejection400(lower: String): Boolean {
+            val patterns = listOf(
+                "unknown", "unrecognized", "unsupported", "unexpected",
+                "extra_forbidden", "extra inputs", "additional properties",
+                "not permitted", "not allowed", "invalid parameter", "invalid field",
+                "invalid request", "bad request", "invalid_argument", "invalid json",
+                "参数错误", "不支持", "请求失败（无详细错误信息）", "请求被服务端拒绝"
+            )
+            return patterns.any { lower.contains(it) }
+        }
+
         private val errJson = Json { ignoreUnknownKeys = true }
 
         fun extractReadableErrorMessage(data: ByteArray): String {
             if (data.isEmpty()) return L10n.text("请求失败（无详细错误信息）", "Request failed with no details.")
             val text = data.toString(Charsets.UTF_8)
-            val obj = runCatching { errJson.parseToJsonElement(text).jsonObject }.getOrNull()
-            if (obj != null) {
-                val errElem = obj["error"]
-                if (errElem is JsonObject) {
-                    errElem["message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }?.let { return it }
-                } else if (errElem is JsonPrimitive && errElem.isString) {
-                    errElem.content.takeIf { it.isNotEmpty() }?.let { return it }
+            val parsed = runCatching { errJson.parseToJsonElement(text) }.getOrNull()
+            when (parsed) {
+                is JsonObject -> extractMessageFromErrorObject(parsed)?.let { return it }
+                is JsonArray -> {
+                    val firstObj = parsed.firstOrNull() as? JsonObject
+                    if (firstObj != null) {
+                        extractMessageFromErrorObject(firstObj)?.let { return it }
+                    }
                 }
-                obj["message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }?.let { return it }
-                obj["detail"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }?.let { return it }
+                else -> Unit
             }
             val raw = data.copyOfRange(0, minOf(data.size, 600)).toString(Charsets.UTF_8).trim()
             return raw.ifEmpty { L10n.text("请求被服务端拒绝", "Request rejected by server") }
+        }
+
+        private fun extractMessageFromErrorObject(obj: JsonObject): String? {
+            val errElem = obj["error"]
+            if (errElem is JsonObject) {
+                errElem["message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }?.let { return it }
+                errElem["msg"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }?.let { return it }
+                errElem["detail"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }?.let { return it }
+            } else if (errElem is JsonPrimitive && errElem.isString) {
+                errElem.content.takeIf { it.isNotEmpty() }?.let { return it }
+            }
+            obj["message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }?.let { return it }
+            obj["msg"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }?.let { return it }
+            val detailElem = obj["detail"]
+            if (detailElem is JsonPrimitive && detailElem.isString) {
+                detailElem.content.takeIf { it.isNotEmpty() }?.let { return it }
+            } else if (detailElem is JsonArray && detailElem.isNotEmpty()) {
+                val parts = detailElem.take(3).mapNotNull { item ->
+                    val dObj = item as? JsonObject ?: return@mapNotNull null
+                    val msg = (dObj["msg"] as? JsonPrimitive)?.contentOrNull
+                        ?: (dObj["message"] as? JsonPrimitive)?.contentOrNull
+                        ?: ""
+                    val loc = (dObj["loc"] as? JsonArray)
+                        ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                        ?.joinToString(".")
+                        ?: ""
+                    when {
+                        loc.isNotEmpty() && msg.isNotEmpty() -> "$loc: $msg"
+                        msg.isNotEmpty() -> msg
+                        loc.isNotEmpty() -> loc
+                        else -> null
+                    }
+                }
+                if (parts.isNotEmpty()) return parts.joinToString("; ")
+            }
+            return null
         }
 
         fun composeTextWithDocuments(

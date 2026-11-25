@@ -4,9 +4,9 @@ import android.net.Uri
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
-import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
@@ -164,7 +164,7 @@ fun MainScreen(container: AppContainer) {
                                 restoreState = true
                             }
                         },
-                        icon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null) },
+                        icon = { Icon(Icons.Filled.GridView, contentDescription = null) },
                         label = { Text(stringResource(R.string.tab_assistants)) }
                     )
                     NavigationBarItem(
@@ -176,13 +176,8 @@ fun MainScreen(container: AppContainer) {
                                 restoreState = true
                             }
                         },
-                        icon = { Icon(Icons.Filled.Dns, contentDescription = null) },
-                        label = {
-                            Text(
-                                if (prefs.simpleDailyMode) L10n.text("设置", "Settings")
-                                else stringResource(R.string.tab_providers)
-                            )
-                        }
+                        icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                        label = { Text(stringResource(R.string.tab_providers)) }
                     )
                     if (!prefs.simpleDailyMode) {
                         NavigationBarItem(

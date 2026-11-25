@@ -5,7 +5,86 @@ import PDFKit
 enum BookImporter {
     static let maximumFileBytes = 64 * 1_024 * 1_024
 
+    struct ProgressiveImportResult: Sendable {
+        let prepared: PreparedBook
+        let pdfDataForContinuation: Data?
+        let remainingPDFPageIndices: [Int]
+        let totalPDFPages: Int
+    }
+
     static func read(_ url: URL) throws -> PreparedBook {
+        let data = try readBoundedData(url)
+        return try PreparedBook(parse(data, filename: url.lastPathComponent))
+    }
+
+    /// Fast-path import that recognizes selectable PDF text plus an initial batch of scanned pages
+    /// immediately, returning any remaining scanned page indices for `BackgroundPDFOCRQueue` (no 120-page cap).
+    static func readProgressive(_ url: URL, initialOCRPageLimit: Int = 24) throws -> ProgressiveImportResult {
+        let data = try readBoundedData(url)
+        return try parseProgressive(data, filename: url.lastPathComponent, initialOCRPageLimit: initialOCRPageLimit)
+    }
+
+    static func parseProgressive(
+        _ data: Data,
+        filename: String,
+        initialOCRPageLimit: Int = 24
+    ) throws -> ProgressiveImportResult {
+        guard data.count <= maximumFileBytes else { throw BookImportError.fileLimit }
+        let file = URL(fileURLWithPath: filename)
+        guard file.pathExtension.lowercased() == "pdf" else {
+            let prepared = try PreparedBook(parse(data, filename: filename))
+            return ProgressiveImportResult(
+                prepared: prepared,
+                pdfDataForContinuation: nil,
+                remainingPDFPageIndices: [],
+                totalPDFPages: 0
+            )
+        }
+
+        let title = String(file.deletingPathExtension().lastPathComponent.prefix(300))
+        guard let pdf = PDFDocument(data: data) else { throw BookImportError.invalidBook }
+        guard !pdf.isLocked, pdf.allowsCopying else { throw BookImportError.locked }
+        guard pdf.pageCount <= BookManuscript.maximumChapters else { throw BookImportError.textLimit }
+
+        var pages: [BookChapter] = []
+        var size = 0
+        var ocrPagesUsed = 0
+        var remainingOCR: [Int] = []
+        let initialCap = max(1, initialOCRPageLimit)
+
+        for index in 0..<pdf.pageCount {
+            try Task.checkCancellation()
+            let (pageText, deferred) = autoreleasepool { () -> (String, Bool) in
+                guard let pdfPage = pdf.page(at: index) else { return ("", false) }
+                let direct = pdfPage.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !direct.isEmpty { return (direct, false) }
+                if ocrPagesUsed < initialCap {
+                    ocrPagesUsed += 1
+                    return (PDFOCRService.recognizeText(on: pdfPage), false)
+                }
+                return ("", true)
+            }
+            if deferred {
+                remainingOCR.append(index)
+                continue
+            }
+            guard !pageText.isEmpty else { continue }
+            size += pageText.utf8.count
+            guard size <= BookManuscript.maximumTextBytes else { throw BookImportError.textLimit }
+            pages.append(BookChapter(title: String(localized: "第 \(index + 1) 页"), text: pageText))
+        }
+
+        guard !pages.isEmpty else { throw BookImportError.noText }
+        let prepared = try PreparedBook(BookManuscript(title: title, chapters: pages))
+        return ProgressiveImportResult(
+            prepared: prepared,
+            pdfDataForContinuation: remainingOCR.isEmpty ? nil : data,
+            remainingPDFPageIndices: remainingOCR,
+            totalPDFPages: pdf.pageCount
+        )
+    }
+
+    private static func readBoundedData(_ url: URL) throws -> Data {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let info = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
@@ -18,7 +97,7 @@ enum BookImporter {
             guard data.count <= maximumFileBytes - part.count else { throw BookImportError.fileLimit }
             data.append(part)
         }
-        return try PreparedBook(parse(data, filename: url.lastPathComponent))
+        return data
     }
 
     static func parse(_ data: Data, filename: String) throws -> BookManuscript {

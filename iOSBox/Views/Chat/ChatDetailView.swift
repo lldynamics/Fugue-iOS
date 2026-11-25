@@ -6,8 +6,8 @@ struct ChatDetailView: View {
     @Bindable var conversation: Conversation
     let isLandingDraft: Bool
     var onOpenConversation: ((Conversation) -> Void)?
+    var onToggleDrawer: (() -> Void)?
 
-    @Environment(WorkspaceNavigation.self) private var workspaceNavigation: WorkspaceNavigation?
     @Environment(\.modelContext) private var modelContext
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -53,11 +53,13 @@ struct ChatDetailView: View {
         conversation: Conversation,
         initialMessageID: UUID? = nil,
         isLandingDraft: Bool = false,
-        onOpenConversation: ((Conversation) -> Void)? = nil
+        onOpenConversation: ((Conversation) -> Void)? = nil,
+        onToggleDrawer: (() -> Void)? = nil
     ) {
         self.isLandingDraft = isLandingDraft
         self.conversation = conversation
         self.onOpenConversation = onOpenConversation
+        self.onToggleDrawer = onToggleDrawer
         _pendingScrollMessageID = State(initialValue: initialMessageID)
         _isPinnedToBottom = State(initialValue: initialMessageID == nil)
         _draft = State(initialValue: ChatDraftStore.shared.state(for: conversation.id))
@@ -208,6 +210,17 @@ struct ChatDetailView: View {
     private var timelineAndComposer: some View {
         let currentActiveMessages = activeMessages
         let items = TimelineEntry.build(from: currentActiveMessages)
+        let promptMilestones: [ChatTopicScrubberView.PromptMilestone] = currentActiveMessages
+            .filter { $0.role == .user && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .enumerated()
+            .map { index, msg in
+                ChatTopicScrubberView.PromptMilestone(
+                    id: msg.id,
+                    index: index,
+                    preview: String(msg.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(34))
+                )
+            }
+
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottomTrailing) {
                 ScrollView {
@@ -335,6 +348,17 @@ struct ChatDetailView: View {
                     pendingScrollMessageID = nil
                 }
 
+                if promptMilestones.count >= 3 {
+                    ChatTopicScrubberView(milestones: promptMilestones) { targetMessageID in
+                        isPinnedToBottom = false
+                        withAnimation(.snappy(duration: 0.22)) {
+                            proxy.scrollTo(targetMessageID, anchor: .top)
+                        }
+                    }
+                    .frame(maxHeight: .infinity, alignment: .center)
+                    .padding(.trailing, 2)
+                }
+
                 if !isPinnedToBottom && !items.isEmpty {
                     Button {
                         isPinnedToBottom = true
@@ -367,6 +391,9 @@ struct ChatDetailView: View {
                     if let clearedHistory { undoClearBar(clearedHistory) }
                     if let pending = engine.pendingWebpageApproval(in: conversation.id) {
                         webpageApprovalBar(pending)
+                    }
+                    if let pendingMCP = engine.pendingMCPApproval(in: conversation.id) {
+                        mcpApprovalBar(pendingMCP)
                     }
                     if conversation.isGroupMode {
                         groupDiscussionControlBar
@@ -419,11 +446,11 @@ struct ChatDetailView: View {
             requestOptions: $requestOptions,
             onOpenModelPicker: beginModelSetup,
             onOpenArenaPicker: { activeSheet = .arena },
-            onOpenBlindPicker: { activeSheet = .blindArena },
             onOpenGroupSetup: { activeSheet = .groupSetup },
             onOpenOptions: { activeSheet = .options },
             onManageKnowledge: { activeSheet = .knowledge },
             onOpenAudioTranscription: { activeSheet = .audioTranscription },
+            onOpenImageGeneration: { activeSheet = .imageGeneration },
             onOpenVoiceConversation: (conversation.isGroupMode || conversation.isArenaMode) ? nil : openVoiceConversation,
             externalDocumentScanTrigger: externalDocumentScanTrigger,
             writingFirst: writingFirst,
@@ -441,12 +468,41 @@ struct ChatDetailView: View {
     private var writingWorkspace: some View {
         GeometryReader { geometry in
             ScrollView {
-                composer(writingFirst: true)
-                    .frame(maxWidth: 1000)
-                    .padding(.horizontal, geometry.size.width >= 600 ? 36 : 16)
-                    .padding(.vertical, 16)
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: geometry.size.height, alignment: geometry.size.width < 600 ? .top : .center)
+                VStack(alignment: .leading, spacing: DS.Spacing.lg) {
+                    HStack(spacing: DS.Spacing.md) {
+                        FugueSealMark(character: "夜", size: 38, theme: theme)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("今晚想推演什么问题？")
+                                .font(.system(.headline, design: preferences.literarySerifBody ? .serif : .default).weight(.bold))
+                                .foregroundStyle(.primary)
+                            Text("左滑打开置顶空间与历史 · 右上角检视路由与知识库")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.top, DS.Spacing.xs)
+
+                    composer(writingFirst: true)
+
+                    if draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                            Text("推演灵感")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 2)
+
+                            quickSuggestionButton(String(localized: "帮我对比一下 Swift Actor 和传统锁的性能与适用场景"))
+                            quickSuggestionButton(String(localized: "用通俗生动的语言解释 Transformer 的自注意力机制"))
+                            quickSuggestionButton(String(localized: "帮我写一段高质量的 Python 异步并发请求模板"))
+                        }
+                        .padding(.top, DS.Spacing.xxs)
+                    }
+                }
+                .frame(maxWidth: 1000)
+                .padding(.horizontal, geometry.size.width >= 600 ? 36 : 16)
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: geometry.size.height, alignment: geometry.size.width < 600 ? .top : .center)
             }
             .scrollDismissesKeyboard(.interactively)
         }
@@ -486,6 +542,36 @@ struct ChatDetailView: View {
                 Button("本对话始终允许 \(request.host)") {
                     engine.resolvePendingWebpageApproval(id: request.id, decision: .allow, rememberHost: true)
                 }
+            }
+        }
+        .font(.subheadline)
+        .padding(.horizontal)
+        .padding(.vertical, DS.Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+    }
+
+    private func mcpApprovalBar(_ request: ChatEngine.PendingMCPApproval) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            Text("确认调用外部 MCP 工具？").font(.headline)
+            ScrollView {
+                Text("服务：\(request.serverName)\n工具：\(request.toolName)\n参数：\(request.argumentsSummary)")
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 84)
+            HStack {
+                Button("允许本次") {
+                    engine.resolvePendingMCPApproval(id: request.id, decision: .allow, rememberServer: false)
+                }
+                Button("拒绝", role: .cancel) {
+                    engine.resolvePendingMCPApproval(id: request.id, decision: .deny, rememberServer: false)
+                }
+            }
+            .buttonStyle(.bordered)
+            Button("本对话始终允许「\(request.serverName)」") {
+                engine.resolvePendingMCPApproval(id: request.id, decision: .allow, rememberServer: true)
             }
         }
         .font(.subheadline)
@@ -587,10 +673,23 @@ struct ChatDetailView: View {
 
     private var chatWithToolbar: some View {
         workspaceContent
+        .background(DS.Surface.canvas.ignoresSafeArea())
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .toolbar {
+            if let onToggleDrawer {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: onToggleDrawer) {
+                        Image(systemName: "line.3.horizontal")
+                            .font(.body.weight(.semibold))
+                            .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("对话列表")
+                    .accessibilityIdentifier("chat.history")
+                }
+            }
             ToolbarItem(placement: .principal) {
                 if let friend = conversation.activeBookFriend {
                     BookChatHeading(friend: friend, title: conversation.title) { activeSheet = .bookProgress }
@@ -622,6 +721,16 @@ struct ChatDetailView: View {
                 ToolbarItem(placement: .topBarTrailing) { knowledgeMenu(compact: true) }
             }
             ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    preferences.triggerSelectionHaptic()
+                    activeSheet = .inspector
+                } label: {
+                    Image(systemName: "sidebar.right")
+                }
+                .accessibilityLabel("会话检视器")
+                .accessibilityIdentifier("chat.inspector")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
                         activeSheet = .settings
@@ -632,7 +741,9 @@ struct ChatDetailView: View {
 
                     if conversation.activeBookFriend != nil {
                         Divider()
-                        Button { activeSheet = .bookInvitation } label: { Label("邀请进群", systemImage: "person.2.badge.plus") }
+                        if !preferences.simpleDailyMode {
+                            Button { activeSheet = .bookInvitation } label: { Label("邀请进群", systemImage: "person.2.badge.plus") }
+                        }
                         Button { activeSheet = .bookProgress } label: { Label("调整阅读进度", systemImage: "bookmark") }
                             .disabled(engine.isGenerating(in: conversation.id))
                     }
@@ -645,15 +756,6 @@ struct ChatDetailView: View {
                         Label("会话内查找与收藏", systemImage: "magnifyingglass")
                     }
                     .keyboardShortcut("f", modifiers: .command)
-
-                    if !conversation.isGroupMode && !conversation.isArenaMode {
-                        Button {
-                            openVoiceConversation()
-                        } label: {
-                            Label("通勤语音对谈", systemImage: "headphones")
-                        }
-                        .disabled(engine.isGenerating(in: conversation.id))
-                    }
 
                     Button {
                         renameDraft = conversation.title
@@ -679,10 +781,12 @@ struct ChatDetailView: View {
 
                     Divider()
 
-                    Button {
-                        activeSheet = .arena
-                    } label: {
-                        Label("配置多模型并发对比", systemImage: "square.split.2x1")
+                    if preferences.showsArena || conversation.isArenaMode {
+                        Button {
+                            activeSheet = .arena
+                        } label: {
+                            Label("配置多模型并发对比", systemImage: "square.split.2x1")
+                        }
                     }
 
                     Button {
@@ -866,7 +970,10 @@ struct ChatDetailView: View {
             )
         }
         .onChange(of: conversation.isArenaMode || conversation.isGroupMode) { _, multi in
-            if multi { requestOptions.temporaryTarget = nil }
+            if multi {
+                requestOptions.temporaryTarget = nil
+                requestOptions.useDeepResearch = false
+            }
         }
         .alert("重命名对话", isPresented: $showRenameAlert) {
             TextField("对话标题", text: $renameDraft)
@@ -909,16 +1016,41 @@ struct ChatDetailView: View {
             )
             .presentationDetents([.large])
 
-        case .model, .arena, .blindArena:
+        case .inspector:
+            ChatContextInspectorSheet(
+                conversation: conversation,
+                providers: providers,
+                omitKnowledgeOnce: $requestOptions.omitKnowledge,
+                onOpenModelPicker: {
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(180))
+                        beginModelSetup()
+                    }
+                },
+                onOpenKnowledgePicker: {
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(180))
+                        activeSheet = .knowledge
+                    }
+                },
+                onOpenFullSettings: {
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(180))
+                        activeSheet = .settings
+                    }
+                }
+            )
+            .presentationDetents([.medium, .large])
+
+        case .model, .arena:
             ModelPickerSheet(
                 mode: sheet == .model ? .single : .arenaMulti,
                 directory: modelDirectory,
-                conversation: conversation,
-                enableBlindMode: sheet == .blindArena
+                conversation: conversation
             ) { target in
                 try useModel(target, exitGroup: true)
             }
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.large])
 
         case .settings:
             ChatSettingsSheet(conversation: conversation)
@@ -970,6 +1102,35 @@ struct ChatDetailView: View {
             FirstModelSetupSheet { target in
                 do { try useModel(target, exitGroup: false) }
                 catch { presentHistoryError(error.localizedDescription) }
+            }
+
+        case .imageGeneration:
+            ImageGenerationSheet(providers: providers) { promptText, attachment, revisedPrompt in
+                activateLandingDraft()
+                let nextSort = (conversation.messages.map(\.sortIndex).max() ?? 0) + 1
+                let userMsg = ChatMessage(role: .user, content: promptText, sortIndex: nextSort)
+                let replyText = (revisedPrompt?.isEmpty == false) ? revisedPrompt! : String(localized: "已生成图片")
+                let assistantMsg = ChatMessage(
+                    role: .assistant,
+                    content: replyText,
+                    attachments: [attachment],
+                    target: conversation.primaryTarget,
+                    sortIndex: nextSort + 1
+                )
+                if ConversationTree.usesTree(conversation) {
+                    let anchor = ConversationTree.currentAnchorID(in: conversation)
+                    userMsg.parentMessageID = anchor
+                    assistantMsg.parentMessageID = userMsg.id
+                    conversation.activeLeafMessageID = assistantMsg.id
+                }
+                userMsg.conversation = conversation
+                assistantMsg.conversation = conversation
+                conversation.messages.append(userMsg)
+                conversation.messages.append(assistantMsg)
+                conversation.updatedAt = Date()
+                modelContext.insert(userMsg)
+                modelContext.insert(assistantMsg)
+                try? modelContext.save()
             }
 
         case .audioTranscription:
@@ -1085,7 +1246,7 @@ struct ChatDetailView: View {
         let requestOptionsSnapshot = options
         options.authorizedGroupMentions = plan.mentionOnly ? plan.groupMentions : nil
         let usesTools = !conversation.isArenaMode && !conversation.isGroupMode && conversation.assistanceSettings.enableAgentTools
-        authorize(targets, search: options.searchQuery != nil, tools: usesTools, isCurrent: {
+        authorize(targets, search: options.searchQuery != nil || options.useDeepResearch, tools: usesTools, isCurrent: {
             var latestOptions = requestOptions.forSend(in: conversation, quote: draft.quotedText)
             latestOptions.pickedMentions = draft.pickedMentions
             guard requestOptionsSnapshot == latestOptions,
@@ -1133,7 +1294,8 @@ struct ChatDetailView: View {
         let backups = (message.comparisonGroupID == nil && !isGroupMsg)
             ? AssistancePolicy.fallbacks(after: target, settings: conversation.assistanceSettings, providers: providers, requiresVision: false) : []
         let usesTools = message.comparisonGroupID == nil && !isGroupMsg && !message.isSynthesis && conversation.assistanceSettings.enableAgentTools
-        authorize([target] + backups, search: message.assistanceMetadata.requestedSearchQuery != nil, tools: usesTools) {
+        let usesSearchOnRetry = message.assistanceMetadata.requestedSearchQuery != nil || message.assistanceMetadata.deepResearchTrace != nil
+        authorize([target] + backups, search: usesSearchOnRetry, tools: usesTools) {
             engine.regenerate(assistantMessage: message, overrideTarget: override, in: conversation, providers: providers, context: modelContext)
         }
     }
@@ -1367,7 +1529,7 @@ struct ChatDetailView: View {
             }
             return conversation.assistanceSettings.automaticRouting
                 ? String(localized: "请启用服务商和模型，并检查会话参数中的路由目标与识图能力。你输入的内容已保留。")
-                : String(localized: "请先在「服务商」页面启用服务商并添加模型。你输入的内容已保留。")
+                : String(localized: "请先在「设置」页面启用服务商并添加模型。你输入的内容已保留。")
         case .busy:
             return String(localized: "上一条回复仍在生成或正在停止，请稍候再发送。你输入的内容已保留。")
         case .invalidSearch:
@@ -1563,22 +1725,26 @@ struct ChatDetailView: View {
     private var emptyWelcomeView: some View {
         let friend = conversation.activeBookFriend
         return VStack(spacing: DS.Spacing.lg) {
-            ZStack {
-                RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                    .fill(theme.softFill)
-                    .frame(width: 64, height: 64)
-                AssistantEmojiIcon(emoji: conversation.assistantEmoji, font: .system(size: 34))
-                    .frame(width: 64, height: 64)
+            if friend == nil && !conversation.isGroupMode && Conversation.isDefaultTitle(conversation.title) {
+                FugueSealMark(character: "夜", size: 56, theme: theme)
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
+                        .fill(theme.softFill)
+                        .frame(width: 64, height: 64)
+                    AssistantEmojiIcon(emoji: conversation.assistantEmoji, font: .system(size: 34))
+                        .frame(width: 64, height: 64)
+                }
+                .accessibilityHidden(true)
             }
-            .accessibilityHidden(true)
 
             VStack(spacing: DS.Spacing.xs) {
                 Text(
                     friend?.byline ?? (conversation.isGroupMode
                         ? conversation.title
-                        : (conversation.isArenaMode ? String(localized: "多模型并发对比已开启") : String(localized: "开始自由 AI 对话")))
+                        : (conversation.isArenaMode ? String(localized: "复调多模型对比已开启") : String(localized: "今晚想推演什么问题？")))
                 )
-                .font(.title3.weight(.bold))
+                .font(.system(.title3, design: preferences.literarySerifBody ? .serif : .default).weight(.bold))
 
                 Text(
                     friend.map { String(localized: "和《\($0.bookTitle)》中的\($0.name)聊聊天。") } ?? (conversation.isGroupMode

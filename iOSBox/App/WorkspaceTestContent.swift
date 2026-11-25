@@ -7,8 +7,16 @@ import SwiftData
 enum WorkspaceTestContent {
     static func insert(in context: ModelContext) throws {
         if ProcessInfo.processInfo.arguments.contains("-ui-test-personas") {
+            var sample = ModelSpec(id: "sample-a")
+            if ProcessInfo.processInfo.arguments.contains("-ui-test-model-details") {
+                sample.supportsVision = true
+                sample.supportsReasoning = true
+                sample.inputPricePerMillion = 0.1
+                sample.outputPricePerMillion = 1
+                sample.priceCurrency = "USD"
+            }
             let provider = ProviderConfig(name: "本地模型", protocolType: .openAICompatible, baseURL: "http://127.0.0.1:11434/v1",
-                                          models: [ModelSpec(id: "sample-a"), ModelSpec(id: "sample-b")])
+                                          models: [sample, ModelSpec(id: "sample-b")])
             context.insert(provider)
             let member = GroupMember(name: "林舟", rolePrompt: "记录自然观察。", target: provider.makeTarget(for: provider.models[1]))
             _ = try PersonaLibrary.save(member, in: context)
@@ -86,6 +94,40 @@ enum WorkspaceTestContent {
             reply.modelID = "fixture-\(index)"
             context.insert(reply)
             reply.conversation = arena
+        }
+        if ProcessInfo.processInfo.arguments.contains("-ui-audit-incomplete-currency") {
+            var legacy = ModelSpec(id: "legacy-pricing")
+            legacy.inputPricePerMillion = 0.1
+            legacy.outputPricePerMillion = 1
+            let provider = ProviderConfig(name: "币种缺失测试", protocolType: .openAICompatible,
+                                          baseURL: "http://127.0.0.1", models: [legacy])
+            context.insert(provider)
+        }
+        if ProcessInfo.processInfo.arguments.contains("-ui-audit-tiny-cost") {
+            var tiny = ModelSpec(id: "tiny-price")
+            tiny.inputPricePerMillion = 0.1
+            tiny.outputPricePerMillion = 1
+            tiny.priceCurrency = "USD"
+            let provider = ProviderConfig(name: "本地测试", protocolType: .openAICompatible,
+                                          baseURL: "http://127.0.0.1", models: [tiny])
+            let record = RequestRecord(target: provider.makeTarget(for: tiny), spec: tiny, conversationID: draft.id,
+                                       messageID: UUID(), kind: .answer)
+            record.promptTokens = 1
+            record.completionTokens = 0
+            record.status = .succeeded
+            context.insert(record)
+        }
+        if ProcessInfo.processInfo.arguments.contains("-ui-audit-stale-group-model") {
+            let oldModel = ModelSpec(id: "old-model")
+            let removedProvider = ProviderConfig(name: "已移除的服务商", protocolType: .openAICompatible,
+                                                 baseURL: "http://127.0.0.1", models: [oldModel])
+            let staleGroup = Conversation(title: "失效模型测试群")
+            staleGroup.isGroupMode = true
+            staleGroup.assistanceSettings.groupMembers = [GroupMember(name: "测试成员", rolePrompt: "演示角色", target: removedProvider.makeTarget(for: oldModel))]
+            context.insert(staleGroup)
+            let message = ChatMessage(role: .user, content: "测试群内讨论")
+            context.insert(message)
+            message.conversation = staleGroup
         }
         try context.save()
     }

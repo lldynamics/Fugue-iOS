@@ -9,6 +9,8 @@ struct ReasoningCardView: View {
     @State private var hasUserToggled: Bool = false
     @State private var preferences = AppPreferences.shared
 
+    private var theme: DS.AccentTheme { preferences.accentTheme }
+
     private var effectiveExpanded: Bool {
         if hasUserToggled {
             return isExpanded
@@ -41,9 +43,9 @@ struct ReasoningCardView: View {
                         ProgressView()
                             .controlSize(.mini)
                     } else {
-                        Circle()
-                            .fill(preferences.accentTheme.readableText.opacity(0.75))
-                            .frame(width: 6, height: 6)
+                        Image(systemName: "sparkle")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(theme.readableText)
                             .accessibilityHidden(true)
                     }
 
@@ -53,6 +55,10 @@ struct ReasoningCardView: View {
 
                     Spacer(minLength: 0)
 
+                    Text(effectiveExpanded ? String(localized: "收起批注") : String(localized: "展开批注"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -60,28 +66,30 @@ struct ReasoningCardView: View {
                         .accessibilityHidden(true)
                 }
                 .padding(.horizontal, DS.Spacing.md)
-                .padding(.vertical, 8)
-                .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
+                .padding(.vertical, 9)
+                .frame(minHeight: DS.TouchTarget.minimum)
+                .background(DS.Surface.subtle.opacity(0.82), in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                    RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
                         .strokeBorder(DS.Surface.hairline, lineWidth: 1)
                 )
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             if effectiveExpanded {
                 HStack(alignment: .top, spacing: DS.Spacing.sm) {
-                    RoundedRectangle(cornerRadius: 1, style: .continuous)
-                        .fill(Color.secondary.opacity(0.32))
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(theme.solidFill.opacity(0.55))
                         .frame(width: 2)
 
                     if isActivelyThinking && !hasUserToggled {
                         ScrollViewReader { proxy in
                             ScrollView {
                                 Text(reasoning)
-                                    .font(.footnote)
+                                    .font(DS.Typography.prose(size: 14, serif: preferences.literarySerifBody))
                                     .foregroundStyle(.secondary)
-                                    .lineSpacing(4)
+                                    .lineSpacing(4.5)
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Color.clear
@@ -95,9 +103,9 @@ struct ReasoningCardView: View {
                         }
                     } else {
                         Text(reasoning)
-                            .font(.footnote)
+                            .font(DS.Typography.prose(size: 14, serif: preferences.literarySerifBody))
                             .foregroundStyle(.secondary)
-                            .lineSpacing(4)
+                            .lineSpacing(4.5)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }

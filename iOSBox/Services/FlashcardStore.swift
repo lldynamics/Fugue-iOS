@@ -265,11 +265,29 @@ final class FlashcardStore {
         try change { cards in
             cards.removeAll { $0.id == id }
         }
+        if fileURL != nil {
+            SyncTombstoneStore.shared.recordDeletion(kind: .flashcard, id: id)
+        }
     }
 
     func deleteDeck(_ deckName: String) throws {
-        try change { cards in
+        let removedIDs: [UUID] = try change { cards in
+            let ids = cards.filter { $0.deckName == deckName }.map(\.id)
             cards.removeAll { $0.deckName == deckName }
+            return ids
+        }
+        if fileURL != nil, !removedIDs.isEmpty {
+            SyncTombstoneStore.shared.recordDeletions(kind: .flashcard, ids: removedIDs)
+        }
+    }
+
+    @discardableResult
+    func deleteCards(ids: Set<UUID>) throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        return try change { cards in
+            let before = cards.count
+            cards.removeAll { ids.contains($0.id) }
+            return before - cards.count
         }
     }
 

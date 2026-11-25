@@ -91,6 +91,7 @@ struct GenerationOptions: Equatable, Sendable {
     var omitMemory = false
     var omitKnowledge = false
     var searchQuery: String?
+    var useDeepResearch = false
     var quotedExcerpt: String?
     var overrideTarget: ResolvedModelTarget?
     var pickedMentions: [PickedGroupMention] = []
@@ -100,20 +101,36 @@ struct GenerationOptions: Equatable, Sendable {
 struct ComposerRequestOptions: Equatable {
     var useSearch = false
     var searchQuery = ""
+    var useDeepResearch = false
     var omitMemory = false
     var omitKnowledge = false
     var temporaryTarget: ResolvedModelTarget?
 
     mutating func setSearch(_ enabled: Bool, draft: String) {
         useSearch = enabled
-        if enabled && searchQuery.isEmpty { searchQuery = String(draft.prefix(400)) }
+        if enabled {
+            useDeepResearch = false
+            if searchQuery.isEmpty { searchQuery = String(draft.prefix(400)) }
+        }
+    }
+
+    mutating func setDeepResearch(_ enabled: Bool) {
+        useDeepResearch = enabled
+        if enabled {
+            useSearch = false
+        }
     }
 
     func forSend(in chat: Conversation, quote: String?) -> GenerationOptions {
-        GenerationOptions(omitMemory: omitMemory && chat.assistanceSettings.usePersonalMemory,
-                          omitKnowledge: omitKnowledge && !chat.assistanceSettings.knowledgeVolumeIDs.isEmpty,
-                          searchQuery: useSearch ? searchQuery : nil, quotedExcerpt: quote,
-                          overrideTarget: chat.isArenaMode || chat.isGroupMode ? nil : temporaryTarget)
+        let allowDeepResearch = useDeepResearch && !chat.isArenaMode && !chat.isGroupMode
+        return GenerationOptions(
+            omitMemory: omitMemory && chat.assistanceSettings.usePersonalMemory,
+            omitKnowledge: omitKnowledge && !chat.assistanceSettings.knowledgeVolumeIDs.isEmpty,
+            searchQuery: (!allowDeepResearch && useSearch) ? searchQuery : nil,
+            useDeepResearch: allowDeepResearch,
+            quotedExcerpt: quote,
+            overrideTarget: chat.isArenaMode || chat.isGroupMode ? nil : temporaryTarget
+        )
     }
 
     mutating func finishSend(_ outcome: SendOutcome, draftUnchanged: Bool) {
@@ -274,6 +291,7 @@ struct AssistanceMetadata: Codable {
     var knowledgeEvidence: KnowledgeEvidence?
     var proposedSchedules: [ProposedScheduleItem] = []
     var handledScheduleIDs: [UUID] = []
+    var deepResearchTrace: DeepResearchTrace? = nil
 
     init() {}
 
@@ -317,6 +335,7 @@ struct AssistanceMetadata: Codable {
         knowledgeEvidence = try c.decodeIfPresent(KnowledgeEvidence.self, forKey: .knowledgeEvidence)
         proposedSchedules = try c.decodeIfPresent([ProposedScheduleItem].self, forKey: .proposedSchedules) ?? []
         handledScheduleIDs = try c.decodeIfPresent([UUID].self, forKey: .handledScheduleIDs) ?? []
+        deepResearchTrace = try c.decodeIfPresent(DeepResearchTrace.self, forKey: .deepResearchTrace)
     }
 
     var groupSpeakerName: String? {
@@ -351,7 +370,7 @@ struct AssistanceMetadata: Codable {
         !proposedMemories.isEmpty || !handledMemories.isEmpty || !toolCalls.isEmpty || blindArenaRevealed || blindArenaBallot != nil ||
         isPersonaSimulation || personaExcerpts?.isEmpty == false || bookReply != nil || sourceNotice != nil || groupMemberID != nil || groupMemberName != nil || groupReplyToExcerpt != nil ||
         !groupReactions.isEmpty || groupAskedHost || groupSpeechIntent != nil || !generatedFlashcards.isEmpty || generatedQuiz != nil ||
-        knowledgeEvidence != nil || !proposedSchedules.isEmpty || !handledScheduleIDs.isEmpty
+        knowledgeEvidence != nil || !proposedSchedules.isEmpty || !handledScheduleIDs.isEmpty || deepResearchTrace != nil
     }
 }
 

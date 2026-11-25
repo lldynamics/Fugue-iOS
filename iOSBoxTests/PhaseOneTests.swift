@@ -319,6 +319,47 @@ final class PhaseOneTests: XCTestCase {
         XCTAssertTrue(requests.allSatisfy { $0.estimatedCost == nil && $0.tokensPerSecond == nil })
     }
 
+    func testRollingSummarySendsOnlyOlderTurnsAndRevalidatesTheModel() async throws {
+        let settings = AppPreferences.shared
+        let wasEnabled = settings.autoRollingSummaryEnabled
+        settings.autoRollingSummaryEnabled = true
+        let p = provider()
+        let c = conversation(provider: p)
+        let store = RollingContextSummaryStore.shared
+        defer {
+            settings.autoRollingSummaryEnabled = wasEnabled
+            store.remove(for: c.id)
+        }
+        c.contextMessageLimit = 1
+        append(ChatMessage(role: .user, content: "Older question", sortIndex: 1), to: c)
+        append(ChatMessage(role: .assistant, content: "Older reply", sortIndex: 2), to: c)
+        append(ChatMessage(role: .user, content: "Recent question", sortIndex: 3), to: c)
+        try context.save()
+
+        let capture = RequestCapture()
+        let engine = ChatEngine { request in
+            capture.append(request)
+            return AsyncThrowingStream { continuation in
+                continuation.yield(.contentDelta("Summary"))
+                continuation.finish()
+            }
+        }
+        engine.scheduleRollingSummaryIfNeeded(for: c, providers: [p])
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while store.summary(for: c.id) == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let request = try XCTUnwrap(capture.requests.first)
+        let transcript = try XCTUnwrap(request.messages.first?.content)
+        XCTAssertTrue(transcript.contains("Older question") && transcript.contains("Older reply"))
+        XCTAssertFalse(transcript.contains("Recent question"))
+        XCTAssertEqual(store.summary(for: c.id)?.coveredMessageCount, 2)
+        let validate = try XCTUnwrap(request.validateBeforeSending)
+        XCTAssertNoThrow(try validate())
+        p.models[0].isEnabled = false
+        XCTAssertThrowsError(try validate())
+    }
+
     func testCompatibilityRetryRechecksTheModelBeforeIssuingHTTP() async throws {
         let p = provider()
         p.baseURL = "http://localhost/retry-\(UUID())/v1"

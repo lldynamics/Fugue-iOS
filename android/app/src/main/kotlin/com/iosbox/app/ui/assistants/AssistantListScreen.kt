@@ -124,7 +124,7 @@ fun AssistantListScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = L10n.text("助手、角色与书架", "Assistants & Shelf"),
+                        text = L10n.text("工作台", "Workspace"),
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 }

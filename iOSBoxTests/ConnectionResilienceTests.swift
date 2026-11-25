@@ -475,7 +475,7 @@ extension ConnectionResilienceTests {
             XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
             XCTAssertEqual(request.value(forHTTPHeaderField: "X-Channel"), "test")
             let field: String = switch kind {
-            case .openAICompatible: "Authorization"
+            case .openAICompatible, .openAIResponses: "Authorization"
             case .anthropic: "x-api-key"
             case .gemini: "x-goog-api-key"
             }

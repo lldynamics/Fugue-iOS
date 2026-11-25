@@ -5,6 +5,9 @@ enum OpenAICompatibleAdapter {
         var useUsageOption: Bool
         var useNativeSearch: Bool
         var useReasoningContent: Bool
+        var useReasoningParams: Bool
+        var useMaxCompletionTokens: Bool
+        var useSamplingParams: Bool
     }
 
     static func streamChat(
@@ -13,6 +16,28 @@ enum OpenAICompatibleAdapter {
         keyRouter: APIKeyPoolRouter = .shared,
         session: URLSession
     ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
+        let baseModel = baseModelName(request.modelID)
+        let viaOpenRouter = isOpenRouter(request.baseURL)
+        let isOpenAIReasoning = isOpenAIReasoningModel(baseModel)
+        let directOpenAIHost = isDirectOpenAIHost(request.baseURL)
+        let defaultMaxCompletion = isOpenAIReasoning && !viaOpenRouter
+        let resolvedMaxCompletion: Bool
+        if capabilityCache.isUnsupported(.maxCompletionTokens, protocolType: .openAICompatible, baseURL: request.baseURL, modelID: request.modelID) {
+            resolvedMaxCompletion = false
+        } else if capabilityCache.isUnsupported(.requiresMaxCompletionTokens, protocolType: .openAICompatible, baseURL: request.baseURL, modelID: request.modelID) {
+            resolvedMaxCompletion = true
+        } else {
+            resolvedMaxCompletion = defaultMaxCompletion
+        }
+
+        let hasReasoningParams = !reasoningParameters(for: request).isEmpty
+        let hasMaxTokens = (request.maxOutputTokens ?? 0) > 0
+        let omitSampling = isOpenAIReasoning || baseModel.contains("reasoner")
+        let hasSamplingParams = !omitSampling && (request.temperature != nil || request.topP < 0.999)
+        let hasAssistantReasoningContent = !directOpenAIHost
+            && (!isOpenAIReasoning || viaOpenRouter)
+            && request.messages.contains { $0.role == .assistant && !$0.toolCalls.isEmpty && !$0.reasoningContent.isEmpty }
+
         let initial = WireOptions(
             useUsageOption: !capabilityCache.isUnsupported(
                 .streamOptions,
@@ -28,6 +53,19 @@ enum OpenAICompatibleAdapter {
             ),
             useReasoningContent: !capabilityCache.isUnsupported(
                 .reasoningContent,
+                protocolType: .openAICompatible,
+                baseURL: request.baseURL,
+                modelID: request.modelID
+            ),
+            useReasoningParams: !capabilityCache.isUnsupported(
+                .reasoningParams,
+                protocolType: .openAICompatible,
+                baseURL: request.baseURL,
+                modelID: request.modelID
+            ),
+            useMaxCompletionTokens: resolvedMaxCompletion,
+            useSamplingParams: !capabilityCache.isUnsupported(
+                .samplingParams,
                 protocolType: .openAICompatible,
                 baseURL: request.baseURL,
                 modelID: request.modelID
@@ -57,14 +95,20 @@ enum OpenAICompatibleAdapter {
                     request,
                     includeUsageOption: state.useUsageOption,
                     includeNativeSearch: state.useNativeSearch,
-                    includeReasoningContent: state.useReasoningContent
+                    includeReasoningContent: state.useReasoningContent,
+                    includeReasoningParams: state.useReasoningParams,
+                    useMaxCompletionTokens: state.useMaxCompletionTokens,
+                    includeSamplingParams: state.useSamplingParams
                 )
                 urlRequest.httpBody = try JSONSerialization.data(withJSONObject: payload)
                 return urlRequest
             },
             degradeOn400: { _, detail, state, newlyDisabled in
                 let lower = detail.lowercased()
-                if state.useUsageOption && lower.contains("stream_options") {
+                if LLMClient.isUnrecoverable400(lower) {
+                    return false
+                }
+                if state.useUsageOption && (lower.contains("stream_options") || lower.contains("include_usage")) {
                     state.useUsageOption = false
                     newlyDisabled.insert(.streamOptions)
                     return true
@@ -74,10 +118,62 @@ enum OpenAICompatibleAdapter {
                     newlyDisabled.insert(.reasoningContent)
                     return true
                 }
+                if hasReasoningParams && state.useReasoningParams
+                    && (lower.contains("reasoning_effort") || lower.contains("enable_thinking")
+                        || lower.contains("thinking_budget") || lower.contains("thinking")
+                        || lower.contains("reasoning")) {
+                    state.useReasoningParams = false
+                    newlyDisabled.insert(.reasoningParams)
+                    return true
+                }
+                if hasMaxTokens && state.useMaxCompletionTokens && lower.contains("max_completion_tokens") {
+                    state.useMaxCompletionTokens = false
+                    newlyDisabled.insert(.maxCompletionTokens)
+                    return true
+                }
+                if hasMaxTokens && !state.useMaxCompletionTokens && lower.contains("max_tokens")
+                    && (lower.contains("max_completion_tokens") || lower.contains("unsupported") || lower.contains("not supported") || lower.contains("not allowed")) {
+                    state.useMaxCompletionTokens = true
+                    newlyDisabled.insert(.requiresMaxCompletionTokens)
+                    return true
+                }
+                if hasSamplingParams && state.useSamplingParams && (lower.contains("temperature") || lower.contains("top_p")) {
+                    state.useSamplingParams = false
+                    newlyDisabled.insert(.samplingParams)
+                    return true
+                }
                 if state.useNativeSearch && (lower.contains("web_search") || lower.contains("plugins") || lower.contains("unknown") || lower.contains("unrecognized")) {
                     state.useNativeSearch = false
                     newlyDisabled.insert(.nativeSearch)
                     return true
+                }
+                // Generic fallback when a gateway rejects extra/unknown fields without naming the exact key.
+                if LLMClient.isGenericParameterRejection400(lower) {
+                    if state.useNativeSearch {
+                        state.useNativeSearch = false
+                        newlyDisabled.insert(.nativeSearch)
+                        return true
+                    }
+                    if hasReasoningParams && state.useReasoningParams {
+                        state.useReasoningParams = false
+                        newlyDisabled.insert(.reasoningParams)
+                        return true
+                    }
+                    if state.useUsageOption {
+                        state.useUsageOption = false
+                        newlyDisabled.insert(.streamOptions)
+                        return true
+                    }
+                    if hasAssistantReasoningContent && state.useReasoningContent {
+                        state.useReasoningContent = false
+                        newlyDisabled.insert(.reasoningContent)
+                        return true
+                    }
+                    if hasMaxTokens && state.useMaxCompletionTokens {
+                        state.useMaxCompletionTokens = false
+                        newlyDisabled.insert(.maxCompletionTokens)
+                        return true
+                    }
                 }
                 return false
             },
@@ -260,7 +356,10 @@ enum OpenAICompatibleAdapter {
         _ request: LLMChatRequest,
         includeUsageOption: Bool = true,
         includeNativeSearch: Bool? = nil,
-        includeReasoningContent: Bool = true
+        includeReasoningContent: Bool = true,
+        includeReasoningParams: Bool = true,
+        useMaxCompletionTokens: Bool? = nil,
+        includeSamplingParams: Bool = true
     ) -> [String: Any] {
         let useNativeSearch = includeNativeSearch ?? request.enableNativeSearch
         let sanitizedMessages = LLMClient.sanitizeToolHistory(request.messages)
@@ -382,7 +481,7 @@ enum OpenAICompatibleAdapter {
             "stream": true
         ]
 
-        let omitSampling = isOpenAIReasoning || baseModel.contains("reasoner")
+        let omitSampling = !includeSamplingParams || isOpenAIReasoning || baseModel.contains("reasoner")
 
         if let temp = request.temperature, !omitSampling {
             body["temperature"] = temp
@@ -391,7 +490,8 @@ enum OpenAICompatibleAdapter {
             body["top_p"] = request.topP
         }
         if let maxTokens = request.maxOutputTokens, maxTokens > 0 {
-            let key = (isOpenAIReasoning && !viaOpenRouter) ? "max_completion_tokens" : "max_tokens"
+            let preferCompletionKey = useMaxCompletionTokens ?? (isOpenAIReasoning && !viaOpenRouter)
+            let key = preferCompletionKey ? "max_completion_tokens" : "max_tokens"
             body[key] = maxTokens
         }
         if includeUsageOption {
@@ -416,7 +516,9 @@ enum OpenAICompatibleAdapter {
                 body["web_search_options"] = ["search_context_size": "medium"]
             }
         }
-        body.merge(reasoningParameters(for: request)) { _, new in new }
+        if includeReasoningParams {
+            body.merge(reasoningParameters(for: request)) { _, new in new }
+        }
         return body
     }
 

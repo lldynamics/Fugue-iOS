@@ -558,17 +558,28 @@ private struct SingleMessageShareCardView: View {
     let dateText: String
     let accentHex: String
     let blocks: [MessageExportBlock]
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let accent = Color(hex: accentHex)
-        VStack(alignment: .leading, spacing: 14) {
+        let isDark = colorScheme == .dark
+        let paperBg = isDark
+            ? Color(red: 0.067, green: 0.075, blue: 0.094)
+            : Color(red: 0.980, green: 0.969, blue: 0.941)
+        let subtleBg = isDark
+            ? Color(red: 0.102, green: 0.114, blue: 0.141)
+            : Color(red: 0.945, green: 0.929, blue: 0.894)
+        let vermilion = isDark
+            ? Color(red: 0.886, green: 0.494, blue: 0.369)
+            : Color(red: 0.737, green: 0.243, blue: 0.141)
+        let accent = accentHex.isEmpty ? vermilion : Color(hex: accentHex)
+        let border = isDark ? Color.white.opacity(0.11) : Color.black.opacity(0.09)
+
+        VStack(alignment: .leading, spacing: 15) {
             HStack(alignment: .center, spacing: 10) {
-                Circle()
-                    .fill(accent)
-                    .frame(width: 10, height: 10)
+                FugueSealMark(character: "奔", size: 28, theme: .vermilion)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.headline)
+                        .font(.system(size: 16.5, weight: .bold, design: .serif))
                         .foregroundStyle(.primary)
                         .lineLimit(2)
                     Text([speaker, dateText].filter { !$0.isEmpty }.joined(separator: " · "))
@@ -578,44 +589,44 @@ private struct SingleMessageShareCardView: View {
                 Spacer()
             }
 
-            Divider()
+            Divider().overlay(border)
 
-            VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 10) {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                     switch block {
                     case .heading(let level, let text):
                         Text(text)
-                            .font(.system(size: level == 1 ? 17 : (level == 2 ? 15.5 : 14.5), weight: .bold))
+                            .font(.system(size: level == 1 ? 17 : (level == 2 ? 15.5 : 14.5), weight: .bold, design: .serif))
                             .foregroundStyle(.primary)
                             .padding(.top, 2)
                     case .paragraph(let text):
                         Text(text)
-                            .font(.system(size: 14.5))
+                            .font(.system(size: 14.5, design: .serif))
                             .foregroundStyle(.primary)
-                            .lineSpacing(4)
+                            .lineSpacing(5)
                     case .bullet(let marker, let text):
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(marker)
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(accent)
                             Text(text)
-                                .font(.system(size: 14.5))
+                                .font(.system(size: 14.5, design: .serif))
                                 .foregroundStyle(.primary)
-                                .lineSpacing(3.5)
+                                .lineSpacing(4.5)
                         }
                     case .quote(let text):
                         HStack(alignment: .top, spacing: 8) {
                             RoundedRectangle(cornerRadius: 2)
-                                .fill(accent.opacity(0.75))
+                                .fill(vermilion.opacity(0.8))
                                 .frame(width: 3)
                             Text(text)
-                                .font(.system(size: 13.5))
+                                .font(.system(size: 13.5, design: .serif))
                                 .foregroundStyle(.secondary)
-                                .lineSpacing(3.5)
+                                .lineSpacing(4)
                         }
-                        .padding(9)
+                        .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                        .background(subtleBg, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     case .codeBlock(let language, let code):
                         VStack(alignment: .leading, spacing: 4) {
                             if !language.isEmpty {
@@ -629,24 +640,32 @@ private struct SingleMessageShareCardView: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                        .background(subtleBg, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(border, lineWidth: 1)
+                        )
                     case .divider:
-                        Divider().padding(.vertical, 2)
+                        Divider().overlay(border).padding(.vertical, 2)
                     }
                 }
             }
 
-            Divider()
+            Divider().overlay(border)
 
-            HStack {
-                Text("夜奔 (Fugue) · 本地直连 AI")
+            HStack(spacing: 8) {
+                FugueSealMark(character: "夜", size: 16, theme: .vermilion)
+                Text("夜奔 (Fugue) · 本地直连 AI 书笺")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
             }
         }
-        .padding(22)
+        .padding(24)
         .frame(width: 440, alignment: .leading)
-        .background(Color(.systemBackground))
+        .background(paperBg)
+        .overlay(alignment: .top) {
+            Rectangle().fill(vermilion).frame(height: 3.5)
+        }
     }
 }

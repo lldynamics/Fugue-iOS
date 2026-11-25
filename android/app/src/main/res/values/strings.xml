@@ -1,8 +1,8 @@
 <resources>
     <string name="app_name">Fugue</string>
     <string name="tab_chats">Chats</string>
-    <string name="tab_assistants">Assistants</string>
-    <string name="tab_providers">Providers</string>
+    <string name="tab_assistants">Workspace</string>
+    <string name="tab_providers">Settings</string>
     <string name="tab_usage">Usage</string>
     <string name="process_text_label">Ask Fugue</string>
     <string name="quick_tile_label">Ask Fugue</string>

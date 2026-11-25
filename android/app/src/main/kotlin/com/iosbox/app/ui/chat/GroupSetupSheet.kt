@@ -62,12 +62,19 @@ import com.iosbox.app.core.model.GroupRoomTemplate
 import com.iosbox.app.core.model.GroupSpeakingMode
 import com.iosbox.app.core.model.GroupSpeechStyle
 import com.iosbox.app.core.model.L10n
+import com.iosbox.app.core.model.ResolvedModelTarget
 import com.iosbox.app.core.storage.ChatRepository
 import com.iosbox.app.core.storage.ConversationItem
 import com.iosbox.app.core.storage.ProviderItem
 import com.iosbox.app.ui.theme.DS
 import java.util.Locale
 import kotlin.math.roundToInt
+
+internal fun initialGroupMembers(
+    existingMembers: List<GroupMember>?,
+    defaultTemplate: GroupRoomTemplate,
+    readyTargets: List<ResolvedModelTarget>
+): List<GroupMember> = existingMembers ?: defaultTemplate.instantiate(readyTargets)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -113,8 +120,7 @@ fun GroupSetupSheet(
     }
     val members = remember(existing?.id) {
         mutableStateListOf<GroupMember>().apply {
-            val initial = existing?.groupMembers?.takeIf { it.isNotEmpty() }
-                ?: defaultTemplate.instantiate(readyTargets)
+            val initial = initialGroupMembers(existing?.groupMembers, defaultTemplate, readyTargets)
             addAll(initial)
         }
     }
@@ -163,6 +169,14 @@ fun GroupSetupSheet(
                 }
             }
 
+            if (existing != null && members.isEmpty()) {
+                Text(
+                    text = L10n.text("该群暂无成员，请选择下方模板或手动添加成员。",
+                        "This group has no members. Choose a template below or add members manually."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             if (readyTargets.isEmpty()) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
@@ -171,8 +185,8 @@ fun GroupSetupSheet(
                 ) {
                     Text(
                         text = L10n.text(
-                            "暂无可用模型，请先在「服务商」配置 API Key。",
-                            "No ready model yet. Configure an API key in Providers first."
+                            "暂无可用模型，请先在「设置」配置 API Key。",
+                            "No ready model yet. Configure an API key in Settings first."
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onErrorContainer,

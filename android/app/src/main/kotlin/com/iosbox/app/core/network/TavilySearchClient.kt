@@ -51,7 +51,7 @@ $encoded"""
 
 sealed class SearchError(override val message: String) : Exception(message) {
     class MissingKey : SearchError(
-        L10n.text("请先在「服务商 → 联网搜索」配置 Tavily API Key。", "Configure a Tavily API key in Providers -> Web Search first.")
+        L10n.text("请先在「设置 → 联网搜索」配置 Tavily API Key。", "Configure a Tavily API key in Settings -> Web Search first.")
     )
 
     class InvalidQuery : SearchError(

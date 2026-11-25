@@ -2,6 +2,7 @@ package com.iosbox.app
 
 import android.content.Context
 import com.iosbox.app.core.backup.BackupRepository
+import com.iosbox.app.core.backup.SyncTombstoneStore
 import com.iosbox.app.core.network.APIKeyPoolRouter
 import com.iosbox.app.core.network.GatewayCapabilityCache
 import com.iosbox.app.core.network.LLMClient
@@ -27,6 +28,7 @@ class AppContainer(context: Context) {
     val externalEntryRouter: ExternalEntryRouter = ExternalEntryRouter()
     val speechController: SpeechController by lazy { SpeechController(appContext) }
     val blobStore: ExternalBlobStore = FileExternalBlobStore(File(appContext.filesDir, "blobs"))
+    val syncTombstoneStore: SyncTombstoneStore = SyncTombstoneStore(blobStore)
     val draftStore: ChatDraftStore = ChatDraftStore(File(appContext.filesDir, "drafts"))
     val database: FugueDatabase = FugueDatabase.build(appContext)
     val capabilityCache: GatewayCapabilityCache = GatewayCapabilityCache(preferences)
@@ -42,10 +44,14 @@ class AppContainer(context: Context) {
         db = database,
         blobStore = blobStore,
         secretStore = secretStore,
-        draftStore = draftStore
+        draftStore = draftStore,
+        tombstoneStore = syncTombstoneStore
     )
 
-    val flashcardRepository: FlashcardRepository = FlashcardRepository(blobStore = blobStore)
+    val flashcardRepository: FlashcardRepository = FlashcardRepository(
+        blobStore = blobStore,
+        tombstoneStore = syncTombstoneStore
+    )
 
     val backupRepository: BackupRepository = BackupRepository(
         db = database,
@@ -53,7 +59,8 @@ class AppContainer(context: Context) {
         secretStore = secretStore,
         flashcardRepository = flashcardRepository,
         appVersion = BuildConfig.VERSION_NAME,
-        draftStore = draftStore
+        draftStore = draftStore,
+        tombstoneStore = syncTombstoneStore
     )
 
     val dataSeeder: DataSeeder = DataSeeder(

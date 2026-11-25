@@ -1,6 +1,29 @@
 import SwiftUI
 import SwiftData
 
+enum ModelPricingDisplay {
+    static func rateText(_ rate: Double) -> String {
+        if rate > 0 && rate < 0.000001 {
+            return rate.formatted(.number.notation(.scientific).precision(.significantDigits(1...6)))
+        }
+        return rate.formatted(.number.precision(.significantDigits(1...6)))
+    }
+
+    static func configuredRates(for model: ModelSpec) -> (currency: String, input: Double, output: Double)? {
+        guard let input = RequestRecord.validPrice(model.inputPricePerMillion),
+              let output = RequestRecord.validPrice(model.outputPricePerMillion),
+              let currency = model.priceCurrency, RequestRecord.currencies.contains(currency) else { return nil }
+        return (currency, input, output)
+    }
+
+    static func label(for model: ModelSpec) -> String {
+        guard let rates = configuredRates(for: model) else { return String(localized: "单价未完整设置") }
+        let input = rateText(rates.input)
+        let output = rateText(rates.output)
+        return String(localized: "\(rates.currency) 输入 \(input) / 输出 \(output) · 每百万 Token")
+    }
+}
+
 struct ModelPickerSheet: View {
     enum Mode {
         case single
@@ -11,7 +34,6 @@ struct ModelPickerSheet: View {
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     let directory: ChatModelDirectory
     @Bindable var conversation: Conversation
-    var enableBlindMode = false
     let selectSingle: (ResolvedModelTarget) throws -> Void
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -21,6 +43,7 @@ struct ModelPickerSheet: View {
     @State private var selectionError: String?
     @State private var searchText: String = ""
     @State private var draftArenaTargets: [ResolvedModelTarget] = []
+    @State private var draftBlindMode = false
     @State private var preferences = AppPreferences.shared
     @State private var configuredProviders: [ProviderConfig] = []
 
@@ -56,10 +79,11 @@ struct ModelPickerSheet: View {
                     ContentUnavailableView {
                         Label("尚未配置可用的 API", systemImage: "server.rack")
                     } description: {
-                        Text("请在「服务商」中配置 API 连接并启用模型。")
+                        Text("请在「设置」中配置 API 连接并启用模型。")
                     } actions: {
                         configureButton.buttonStyle(.borderedProminent)
                     }
+                    .background(DS.Surface.grouped)
                 } else {
                     List {
                         if allEnabledTargets.count < (mode == .arenaMulti ? 2 : 1) {
@@ -74,6 +98,36 @@ struct ModelPickerSheet: View {
                                         .font(.footnote)
                                         .foregroundStyle(.secondary)
                                 }
+                            }
+                        }
+                        Section {
+                            Text("能力是本地标记，可能按名称推测；显示的基础单价不含服务商倍率。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+
+                        if isSearching && allEnabledTargets.isEmpty {
+                            Section {
+                                Text("暂无可选模型，请在「设置」中启用模型。")
+                                    .foregroundStyle(.secondary)
+                                configureButton
+                            }
+                        } else if isSearching && configuredProviders.allSatisfy({ filterModels($0.enabledModels).isEmpty }) {
+                            Section {
+                                ContentUnavailableView {
+                                    Label("没有匹配的模型", systemImage: "magnifyingglass")
+                                } description: {
+                                    Text("请尝试其他模型名称或 ID。")
+                                } actions: {
+                                    Button("清除搜索") { searchText = "" }
+                                }
+                                .accessibilityIdentifier("modelPicker.noMatches")
+                            }
+                        }
+
+                        if mode == .arenaMulti && !isSearching {
+                            Section {
+                                Toggle("双盲对比", isOn: $draftBlindMode)
+                                    .accessibilityIdentifier("modelPicker.blindArena")
                             }
                         }
 
@@ -102,7 +156,7 @@ struct ModelPickerSheet: View {
                             if !filteredModels.isEmpty || !isSearching {
                                 Section {
                                     if filteredModels.isEmpty {
-                                        Text("暂无可选模型，请刷新列表或在「服务商」中启用模型。").foregroundStyle(.secondary)
+                                        Text("暂无可选模型，请刷新列表或在「设置」中启用模型。").foregroundStyle(.secondary)
                                     }
                                     ForEach(filteredModels) { spec in
                                         let target = provider.makeTarget(for: spec)
@@ -120,18 +174,30 @@ struct ModelPickerSheet: View {
                                         } else {
                                             Button { directory.refresh(provider, in: modelContext) } label: {
                                                 Image(systemName: "arrow.clockwise")
+                                                    .foregroundStyle(preferences.accentTheme.readableText)
+                                                    .frame(width: DS.TouchTarget.minimum + 2, height: DS.TouchTarget.minimum + 2)
+                                                    .contentShape(Rectangle())
                                             }
-                                            .accessibilityLabel("刷新模型列表")
+                                            .buttonStyle(.plain)
+                                            .accessibilityLabel(Text("刷新 \(provider.name) 的模型列表"))
                                         }
                                     }
                                 } footer: {
-                                    if directory.catalogs[provider.id]?.error != nil {
+                                    if directory.catalogs[provider.id]?.isLoading == true {
+                                        Text("正在刷新模型列表…")
+                                    } else if directory.catalogs[provider.id]?.error != nil {
                                         Text("刷新失败，显示已保存的模型。")
+                                    } else if directory.catalogs[provider.id]?.models != nil {
+                                        Text("已刷新，显示已启用的模型。")
+                                    } else {
+                                        Text("显示已保存的模型。")
                                     }
                                 }
                             }
                         }
                     }
+                    .scrollContentBackground(.hidden)
+                    .background(DS.Surface.grouped)
                     .searchable(text: $searchText, prompt: "搜索模型名称或 ID")
                 }
             }
@@ -146,14 +212,16 @@ struct ModelPickerSheet: View {
                         Button("开启对比 (\(draftArenaTargets.count))") {
                             let valid = validTargets(draftArenaTargets)
                             guard valid.count >= 2 else { draftArenaTargets = valid; return }
-                            let previous = (conversation.arenaTargetsData, conversation.isArenaMode, conversation.assistanceSettingsData)
+                            let previous = (conversation.arenaTargetsData, conversation.isArenaMode,
+                                            conversation.isGroupMode, conversation.assistanceSettingsData)
                             conversation.arenaTargets = valid
                             conversation.isGroupMode = false
                             conversation.isArenaMode = true
-                            if enableBlindMode { conversation.assistanceSettings.blindArenaMode = true }
+                            conversation.assistanceSettings.blindArenaMode = draftBlindMode
                             do { try modelContext.save() }
                             catch {
-                                (conversation.arenaTargetsData, conversation.isArenaMode, conversation.assistanceSettingsData) = previous
+                                (conversation.arenaTargetsData, conversation.isArenaMode,
+                                 conversation.isGroupMode, conversation.assistanceSettingsData) = previous
                                 selectionError = error.localizedDescription
                                 return
                             }
@@ -176,6 +244,7 @@ struct ModelPickerSheet: View {
             .onAppear {
                 reloadProviders()
                 if mode == .arenaMulti {
+                    draftBlindMode = conversation.assistanceSettings.blindArenaMode
                     let validExisting = validTargets(conversation.arenaTargets)
                     if !validExisting.isEmpty {
                         draftArenaTargets = validExisting
@@ -253,26 +322,27 @@ struct ModelPickerSheet: View {
             } label: {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text(target.modelDisplayName)
-                                .font(.body.weight(.medium))
-                                .foregroundStyle(.primary)
-
-                            if target.supportsReasoning {
-                                Text("思考")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.purple)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1.5)
-                                    .background(Color.purple.opacity(0.12), in: Capsule())
-                            }
-                            if target.supportsVision {
-                                Text("识图")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.blue)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1.5)
-                                    .background(Color.blue.opacity(0.12), in: Capsule())
+                        Text(target.modelDisplayName)
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(.primary)
+                        if target.supportsReasoning || target.supportsVision {
+                            HStack(spacing: 6) {
+                                if target.supportsReasoning {
+                                    Text("思考")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(DS.AccentTheme.indigo.readableText)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1.5)
+                                        .background(Color.purple.opacity(0.12), in: Capsule())
+                                }
+                                if target.supportsVision {
+                                    Text("识图")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(DS.AccentTheme.cobalt.readableText)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1.5)
+                                        .background(Color.blue.opacity(0.12), in: Capsule())
+                                }
                             }
                         }
 
@@ -286,6 +356,10 @@ struct ModelPickerSheet: View {
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(.secondary)
                         }
+                        Text(ModelPricingDisplay.label(for: spec))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Spacer()
@@ -310,11 +384,13 @@ struct ModelPickerSheet: View {
                 Image(systemName: spec.isStarred ? "star.fill" : "star")
                     .font(.subheadline)
                     .foregroundStyle(spec.isStarred ? .yellow : .secondary.opacity(0.5))
-                    .frame(width: 30, height: 30)
+                    .frame(width: DS.TouchTarget.minimum, height: DS.TouchTarget.minimum)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(spec.isStarred ? String(localized: "取消置顶模型") : String(localized: "置顶常用模型"))
+            .accessibilityLabel(spec.isStarred
+                ? Text("取消置顶 \(provider.name) 的 \(target.modelDisplayName)")
+                : Text("置顶 \(provider.name) 的 \(target.modelDisplayName)"))
         }
         .contextMenu {
             Button("设为默认模型") {

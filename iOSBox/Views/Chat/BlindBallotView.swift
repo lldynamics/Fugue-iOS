@@ -17,6 +17,7 @@ struct BlindBallotView: View {
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var selectedID: UUID?
     @State private var visibleID: UUID?
+    @State private var openedIDs: Set<UUID> = []
     @State private var error: String?
 
     private var candidates: [ChatMessage] {
@@ -67,13 +68,29 @@ struct BlindBallotView: View {
                             .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(DS.Surface.hairline) }
                         } else if let first = pool.first {
                             let visible = pool.first { $0.id == visibleID } ?? first
-                            Picker("查看回答", selection: Binding(get: { visible.id }, set: { visibleID = $0 })) {
+                            Picker("查看回答", selection: Binding(get: { visible.id }, set: {
+                                visibleID = $0
+                                openedIDs.insert($0)
+                            })) {
                                 ForEach(Array(pool.enumerated()), id: \.element.id) { i, item in
                                     Text(verbatim: Self.letter(i)).tag(item.id)
                                 }
                             }
                             .pickerStyle(.segmented)
                             .accessibilityIdentifier("ballot.answers")
+                            if !revealed {
+                                let opened = pool.filter { openedIDs.contains($0.id) }.count
+                                Group {
+                                    if opened < pool.count {
+                                        Text("已打开 \(opened)/\(pool.count) 个回答，建议先比较。")
+                                    } else {
+                                        Text("已打开 \(opened)/\(pool.count) 个回答。")
+                                    }
+                                }
+                                    .font(.footnote).foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .accessibilityIdentifier("ballot.opened")
+                            }
                             if let index = pool.firstIndex(where: { $0.id == visible.id }) {
                                 answer(visible, index: index, wide: false)
                                     .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(DS.Surface.hairline) }
@@ -88,16 +105,30 @@ struct BlindBallotView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 if !revealed {
-                    Button {
-                        guard let winner = candidates.first(where: { $0.id == selectedID }) else { return }
-                        do { try vote(winner) } catch { self.error = error.localizedDescription }
-                    } label: {
-                        Text("投票并揭晓").font(.headline).frame(minWidth: widthClass == .regular ? 300 : 180, minHeight: 36)
+                    let eligible = candidates.filter(ArenaSynthesis.isComplete)
+                    let chosen = eligible.first { $0.id == selectedID }
+                    VStack(spacing: 4) {
+                        Group {
+                            if isGenerating {
+                                Text("等待回答完成后再投票。")
+                            } else if eligible.count < 2 {
+                                Text("至少需要两个完整回答才能投票。")
+                            } else if chosen == nil {
+                                Text("请选择一个回答后投票。")
+                            }
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        Button {
+                            guard let chosen else { return }
+                            do { try vote(chosen) } catch { self.error = error.localizedDescription }
+                        } label: {
+                            Text("投票并揭晓").font(.headline).frame(minWidth: widthClass == .regular ? 300 : 180, minHeight: 36)
+                        }
+                        .disabled(isGenerating || eligible.count < 2 || chosen == nil)
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                        .accessibilityIdentifier("ballot.vote")
                     }
-                    .disabled(isGenerating || candidates.filter(ArenaSynthesis.isComplete).count < 2 ||
-                              !candidates.contains { $0.id == selectedID && ArenaSynthesis.isComplete($0) })
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                    .accessibilityIdentifier("ballot.vote")
                     .padding()
                     .padding(.bottom, widthClass == .regular ? 30 : 0)
                 }
@@ -110,10 +141,20 @@ struct BlindBallotView: View {
                     .accessibilityIdentifier("ballot.close")
                 }
             }
-            .onAppear { visibleID = initialAnswer }
+            .onAppear {
+                visibleID = initialAnswer
+                markVisibleAnswerOpened()
+            }
+            .onChange(of: candidates.map(\.id)) { _, _ in markVisibleAnswerOpened() }
             .alert("无法更新对话记录", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("好", role: .cancel) {}
             } message: { Text(verbatim: error ?? "") }
+        }
+    }
+
+    private func markVisibleAnswerOpened() {
+        if let answer = candidates.first(where: { $0.id == visibleID }) ?? candidates.first {
+            openedIDs.insert(answer.id)
         }
     }
 

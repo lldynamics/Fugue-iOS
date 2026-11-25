@@ -113,224 +113,201 @@ struct MessageRowView: View {
         .padding(.vertical, DS.Spacing.xs)
     }
 
-    // MARK: - User Bubble
+    // MARK: - User Prompt (Editorial Section Heading or Soft Micro-Bubble)
 
     private var userMessageView: some View {
         let attachments = message.attachments
         let meta = message.assistanceMetadata
         let currentBranchIdx = branchSiblings.firstIndex(where: { $0.id == message.id }) ?? 0
         let theme = preferences.accentTheme
+        let useEditorial = preferences.chatMessageStyle == .editorial && !isCompactCard
 
-        return HStack {
-            Spacer(minLength: 44)
-            VStack(alignment: .trailing, spacing: DS.Spacing.xs) {
-                if !attachments.isEmpty {
-                    attachmentGrid(attachments, alignment: .trailing)
-                }
+        return Group {
+            if useEditorial {
+                VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                    if !attachments.isEmpty {
+                        attachmentGrid(attachments, alignment: .leading)
+                    }
 
-                if let quote = meta.quotedExcerpt, !quote.isEmpty {
-                    HStack(spacing: DS.Spacing.xs) {
-                        RoundedRectangle(cornerRadius: 1.5)
-                            .fill(theme.tintColor.opacity(0.7))
+                    if let quote = meta.quotedExcerpt, !quote.isEmpty {
+                        quotedExcerptBox(quote, theme: theme)
+                    }
+
+                    HStack(alignment: .top, spacing: DS.Spacing.md) {
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                            .fill(theme.solidFill.opacity(meta.isExcludedFromContext ? 0.45 : 1.0))
                             .frame(width: 2.5)
-                        Text(quote)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(3)
-                            .multilineTextAlignment(.leading)
-                    }
-                    .padding(.horizontal, DS.Spacing.sm)
-                    .padding(.vertical, DS.Spacing.xs)
-                    .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
-                            .strokeBorder(DS.Surface.hairline, lineWidth: 1)
-                    )
-                }
+                            .padding(.vertical, 2)
+                            .accessibilityHidden(true)
 
-                if !message.content.isEmpty {
-                    Group {
-                        if message.content.contains("```") {
-                            MarkdownContentView(text: message.content, isStreaming: false)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(
-                                    DS.Surface.subtle,
-                                    in: RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                                        .strokeBorder(theme.tintColor.opacity(meta.isExcludedFromContext ? 0.16 : 0.30), lineWidth: 1)
-                                )
-                                .opacity(meta.isExcludedFromContext ? 0.65 : 1.0)
-                        } else {
-                            Text(message.content)
-                                .font(.system(size: baseBodySize * preferences.fontScale))
-                                .foregroundStyle(isReading ? Color.primary : theme.solidForeground)
-                                .lineSpacing(3)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(
-                                    (isReading ? theme.softFill : theme.solidFill).opacity(meta.isExcludedFromContext ? 0.55 : 1.0),
-                                    in: RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                                )
-                        }
-                    }
-                    .contextMenu {
-                        Button {
-                            UIPasteboard.general.string = message.content
-                        } label: {
-                            Label("复制提问", systemImage: "doc.on.doc")
-                        }
+                        VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                            HStack(spacing: DS.Spacing.xs) {
+                                Text("提问")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(theme.readableText)
 
-                        Button {
-                            showTextSelectionSheet = true
-                        } label: {
-                            Label("选择文本", systemImage: "selection.pin.in.out")
-                        }
-
-                        if let onQuote = actions.onQuote {
-                            Button {
-                                onQuote(message.content)
-                            } label: {
-                                Label("引用追问", systemImage: "quote.opening")
-                            }
-                        }
-
-                        if actions.onEditAndResend != nil {
-                            Button {
-                                editDraftText = message.content
-                                showEditSheet = true
-                            } label: {
-                                Label("编辑重发", systemImage: "pencil")
-                            }
-                        }
-
-                        if let onToggleBookmark = actions.onToggleBookmark {
-                            Button {
-                                onToggleBookmark()
-                            } label: {
-                                Label(
-                                    meta.isBookmarked ? String(localized: "取消收藏") : String(localized: "收藏消息"),
-                                    systemImage: meta.isBookmarked ? "bookmark.slash" : "bookmark"
-                                )
-                            }
-                        }
-
-                        if let onToggleExcludeFromContext = actions.onToggleExcludeFromContext {
-                            Button {
-                                onToggleExcludeFromContext()
-                            } label: {
-                                Label(
-                                    meta.isExcludedFromContext ? String(localized: "恢复携带上下文") : String(localized: "移出上下文"),
-                                    systemImage: meta.isExcludedFromContext ? "eye" : "eye.slash"
-                                )
-                            }
-                        }
-
-                        if let onForkConversation = actions.onForkConversation {
-                            Button {
-                                onForkConversation()
-                            } label: {
-                                Label("从此处分叉新对话", systemImage: "arrow.triangle.branch")
-                            }
-                        }
-
-                        if let onDeleteMessage = actions.onDeleteMessage {
-                            Divider()
-                            Button(role: .destructive) {
-                                onDeleteMessage()
-                            } label: {
-                                Label("删除此条消息", systemImage: "trash")
-                            }
-                        }
-                    }
-                }
-
-                if !meta.groupReactions.isEmpty {
-                    groupReactionsStrip(meta.groupReactions)
-                }
-
-                HStack(spacing: DS.Spacing.sm) {
-                    if meta.isExcludedFromContext {
-                        Text("已移出上下文")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if meta.isBookmarked {
-                        Image(systemName: "bookmark.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                    }
-
-                    if branchSiblings.count > 1, let onSwitchBranch = actions.onSwitchBranch {
-                        branchPager(
-                            current: currentBranchIdx,
-                            total: branchSiblings.count,
-                            onPrev: {
-                                if currentBranchIdx > 0 {
-                                    onSwitchBranch(branchSiblings[currentBranchIdx - 1])
+                                if meta.isExcludedFromContext {
+                                    Text("· 已移出上下文")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
                                 }
-                            },
-                            onNext: {
-                                if currentBranchIdx + 1 < branchSiblings.count {
-                                    onSwitchBranch(branchSiblings[currentBranchIdx + 1])
-                                }
-                            }
-                        )
-                    }
 
-                    if actions.onEditAndResend != nil && (!message.content.isEmpty || !attachments.isEmpty) {
-                        Button {
-                            editDraftText = message.content
-                            showEditSheet = true
-                        } label: {
-                            Label("编辑重发", systemImage: "pencil")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    if actions.onQuote != nil || actions.onDeleteMessage != nil {
-                        Menu {
-                            if let onQuote = actions.onQuote, !message.content.isEmpty {
-                                Button {
-                                    onQuote(message.content)
-                                } label: {
-                                    Label("引用追问", systemImage: "quote.opening")
+                                if meta.isBookmarked {
+                                    Image(systemName: "bookmark.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
                                 }
-                            }
-                            if let onToggleBookmark = actions.onToggleBookmark {
-                                Button {
-                                    onToggleBookmark()
-                                } label: {
-                                    Label(
-                                        meta.isBookmarked ? String(localized: "取消收藏") : String(localized: "收藏消息"),
-                                        systemImage: meta.isBookmarked ? "bookmark.slash" : "bookmark"
+
+                                Spacer(minLength: 4)
+
+                                if branchSiblings.count > 1, let onSwitchBranch = actions.onSwitchBranch {
+                                    branchPager(
+                                        current: currentBranchIdx,
+                                        total: branchSiblings.count,
+                                        onPrev: {
+                                            if currentBranchIdx > 0 {
+                                                onSwitchBranch(branchSiblings[currentBranchIdx - 1])
+                                            }
+                                        },
+                                        onNext: {
+                                            if currentBranchIdx + 1 < branchSiblings.count {
+                                                onSwitchBranch(branchSiblings[currentBranchIdx + 1])
+                                            }
+                                        }
                                     )
                                 }
                             }
-                            if let onDeleteMessage = actions.onDeleteMessage {
-                                Divider()
-                                Button(role: .destructive) {
-                                    onDeleteMessage()
-                                } label: {
-                                    Label("删除此条消息", systemImage: "trash")
+
+                            if !message.content.isEmpty {
+                                Group {
+                                    if message.content.contains("```") {
+                                        MarkdownContentView(text: message.content, isStreaming: false)
+                                            .opacity(meta.isExcludedFromContext ? 0.65 : 1.0)
+                                    } else {
+                                        Text(message.content)
+                                            .font(DS.Typography.prose(
+                                                size: baseBodySize * preferences.fontScale * 1.03,
+                                                serif: preferences.literarySerifBody,
+                                                weight: .semibold
+                                            ))
+                                            .foregroundStyle(.primary)
+                                            .lineSpacing(4)
+                                            .opacity(meta.isExcludedFromContext ? 0.65 : 1.0)
+                                    }
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contextMenu { userMessageContextMenu(meta: meta) }
                             }
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 2)
                         }
-                        .accessibilityLabel("更多消息操作")
+                    }
+
+                    if !meta.groupReactions.isEmpty {
+                        groupReactionsStrip(meta.groupReactions)
+                    }
+
+                    HStack(spacing: DS.Spacing.xs) {
+                        Spacer(minLength: 0)
+                        userActionButtons(meta: meta, attachments: attachments)
                     }
                 }
-                .padding(.trailing, DS.Spacing.xxs)
+            } else {
+                HStack {
+                    Spacer(minLength: 44)
+                    VStack(alignment: .trailing, spacing: DS.Spacing.xs) {
+                        if !attachments.isEmpty {
+                            attachmentGrid(attachments, alignment: .trailing)
+                        }
+
+                        if let quote = meta.quotedExcerpt, !quote.isEmpty {
+                            quotedExcerptBox(quote, theme: theme)
+                        }
+
+                        if !message.content.isEmpty {
+                            Group {
+                                if message.content.contains("```") {
+                                    MarkdownContentView(text: message.content, isStreaming: false)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 10)
+                                        .background(
+                                            DS.Surface.subtle,
+                                            in: RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
+                                                .strokeBorder(theme.tintColor.opacity(meta.isExcludedFromContext ? 0.16 : 0.30), lineWidth: 1)
+                                        )
+                                        .opacity(meta.isExcludedFromContext ? 0.65 : 1.0)
+                                } else {
+                                    Text(message.content)
+                                        .font(.system(size: baseBodySize * preferences.fontScale))
+                                        .foregroundStyle(.primary)
+                                        .lineSpacing(3.5)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 10)
+                                        .background(
+                                            theme.softFill.opacity(meta.isExcludedFromContext ? 0.55 : 1.0),
+                                            in: UnevenRoundedRectangle(
+                                                topLeadingRadius: DS.Radius.lg,
+                                                bottomLeadingRadius: DS.Radius.lg,
+                                                bottomTrailingRadius: DS.Radius.lg,
+                                                topTrailingRadius: 6,
+                                                style: .continuous
+                                            )
+                                        )
+                                        .overlay(
+                                            UnevenRoundedRectangle(
+                                                topLeadingRadius: DS.Radius.lg,
+                                                bottomLeadingRadius: DS.Radius.lg,
+                                                bottomTrailingRadius: DS.Radius.lg,
+                                                topTrailingRadius: 6,
+                                                style: .continuous
+                                            )
+                                            .strokeBorder(theme.tintColor.opacity(meta.isExcludedFromContext ? 0.18 : 0.34), lineWidth: 1)
+                                        )
+                                }
+                            }
+                            .contextMenu { userMessageContextMenu(meta: meta) }
+                        }
+
+                        if !meta.groupReactions.isEmpty {
+                            groupReactionsStrip(meta.groupReactions)
+                        }
+
+                        HStack(spacing: DS.Spacing.sm) {
+                            if meta.isExcludedFromContext {
+                                Text("已移出上下文")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            if meta.isBookmarked {
+                                Image(systemName: "bookmark.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+
+                            if branchSiblings.count > 1, let onSwitchBranch = actions.onSwitchBranch {
+                                branchPager(
+                                    current: currentBranchIdx,
+                                    total: branchSiblings.count,
+                                    onPrev: {
+                                        if currentBranchIdx > 0 {
+                                            onSwitchBranch(branchSiblings[currentBranchIdx - 1])
+                                        }
+                                    },
+                                    onNext: {
+                                        if currentBranchIdx + 1 < branchSiblings.count {
+                                            onSwitchBranch(branchSiblings[currentBranchIdx + 1])
+                                        }
+                                    }
+                                )
+                            }
+
+                            userActionButtons(meta: meta, attachments: attachments)
+                        }
+                        .padding(.trailing, DS.Spacing.xxs)
+                    }
+                }
             }
         }
         .sheet(item: Binding(
@@ -376,6 +353,151 @@ struct MessageRowView: View {
         }
         .sheet(isPresented: $showTextSelectionSheet) {
             TextSelectionSheet(text: message.content)
+        }
+    }
+
+    private func quotedExcerptBox(_ quote: String, theme: DS.AccentTheme) -> some View {
+        HStack(spacing: DS.Spacing.xs) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(theme.tintColor.opacity(0.75))
+                .frame(width: 2.5)
+            Text(quote)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+        }
+        .padding(.horizontal, DS.Spacing.sm)
+        .padding(.vertical, DS.Spacing.xs)
+        .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                .strokeBorder(DS.Surface.hairline, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func userMessageContextMenu(meta: AssistanceMetadata) -> some View {
+        Button {
+            UIPasteboard.general.string = message.content
+        } label: {
+            Label("复制提问", systemImage: "doc.on.doc")
+        }
+
+        Button {
+            showTextSelectionSheet = true
+        } label: {
+            Label("选择文本", systemImage: "selection.pin.in.out")
+        }
+
+        if let onQuote = actions.onQuote {
+            Button {
+                onQuote(message.content)
+            } label: {
+                Label("引用追问", systemImage: "quote.opening")
+            }
+        }
+
+        if actions.onEditAndResend != nil {
+            Button {
+                editDraftText = message.content
+                showEditSheet = true
+            } label: {
+                Label("编辑重发", systemImage: "pencil")
+            }
+        }
+
+        if let onToggleBookmark = actions.onToggleBookmark {
+            Button {
+                onToggleBookmark()
+            } label: {
+                Label(
+                    meta.isBookmarked ? String(localized: "取消收藏") : String(localized: "收藏消息"),
+                    systemImage: meta.isBookmarked ? "bookmark.slash" : "bookmark"
+                )
+            }
+        }
+
+        if let onToggleExcludeFromContext = actions.onToggleExcludeFromContext {
+            Button {
+                onToggleExcludeFromContext()
+            } label: {
+                Label(
+                    meta.isExcludedFromContext ? String(localized: "恢复携带上下文") : String(localized: "移出上下文"),
+                    systemImage: meta.isExcludedFromContext ? "eye" : "eye.slash"
+                )
+            }
+        }
+
+        if let onForkConversation = actions.onForkConversation {
+            Button {
+                onForkConversation()
+            } label: {
+                Label("从此处分叉新对话", systemImage: "arrow.triangle.branch")
+            }
+        }
+
+        if let onDeleteMessage = actions.onDeleteMessage {
+            Divider()
+            Button(role: .destructive) {
+                onDeleteMessage()
+            } label: {
+                Label("删除此条消息", systemImage: "trash")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func userActionButtons(meta: AssistanceMetadata, attachments: [MessageAttachment]) -> some View {
+        if actions.onEditAndResend != nil && (!message.content.isEmpty || !attachments.isEmpty) {
+            Button {
+                editDraftText = message.content
+                showEditSheet = true
+            } label: {
+                Label("编辑重发", systemImage: "pencil")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: DS.TouchTarget.minimum + 2, minHeight: DS.TouchTarget.minimum + 2)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+
+        if actions.onQuote != nil || actions.onDeleteMessage != nil {
+            Menu {
+                if let onQuote = actions.onQuote, !message.content.isEmpty {
+                    Button {
+                        onQuote(message.content)
+                    } label: {
+                        Label("引用追问", systemImage: "quote.opening")
+                    }
+                }
+                if let onToggleBookmark = actions.onToggleBookmark {
+                    Button {
+                        onToggleBookmark()
+                    } label: {
+                        Label(
+                            meta.isBookmarked ? String(localized: "取消收藏") : String(localized: "收藏消息"),
+                            systemImage: meta.isBookmarked ? "bookmark.slash" : "bookmark"
+                        )
+                    }
+                }
+                if let onDeleteMessage = actions.onDeleteMessage {
+                    Divider()
+                    Button(role: .destructive) {
+                        onDeleteMessage()
+                    } label: {
+                        Label("删除此条消息", systemImage: "trash")
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(width: DS.TouchTarget.minimum + 2, height: DS.TouchTarget.minimum + 2)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("更多消息操作")
         }
     }
 
@@ -524,12 +646,19 @@ struct MessageRowView: View {
                         .opacity(meta.isExcludedFromContext ? 0.65 : 1.0)
                 }
             } else if message.isStreaming && message.reasoningContent.isEmpty && attachments.isEmpty {
+                let loadingLabel: String = {
+                    if let trace = meta.deepResearchTrace, trace.isRunning {
+                        return trace.steps.last?.title ?? String(localized: "正在规划深度研究…")
+                    }
+                    if meta.requestedSearchQuery != nil && meta.search == nil {
+                        return String(localized: "正在搜索网页…")
+                    }
+                    return groupPersona != nil ? String(localized: "正在组织发言…") : String(localized: "正在连接模型生成回复…")
+                }()
                 HStack(spacing: DS.Spacing.sm) {
                     ProgressView()
                         .controlSize(.small)
-                    Text(meta.requestedSearchQuery != nil && meta.search == nil
-                         ? String(localized: "正在搜索网页…")
-                         : (groupPersona != nil ? String(localized: "正在组织发言…") : String(localized: "正在连接模型生成回复…")))
+                    Text(loadingLabel)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -639,6 +768,7 @@ struct MessageRowView: View {
             }
 
             if let err = message.errorMessage, !err.isEmpty {
+                let canContinueFromInterruption = !message.content.isEmpty && actions.onContinueGeneration != nil
                 HStack(alignment: .top, spacing: DS.Spacing.sm) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -646,13 +776,39 @@ struct MessageRowView: View {
                         Text(err)
                             .font(.footnote)
                             .foregroundStyle(.primary)
-                        if let onRegenerate = actions.onRegenerate {
-                            Button("重试请求") {
-                                onRegenerate()
+                        if canContinueFromInterruption {
+                            Text("已保留已生成内容，可从断点续写或重新请求。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: DS.Spacing.sm) {
+                            if canContinueFromInterruption, let onContinueGeneration = actions.onContinueGeneration {
+                                Button {
+                                    onContinueGeneration()
+                                } label: {
+                                    Label("从断句处继续", systemImage: "text.append")
+                                        .font(.caption.weight(.semibold))
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.mini)
                             }
-                            .font(.caption.weight(.semibold))
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.mini)
+                            if let onRegenerate = actions.onRegenerate {
+                                if canContinueFromInterruption {
+                                    Button("重试请求") {
+                                        onRegenerate()
+                                    }
+                                    .font(.caption.weight(.semibold))
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.mini)
+                                } else {
+                                    Button("重试请求") {
+                                        onRegenerate()
+                                    }
+                                    .font(.caption.weight(.semibold))
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.mini)
+                                }
+                            }
                         }
                     }
                 }
@@ -919,6 +1075,13 @@ struct MessageRowView: View {
                 if hasSecondaryActions {
                     Menu {
                         if !message.content.isEmpty {
+                            if !message.isStreaming, let onContinueGeneration = actions.onContinueGeneration {
+                                Button {
+                                    onContinueGeneration()
+                                } label: {
+                                    Label("从末尾继续生成", systemImage: "text.append")
+                                }
+                            }
                             Button {
                                 if let onToggleSpeak = actions.onToggleSpeak {
                                     onToggleSpeak()

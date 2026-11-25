@@ -222,7 +222,7 @@ enum AudioTranscriptionService {
     @MainActor
     static func resolveAudioProvider(in providers: [ProviderConfig], preferredID: UUID?) -> ProviderConfig? {
         let eligible = providers.filter {
-            !$0.isDeleted && $0.isEnabled && $0.protocolType == .openAICompatible && $0.hasConfiguredChatAPI
+            !$0.isDeleted && $0.isEnabled && ($0.protocolType == .openAICompatible || $0.protocolType == .openAIResponses) && $0.hasConfiguredChatAPI
         }
         if let preferredID, let exact = eligible.first(where: { $0.id == preferredID }) {
             return exact

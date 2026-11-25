@@ -87,6 +87,9 @@ final class VoiceConversationController {
     @ObservationIgnored private let injectedSpeech: SpeechService?
     @ObservationIgnored private var silenceTimerTask: Task<Void, Never>?
     @ObservationIgnored private var resumeTask: Task<Void, Never>?
+    @ObservationIgnored private var sentenceBuffer = StreamingSentenceBuffer()
+    @ObservationIgnored private var streamingMessageID: UUID?
+    @ObservationIgnored private var hasStartedStreamingSpeech = false
     @ObservationIgnored var onSilenceAutoCommit: (() -> Void)?
 
     private var speech: SpeechService { injectedSpeech ?? .shared }
@@ -104,6 +107,7 @@ final class VoiceConversationController {
     func stopSession() {
         isSessionActive = false
         cancelTimers()
+        resetStreamingBuffer()
         speech.stopDictation()
         speech.stopSpeaking()
         voiceLevel = 0
@@ -112,6 +116,7 @@ final class VoiceConversationController {
 
     func pauseSession() {
         cancelTimers()
+        resetStreamingBuffer()
         speech.stopDictation()
         speech.stopSpeaking()
         voiceLevel = 0
@@ -121,6 +126,7 @@ final class VoiceConversationController {
     func startListening() {
         guard isSessionActive else { return }
         cancelTimers()
+        resetStreamingBuffer()
         speech.stopSpeaking()
         statusError = nil
         liveTranscript = ""
@@ -177,11 +183,53 @@ final class VoiceConversationController {
         liveTranscript = ""
         statusError = nil
         if sendHandler(clean) {
+            resetStreamingBuffer()
             phase = .thinking
             return true
         } else {
             phase = .idle
             return false
+        }
+    }
+
+    /// Feeds incremental assistant tokens during streaming so TTS starts on the first completed sentence.
+    func handleStreamingTextUpdate(
+        _ cumulativeText: String,
+        messageID: UUID,
+        cloudSynthesizer: CloudSpeechSynthesizerHandler? = nil,
+        resumeDelayMs: Int = 250,
+        sentenceHandler: ((UUID, String) -> Void)? = nil
+    ) {
+        guard isSessionActive, phase == .thinking || (phase == .speaking && streamingMessageID == messageID) else { return }
+        if streamingMessageID != messageID {
+            resetStreamingBuffer()
+            streamingMessageID = messageID
+        }
+        latestAssistantReply = cumulativeText
+        let readySentences = sentenceBuffer.ingest(cumulativeText: cumulativeText)
+        guard !readySentences.isEmpty else { return }
+
+        if !hasStartedStreamingSpeech {
+            hasStartedStreamingSpeech = true
+            phase = .speaking
+            statusError = nil
+            if sentenceHandler == nil {
+                speech.beginStreamingSpeech(
+                    messageID: messageID,
+                    personaID: nil,
+                    cloudSynthesizer: cloudSynthesizer
+                ) { [weak self] in
+                    self?.handleSpeechCompleted(resumeDelayMs: resumeDelayMs)
+                }
+            }
+        }
+
+        for sentence in readySentences {
+            if let sentenceHandler {
+                sentenceHandler(messageID, sentence)
+            } else {
+                speech.enqueueStreamingSentence(sentence, for: messageID)
+            }
         }
     }
 
@@ -191,17 +239,39 @@ final class VoiceConversationController {
         messageID: UUID,
         cloudSynthesizer: CloudSpeechSynthesizerHandler? = nil,
         resumeDelayMs: Int = 250,
-        speakHandler: ((UUID, String, @escaping @MainActor () -> Void) -> Void)? = nil
+        speakHandler: ((UUID, String, @escaping @MainActor () -> Void) -> Void)? = nil,
+        sentenceHandler: ((UUID, String) -> Void)? = nil
     ) {
         guard isSessionActive else { return }
         cancelTimers()
 
         if let errorMessage, !errorMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            resetStreamingBuffer()
+            speech.stopSpeaking()
             statusError = errorMessage
             phase = .idle
             return
         }
 
+        if hasStartedStreamingSpeech && streamingMessageID == messageID {
+            latestAssistantReply = replyText
+            let tail = sentenceBuffer.ingest(cumulativeText: replyText) + sentenceBuffer.finish()
+            turnCount += 1
+            for sentence in tail {
+                if let sentenceHandler {
+                    sentenceHandler(messageID, sentence)
+                } else {
+                    speech.enqueueStreamingSentence(sentence, for: messageID)
+                }
+            }
+            if sentenceHandler == nil {
+                speech.finishStreamingSpeech(for: messageID)
+            }
+            resetStreamingBuffer()
+            return
+        }
+
+        resetStreamingBuffer()
         let cleanSpeech = VoiceConversationPolicy.cleanedSpeechSummary(from: replyText)
         guard !cleanSpeech.isEmpty else {
             phase = .idle
@@ -278,8 +348,15 @@ final class VoiceConversationController {
 
     func interruptAndListen() {
         cancelTimers()
+        resetStreamingBuffer()
         speech.stopSpeaking()
         startListening()
+    }
+
+    private func resetStreamingBuffer() {
+        sentenceBuffer.reset()
+        streamingMessageID = nil
+        hasStartedStreamingSpeech = false
     }
 
     func replayLastReply(cloudSynthesizer: (@Sendable (String) async throws -> Data)? = nil) {

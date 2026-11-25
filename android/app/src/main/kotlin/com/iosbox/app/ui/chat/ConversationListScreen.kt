@@ -62,6 +62,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -627,6 +628,7 @@ private fun ConversationRow(
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val accent = LocalAccentColors.current
+    val largeType = LocalDensity.current.fontScale >= 1.3f
     val dateText = remember(conversation.updatedAtEpochMs) {
         DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
             .format(Date(conversation.updatedAtEpochMs))
@@ -670,47 +672,15 @@ private fun ConversationRow(
                     Text(
                         text = conversation.title,
                         style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
-                        maxLines = 1,
+                        maxLines = if (largeType) 3 else 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (conversation.isGroupMode) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.secondaryContainer
-                        ) {
-                            Text(
-                                text = L10n.text("群聊", "Group"),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
-                            )
-                        }
-                    } else if (conversation.isArenaMode) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer
-                        ) {
-                            Text(
-                                text = L10n.text("竞技场", "Arena"),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
-                            )
-                        }
-                    }
-                    conversation.folderTag?.takeIf { it.isNotBlank() }?.let { tag ->
-                        Surface(
-                            shape = CircleShape,
-                            color = accent.softFill
-                        ) {
-                            Text(
-                                text = tag,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = accent.readableText,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
-                            )
-                        }
+                    if (!largeType) ConversationBadges(conversation)
+                }
+                if (largeType && (conversation.isGroupMode || conversation.isArenaMode || !conversation.folderTag.isNullOrBlank())) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        ConversationBadges(conversation)
                     }
                 }
                 Spacer(modifier = Modifier.height(2.dp))
@@ -732,7 +702,7 @@ private fun ConversationRow(
                     ).joinToString(" · "),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    maxLines = if (largeType) 2 else 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 for (hit in hits.take(2)) {
@@ -793,6 +763,49 @@ private fun ConversationRow(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ConversationBadges(conversation: ConversationItem) {
+    val accent = LocalAccentColors.current
+    if (conversation.isGroupMode) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.secondaryContainer
+        ) {
+            Text(
+                text = L10n.text("群聊", "Group"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+            )
+        }
+    } else if (conversation.isArenaMode) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer
+        ) {
+            Text(
+                text = L10n.text("竞技场", "Arena"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+            )
+        }
+    }
+    conversation.folderTag?.takeIf { it.isNotBlank() }?.let { tag ->
+        Surface(
+            shape = CircleShape,
+            color = accent.softFill
+        ) {
+            Text(
+                text = tag,
+                style = MaterialTheme.typography.labelSmall,
+                color = accent.readableText,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+            )
         }
     }
 }

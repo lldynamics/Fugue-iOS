@@ -14,6 +14,7 @@ struct RequestOptionsBar: View {
 
     private var activeOptions: [String] {
         var labels: [String] = []
+        if options.useDeepResearch { labels.append(String(localized: "深度研究")) }
         if options.useSearch { labels.append(String(localized: "本次联网")) }
         if options.omitMemory && conversation.assistanceSettings.usePersonalMemory {
             labels.append(String(localized: "本次不使用记忆"))
@@ -180,6 +181,16 @@ struct ComposerOptionsSheet: View {
         NavigationStack {
             Form {
                 Section("仅本条消息") {
+                    if !conversation.isArenaMode && !conversation.isGroupMode {
+                        Toggle("深度研究（多轮检索 + 网页深读）", isOn: Binding(
+                            get: { options.useDeepResearch },
+                            set: { options.setDeepResearch($0) }
+                        ))
+                        if options.useDeepResearch {
+                            Text("自动拆解研究子问题、并发联网检索、深读高相关网页并输出带来源引用的长报告。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
                     Toggle("联网搜索", isOn: Binding(get: { options.useSearch }, set: {
                         options.setSearch($0, draft: draftText)
                     }))
@@ -260,6 +271,9 @@ struct AssistanceEvidenceView: View {
             }
             ForEach(Array(metadata.fallbackNotices.enumerated()), id: \.offset) { _, notice in
                 Label(notice, systemImage: "arrow.triangle.branch").font(.caption2).foregroundStyle(.orange)
+            }
+            if let trace = metadata.deepResearchTrace {
+                DeepResearchTraceCard(trace: trace)
             }
             if !metadata.toolCalls.isEmpty {
                 DisclosureGroup {
@@ -417,7 +431,7 @@ struct AssistanceEvidenceView: View {
                         HStack(spacing: 8) {
                             Button("存入记忆") {
                                 if !ChatEngine.shared.acceptMemoryProposal(fact, on: message, context: modelContext) {
-                                    memoryLimitError = String(localized: "个人长期记忆已达到上限（\(PersonalMemory.maximumCount) 条），请先在「服务商 → 个人长期记忆」清理后再保存。")
+                                    memoryLimitError = String(localized: "个人长期记忆已达到上限（\(PersonalMemory.maximumCount) 条），请先在「设置 → 个人长期记忆」清理后再保存。")
                                 }
                             }
                             .font(.caption2.weight(.semibold))
@@ -447,6 +461,112 @@ struct AssistanceEvidenceView: View {
             Button("好", role: .cancel) { memoryLimitError = nil }
         } message: {
             Text(verbatim: memoryLimitError ?? "")
+        }
+    }
+}
+
+private struct DeepResearchTraceCard: View {
+    let trace: DeepResearchTrace
+    @State private var isExpanded: Bool
+
+    init(trace: DeepResearchTrace) {
+        self.trace = trace
+        _isExpanded = State(initialValue: trace.isRunning)
+    }
+
+    private var summaryTitle: String {
+        if trace.isRunning {
+            return trace.steps.last?.title ?? String(localized: "深度研究进行中…")
+        }
+        if trace.totalSources > 0 {
+            return String(localized: "深度研究 · \(trace.subQueries.count) 维检索 · \(trace.totalSources) 来源 · 深读 \(trace.pagesRead) 页")
+        }
+        return String(localized: "深度研究 · \(max(1, trace.subQueries.count)) 维分析")
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                if !trace.subQueries.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("研究维度")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(Array(trace.subQueries.enumerated()), id: \.offset) { idx, query in
+                            HStack(alignment: .top, spacing: 5) {
+                                Text("\(idx + 1).")
+                                    .font(.caption2.monospacedDigit().weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Text(verbatim: query)
+                                    .font(.caption2)
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                    }
+                }
+
+                if !trace.steps.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(trace.steps) { step in
+                            HStack(alignment: .top, spacing: 7) {
+                                Image(systemName: step.phase.symbol)
+                                    .font(.caption2)
+                                    .foregroundStyle(step.succeeded ? Color.accentColor : Color.orange)
+                                    .frame(width: 14)
+                                    .padding(.top, 2)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    HStack(spacing: 6) {
+                                        Text(step.title)
+                                            .font(.caption2.weight(.semibold))
+                                        if let ms = step.durationMs, ms > 0 {
+                                            Text(ms >= 1000 ? String(format: "%.1fs", Double(ms) / 1000.0) : "\(ms)ms")
+                                                .font(.caption2.monospacedDigit())
+                                                .foregroundStyle(.tertiary)
+                                        }
+                                    }
+                                    if !step.detail.isEmpty {
+                                        Text(step.detail)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(3)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.top, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            HStack(spacing: 7) {
+                if trace.isRunning {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+                Text(summaryTitle)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(DS.Surface.hairline, lineWidth: 1)
+        )
+        .onChange(of: trace.isRunning) { wasRunning, nowRunning in
+            if wasRunning && !nowRunning {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded = false
+                }
+            }
         }
     }
 }

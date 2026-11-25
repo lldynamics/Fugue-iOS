@@ -30,7 +30,7 @@ enum SearchError: LocalizedError {
     case missingKey, invalidQuery, invalidResponse, tooLarge, noResults, http(Int)
     var errorDescription: String? {
         switch self {
-        case .missingKey: return String(localized: "请先在「服务商 → 联网搜索」配置 Tavily API Key。")
+        case .missingKey: return String(localized: "请先在「设置 → 联网搜索」配置 Tavily API Key。")
         case .invalidQuery: return String(localized: "搜索词需为 1–400 个字符，请编辑后重试。")
         case .invalidResponse: return String(localized: "搜索服务返回了无法读取的数据。")
         case .tooLarge: return String(localized: "搜索结果超过大小限制。")

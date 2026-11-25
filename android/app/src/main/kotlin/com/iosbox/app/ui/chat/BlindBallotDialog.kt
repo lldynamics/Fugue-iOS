@@ -33,6 +33,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -74,12 +75,16 @@ fun BlindBallotDialog(
     var visibleID by remember(groupID, initialAnswerId) {
         mutableStateOf(initialAnswerId ?: candidates.firstOrNull()?.id)
     }
+    var openedIDs by remember(groupID) { mutableStateOf(emptySet<String>()) }
 
     val activeIndex = remember(candidates, visibleID) {
         val idx = candidates.indexOfFirst { it.id == visibleID }
         if (idx >= 0) idx else 0
     }
     val visibleCandidate = candidates.getOrNull(activeIndex)
+    LaunchedEffect(visibleCandidate?.id) {
+        visibleCandidate?.id?.let { openedIDs = openedIDs + it }
+    }
     val accent = LocalAccentColors.current
 
     Dialog(
@@ -107,17 +112,28 @@ fun BlindBallotDialog(
                     val chosen = eligible.firstOrNull { it.id == selectedID }
                     val canVote = !isGenerating && eligible.size >= 2 && chosen != null
                     Surface(tonalElevation = 3.dp) {
-                        Button(
-                            onClick = { if (chosen != null) onVote(chosen) },
-                            enabled = canVote,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = DS.Spacing.lg, vertical = DS.Spacing.md)
-                        ) {
-                            Text(
-                                text = L10n.text("投票并揭晓", "Vote & Reveal"),
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
-                            )
+                        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = DS.Spacing.lg, vertical = DS.Spacing.md)) {
+                            val hint = when {
+                                isGenerating -> L10n.text("等待回答完成后再投票。", "Wait for the answers to finish before voting.")
+                                eligible.size < 2 -> L10n.text("至少需要两个完整回答才能投票。", "At least two complete answers are required to vote.")
+                                chosen == null -> L10n.text("请选择一个回答后投票。", "Select an answer before voting.")
+                                else -> null
+                            }
+                            if (hint != null) {
+                                Text(text = hint, style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(bottom = DS.Spacing.sm))
+                            }
+                            Button(
+                                onClick = { if (chosen != null) onVote(chosen) },
+                                enabled = canVote,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = L10n.text("投票并揭晓", "Vote & Reveal"),
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                                )
+                            }
                         }
                     }
                 }
@@ -189,6 +205,19 @@ fun BlindBallotDialog(
                                 }
                             )
                         }
+                    }
+                    if (!revealed) {
+                        val opened = candidates.count { it.id in openedIDs }
+                        Text(
+                            text = if (opened < candidates.size) {
+                                L10n.text("已打开 $opened/${candidates.size} 个回答，建议先比较。",
+                                    "Opened $opened/${candidates.size} answers. Consider comparing them first.")
+                            } else {
+                                L10n.text("已打开 $opened/${candidates.size} 个回答。", "Opened $opened/${candidates.size} answers.")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
 

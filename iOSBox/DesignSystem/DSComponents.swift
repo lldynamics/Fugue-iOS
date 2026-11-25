@@ -1,5 +1,25 @@
 import SwiftUI
 
+// MARK: - Night-Run Brand Seal Mark
+
+struct FugueSealMark: View {
+    var character: String = "奔"
+    var size: CGFloat = 24
+    var theme: DS.AccentTheme = AppPreferences.shared.accentTheme
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: max(5, size * 0.24), style: .continuous)
+                .fill(theme.solidFill)
+                .frame(width: size, height: size)
+            Text(verbatim: character)
+                .font(.system(size: size * 0.56, weight: .bold, design: .serif))
+                .foregroundStyle(theme.solidForeground)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Unified Badge
 
 struct DSBadge: View {
@@ -104,7 +124,7 @@ struct DSMetricTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(DS.Spacing.md)
-        .background(DS.Surface.canvas, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
+        .background(DS.Surface.card, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
                 .strokeBorder(DS.Surface.hairline, lineWidth: 1)
@@ -112,7 +132,7 @@ struct DSMetricTile: View {
     }
 }
 
-// MARK: - Card Surface Modifier
+// MARK: - Card & Floating Island Modifiers
 
 struct DSCardModifier: ViewModifier {
     var cornerRadius: CGFloat = DS.Radius.lg
@@ -131,6 +151,27 @@ struct DSCardModifier: ViewModifier {
     }
 }
 
+struct DSFloatingIslandModifier: ViewModifier {
+    var cornerRadius: CGFloat = DS.Radius.island
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(DS.Surface.floatingIsland)
+                    )
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(DS.Surface.strongBorder, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.14), radius: 18, x: 0, y: 6)
+    }
+}
+
 extension View {
     func dsCard(
         cornerRadius: CGFloat = DS.Radius.lg,
@@ -144,5 +185,9 @@ extension View {
             borderColor: borderColor,
             padding: padding
         ))
+    }
+
+    func dsFloatingIsland(cornerRadius: CGFloat = DS.Radius.island) -> some View {
+        modifier(DSFloatingIslandModifier(cornerRadius: cornerRadius))
     }
 }

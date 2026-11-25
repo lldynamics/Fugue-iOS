@@ -104,6 +104,20 @@ struct ProviderTemplate: Identifiable {
             ]
         ),
         ProviderTemplate(
+            id: "openai_responses",
+            name: "OpenAI Responses API",
+            protocolType: .openAIResponses,
+            baseURL: "https://api.openai.com/v1",
+            iconSymbol: "bolt.horizontal.circle",
+            accentHex: "#0D9488",
+            note: String(localized: "OpenAI 新一代 /v1/responses 协议，原生支持推理摘要与内置联网检索"),
+            suggestedModels: [
+                ModelSpec(id: "gpt-5", displayName: "GPT-5", supportsVision: true, supportsReasoning: true),
+                ModelSpec(id: "o3", displayName: "OpenAI o3", supportsVision: true, supportsReasoning: true),
+                ModelSpec(id: "gpt-4.1", displayName: "GPT-4.1", supportsVision: true, supportsReasoning: false)
+            ]
+        ),
+        ProviderTemplate(
             id: "anthropic",
             name: "Anthropic Claude",
             protocolType: .anthropic,

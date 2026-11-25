@@ -19,11 +19,13 @@ struct QuickKeySetupSheet: View {
     @State private var iconSymbol = "circle.hexagongrid.fill"
     @State private var suggestedModels: [ModelSpec] = []
     @State private var parseNote: String?
+    @State private var showAdvancedSettings = false
 
     @State private var isBusy = false
     @State private var statusBanner: (ok: Bool, message: String)?
     @State private var connectedProvider: ProviderConfig?
     @State private var connectedTarget: ResolvedModelTarget?
+    @State private var verificationTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -39,6 +41,7 @@ struct QuickKeySetupSheet: View {
 
                     HStack(spacing: 8) {
                         TextField("或粘贴含 URL / Key 的整段文本…", text: $pasteInput, axis: .vertical)
+                            .accessibilityIdentifier("quickSetup.configInput")
                             .lineLimit(1...3)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
@@ -61,41 +64,16 @@ struct QuickKeySetupSheet: View {
                     Text("仅在您点击上方按钮时读取一次剪贴板，自动提取常见服务商（OpenAI / DeepSeek / Claude / Gemini / OpenRouter / 中转站）的地址与密钥。")
                 }
 
-                Section("确认接口配置") {
-                    TextField("服务商名称", text: $name)
-
-                    Picker("API 协议类型", selection: Binding(
-                        get: { protocolType },
-                        set: { newProtocol in
-                            baseURL = ProviderTemplate.baseURLAfterProtocolChange(
-                                currentBaseURL: baseURL,
-                                from: protocolType,
-                                to: newProtocol
-                            )
-                            protocolType = newProtocol
-                        }
-                    )) {
-                        ForEach(APIProtocolType.allCases) { proto in
-                            Text(proto.displayName).tag(proto)
-                        }
-                    }
-
-                    TextField("Base URL", text: $baseURL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .font(.subheadline.monospaced())
-
-                    InsecureHTTPWarningView(baseURL: baseURL)
-
+                Section {
+                    LabeledContent("服务商", value: name)
                     SecureField("API Key（本地局域网可留空）", text: $apiKey)
+                        .accessibilityIdentifier("quickSetup.apiKey")
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-
-                    TextField("指定测试模型 ID（留空则自动拉取优选）", text: $manualModelID)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.subheadline.monospaced())
+                } header: {
+                    Text("确认服务商和 API Key")
+                } footer: {
+                    Text("可在服务商控制台创建 API Key，免鉴权的局域网服务可留空。")
                 }
 
                 if let statusBanner {
@@ -105,6 +83,7 @@ struct QuickKeySetupSheet: View {
                                 .foregroundStyle(statusBanner.ok ? .green : .orange)
                             Text(statusBanner.message)
                                 .font(.footnote)
+                                .textSelection(.enabled)
                         }
                     }
                 }
@@ -121,7 +100,8 @@ struct QuickKeySetupSheet: View {
                         }
                     } else {
                         Button {
-                            Task { await verifyAndSave() }
+                            verificationTask?.cancel()
+                            verificationTask = Task { await verifyAndSave() }
                         } label: {
                             HStack(spacing: 8) {
                                 if isBusy {
@@ -136,8 +116,53 @@ struct QuickKeySetupSheet: View {
                         }
                         .disabled(isBusy)
                     }
+                } footer: {
+                    Text("验证会发送一条测试消息，可能产生少量 API 费用。")
+                }
+
+                Section {
+                    DisclosureGroup("高级设置", isExpanded: $showAdvancedSettings) {
+                        TextField("服务商名称", text: $name)
+
+                        Picker("API 协议类型", selection: Binding(
+                            get: { protocolType },
+                            set: { newProtocol in
+                                baseURL = ProviderTemplate.baseURLAfterProtocolChange(
+                                    currentBaseURL: baseURL,
+                                    from: protocolType,
+                                    to: newProtocol
+                                )
+                                protocolType = newProtocol
+                            }
+                        )) {
+                            ForEach(APIProtocolType.allCases) { proto in
+                                Text(proto.displayName).tag(proto)
+                            }
+                        }
+
+                        TextField("Base URL", text: $baseURL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .font(.subheadline.monospaced())
+                        InsecureHTTPWarningView(baseURL: baseURL)
+                        TextField("指定测试模型 ID（留空则自动拉取优选）", text: $manualModelID)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.subheadline.monospaced())
+                    }
+                    .accessibilityIdentifier("quickSetup.advanced")
+                } footer: {
+                    Text("修改接口地址、协议或指定测试模型。")
                 }
             }
+            .disabled(isBusy)
+            .onChange(of: name) { _, _ in invalidateVerifiedConnection() }
+            .onChange(of: protocolType) { _, _ in invalidateVerifiedConnection() }
+            .onChange(of: baseURL) { _, _ in invalidateVerifiedConnection() }
+            .onChange(of: apiKey) { _, _ in invalidateVerifiedConnection() }
+            .onChange(of: manualModelID) { _, _ in invalidateVerifiedConnection() }
+            .onDisappear { verificationTask?.cancel() }
             .navigationTitle("一键配 Key 并测通")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -146,6 +171,12 @@ struct QuickKeySetupSheet: View {
                 }
             }
         }
+    }
+
+    private func invalidateVerifiedConnection() {
+        connectedProvider = nil
+        connectedTarget = nil
+        statusBanner = nil
     }
 
     private func readFromSystemClipboard() {
@@ -180,14 +211,16 @@ struct QuickKeySetupSheet: View {
 
     @MainActor
     private func verifyAndSave() async {
+        guard !Task.isCancelled else { return }
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanKey = LLMClient.sanitizedAPIKey(apiKey)
         let cleanManual = manualModelID.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !cleanURL.isEmpty,
               !cleanURL.localizedCaseInsensitiveContains("api.example.com"),
               !NetworkLocation.isPlainHTTPToPublicHost(baseURL: cleanURL) else {
+            showAdvancedSettings = true
             statusBanner = (false, String(localized: "请填写有效的 HTTPS 接口地址或局域网地址。"))
             return
         }
@@ -213,9 +246,13 @@ struct QuickKeySetupSheet: View {
                     apiKeys: [],
                     customHeaders: []
                 )
+            } catch is CancellationError {
+                return
             } catch {
+                guard !Task.isCancelled else { return }
                 fetchError = error
             }
+            try Task.checkCancellation()
 
             let templateFallback = ProviderTemplate.matching(baseURL: cleanURL, protocolType: protocolType)?.suggestedModels ?? []
             let fallbackCatalog = suggestedModels.isEmpty ? templateFallback : suggestedModels
@@ -237,21 +274,33 @@ struct QuickKeySetupSheet: View {
                 if let fetchError {
                     throw fetchError
                 }
+                showAdvancedSettings = true
                 statusBanner = (false, String(localized: "未从接口获取到可用模型，请填写“指定测试模型 ID”后重试。"))
                 return
             }
 
             let providerTitle = cleanName.isEmpty ? "Provider" : cleanName
-            let ping = try await LLMClient.pingModel(
-                providerName: providerTitle,
-                protocolType: protocolType,
-                baseURL: cleanURL,
-                apiKey: cleanKey,
-                apiKeys: [],
-                customHeaders: [],
-                modelID: chosenModel.id,
-                supportsReasoning: chosenModel.supportsReasoning
-            )
+            let ping: LLMPingResult
+            do {
+                ping = try await LLMClient.pingModel(
+                    providerName: providerTitle,
+                    protocolType: protocolType,
+                    baseURL: cleanURL,
+                    apiKey: cleanKey,
+                    apiKeys: [],
+                    customHeaders: [],
+                    modelID: chosenModel.id,
+                    supportsReasoning: chosenModel.supportsReasoning
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                showAdvancedSettings = true
+                statusBanner = (false, "[\(chosenModel.id)] \(error.localizedDescription)")
+                return
+            }
+            try Task.checkCancellation()
 
             let matchedExisting = existingProviders.first {
                 normalizeURLForMatch($0.baseURL) == normalizeURLForMatch(cleanURL) &&
@@ -346,7 +395,10 @@ struct QuickKeySetupSheet: View {
                 true,
                 String(localized: "已测通 \(target.modelDisplayName)（首字 \(ping.ttftMs) ms）\(countNote)，已保存并设为可用！")
             )
+        } catch is CancellationError {
+            return
         } catch {
+            guard !Task.isCancelled else { return }
             statusBanner = (false, error.localizedDescription)
         }
     }

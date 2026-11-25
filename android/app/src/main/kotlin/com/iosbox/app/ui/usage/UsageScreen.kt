@@ -63,6 +63,8 @@ import java.text.DateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.math.BigDecimal
+import java.math.MathContext
 import kotlin.math.roundToInt
 
 private enum class UsagePeriod {
@@ -85,6 +87,40 @@ private enum class UsagePeriod {
         if (this == MONTH) cal.set(Calendar.DAY_OF_MONTH, 1)
         return epochMs >= cal.timeInMillis
     }
+}
+
+internal data class UsageCostSummary(val totals: Map<String, Double>, val missingCount: Int)
+
+internal data class UsageTokenSummary(val input: Long, val output: Long, val cached: Long) {
+    val total: Long get() = input + output
+}
+
+internal fun summarizeUsageTokens(records: List<RequestRecordItem>): UsageTokenSummary = UsageTokenSummary(
+    input = records.sumOf { (it.promptTokens ?: 0).coerceAtLeast(0).toLong() },
+    output = records.sumOf { (it.completionTokens ?: 0).coerceAtLeast(0).toLong() },
+    cached = records.sumOf { (it.cachedTokens ?: 0).coerceAtLeast(0).toLong() }
+)
+
+internal fun summarizeUsageCosts(records: List<RequestRecordItem>): UsageCostSummary {
+    val totals = sortedMapOf<String, Double>()
+    var missingCount = 0
+    for (record in records) {
+        if (record.kind == RequestKind.WEB_SEARCH || record.status == RequestStatus.RUNNING) continue
+        val cost = record.estimatedCost
+        val currency = record.currency
+        if (cost != null && currency != null) {
+            totals[currency] = (totals[currency] ?: 0.0) + cost
+        } else if (record.status != RequestStatus.BLOCKED) {
+            missingCount++
+        }
+    }
+    return UsageCostSummary(totals, missingCount)
+}
+
+private fun usageCostText(currency: String, value: Double): String {
+    val decimal = BigDecimal.valueOf(value).round(MathContext(6)).stripTrailingZeros()
+    val amount = if (decimal.scale() > 9) decimal.toString() else decimal.toPlainString()
+    return "$currency $amount"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -160,9 +196,7 @@ fun UsageScreen(
 
     val modelRows = remember(filtered) { filtered.filter { it.kind != RequestKind.WEB_SEARCH } }
     val succeededCount = remember(filtered) { filtered.count { it.status == RequestStatus.SUCCEEDED } }
-    val totalPrompt = remember(filtered) { filtered.sumOf { it.promptTokens ?: 0 } }
-    val totalCompletion = remember(filtered) { filtered.sumOf { it.completionTokens ?: 0 } }
-    val totalCached = remember(filtered) { filtered.sumOf { it.cachedTokens ?: 0 } }
+    val tokenSummary = remember(filtered) { summarizeUsageTokens(filtered) }
     val medianTps = remember(modelRows) {
         val samples = modelRows.mapNotNull { it.tokensPerSecond }.sorted()
         if (samples.isEmpty()) null else {
@@ -171,17 +205,15 @@ fun UsageScreen(
             med to samples.size
         }
     }
-    val costSummary = remember(modelRows) {
-        val byCurrency = LinkedHashMap<String, Double>()
-        for (rec in modelRows) {
-            if (rec.status == RequestStatus.RUNNING) continue
-            val cur = rec.currency ?: continue
-            val cost = rec.estimatedCost ?: continue
-            byCurrency[cur] = (byCurrency[cur] ?: 0.0) + cost
+    val costSummary = remember(modelRows) { summarizeUsageCosts(modelRows) }
+    val firstCost = costSummary.totals.entries.firstOrNull()
+    val costDetail = buildList {
+        costSummary.totals.entries.drop(1).forEach { add(usageCostText(it.key, it.value)) }
+        if (costSummary.missingCount > 0) {
+            add(L10n.text("缺少用量或单价：${costSummary.missingCount} 次（不按零费用计算）",
+                "Missing usage or price: ${costSummary.missingCount} requests (not counted as free)"))
         }
-        val first = byCurrency.entries.firstOrNull()
-        first?.let { "${it.key} ${String.format(Locale.US, "%.4f", it.value).trimEnd('0').trimEnd('.')}" } ?: "—"
-    }
+    }.joinToString("\n").ifEmpty { null }
 
     Scaffold(
         topBar = {
@@ -381,8 +413,8 @@ fun UsageScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(DS.Spacing.sm)) {
                         MetricTile(
                             title = L10n.text("预估费用", "Est. Cost"),
-                            value = costSummary,
-                            detail = null,
+                            value = firstCost?.let { usageCostText(it.key, it.value) } ?: "—",
+                            detail = costDetail,
                             modifier = Modifier.weight(1f)
                         )
                         MetricTile(
@@ -401,9 +433,18 @@ fun UsageScreen(
                         )
                         MetricTile(
                             title = L10n.text("已知 Token", "Known Tokens"),
-                            value = compactTokens(totalPrompt + totalCompletion),
-                            detail = if (totalCached > 0) L10n.text("缓存 ${compactTokens(totalCached)}", "Cached ${compactTokens(totalCached)}") else null,
+                            value = compactTokens(tokenSummary.total),
+                            detail = if (tokenSummary.cached > 0) L10n.text("缓存 ${compactTokens(tokenSummary.cached)}", "Cached ${compactTokens(tokenSummary.cached)}") else null,
                             modifier = Modifier.weight(1f)
+                        )
+                    }
+                    val searchCount = filtered.size - modelRows.size
+                    if (searchCount > 0) {
+                        Text(
+                            text = L10n.text("含联网搜索 $searchCount 次；搜索费用另计。",
+                                "Includes $searchCount web searches; search charges are separate."),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -673,7 +714,7 @@ private fun UsageTrendChartCard(buckets: List<UsageTrendBucket>) {
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
                 )
                 Text(
-                    text = L10n.text("峰值 ${compactTokens(maxTokens.toInt())}", "Peak ${compactTokens(maxTokens.toInt())}"),
+                    text = L10n.text("峰值 ${compactTokens(maxTokens)}", "Peak ${compactTokens(maxTokens)}"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -712,8 +753,9 @@ private fun UsageTrendChartCard(buckets: List<UsageTrendBucket>) {
     }
 }
 
-private fun compactTokens(count: Int): String = when {
-    count >= 1_000_000 -> String.format(Locale.US, "%.1fM", count / 1_000_000.0)
-    count >= 1_000 -> String.format(Locale.US, "%.1fK", count / 1_000.0)
+internal fun compactTokens(count: Long): String = when {
+    count >= 1_000_000_000L -> String.format(Locale.US, "%.1fB", count / 1_000_000_000.0)
+    count >= 1_000_000L -> String.format(Locale.US, "%.1fM", count / 1_000_000.0)
+    count >= 1_000L -> String.format(Locale.US, "%.1fK", count / 1_000.0)
     else -> count.toString()
 }

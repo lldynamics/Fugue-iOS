@@ -6,6 +6,8 @@ struct ChatSettingsSheet: View {
     @Query(sort: \AssistantPreset.sortOrder) private var presets: [AssistantPreset]
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @State private var preferences = AppPreferences.shared
+    @State private var summaryStore = RollingContextSummaryStore.shared
 
     var body: some View {
         NavigationStack {
@@ -27,12 +29,12 @@ struct ChatSettingsSheet: View {
                                         .padding(.horizontal, 11)
                                         .padding(.vertical, 7)
                                         .background(
-                                            active ? Color.accentColor.opacity(0.18) : Color(.secondarySystemBackground),
+                                            active ? preferences.accentTheme.softFill : DS.Surface.subtle,
                                             in: Capsule()
                                         )
                                         .overlay(
                                             Capsule().strokeBorder(
-                                                active ? Color.accentColor : Color.clear,
+                                                active ? preferences.accentTheme.tintColor : DS.Surface.hairline,
                                                 lineWidth: 1
                                             )
                                         )
@@ -63,7 +65,7 @@ struct ChatSettingsSheet: View {
                                         .font(.caption2.monospaced())
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 4)
-                                        .background(Color(.secondarySystemBackground), in: Capsule())
+                                        .background(DS.Surface.subtle, in: Capsule())
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -124,6 +126,28 @@ struct ChatSettingsSheet: View {
                         }
                     }
 
+                    Toggle("长对话自动滚动摘要", isOn: $preferences.autoRollingSummaryEnabled)
+
+                    if let summary = summaryStore.summary(for: conversation.id) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Label("已压缩前 \(summary.coveredMessageCount) 条历史摘要", systemImage: "text.alignleft")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("清除摘要", role: .destructive) {
+                                    summaryStore.remove(for: conversation.id)
+                                }
+                                .font(.caption)
+                            }
+                            Text(summary.summaryText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(4)
+                        }
+                        .padding(.vertical, 2)
+                    }
+
                     HStack {
                         Text("最大输出 Tokens (0=默认)")
                         Spacer()
@@ -134,6 +158,8 @@ struct ChatSettingsSheet: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(DS.Surface.grouped)
             .navigationTitle("会话参数与预设")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

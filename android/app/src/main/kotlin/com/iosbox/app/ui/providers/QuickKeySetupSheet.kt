@@ -16,6 +16,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -27,6 +29,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +54,8 @@ import com.iosbox.app.core.network.NetworkLocation
 import com.iosbox.app.core.storage.ProviderItem
 import com.iosbox.app.ui.theme.DS
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -74,6 +79,8 @@ fun QuickKeySetupSheet(
     var accentHex by remember { mutableStateOf("#10A37F") }
     var iconSymbol by remember { mutableStateOf("circle.hexagongrid.fill") }
     var parseNote by remember { mutableStateOf<String?>(null) }
+    var showConfigurationInput by remember { mutableStateOf(false) }
+    var showAdvancedSettings by remember { mutableStateOf(false) }
 
     var isBusy by remember { mutableStateOf(false) }
     var statusBanner by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
@@ -82,11 +89,12 @@ fun QuickKeySetupSheet(
     fun applyParsedText(raw: String) {
         pasteInput = raw
         statusBanner = null
+        connectedTarget = null
         val parsed = ClipboardProviderParser.parse(raw)
         if (parsed == null) {
             parseNote = L10n.text(
-                "未检测到有效 API Key 或安全链接（注：公网明文 http:// 地址已拦截）。请手动核对下方字段。",
-                "No valid key or HTTPS/LAN URL detected (insecure public http:// is blocked)."
+                "未检测到有效 API Key 或安全链接。请填写 API Key，或在高级设置中检查地址。",
+                "No valid key or secure URL detected. Enter an API key or check the address in Advanced settings."
             )
             return
         }
@@ -129,13 +137,13 @@ fun QuickKeySetupSheet(
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = L10n.text("剪贴板一键配 Key 并测通", "Quick Key Setup & Verify"),
+                        text = L10n.text("连接模型", "Connect a model"),
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                     Text(
                         text = L10n.text(
-                            "支持整段环境变量、中转站信息或裸 Key，自动拉取并测通首个可用对话模型。",
-                            "Paste an API key or gateway snippet to fetch models and verify a working starter model."
+                            "选择服务商并输入 API Key，验证后即可开始对话。",
+                            "Choose a provider and enter an API key to verify the connection and start chatting."
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -143,6 +151,57 @@ fun QuickKeySetupSheet(
                 }
             }
 
+            Text(
+                text = L10n.text("选择服务商", "Choose a provider"),
+                style = MaterialTheme.typography.labelLarge
+            )
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (tplID in quickTemplateIDs) {
+                    val tpl = ProviderTemplate.catalog.firstOrNull { it.id == tplID } ?: continue
+                    FilterChip(
+                        enabled = !isBusy,
+                        selected = baseURL.trim().trimEnd('/').equals(tpl.baseURL.trimEnd('/'), ignoreCase = true) &&
+                            protocolType == tpl.protocolType,
+                        onClick = {
+                            connectedTarget = null
+                            statusBanner = null
+                            name = tpl.name
+                            protocolType = tpl.protocolType
+                            baseURL = tpl.baseURL
+                            accentHex = tpl.accentHex
+                            iconSymbol = tpl.iconSymbol
+                            manualModelID = tpl.suggestedModels.firstOrNull()?.id.orEmpty()
+                        },
+                        label = { Text(tpl.name) }
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = apiKey,
+                onValueChange = {
+                    apiKey = it
+                    connectedTarget = null
+                    statusBanner = null
+                },
+                enabled = !isBusy,
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                label = { Text(L10n.text("API Key（本地加密存放，局域网可留空）", "API Key")) },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Text(
+                text = L10n.text(
+                    "在服务商控制台创建 API Key；免鉴权的局域网服务可留空。",
+                    "Create an API key in your provider’s console. Local services without authentication can leave it blank."
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             OutlinedButton(
                 enabled = !isBusy,
                 onClick = {
@@ -150,7 +209,7 @@ fun QuickKeySetupSheet(
                     val clipText = cm?.primaryClip?.takeIf { it.itemCount > 0 }
                         ?.getItemAt(0)?.coerceToText(context)?.toString()?.trim().orEmpty()
                     if (clipText.isEmpty()) {
-                        parseNote = L10n.text("系统剪贴板暂无文本内容，请在下方直接粘贴。", "Clipboard has no text content.")
+                        parseNote = L10n.text("剪贴板为空，请填写 API Key 或展开完整配置。", "The clipboard is empty. Enter an API key or open the configuration field.")
                     } else {
                         applyParsedText(clipText)
                     }
@@ -162,18 +221,27 @@ fun QuickKeySetupSheet(
                 Text(L10n.text("从剪贴板识别", "Read from Clipboard"))
             }
 
-            OutlinedTextField(
-                value = pasteInput,
-                onValueChange = { applyParsedText(it) },
-                label = { Text(L10n.text("粘贴 API Key 或中转配置片段", "Paste Key or Config Snippet")) },
-                placeholder = {
-                    Text("sk-...  或  OPENAI_BASE_URL=https://...\nOPENAI_API_KEY=sk-...")
-                },
-                minLines = 2,
-                maxLines = 4,
-                modifier = Modifier.fillMaxWidth()
-            )
-
+            TextButton(onClick = { showConfigurationInput = !showConfigurationInput }, enabled = !isBusy) {
+                Text(
+                    if (showConfigurationInput) L10n.text("收起配置输入", "Hide configuration input")
+                    else L10n.text("粘贴完整配置", "Paste a configuration snippet")
+                )
+                Icon(if (showConfigurationInput) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = null)
+            }
+            if (showConfigurationInput) {
+                OutlinedTextField(
+                    value = pasteInput,
+                    onValueChange = { applyParsedText(it) },
+                    enabled = !isBusy,
+                    label = { Text(L10n.text("粘贴 API Key 或中转配置片段", "Paste Key or Config Snippet")) },
+                    placeholder = {
+                        Text("sk-...  或  OPENAI_BASE_URL=https://...\nOPENAI_API_KEY=sk-...")
+                    },
+                    minLines = 2,
+                    maxLines = 4,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             parseNote?.let { note ->
                 Surface(
                     shape = RoundedCornerShape(DS.Radius.sm),
@@ -189,62 +257,55 @@ fun QuickKeySetupSheet(
                 }
             }
 
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                for (tplID in quickTemplateIDs) {
-                    val tpl = ProviderTemplate.catalog.firstOrNull { it.id == tplID } ?: continue
-                    FilterChip(
-                        selected = baseURL.trim().trimEnd('/').equals(tpl.baseURL.trimEnd('/'), ignoreCase = true) &&
-                            protocolType == tpl.protocolType,
-                        onClick = {
-                            name = tpl.name
-                            protocolType = tpl.protocolType
-                            baseURL = tpl.baseURL
-                            accentHex = tpl.accentHex
-                            iconSymbol = tpl.iconSymbol
-                            manualModelID = tpl.suggestedModels.firstOrNull()?.id.orEmpty()
-                        },
-                        label = { Text(tpl.name) }
-                    )
-                }
+            TextButton(onClick = { showAdvancedSettings = !showAdvancedSettings }, enabled = !isBusy) {
+                Text(
+                    if (showAdvancedSettings) L10n.text("收起高级设置", "Hide advanced settings")
+                    else L10n.text("高级设置", "Advanced settings")
+                )
+                Icon(if (showAdvancedSettings) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = null)
             }
+            if (showAdvancedSettings) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = {
+                        name = it
+                        connectedTarget = null
+                        statusBanner = null
+                    },
+                    enabled = !isBusy,
+                    singleLine = true,
+                    label = { Text(L10n.text("服务商名称", "Provider Name")) },
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                singleLine = true,
-                label = { Text(L10n.text("服务商名称", "Provider Name")) },
-                modifier = Modifier.fillMaxWidth()
-            )
+                OutlinedTextField(
+                    value = baseURL,
+                    onValueChange = {
+                        baseURL = it
+                        connectedTarget = null
+                        statusBanner = null
+                    },
+                    enabled = !isBusy,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    label = { Text(L10n.text("Base URL", "Base URL")) },
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-            OutlinedTextField(
-                value = baseURL,
-                onValueChange = { baseURL = it },
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                label = { Text(L10n.text("Base URL", "Base URL")) },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = apiKey,
-                onValueChange = { apiKey = it },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                label = { Text(L10n.text("API Key（本地加密存放，局域网可留空）", "API Key")) },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = manualModelID,
-                onValueChange = { manualModelID = it },
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                label = { Text(L10n.text("指定模型 ID（留空则自动拉取并优选）", "Model ID (optional auto-pick)")) },
-                modifier = Modifier.fillMaxWidth()
-            )
+                OutlinedTextField(
+                    value = manualModelID,
+                    onValueChange = {
+                        manualModelID = it
+                        connectedTarget = null
+                        statusBanner = null
+                    },
+                    enabled = !isBusy,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    label = { Text(L10n.text("指定模型 ID（留空则自动拉取并优选）", "Model ID (optional auto-pick)")) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             if (isBusy) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -286,6 +347,18 @@ fun QuickKeySetupSheet(
             val isPublicHttp = NetworkLocation.isPlainHTTPToPublicHost(cleanURL)
 
             if (connectedTarget == null) {
+                if (isPublicHttp) {
+                    Text(
+                        text = L10n.text("公网服务必须使用 HTTPS，请在高级设置中修改地址。", "Public services must use HTTPS. Update the address in Advanced settings."),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                Text(
+                    text = L10n.text("验证会发送一条测试消息，可能产生少量 API 费用。", "Verification sends a test message and may incur a small API charge."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Button(
                     enabled = !isBusy && cleanURL.isNotEmpty() && !isPublicHttp && (cleanKey.isNotEmpty() || isLocal),
                     onClick = {
@@ -293,14 +366,19 @@ fun QuickKeySetupSheet(
                             isBusy = true
                             statusBanner = null
                             try {
-                                val fetched = runCatching {
+                                val fetched = try {
                                     container.llmClient.fetchModels(
                                         providerName = name.trim().ifEmpty { "Provider" },
                                         protocolType = protocolType,
                                         baseURL = cleanURL,
                                         apiKey = cleanKey
                                     )
-                                }.getOrNull().orEmpty()
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: Exception) {
+                                    emptyList()
+                                }
+                                currentCoroutineContext().ensureActive()
 
                                 val tplSuggestions = ProviderTemplate.matching(cleanURL, protocolType)
                                     ?.suggestedModels.orEmpty()
@@ -334,6 +412,7 @@ fun QuickKeySetupSheet(
                                     modelID = picked.id,
                                     supportsReasoning = picked.supportsReasoning
                                 )
+                                currentCoroutineContext().ensureActive()
 
                                 val allModels = ModelSpec.deduplicated(
                                     listOf(picked.copy(isEnabled = true)) +

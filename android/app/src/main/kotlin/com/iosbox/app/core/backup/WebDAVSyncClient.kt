@@ -77,6 +77,13 @@ sealed class WebDAVSyncException(override val message: String) : Exception(messa
         )
     )
 
+    class ShardedBlobMissing(hash: String) : WebDAVSyncException(
+        L10n.text(
+            "云端缺少分片资产（${hash.take(12)}），请重新执行一次完整上传。",
+            "Remote shard blob (${hash.take(12)}) is missing. Run a full upload."
+        )
+    )
+
     class HttpError(code: Int) : WebDAVSyncException(
         L10n.text("WebDAV 请求失败（HTTP $code）。", "WebDAV request failed (HTTP $code).")
     )
@@ -155,6 +162,22 @@ class WebDAVSyncClient(
             .readTimeout(90, TimeUnit.SECONDS)
             .writeTimeout(90, TimeUnit.SECONDS)
             .build()
+
+        internal fun parsePropfindChildNames(xml: String, directoryPath: String): List<String> {
+            if (xml.isBlank()) return emptyList()
+            val normalizedDir = directoryPath.trim('/').lowercase()
+            val regex = Regex("""<(?:[A-Za-z0-9_-]+:)?href[^>]*>([^<]+)</(?:[A-Za-z0-9_-]+:)?href>""", RegexOption.IGNORE_CASE)
+            val seen = LinkedHashSet<String>()
+            for (match in regex.findAll(xml)) {
+                val raw = match.groupValues[1].trim()
+                if (raw.isEmpty()) continue
+                val path = runCatching { URI(raw).path ?: raw }.getOrDefault(raw).trim('/')
+                if (path.isEmpty() || path.lowercase() == normalizedDir) continue
+                val leaf = path.substringAfterLast('/')
+                if (leaf.isNotEmpty()) seen.add(leaf)
+            }
+            return seen.sorted()
+        }
     }
 
     suspend fun testConnection(
@@ -183,6 +206,38 @@ class WebDAVSyncClient(
         username: String,
         password: String,
         data: ByteArray
+    ): Result<Unit> = uploadRawBytes(serverUrl, remotePath, username, password, data, "application/json; charset=utf-8")
+
+    suspend fun exists(
+        serverUrl: String,
+        remotePath: String,
+        username: String,
+        password: String
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        runCatching {
+            val resolved = WebDAVEndpointResolver.resolve(serverUrl, remotePath)
+            val cleanUser = username.trim()
+            if (cleanUser.isEmpty() || password.isEmpty()) throw WebDAVSyncException.MissingCredentials()
+            val req = Request.Builder()
+                .url(resolved.targetUrl)
+                .head()
+                .header("Authorization", WebDAVEndpointResolver.basicAuthHeader(cleanUser, password))
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (resp.code == 404) return@use false
+                validateStatus(resp.code, allow207 = false)
+                true
+            }
+        }
+    }
+
+    suspend fun uploadRawBytes(
+        serverUrl: String,
+        remotePath: String,
+        username: String,
+        password: String,
+        data: ByteArray,
+        contentType: String
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             if (data.size > EncryptedBackupCrypto.MAXIMUM_FILE_BYTES) {
@@ -209,7 +264,7 @@ class WebDAVSyncClient(
 
             val put = Request.Builder()
                 .url(resolved.targetUrl)
-                .put(data.toRequestBody(JSON_MEDIA))
+                .put(data.toRequestBody(contentType.toMediaType()))
                 .header("Authorization", auth)
                 .build()
             httpClient.newCall(put).execute().use { resp ->
@@ -218,7 +273,7 @@ class WebDAVSyncClient(
         }
     }
 
-    suspend fun downloadEncryptedBytes(
+    suspend fun downloadRawBytes(
         serverUrl: String,
         remotePath: String,
         username: String,
@@ -243,7 +298,7 @@ class WebDAVSyncClient(
                 val declared = body.contentLength()
                 if (declared > limit) throw WebDAVSyncException.PayloadTooLarge()
 
-                val bytes = body.byteStream().use { input ->
+                body.byteStream().use { input ->
                     val buffer = ByteArray(16 * 1024)
                     val out = ByteArrayOutputStream()
                     var total = 0
@@ -256,10 +311,69 @@ class WebDAVSyncClient(
                     }
                     out.toByteArray()
                 }
-                if (!EncryptedBackupCrypto.isEncryptedBackup(bytes)) {
-                    throw WebDAVSyncException.NotEncryptedBackup()
-                }
-                bytes
+            }
+        }
+    }
+
+    suspend fun downloadEncryptedBytes(
+        serverUrl: String,
+        remotePath: String,
+        username: String,
+        password: String
+    ): Result<ByteArray> = withContext(Dispatchers.IO) {
+        downloadRawBytes(serverUrl, remotePath, username, password).mapCatching { bytes ->
+            if (!EncryptedBackupCrypto.isEncryptedBackup(bytes)) {
+                throw WebDAVSyncException.NotEncryptedBackup()
+            }
+            bytes
+        }
+    }
+
+    suspend fun listDirectoryFilenames(
+        serverUrl: String,
+        directoryPath: String,
+        username: String,
+        password: String
+    ): Result<List<String>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val resolved = WebDAVEndpointResolver.resolve(serverUrl, directoryPath)
+            val cleanUser = username.trim()
+            if (cleanUser.isEmpty() || password.isEmpty()) throw WebDAVSyncException.MissingCredentials()
+            val dirUrl = if (resolved.targetUrl.endsWith("/")) resolved.targetUrl else "${resolved.targetUrl}/"
+            val bodyXml = """<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>"""
+            val req = Request.Builder()
+                .url(dirUrl)
+                .method("PROPFIND", bodyXml.toRequestBody("application/xml; charset=utf-8".toMediaType()))
+                .header("Authorization", WebDAVEndpointResolver.basicAuthHeader(cleanUser, password))
+                .header("Depth", "1")
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (resp.code == 404) return@use emptyList()
+                validateStatus(resp.code, allow207 = true)
+                val xml = resp.body?.string().orEmpty()
+                parsePropfindChildNames(xml, URI(dirUrl).path.orEmpty())
+            }
+        }
+    }
+
+    suspend fun deleteFile(
+        serverUrl: String,
+        remotePath: String,
+        username: String,
+        password: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val resolved = WebDAVEndpointResolver.resolve(serverUrl, remotePath)
+            val cleanUser = username.trim()
+            if (cleanUser.isEmpty() || password.isEmpty()) throw WebDAVSyncException.MissingCredentials()
+            val req = Request.Builder()
+                .url(resolved.targetUrl)
+                .delete()
+                .header("Authorization", WebDAVEndpointResolver.basicAuthHeader(cleanUser, password))
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (resp.code == 404) return@use
+                validateStatus(resp.code, allow207 = false)
             }
         }
     }

@@ -3,6 +3,8 @@ import SwiftData
 import UniformTypeIdentifiers
 
 struct ProviderListView: View {
+    var onClose: (() -> Void)? = nil
+
     private struct BackupAlert: Identifiable {
         let id = UUID()
         let title: String
@@ -10,12 +12,13 @@ struct ProviderListView: View {
     }
 
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
 
     @State private var showAddSheet = false
     @State private var showQuickSetupSheet = false
     @State private var preferences = AppPreferences.shared
-    @State private var navigationPath: [ProviderConfig] = []
+    @State private var navigationPath = NavigationPath()
     @State private var exportedJSONURL: URL?
     @State private var isExporting = false
     @State private var isImporting = false
@@ -57,20 +60,24 @@ struct ProviderListView: View {
                     Text("点进任意服务商可填入 API Key、修改 Base URL，并支持一键拉取 /models 模型列表或手动添加模型。")
                 }
 
-                Section("个性化与联网") {
-                    Toggle("极简日常模式（界面减法）", isOn: $preferences.simpleDailyMode)
-                    NavigationLink { RequestLedgerView() } label: { Label("用量与费用账本", systemImage: "chart.bar.xaxis") }
+                Section("对话与显示") {
                     NavigationLink { NewChatDefaultsView() } label: {
                         Label("新对话默认设置", systemImage: "bubble.left.and.text.bubble.right")
                     }
                     NavigationLink { AppearanceSettingsView() } label: { Label("阅读与交互偏好", systemImage: "textformat.size") }
                     NavigationLink { VoiceSettingsView() } label: { Label("语音转写与自然朗读", systemImage: "waveform") }
-                    NavigationLink { PersonalMemoryView() } label: { Label("个人长期记忆", systemImage: "brain.head.profile") }
-                    NavigationLink { SearchSettingsView() } label: { Label("联网搜索", systemImage: "globe") }
-                    NavigationLink { SystemQuickEntryGuideView() } label: { Label("小组件、控制中心与操作按钮", systemImage: "square.grid.2x2") }
                 }
 
-                Section {
+                Section("用量与联网") {
+                    NavigationLink { RequestLedgerView() } label: { Label("用量与费用账本", systemImage: "chart.bar.xaxis") }
+                    NavigationLink { SearchSettingsView() } label: { Label("联网搜索", systemImage: "globe") }
+                }
+
+                Section("高级功能") {
+                    NavigationLink { PersonalMemoryView() } label: { Label("个人长期记忆", systemImage: "brain.head.profile") }
+                    NavigationLink { KnowledgeSearchSettingsView() } label: { Label("全文检索与知识库索引", systemImage: "magnifyingglass.circle") }
+                    NavigationLink { MCPServersSettingsView() } label: { Label("Remote MCP 工具服务", systemImage: "puzzlepiece.extension") }
+                    NavigationLink { SystemQuickEntryGuideView() } label: { Label("小组件、控制中心与操作按钮", systemImage: "square.grid.2x2") }
                     DisclosureGroup("查看支持的 API 协议说明") {
                         ForEach(APIProtocolType.allCases) { proto in
                             HStack(alignment: .top, spacing: 10) {
@@ -88,8 +95,6 @@ struct ProviderListView: View {
                             .foregroundStyle(.primary)
                         }
                     }
-                } header: {
-                    Text("协议说明").foregroundStyle(.primary)
                 }
 
                 Section {
@@ -180,10 +185,17 @@ struct ProviderListView: View {
                     Text("导入会补回缺失的对话、附件、分支与助学闪卡，并保留本机已有配置。普通备份会省略密钥、敏感请求头及自定义路径地址；使用「加密导出完整备份」时才会以密码加密包含 API Key 与完整连接地址。")
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(DS.Surface.grouped)
             .navigationTitle("服务商与设置")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    EditButton()
+                ToolbarItem(placement: onClose != nil ? .cancellationAction : .topBarLeading) {
+                    if let onClose {
+                        Button("完成", action: onClose)
+                            .tint(.primary)
+                    } else {
+                        EditButton()
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -238,10 +250,14 @@ struct ProviderListView: View {
                     providerPendingDeletion = nil
                 }
                 Button("删除并清除密钥", role: .destructive) {
+                    let deletedProviderID = provider.id
                     try? SystemIntegration.shared.setEnabled(false, provider: provider, context: modelContext)
                     provider.deleteAllSecrets()
                     modelContext.delete(provider)
                     try? modelContext.save()
+                    if !modelContext.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
+                        SyncTombstoneStore.shared.recordDeletion(kind: .provider, id: deletedProviderID)
+                    }
                     providerPendingDeletion = nil
                 }
             } message: { provider in
@@ -377,7 +393,10 @@ struct ProviderListView: View {
             )
 
             VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
-                HStack(spacing: DS.Spacing.xs) {
+                let titleLayout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: DS.Spacing.xxs))
+                    : AnyLayout(HStackLayout(spacing: DS.Spacing.xs))
+                titleLayout {
                     Text(provider.name)
                         .font(.body.weight(.semibold))
                         .foregroundStyle(provider.isEnabled ? .primary : .secondary)
@@ -385,7 +404,10 @@ struct ProviderListView: View {
                     DSBadge(text: provider.protocolType.shortBadge, style: .neutral)
                 }
 
-                HStack(spacing: DS.Spacing.sm) {
+                let statusLayout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: DS.Spacing.xxs))
+                    : AnyLayout(HStackLayout(spacing: DS.Spacing.sm))
+                statusLayout {
                     HStack(spacing: 4) {
                         Circle()
                             .fill(statusColor)
@@ -396,7 +418,7 @@ struct ProviderListView: View {
                             .foregroundStyle(.primary)
                     }
 
-                    Text("· 已启用 \(provider.enabledModels.count) 个模型")
+                    Text("已启用 \(provider.enabledModels.count) 个模型")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

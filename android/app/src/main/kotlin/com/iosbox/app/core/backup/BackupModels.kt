@@ -68,7 +68,8 @@ data class BackupArchive(
     val books: List<BookVolumeSnapshot>? = null,
     val flashcards: List<JsonElement>? = null,
     val personaProfiles: List<JsonElement>? = null,
-    val shelfPositions: List<ShelfPositionSnapshot>? = null
+    val shelfPositions: List<ShelfPositionSnapshot>? = null,
+    val tombstones: List<SyncTombstone>? = null
 ) {
     companion object {
         const val CURRENT_FORMAT_VERSION = 7
@@ -319,6 +320,7 @@ data class ImportSummary(
     val memories: Int = 0,
     val books: Int = 0,
     val flashcards: Int = 0,
+    val deleted: Int = 0,
     val skipped: Int = 0,
     val confirmedCredentials: Int = 0,
     val failedCredentialWrites: Int = 0,
@@ -346,6 +348,7 @@ data class ImportSummary(
             if (requests > 0) parts.add(L10n.text("请求记录 $requests 条", "$requests requests"))
             if (books > 0) parts.add(L10n.text("书籍 $books 本", "$books books"))
             if (memories > 0) parts.add(L10n.text("记忆 $memories 条", "$memories memories"))
+            if (deleted > 0) parts.add(L10n.text("同步移除 $deleted 项", "$deleted removed via sync"))
             if (skipped > 0) parts.add(L10n.text("跳过已存在的 $skipped 项", "$skipped existing items skipped"))
 
             val lines = mutableListOf<String>()
@@ -356,7 +359,7 @@ data class ImportSummary(
             if (providers > 0) {
                 lines.add(L10n.text(
                     "请在服务商设置中核对导入的连接地址，再启用服务商。",
-                    "Review each imported endpoint in Providers before enabling it."
+                    "Review each imported endpoint in Settings before enabling it."
                 ))
             }
             if (flashcardRestoreFailed) {

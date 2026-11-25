@@ -18,6 +18,17 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
 
     @ObservationIgnored private let synthesizer = AVSpeechSynthesizer()
     @ObservationIgnored private var activeUtteranceID: ObjectIdentifier?
+    @ObservationIgnored private var streamingMessageID: UUID?
+    @ObservationIgnored private var streamingUtteranceIDs: Set<ObjectIdentifier> = []
+    @ObservationIgnored private var streamingEnded = false
+    @ObservationIgnored private var streamingPersonaID: UUID?
+    @ObservationIgnored private var streamingCloudSynthesizer: CloudSpeechSynthesizerHandler?
+    @ObservationIgnored private var streamingCloudQueue: [(id: UUID, task: Task<Data, Error>, fallbackText: String)] = []
+    @ObservationIgnored private var streamingCloudLoopTask: Task<Void, Never>?
+    @ObservationIgnored private var streamingCloudLoopToken: UUID?
+    @ObservationIgnored private var streamingCloudAudioContinuation: CheckedContinuation<Bool, Never>?
+    @ObservationIgnored private var streamingAudioSessionReady = false
+    @ObservationIgnored private var pendingLocalStreamingUtterances: [AVSpeechUtterance] = []
     @ObservationIgnored private var audioPlayer: AVAudioPlayer?
     @ObservationIgnored private var activePlayerID: ObjectIdentifier?
     @ObservationIgnored private var cloudSpeechTask: Task<Void, Never>?
@@ -172,6 +183,16 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
     }
 
     private func speakLocally(messageID: UUID, text: String, personaID: UUID?) {
+        let utterance = makeUtterance(text: text, personaID: personaID)
+        activeUtteranceID = ObjectIdentifier(utterance)
+        speakingMessageID = messageID
+        activateAudioSession(forRecording: false) { [weak self] _ in
+            guard let self, self.activeUtteranceID == ObjectIdentifier(utterance) else { return }
+            self.synthesizer.speak(utterance)
+        }
+    }
+
+    private func makeUtterance(text: String, personaID: UUID?) -> AVSpeechUtterance {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = preferredVoice(for: text, personaID: personaID)
         if let personaID {
@@ -183,24 +204,201 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
         } else {
             utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         }
-        activeUtteranceID = ObjectIdentifier(utterance)
-        speakingMessageID = messageID
-        activateAudioSession(forRecording: false) { [weak self] _ in
-            guard let self, self.activeUtteranceID == ObjectIdentifier(utterance) else { return }
-            self.synthesizer.speak(utterance)
+        return utterance
+    }
+
+    // MARK: - Streaming Sentence-by-Sentence TTS
+
+    func beginStreamingSpeech(
+        messageID: UUID,
+        personaID: UUID? = nil,
+        cloudSynthesizer: CloudSpeechSynthesizerHandler? = nil,
+        onFinished: (@MainActor () -> Void)? = nil
+    ) {
+        if dictationToken != nil {
+            stopDictation()
         }
+        stopSpeaking()
+        streamingMessageID = messageID
+        speakingMessageID = messageID
+        streamingPersonaID = personaID
+        streamingCloudSynthesizer = cloudSynthesizer
+        streamingEnded = false
+        streamingAudioSessionReady = false
+        pendingLocalStreamingUtterances.removeAll()
+        onSpeechFinished = onFinished
+
+        activateAudioSession(forRecording: false) { [weak self] _ in
+            guard let self, self.streamingMessageID == messageID else { return }
+            self.streamingAudioSessionReady = true
+            let queued = self.pendingLocalStreamingUtterances
+            self.pendingLocalStreamingUtterances.removeAll()
+            for utterance in queued {
+                self.synthesizer.speak(utterance)
+            }
+            if self.streamingCloudSynthesizer != nil && !self.streamingCloudQueue.isEmpty {
+                self.startStreamingCloudLoopIfNeeded(messageID: messageID)
+            } else if self.streamingEnded && self.streamingUtteranceIDs.isEmpty && self.streamingCloudQueue.isEmpty && self.activePlayerID == nil && self.streamingCloudLoopTask == nil {
+                self.completeStreamingSession(finishedNaturally: true)
+            }
+        }
+    }
+
+    func enqueueStreamingSentence(_ sentence: String, for messageID: UUID) {
+        guard streamingMessageID == messageID else { return }
+        let cleaned = Self.cleanForSpeech(sentence).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return }
+
+        if let cloud = streamingCloudSynthesizer {
+            let chunkID = UUID()
+            let prefetchTask = Task<Data, Error> {
+                try await cloud(cleaned)
+            }
+            streamingCloudQueue.append((id: chunkID, task: prefetchTask, fallbackText: cleaned))
+            if streamingAudioSessionReady {
+                startStreamingCloudLoopIfNeeded(messageID: messageID)
+            }
+        } else {
+            let utterance = makeUtterance(text: cleaned, personaID: streamingPersonaID)
+            let uid = ObjectIdentifier(utterance)
+            streamingUtteranceIDs.insert(uid)
+            if streamingAudioSessionReady {
+                synthesizer.speak(utterance)
+            } else {
+                pendingLocalStreamingUtterances.append(utterance)
+            }
+        }
+    }
+
+    func finishStreamingSpeech(for messageID: UUID) {
+        guard streamingMessageID == messageID else { return }
+        streamingEnded = true
+        guard streamingAudioSessionReady else { return }
+        if streamingCloudSynthesizer != nil {
+            if streamingCloudLoopTask == nil && streamingCloudQueue.isEmpty && activePlayerID == nil {
+                completeStreamingSession(finishedNaturally: true)
+            }
+        } else if streamingUtteranceIDs.isEmpty && pendingLocalStreamingUtterances.isEmpty {
+            completeStreamingSession(finishedNaturally: true)
+        }
+    }
+
+    private func startStreamingCloudLoopIfNeeded(messageID: UUID) {
+        guard streamingCloudLoopTask == nil, streamingAudioSessionReady else { return }
+        let loopToken = UUID()
+        streamingCloudLoopToken = loopToken
+        streamingCloudLoopTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.streamingCloudLoopToken == loopToken {
+                    self.streamingCloudLoopTask = nil
+                    self.streamingCloudLoopToken = nil
+                }
+            }
+            while !Task.isCancelled && self.streamingMessageID == messageID {
+                guard !self.streamingCloudQueue.isEmpty else {
+                    if self.streamingEnded {
+                        self.completeStreamingSession(finishedNaturally: true)
+                    }
+                    return
+                }
+                let nextItem = self.streamingCloudQueue.removeFirst()
+                self.isSynthesizingCloudSpeech = true
+                do {
+                    let audioData = try await nextItem.task.value
+                    self.isSynthesizingCloudSpeech = false
+                    guard !Task.isCancelled, self.streamingMessageID == messageID else { return }
+                    let played = await self.playStreamingCloudAudio(audioData, messageID: messageID)
+                    if !played && !Task.isCancelled && self.streamingMessageID == messageID {
+                        await self.speakStreamingFallbackLocally(nextItem.fallbackText, messageID: messageID)
+                    }
+                } catch is CancellationError {
+                    self.isSynthesizingCloudSpeech = false
+                    return
+                } catch {
+                    self.isSynthesizingCloudSpeech = false
+                    guard !Task.isCancelled, self.streamingMessageID == messageID else { return }
+                    await self.speakStreamingFallbackLocally(nextItem.fallbackText, messageID: messageID)
+                }
+            }
+        }
+    }
+
+    private func playStreamingCloudAudio(_ data: Data, messageID: UUID) async -> Bool {
+        guard streamingMessageID == messageID else { return false }
+        guard let player = try? AVAudioPlayer(data: data) else { return false }
+        player.delegate = self
+        let pid = ObjectIdentifier(player)
+        audioPlayer = player
+        activePlayerID = pid
+        guard player.play() else {
+            audioPlayer = nil
+            activePlayerID = nil
+            return false
+        }
+        return await withCheckedContinuation { continuation in
+            streamingCloudAudioContinuation = continuation
+        }
+    }
+
+    private func speakStreamingFallbackLocally(_ text: String, messageID: UUID) async {
+        guard streamingMessageID == messageID else { return }
+        let utterance = makeUtterance(text: text, personaID: streamingPersonaID)
+        let uid = ObjectIdentifier(utterance)
+        streamingUtteranceIDs.insert(uid)
+        synthesizer.speak(utterance)
+        while streamingUtteranceIDs.contains(uid) && streamingMessageID == messageID && !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(60))
+        }
+    }
+
+    private func completeStreamingSession(finishedNaturally: Bool) {
+        let callback = finishedNaturally ? onSpeechFinished : nil
+        onSpeechFinished = nil
+        streamingMessageID = nil
+        streamingEnded = false
+        streamingAudioSessionReady = false
+        pendingLocalStreamingUtterances.removeAll()
+        streamingCloudLoopToken = nil
+        streamingPersonaID = nil
+        streamingCloudSynthesizer = nil
+        streamingUtteranceIDs.removeAll()
+        speakingMessageID = nil
+        isSynthesizingCloudSpeech = false
+        deactivateAudioSessionIfIdle()
+        callback?()
     }
 
     func stopSpeaking() {
         let hadActiveSpeech = activeUtteranceID != nil
+            || !streamingUtteranceIDs.isEmpty
+            || !pendingLocalStreamingUtterances.isEmpty
+            || streamingMessageID != nil
             || activePlayerID != nil
             || cloudSpeechTask != nil
+            || streamingCloudLoopTask != nil
             || speakingMessageID != nil
             || synthesizer.isSpeaking
             || (audioPlayer?.isPlaying == true)
         onSpeechFinished = nil
         cloudSpeechTask?.cancel()
         cloudSpeechTask = nil
+        streamingCloudLoopTask?.cancel()
+        streamingCloudLoopTask = nil
+        streamingCloudLoopToken = nil
+        for item in streamingCloudQueue { item.task.cancel() }
+        streamingCloudQueue.removeAll()
+        pendingLocalStreamingUtterances.removeAll()
+        streamingAudioSessionReady = false
+        if let cont = streamingCloudAudioContinuation {
+            streamingCloudAudioContinuation = nil
+            cont.resume(returning: false)
+        }
+        streamingMessageID = nil
+        streamingEnded = false
+        streamingPersonaID = nil
+        streamingCloudSynthesizer = nil
+        streamingUtteranceIDs.removeAll()
         isSynthesizingCloudSpeech = false
         activePlayerID = nil
         if let player = audioPlayer {
@@ -230,6 +428,11 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
             guard let self, self.activePlayerID == finishedID else { return }
             self.activePlayerID = nil
             self.audioPlayer = nil
+            if let cont = self.streamingCloudAudioContinuation {
+                self.streamingCloudAudioContinuation = nil
+                cont.resume(returning: flag)
+                return
+            }
             self.speakingMessageID = nil
             let callback = flag ? self.onSpeechFinished : nil
             self.onSpeechFinished = nil
@@ -244,6 +447,11 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
             guard let self, self.activePlayerID == erroredID else { return }
             self.activePlayerID = nil
             self.audioPlayer = nil
+            if let cont = self.streamingCloudAudioContinuation {
+                self.streamingCloudAudioContinuation = nil
+                cont.resume(returning: false)
+                return
+            }
             self.speakingMessageID = nil
             self.onSpeechFinished = nil
             self.deactivateAudioSessionIfIdle()
@@ -265,6 +473,14 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
     }
 
     func handleUtteranceEnded(_ utteranceID: ObjectIdentifier, finishedNaturally: Bool = true) {
+        if streamingUtteranceIDs.remove(utteranceID) != nil {
+            if !finishedNaturally {
+                completeStreamingSession(finishedNaturally: false)
+            } else if streamingEnded && streamingUtteranceIDs.isEmpty && streamingCloudSynthesizer == nil {
+                completeStreamingSession(finishedNaturally: true)
+            }
+            return
+        }
         if activeUtteranceID == utteranceID {
             activeUtteranceID = nil
             speakingMessageID = nil
@@ -338,8 +554,11 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
               dictationToken == nil,
               !synthesizer.isSpeaking,
               activeUtteranceID == nil,
+              streamingUtteranceIDs.isEmpty,
+              streamingMessageID == nil,
               activePlayerID == nil,
-              cloudSpeechTask == nil else { return }
+              cloudSpeechTask == nil,
+              streamingCloudLoopTask == nil else { return }
         audioSessionRequested = false
         sessionQueue.async {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)

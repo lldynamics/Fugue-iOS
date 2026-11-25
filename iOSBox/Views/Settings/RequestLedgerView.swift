@@ -3,6 +3,8 @@ import SwiftData
 import Charts
 
 struct RequestLedgerView: View {
+    var onClose: (() -> Void)? = nil
+
     @Query(sort: \RequestRecord.startedAt, order: .reverse) private var records: [RequestRecord]
     @Query(filter: #Predicate<ChatMessage> { $0.comparisonGroupID != nil && $0.synthesisSourceDigest == nil })
     private var arenaMessages: [ChatMessage]
@@ -125,7 +127,7 @@ struct RequestLedgerView: View {
 
                 filterSection
                 if !rows.isEmpty {
-                    Section("用量与预估费用") {
+                    Section("Token 与费用明细") {
                         let buckets = RequestLedger.trendBuckets(rows, period: period)
                         if buckets.count >= 2 {
                             VStack(alignment: .leading, spacing: DS.Spacing.xs) {
@@ -145,8 +147,6 @@ struct RequestLedgerView: View {
                             .padding(.vertical, DS.Spacing.xxs)
                         }
 
-                        LabeledContent("请求次数", value: String(rows.count))
-                        LabeledContent("完整完成", value: String(succeededCount))
                         LabeledContent("已知输入 Token", value: Double(totalPrompt).formatted(.number.precision(.fractionLength(0))))
                         LabeledContent("已知输出 Token", value: Double(totalCompletion).formatted(.number.precision(.fractionLength(0))))
                         if totalCached > 0 {
@@ -154,8 +154,10 @@ struct RequestLedgerView: View {
                         }
                         let searchCount = rows.count - modelRows.count
                         if searchCount > 0 { Text("含联网搜索 \(searchCount) 次；搜索费用另计。").font(.caption).foregroundStyle(.secondary) }
-                        ForEach(totals.keys.sorted(), id: \.self) { currency in
-                            LabeledContent("预估费用", value: RequestLedger.costText(totals[currency] ?? 0, currency: currency))
+                        if totals.count > 1 {
+                            ForEach(totals.keys.sorted(), id: \.self) { currency in
+                                LabeledContent("预估费用", value: RequestLedger.costText(totals[currency] ?? 0, currency: currency))
+                            }
                         }
                         ForEach(savings.keys.sorted(), id: \.self) { currency in
                             LabeledContent("缓存已节省", value: RequestLedger.costText(savings[currency] ?? 0, currency: currency))
@@ -309,10 +311,20 @@ struct RequestLedgerView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(DS.Surface.grouped)
             .navigationTitle("用量与测速")
             .toolbar {
-                Button(action: openBudgetEditor) { Label("月度预算", systemImage: "gauge.with.dots.needle.50percent") }
-                    .accessibilityIdentifier("usage.budget")
+                if let onClose {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("完成", action: onClose)
+                            .tint(.primary)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: openBudgetEditor) { Label("月度预算", systemImage: "gauge.with.dots.needle.50percent") }
+                        .accessibilityIdentifier("usage.budget")
+                }
             }
             .onChange(of: referenceDate) { _, _ in visibleLimit = 50 }
             .onChange(of: providerID) { _, _ in modelID = nil; visibleLimit = 50 }

@@ -451,8 +451,8 @@ class ChatViewModel(
         if (tavilyKey.isEmpty()) {
             useWebSearchOnce.value = false
             bannerError.value = L10n.text(
-                "请先在「服务商 → 联网搜索」配置 Tavily API Key。",
-                "Configure a Tavily API key in Providers -> Web Search first."
+                "请先在「设置 → 联网搜索」配置 Tavily API Key。",
+                "Configure a Tavily API key in Settings -> Web Search first."
             )
             return
         }
@@ -949,8 +949,8 @@ class ChatViewModel(
             ?: return Result.failure(
                 IllegalStateException(
                     L10n.text(
-                        "请先在「服务商」页面配置并启用一个 OpenAI 兼容服务商（如 OpenAI、Groq、硅基流动等）。",
-                        "Configure and enable an OpenAI-compatible provider in Providers first."
+                        "请先在「设置」页面配置并启用一个 OpenAI 兼容服务商（如 OpenAI、Groq、硅基流动等）。",
+                        "Configure and enable an OpenAI-compatible provider in Settings first."
                     )
                 )
             )

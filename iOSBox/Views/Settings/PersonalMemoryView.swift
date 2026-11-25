@@ -4,6 +4,7 @@ import SwiftData
 struct PersonalMemoryView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \PersonalMemory.createdAt) private var memories: [PersonalMemory]
+    @State private var scopeStore = MemoryScopeStore.shared
     @State private var editor: MemoryDraft?
     @State private var error: String?
 
@@ -11,9 +12,26 @@ struct PersonalMemoryView: View {
         List {
             Section {
                 ForEach(memories) { memory in
+                    let tags = scopeStore.tags(for: memory.id)
                     HStack {
-                        Button { editor = MemoryDraft(id: memory.id, text: memory.content) } label: {
-                            Text(memory.content).foregroundStyle(.primary).multilineTextAlignment(.leading)
+                        Button {
+                            editor = MemoryDraft(id: memory.id, text: memory.content, tagsText: tags.joined(separator: ", "))
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(memory.content).foregroundStyle(.primary).multilineTextAlignment(.leading)
+                                if !tags.isEmpty {
+                                    HStack(spacing: 4) {
+                                        ForEach(tags, id: \.self) { tag in
+                                            Text("#\(tag)")
+                                                .font(.caption2.weight(.medium))
+                                                .foregroundStyle(.secondary)
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(Color(.secondarySystemBackground), in: Capsule())
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Spacer()
                         Toggle("启用记忆", isOn: Binding(get: { memory.isEnabled }, set: {
@@ -26,7 +44,9 @@ struct PersonalMemoryView: View {
                     }
                     .swipeActions {
                         Button("删除", role: .destructive) { remove(memory) }
-                        Button("编辑") { editor = MemoryDraft(id: memory.id, text: memory.content) }
+                        Button("编辑") {
+                            editor = MemoryDraft(id: memory.id, text: memory.content, tagsText: tags.joined(separator: ", "))
+                        }
                     }
                 }
                 Button { editor = MemoryDraft() } label: { Label("添加记忆", systemImage: "plus") }
@@ -52,6 +72,10 @@ struct PersonalMemoryView: View {
             if let item = try transaction.fetch(FetchDescriptor<PersonalMemory>(predicate: #Predicate { $0.id == id })).first {
                 transaction.delete(item)
                 try transaction.save()
+                if !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
+                    SyncTombstoneStore.shared.recordDeletion(kind: .memory, id: id)
+                }
+                scopeStore.remove(memoryID: id)
                 context.processPendingChanges()
             }
         } catch { self.error = error.localizedDescription }
@@ -61,6 +85,7 @@ struct PersonalMemoryView: View {
 private struct MemoryDraft: Identifiable {
     var id = UUID()
     var text = ""
+    var tagsText = ""
 }
 
 private struct MemoryEditorSheet: View {
@@ -68,15 +93,29 @@ private struct MemoryEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     let draft: MemoryDraft
     @State private var text: String
+    @State private var tagsText: String
     @State private var error: String?
 
-    init(draft: MemoryDraft) { self.draft = draft; _text = State(initialValue: draft.text) }
+    init(draft: MemoryDraft) {
+        self.draft = draft
+        _text = State(initialValue: draft.text)
+        _tagsText = State(initialValue: draft.tagsText)
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                TextField("例如：我使用 Swift，偏好简体中文回答。", text: $text, axis: .vertical).lineLimit(5...12)
-                Text("\(text.count) / 500").font(.caption).foregroundStyle(text.count > 500 ? .red : .secondary)
+                Section("记忆内容") {
+                    TextField("例如：我使用 Swift，偏好简体中文回答。", text: $text, axis: .vertical).lineLimit(5...12)
+                    Text("\(text.count) / 500").font(.caption).foregroundStyle(text.count > 500 ? .red : .secondary)
+                }
+                Section {
+                    TextField("留空为全局记忆，或逗号分隔如：工程, 写作", text: $tagsText)
+                } header: {
+                    Text("适用分区标签（可选）")
+                } footer: {
+                    Text("为记忆打上标签后，在对应标签的项目空间对话中会自动命中；留空则在所有对话中生效。")
+                }
                 if let error { Text(error).foregroundStyle(.red) }
             }
             .navigationTitle("编辑记忆")
@@ -100,6 +139,7 @@ private struct MemoryEditorSheet: View {
                 transaction.insert(PersonalMemory(id: draft.id, content: text.trimmingCharacters(in: .whitespacesAndNewlines)))
             }
             try transaction.save()
+            MemoryScopeStore.shared.setTags(ProjectWorkspace.normalizedTags(from: tagsText), for: draft.id)
             context.processPendingChanges()
             dismiss()
         } catch { self.error = error.localizedDescription }

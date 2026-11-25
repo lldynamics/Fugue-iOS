@@ -151,6 +151,8 @@ struct BookmarksHubSheet: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(DS.Surface.grouped)
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索收藏内容、对话或模型")
             .navigationTitle("跨会话收藏夹")
             .navigationBarTitleDisplayMode(.inline)

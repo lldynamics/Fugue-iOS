@@ -22,7 +22,7 @@ struct AddProviderSheet: View {
     @State private var clipboardHint: String?
 
     private var request: ModelCatalogRequest {
-        ModelCatalogRequest(protocolType: protocolType, baseURL: baseURL, apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
+        ModelCatalogRequest(protocolType: protocolType, baseURL: baseURL, apiKey: LLMClient.sanitizedAPIKey(apiKey))
     }
 
     private var suggestions: [ModelSpec] {

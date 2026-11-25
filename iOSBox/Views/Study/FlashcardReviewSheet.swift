@@ -16,6 +16,9 @@ struct FlashcardReviewSheet: View {
     @State private var showHint = false
     @State private var goodOrEasyCount = 0
     @State private var reviewedTotal = 0
+    @State private var cardDragX: CGFloat = 0
+
+    private var theme: DS.AccentTheme { preferences.accentTheme }
 
     private var currentCard: StudyFlashcard? {
         guard queue.indices.contains(currentIndex) else { return nil }
@@ -36,6 +39,7 @@ struct FlashcardReviewSheet: View {
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
+            .background(DS.Surface.canvas.ignoresSafeArea())
             .navigationTitle(sessionTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -69,36 +73,48 @@ struct FlashcardReviewSheet: View {
             HStack {
                 Text(card.deckName)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.indigo)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 3)
-                    .background(Color.indigo.opacity(0.12), in: Capsule())
+                    .foregroundStyle(theme.readableText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(theme.softFill, in: Capsule())
 
                 Spacer()
 
-                Text("\(currentIndex + 1) / \(queue.count)")
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.secondary)
+                if isFlipped && abs(cardDragX) > 22 {
+                    Text(cardDragX > 0 ? String(localized: "右滑 · 良好") : String(localized: "左滑 · 重来"))
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(cardDragX > 0 ? DS.AccentTheme.teal.readableText : .red)
+                        .transition(.opacity)
+                } else {
+                    Text("\(currentIndex + 1) / \(queue.count)")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             ProgressView(value: Double(currentIndex), total: Double(max(queue.count, 1)))
-                .tint(.indigo)
+                .tint(theme.solidFill)
         }
     }
 
     private func flipCardStage(card: StudyFlashcard) -> some View {
         ZStack {
-            // Front Face
+            // Front Stationery Card
             VStack(alignment: .leading, spacing: 14) {
-                Label("正面 · 回想问题", systemImage: "questionmark.circle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.indigo)
+                HStack {
+                    Label("正面 · 回想问题", systemImage: "sparkle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(theme.readableText)
+                    Spacer()
+                    FugueSealMark(character: "学", size: 20, theme: theme)
+                }
 
                 Spacer(minLength: 6)
 
                 ScrollView {
                     Text(card.front)
-                        .font(.title3.weight(.semibold))
+                        .font(DS.Typography.prose(size: 21, serif: preferences.literarySerifBody, weight: .semibold))
+                        .lineSpacing(6)
                         .foregroundStyle(.primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -110,14 +126,15 @@ struct FlashcardReviewSheet: View {
                             .foregroundStyle(.secondary)
                             .padding(10)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.indigo.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .background(theme.softFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     } else {
                         Button {
                             showHint = true
                         } label: {
                             Label("查看提示", systemImage: "lightbulb")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.indigo)
+                                .foregroundStyle(theme.readableText)
+                                .frame(minHeight: DS.TouchTarget.minimum)
                         }
                         .buttonStyle(.plain)
                     }
@@ -127,38 +144,51 @@ struct FlashcardReviewSheet: View {
 
                 HStack {
                     Spacer()
-                    Label("轻点卡片翻转核对答案", systemImage: "hand.tap")
+                    Label("轻点卡片翻面核对答案", systemImage: "hand.tap")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
             }
-            .padding(22)
+            .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .background(DS.Surface.card, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(alignment: .top) {
+                UnevenRoundedRectangle(topLeadingRadius: 24, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 24, style: .continuous)
+                    .fill(theme.solidFill)
+                    .frame(height: 3.5)
+            }
             .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(Color.indigo.opacity(0.22), lineWidth: 1.2)
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(DS.Surface.strongBorder, lineWidth: 1)
             )
+            .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: 6)
             .opacity(isFlipped ? 0 : 1)
             .accessibilityHidden(isFlipped)
 
-            // Back Face (counter-rotated so text is upright after 180 deg flip)
+            // Back Stationery Card (counter-rotated 180 deg)
             VStack(alignment: .leading, spacing: 14) {
-                Label("背面 · 标准解析", systemImage: "checkmark.seal.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.teal)
+                HStack {
+                    Label("背面 · 标准解析", systemImage: "checkmark.seal.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DS.AccentTheme.teal.readableText)
+                    Spacer()
+                    Text("左右滑动也可记分")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
 
                 Text(card.front)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
 
-                Divider()
+                Divider().overlay(DS.Surface.hairline)
 
                 ScrollView {
                     Text(card.back)
-                        .font(.body)
+                        .font(DS.Typography.prose(size: 17, serif: preferences.literarySerifBody))
+                        .lineSpacing(5.5)
                         .foregroundStyle(.primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -167,24 +197,32 @@ struct FlashcardReviewSheet: View {
 
                 HStack {
                     Spacer()
-                    Text("请根据刚才的回想顺畅度选择下方间隔档位")
+                    Text("左滑「重来」· 右滑「良好」，或点选下方间隔档位")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
             }
-            .padding(22)
+            .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .background(DS.Surface.card, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(alignment: .top) {
+                UnevenRoundedRectangle(topLeadingRadius: 24, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 24, style: .continuous)
+                    .fill(DS.AccentTheme.teal.solidFill)
+                    .frame(height: 3.5)
+            }
             .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(Color.teal.opacity(0.32), lineWidth: 1.2)
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(DS.Surface.strongBorder, lineWidth: 1)
             )
+            .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: 6)
             .rotation3DEffect(.degrees(180), axis: (x: 0, y: 1, z: 0))
             .opacity(isFlipped ? 1 : 0)
             .accessibilityHidden(!isFlipped)
         }
         .rotation3DEffect(.degrees(isFlipped ? 180 : 0), axis: (x: 0, y: 1, z: 0), perspective: 0.65)
+        .offset(x: cardDragX)
+        .rotationEffect(.degrees(Double(cardDragX) * 0.04))
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) {
@@ -192,6 +230,27 @@ struct FlashcardReviewSheet: View {
             }
             preferences.triggerSelectionHaptic()
         }
+        .gesture(
+            DragGesture(minimumDistance: 16)
+                .onChanged { value in
+                    guard isFlipped else { return }
+                    cardDragX = value.translation.width * 0.85
+                }
+                .onEnded { value in
+                    guard isFlipped else { return }
+                    if value.translation.width > 72 {
+                        cardDragX = 0
+                        submitRating(.good, for: card)
+                    } else if value.translation.width < -72 {
+                        cardDragX = 0
+                        submitRating(.again, for: card)
+                    } else {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                            cardDragX = 0
+                        }
+                    }
+                }
+        )
     }
 
     @ViewBuilder
@@ -210,9 +269,14 @@ struct FlashcardReviewSheet: View {
                                 .opacity(0.85)
                         }
                         .foregroundStyle(ratingColor(rating))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(ratingColor(rating).opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum)
+                        .padding(.vertical, 8)
+                        .background(ratingColor(rating).opacity(0.13), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(ratingColor(rating).opacity(0.24), lineWidth: 1)
+                        )
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -226,10 +290,11 @@ struct FlashcardReviewSheet: View {
             } label: {
                 Text("显示答案")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(Color.indigo, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .foregroundStyle(theme.solidForeground)
+                    .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum)
+                    .padding(.vertical, 10)
+                    .background(theme.solidFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
@@ -238,12 +303,10 @@ struct FlashcardReviewSheet: View {
     private var completionSummary: some View {
         VStack(spacing: 16) {
             Spacer()
-            Image(systemName: "sparkles")
-                .font(.system(size: 44))
-                .foregroundStyle(.indigo)
+            FugueSealMark(character: "成", size: 54, theme: theme)
 
             Text("完成本轮闪卡复习！")
-                .font(.title3.weight(.bold))
+                .font(.system(.title3, design: preferences.literarySerifBody ? .serif : .default).weight(.bold))
 
             if reviewedTotal > 0 {
                 let accuracy = Int((Double(goodOrEasyCount) / Double(reviewedTotal) * 100).rounded())
@@ -257,11 +320,13 @@ struct FlashcardReviewSheet: View {
             } label: {
                 Text("完成")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(theme.solidForeground)
                     .padding(.horizontal, 36)
                     .padding(.vertical, 12)
-                    .background(Color.indigo, in: Capsule())
+                    .frame(minHeight: DS.TouchTarget.minimum)
+                    .background(theme.solidFill, in: Capsule())
             }
+            .buttonStyle(.plain)
             .padding(.top, 8)
             Spacer()
         }
@@ -276,6 +341,7 @@ struct FlashcardReviewSheet: View {
             goodOrEasyCount += 1
         }
         preferences.triggerLightHaptic()
+        cardDragX = 0
         isFlipped = false
         showHint = false
         currentIndex += 1
@@ -284,9 +350,9 @@ struct FlashcardReviewSheet: View {
     private func ratingColor(_ rating: StudyReviewRating) -> Color {
         switch rating {
         case .again: return .red
-        case .hard: return .orange
-        case .good: return .blue
-        case .easy: return .green
+        case .hard: return DS.AccentTheme.amber.readableText
+        case .good: return DS.AccentTheme.cobalt.readableText
+        case .easy: return DS.AccentTheme.teal.readableText
         }
     }
 }
@@ -298,11 +364,14 @@ struct FlashcardEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var saveError: String?
     @State private var store = FlashcardStore.shared
+    @State private var preferences = AppPreferences.shared
 
     @State private var deckName = ""
     @State private var front = ""
     @State private var back = ""
     @State private var hint = ""
+
+    private var theme: DS.AccentTheme { preferences.accentTheme }
 
     private var canSave: Bool {
         !front.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -313,6 +382,11 @@ struct FlashcardEditorSheet: View {
         NavigationStack {
             Form {
                 if let saveError { Text(verbatim: saveError).foregroundStyle(.red) }
+                if !canSave {
+                    Text("填写正面和背面后可保存。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 Section("所属卡组") {
                     TextField("例如：Swift 并发 / 《渡河记》", text: $deckName)
                     if !store.deckNames.isEmpty {
@@ -322,11 +396,12 @@ struct FlashcardEditorSheet: View {
                                     Button(name) {
                                         deckName = name
                                     }
-                                    .font(.caption)
-                                    .padding(.horizontal, 9)
-                                    .padding(.vertical, 4)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(deckName == name ? theme.readableText : .primary)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
                                     .background(
-                                        deckName == name ? Color.indigo.opacity(0.18) : Color(.secondarySystemBackground),
+                                        deckName == name ? theme.softFill : DS.Surface.subtle,
                                         in: Capsule()
                                     )
                                     .buttonStyle(.plain)
@@ -336,12 +411,12 @@ struct FlashcardEditorSheet: View {
                     }
                 }
 
-                Section("正面（回想提问）") {
+                Section("正面（必填：回想提问）") {
                     TextEditor(text: $front)
                         .frame(minHeight: 80)
                 }
 
-                Section("背面（核心答案与解析）") {
+                Section("背面（必填：核心答案与解析）") {
                     TextEditor(text: $back)
                         .frame(minHeight: 110)
                 }
@@ -350,6 +425,8 @@ struct FlashcardEditorSheet: View {
                     TextField("卡壳时给自己的小提示…", text: $hint)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(DS.Surface.grouped)
             .navigationTitle(existingCard == nil ? String(localized: "新建闪卡") : String(localized: "编辑闪卡"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

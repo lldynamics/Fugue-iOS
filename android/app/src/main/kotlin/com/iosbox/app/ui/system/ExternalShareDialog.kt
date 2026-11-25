@@ -226,7 +226,7 @@ fun ExternalShareDialog(
                         )
                         Text(
                             text = selectedTarget?.let { "${it.providerName} · ${it.modelDisplayName}" }
-                                ?: L10n.text("请先在「服务商」配置可用模型", "Configure a ready model first"),
+                                ?: L10n.text("请先在「设置」配置可用模型", "Configure a ready model first"),
                             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium)
                         )
                     }

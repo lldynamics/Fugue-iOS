@@ -80,12 +80,14 @@ enum EncryptedBackupService {
     static func makeExportPayload(
         context: ModelContext,
         flashcardStore: FlashcardStore? = nil,
-        knowledgeStore: PresetKnowledgeStore = .shared
+        knowledgeStore: PresetKnowledgeStore = .shared,
+        tombstoneStore: SyncTombstoneStore? = nil
     ) throws -> FullPayload {
         let archive = try BackupService.makeArchive(
             context: context,
             flashcardStore: flashcardStore,
-            knowledgeStore: knowledgeStore
+            knowledgeStore: knowledgeStore,
+            tombstoneStore: tombstoneStore
         )
         let providers = try context.fetch(FetchDescriptor<ProviderConfig>(sortBy: [SortDescriptor(\.sortOrder)]))
 
@@ -262,6 +264,7 @@ enum EncryptedBackupService {
         to context: ModelContext,
         flashcardStore: FlashcardStore? = nil,
         knowledgeStore: PresetKnowledgeStore = .shared,
+        tombstonePolicy: SyncTombstonePolicy = .ignore,
         restoreSecret: (String, String) -> Bool = KeychainService.shared.restoreSecretIfMissing
     ) throws -> ImportSummary {
         guard PersistenceController.canCommitUserData(in: context) else { throw BackupError.storageUnavailable }
@@ -276,8 +279,13 @@ enum EncryptedBackupService {
             guard let bundle = bundles[archive.providers[i].id], validDestination(bundle.rawBaseURL) else { continue }
             archive.providers[i].baseURL = bundle.rawBaseURL
         }
-        var summary = try BackupService.apply(.full(archive), to: context,
-                                              flashcardStore: flashcardStore, knowledgeStore: knowledgeStore)
+        var summary = try BackupService.apply(
+            .full(archive),
+            to: context,
+            flashcardStore: flashcardStore,
+            knowledgeStore: knowledgeStore,
+            tombstonePolicy: tombstonePolicy
+        )
         let archived = Dictionary(uniqueKeysWithValues: archive.providers.map { ($0.id, $0) })
         let local = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<ProviderConfig>()).map { ($0.id, $0) })
 
@@ -289,6 +297,10 @@ enum EncryptedBackupService {
 
         for bundle in payload.providerSecrets {
             let id = bundle.providerID
+            if case .enforce(let tombstoneStore) = tombstonePolicy,
+               tombstoneStore.latestDeletion(kind: .provider, id: id) != nil {
+                continue
+            }
             let raw = bundle.rawBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let source = archived[id], let provider = local[id],
                   APIProtocolType(rawValue: source.protocolRaw) != nil, provider.protocolRaw == source.protocolRaw,
@@ -343,14 +355,16 @@ enum EncryptedBackupService {
         password: String,
         to context: ModelContext,
         flashcardStore: FlashcardStore? = nil,
-        knowledgeStore: PresetKnowledgeStore = .shared
+        knowledgeStore: PresetKnowledgeStore = .shared,
+        tombstonePolicy: SyncTombstonePolicy = .ignore
     ) throws -> ImportSummary {
         let payload = try decryptPayload(data: data, password: password)
         return try applyDecryptedPayload(
             payload,
             to: context,
             flashcardStore: flashcardStore,
-            knowledgeStore: knowledgeStore
+            knowledgeStore: knowledgeStore,
+            tombstonePolicy: tombstonePolicy
         )
     }
 
@@ -360,7 +374,8 @@ enum EncryptedBackupService {
         password: String,
         to context: ModelContext,
         flashcardStore: FlashcardStore? = nil,
-        knowledgeStore: PresetKnowledgeStore = .shared
+        knowledgeStore: PresetKnowledgeStore = .shared,
+        tombstonePolicy: SyncTombstonePolicy = .ignore
     ) async throws -> ImportSummary {
         let payload = try await Task.detached(priority: .userInitiated) {
             try decryptPayload(data: data, password: password)
@@ -369,7 +384,8 @@ enum EncryptedBackupService {
             payload,
             to: context,
             flashcardStore: flashcardStore,
-            knowledgeStore: knowledgeStore
+            knowledgeStore: knowledgeStore,
+            tombstonePolicy: tombstonePolicy
         )
     }
 

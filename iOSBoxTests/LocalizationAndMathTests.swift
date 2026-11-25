@@ -31,6 +31,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(try english("夜奔"), "Fugue")
         XCTAssertEqual(try english("新对话"), "New Chat")
         XCTAssertEqual(try english("服务商"), "Providers")
+        XCTAssertEqual(try english("工作台"), "Workspace")
         XCTAssertEqual(try english("停止生成"), "Stop Generating")
         XCTAssertEqual(try english("OpenAI 兼容协议"), "OpenAI-Compatible")
         XCTAssertEqual(try english("全能日常助手"), "Everyday Assistant")
@@ -39,8 +40,8 @@ final class LocalizationTests: XCTestCase {
     func testFormatStringsKeepTheirPlaceholders() throws {
         XCTAssertEqual(String(format: try english("最近 %lld 条"), 20), "Last 20")
         XCTAssertEqual(String(format: try english("模型列表（已启用 %lld/%lld）"), 3, 10), "Models (3/10 enabled)")
-        XCTAssertEqual(String(format: try english("请先在「服务商」页面为「%@」配置 API Key（本地服务若免鉴权可忽略）"), "DeepSeek"),
-                       "Add an API key for “DeepSeek” on the Providers tab first (not needed for local services without auth)")
+        XCTAssertEqual(String(format: try english("请先在「设置」页面为「%@」配置 API Key（本地服务若免鉴权可忽略）"), "DeepSeek"),
+                       "Add an API key for “DeepSeek” in Settings first (not needed for local services without authentication).")
     }
 
     func testEnglishInfoPlistPermissionStrings() throws {

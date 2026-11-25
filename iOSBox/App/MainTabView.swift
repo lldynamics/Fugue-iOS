@@ -3,12 +3,59 @@ import SwiftData
 
 @MainActor @Observable
 final class WorkspaceNavigation {
+    enum ModalDestination: String, Identifiable {
+        case workshop
+        case settings
+        case usage
+
+        var id: String { rawValue }
+    }
+
     var tab = 0
     var assistantSection: AssistantListView.WorkshopSection = .friends
+    var isDrawerPresented = false
+    var isInspectorPresented = false
+    var activeModal: ModalDestination?
+
+    func openWorkshop(_ section: AssistantListView.WorkshopSection? = nil) {
+        if let section {
+            assistantSection = section
+        }
+        isDrawerPresented = false
+        tab = 1
+        activeModal = .workshop
+    }
+
+    func openSettings() {
+        isDrawerPresented = false
+        tab = 2
+        activeModal = .settings
+    }
+
+    func openUsage() {
+        isDrawerPresented = false
+        tab = 3
+        activeModal = .usage
+    }
+
+    func closeModal() {
+        activeModal = nil
+        tab = 0
+    }
 
     func openBookshelf() {
-        assistantSection = .books
-        tab = 1
+        openWorkshop(.books)
+    }
+
+    func routeLegacySection(_ index: Int) {
+        switch index {
+        case 1: openWorkshop()
+        case 2: openSettings()
+        case 3: openUsage()
+        default:
+            activeModal = nil
+            tab = 0
+        }
     }
 }
 
@@ -16,7 +63,6 @@ struct MainTabView: View {
     /// Shown once if the local database had to be rebuilt at launch.
     var startupNotice: String?
 
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @State private var integration = SystemIntegration.shared
@@ -31,43 +77,41 @@ struct MainTabView: View {
     @State private var hasSyncedSpotlightOnLaunch = false
 
     var body: some View {
-        TabView(selection: $navigation.tab) {
-            ConversationListView(
-                pendingConversationToOpen: $pendingConversationToOpen,
-                pendingMessageRoute: $pendingMessageRouteToOpen,
-                selectSection: { navigation.tab = $0 }
-            )
-            .toolbar(horizontalSizeClass == .regular ? .hidden : .automatic, for: .tabBar)
-            .tabItem {
-                Label("对话", systemImage: "bubble.left.and.bubble.right.fill")
-            }
-            .tag(0)
-
-            AssistantListView(activeSection: $navigation.assistantSection) { preset in
-                startChat(with: preset)
-            }
-            .tabItem {
-                Label("好友", systemImage: "person.2.fill")
-            }
-            .tag(1)
-
-            ProviderListView()
-                .tabItem {
-                    Label(preferences.simpleDailyMode ? String(localized: "设置") : String(localized: "服务商"), systemImage: preferences.simpleDailyMode ? "gearshape.fill" : "server.rack")
-                }
-                .tag(2)
-
-            if !preferences.simpleDailyMode {
-                RequestLedgerView()
-                    .tabItem { Label("用量", systemImage: "chart.bar.xaxis") }
-                    .tag(3)
-            }
-        }
+        ConversationListView(
+            pendingConversationToOpen: $pendingConversationToOpen,
+            pendingMessageRoute: $pendingMessageRouteToOpen,
+            selectSection: { navigation.routeLegacySection($0) }
+        )
         .environment(navigation)
         .tint(preferences.accentTheme.tintColor)
-        .onChange(of: preferences.simpleDailyMode) { _, isSimple in
-            if isSimple && navigation.tab == 3 {
-                navigation.tab = 2
+        .background(DS.Surface.canvas.ignoresSafeArea())
+        .sheet(item: $navigation.activeModal) { destination in
+            switch destination {
+            case .workshop:
+                AssistantListView(
+                    activeSection: $navigation.assistantSection,
+                    onClose: { navigation.closeModal() }
+                ) { preset in
+                    startChat(with: preset)
+                }
+                .environment(navigation)
+                .tint(preferences.accentTheme.tintColor)
+
+            case .settings:
+                ProviderListView(onClose: { navigation.closeModal() })
+                    .environment(navigation)
+                    .tint(preferences.accentTheme.tintColor)
+
+            case .usage:
+                RequestLedgerView(onClose: { navigation.closeModal() })
+                    .environment(navigation)
+                    .tint(preferences.accentTheme.tintColor)
+
+            }
+        }
+        .onChange(of: preferences.showsUsageTab) { _, shows in
+            if !shows && navigation.activeModal == .usage {
+                navigation.activeModal = .settings
             }
         }
         .onAppear {
@@ -89,7 +133,10 @@ struct MainTabView: View {
         }
         .onChange(of: entryRouter.conversationID) { _, _ in openRoutedConversation() }
         .onChange(of: entryRouter.pendingQuickAction, initial: true) { _, action in
-            if action != nil { navigation.tab = 0 }
+            if action != nil {
+                navigation.closeModal()
+                navigation.isDrawerPresented = false
+            }
         }
         .alert("本地存储提示", isPresented: $showStartupNotice) {
             Button("知道了", role: .cancel) {
@@ -112,7 +159,7 @@ struct MainTabView: View {
     private func refreshSystemEntries() {
         entryRouter.drainPendingInbox()
         if entryRouter.pendingQuickAction != nil {
-            navigation.tab = 0
+            navigation.closeModal()
         }
         guard hasPersistentStore else { return }
         integration.refresh(context: modelContext)
@@ -133,7 +180,8 @@ struct MainTabView: View {
         let targetMsgID = entryRouter.messageID
         let descriptor = FetchDescriptor<Conversation>(predicate: #Predicate { $0.id == id })
         if let conversation = try? modelContext.fetch(descriptor).first {
-            navigation.tab = 0
+            navigation.closeModal()
+            navigation.isDrawerPresented = false
             if let targetMsgID {
                 pendingMessageRouteToOpen = ConversationMessageRoute(conversation: conversation, messageID: targetMsgID)
             } else {
@@ -156,7 +204,8 @@ struct MainTabView: View {
         modelContext.insert(conv)
         try? modelContext.save()
 
-        navigation.tab = 0
+        navigation.closeModal()
+        navigation.isDrawerPresented = false
         Task { @MainActor in
             await Task.yield()
             pendingConversationToOpen = conv

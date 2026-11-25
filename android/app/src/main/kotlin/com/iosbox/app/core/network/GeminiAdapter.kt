@@ -34,11 +34,13 @@ object GeminiAdapter {
 
     private data class WireOptions(
         val includeNativeSearch: Boolean,
-        val includeThinkingConfig: Boolean
+        val includeThinkingConfig: Boolean,
+        val includeSamplingParams: Boolean
     )
 
     fun streamChat(client: LLMClient, request: LLMChatRequest): Flow<LLMStreamEvent> {
         val cache = client.capabilityCache
+        val hasThinkingConfig = thinkingConfig(request) != null
         val initial = WireOptions(
             includeNativeSearch = request.enableNativeSearch && !cache.isUnsupported(
                 GatewayUnsupportedFeature.NATIVE_SEARCH,
@@ -48,6 +50,12 @@ object GeminiAdapter {
             ),
             includeThinkingConfig = !cache.isUnsupported(
                 GatewayUnsupportedFeature.THINKING_CONFIG,
+                APIProtocolType.GEMINI,
+                request.baseURL,
+                request.modelID
+            ),
+            includeSamplingParams = !cache.isUnsupported(
+                GatewayUnsupportedFeature.SAMPLING_PARAMS,
                 APIProtocolType.GEMINI,
                 request.baseURL,
                 request.modelID
@@ -62,7 +70,8 @@ object GeminiAdapter {
                 val payload = buildRequestBody(
                     request = request,
                     includeNativeSearch = state.includeNativeSearch,
-                    includeThinkingConfig = state.includeThinkingConfig
+                    includeThinkingConfig = state.includeThinkingConfig,
+                    includeSamplingParams = state.includeSamplingParams
                 )
                 val bodyStr = compactJson.encodeToString(JsonObject.serializer(), payload)
                 val builder = Request.Builder()
@@ -79,14 +88,24 @@ object GeminiAdapter {
             degradeOn400 = { _, detail, state, newlyDisabled ->
                 val lower = detail.lowercase()
                 when {
-                    state.includeThinkingConfig && (lower.contains("thinkingconfig") || lower.contains("thinking_config") ||
-                        lower.contains("thinkingbudget") || lower.contains("thinkinglevel")) -> {
+                    LLMClient.isUnrecoverable400(lower) -> false to state
+                    hasThinkingConfig && state.includeThinkingConfig && (
+                        lower.contains("thinking") || lower.contains("budget") || lower.contains("thinkinglevel")
+                        ) -> {
                         newlyDisabled.add(GatewayUnsupportedFeature.THINKING_CONFIG)
                         true to state.copy(includeThinkingConfig = false)
                     }
                     state.includeNativeSearch && (lower.contains("google_search") || lower.contains("tools")) -> {
                         newlyDisabled.add(GatewayUnsupportedFeature.NATIVE_SEARCH)
                         true to state.copy(includeNativeSearch = false)
+                    }
+                    state.includeSamplingParams && (lower.contains("temperature") || lower.contains("topp") || lower.contains("top_p")) -> {
+                        newlyDisabled.add(GatewayUnsupportedFeature.SAMPLING_PARAMS)
+                        true to state.copy(includeSamplingParams = false)
+                    }
+                    LLMClient.isGenericParameterRejection400(lower) && hasThinkingConfig && state.includeThinkingConfig -> {
+                        newlyDisabled.add(GatewayUnsupportedFeature.THINKING_CONFIG)
+                        true to state.copy(includeThinkingConfig = false)
                     }
                     else -> false to state
                 }
@@ -253,7 +272,8 @@ object GeminiAdapter {
     fun buildRequestBody(
         request: LLMChatRequest,
         includeNativeSearch: Boolean? = null,
-        includeThinkingConfig: Boolean = true
+        includeThinkingConfig: Boolean = true,
+        includeSamplingParams: Boolean = true
     ): JsonObject {
         val useNativeSearch = includeNativeSearch ?: request.enableNativeSearch
         val sanitizedMessages = LLMClient.sanitizeToolHistory(request.messages)
@@ -364,8 +384,10 @@ object GeminiAdapter {
             }
 
             putJsonObject("generationConfig") {
-                put("topP", request.topP)
-                request.temperature?.let { put("temperature", it) }
+                if (includeSamplingParams) {
+                    put("topP", request.topP)
+                    request.temperature?.let { put("temperature", it) }
+                }
                 request.maxOutputTokens?.takeIf { it > 0 }?.let { put("maxOutputTokens", it) }
                 if (includeThinkingConfig) {
                     thinkingConfig(request)?.let { put("thinkingConfig", it) }

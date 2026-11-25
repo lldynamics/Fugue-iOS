@@ -169,8 +169,8 @@ fun PersonaEditorSheet(
                 ) {
                     Text(
                         text = L10n.text(
-                            "暂无可用模型，请先在「服务商」配置 API Key。",
-                            "No ready model yet. Configure a provider in Providers first."
+                            "暂无可用模型，请先在「设置」配置 API Key。",
+                            "No ready model yet. Configure a provider in Settings first."
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onErrorContainer,

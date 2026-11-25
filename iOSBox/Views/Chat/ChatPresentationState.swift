@@ -4,9 +4,9 @@ import SwiftUI
 /// Consolidates all modal sheet routes presented from `ChatDetailView`.
 enum ChatActiveSheet: Identifiable, Equatable {
     case options
+    case inspector
     case model
     case arena
-    case blindArena
     case settings
     case groupSetup
     case knowledge
@@ -16,15 +16,16 @@ enum ChatActiveSheet: Identifiable, Equatable {
     case search
     case modelSetup
     case audioTranscription
+    case imageGeneration
     case synthesis(UUID)
     case shareFile(URL)
 
     var id: String {
         switch self {
         case .options: return "options"
+        case .inspector: return "inspector"
         case .model: return "model"
         case .arena: return "arena"
-        case .blindArena: return "blindArena"
         case .settings: return "settings"
         case .groupSetup: return "groupSetup"
         case .knowledge: return "knowledge"
@@ -34,6 +35,7 @@ enum ChatActiveSheet: Identifiable, Equatable {
         case .search: return "search"
         case .modelSetup: return "modelSetup"
         case .audioTranscription: return "audioTranscription"
+        case .imageGeneration: return "imageGeneration"
         case .synthesis(let groupID): return "synthesis-\(groupID.uuidString)"
         case .shareFile(let url): return "share-\(url.absoluteString)"
         }

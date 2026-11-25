@@ -13,6 +13,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -21,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -29,6 +32,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -36,7 +40,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iosbox.app.AppContainer
 import com.iosbox.app.core.backup.EncryptedBackupCrypto
+import com.iosbox.app.core.backup.SyncTombstonePolicy
+import com.iosbox.app.core.backup.WebDAVShardedSyncService
 import com.iosbox.app.core.backup.WebDAVSyncClient
+import com.iosbox.app.core.backup.WebDAVSyncException
 import com.iosbox.app.core.model.L10n
 import com.iosbox.app.core.security.SecretStore
 import com.iosbox.app.ui.theme.DS
@@ -53,6 +60,7 @@ fun WebDAVSyncSheet(
     val prefs by container.preferences.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val client = remember { WebDAVSyncClient() }
+    val shardedService = remember { WebDAVShardedSyncService(client) }
 
     var serverUrl by remember(prefs.webDAVServerURL) { mutableStateOf(prefs.webDAVServerURL) }
     var username by remember(prefs.webDAVUsername) { mutableStateOf(prefs.webDAVUsername) }
@@ -61,10 +69,12 @@ fun WebDAVSyncSheet(
     var passphrase by remember { mutableStateOf(container.secretStore.loadSecret(SecretStore.WEBDAV_SYNC_PASSPHRASE_ACCOUNT)) }
 
     var isBusy by remember { mutableStateOf(false) }
+    var showPruneConfirm by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
 
     val canAuth = serverUrl.trim().isNotEmpty() && username.trim().isNotEmpty() && password.isNotEmpty()
     val canSync = canAuth && EncryptedBackupCrypto.isValidExportPassword(passphrase)
+    val tombstoneCount = remember(statusMessage, isBusy) { container.syncTombstoneStore.count() }
 
     suspend fun saveConfigAndSecrets() {
         container.preferences.setWebDAVConfig(
@@ -74,6 +84,57 @@ fun WebDAVSyncSheet(
         )
         container.secretStore.saveSecret(password, SecretStore.WEBDAV_PASSWORD_ACCOUNT)
         container.secretStore.saveSecret(passphrase, SecretStore.WEBDAV_SYNC_PASSPHRASE_ACCOUNT)
+    }
+
+    if (showPruneConfirm) {
+        AlertDialog(
+            onDismissRequest = { showPruneConfirm = false },
+            title = { Text(L10n.text("清理云端未引用孤儿分片？", "Prune Unused Cloud Shards?")) },
+            text = {
+                Text(
+                    L10n.text(
+                        "将扫描云端 blobs 目录，仅删除当前清单已不再引用的加密分片，不会影响最新同步数据。",
+                        "Scans the remote blobs directory and removes only shards no longer referenced by the current manifest."
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showPruneConfirm = false
+                        scope.launch {
+                            isBusy = true
+                            statusMessage = null
+                            saveConfigAndSecrets()
+                            runCatching {
+                                shardedService.pruneOrphanBlobs(
+                                    passphrase = passphrase,
+                                    serverUrl = serverUrl,
+                                    remotePath = remotePath,
+                                    username = username,
+                                    password = password
+                                )
+                            }.fold(
+                                onSuccess = { report ->
+                                    statusMessage = (report.failedCount > 0) to report.summaryText
+                                },
+                                onFailure = { err ->
+                                    statusMessage = true to (err.message ?: L10n.text("清理失败。", "Cleanup failed."))
+                                }
+                            )
+                            isBusy = false
+                        }
+                    }
+                ) {
+                    Text(L10n.text("开始清理", "Prune Now"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPruneConfirm = false }) {
+                    Text(L10n.text("取消", "Cancel"))
+                }
+            }
+        )
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -91,8 +152,8 @@ fun WebDAVSyncSheet(
             )
             Text(
                 text = L10n.text(
-                    "密码与加密口令保存在 Android Keystore + Tink，云端仅上传 AES-GCM 密文。",
-                    "Credentials stay in Android Keystore + Tink; only AES-GCM encrypted data is uploaded."
+                    "密码与加密口令保存在 Android Keystore + Tink，云端仅上传 AES-GCM 密文，并与 iOS 分片格式完全互通。",
+                    "Credentials stay in Android Keystore + Tink; only AES-GCM ciphertext is uploaded, fully interoperable with iOS sharded sync."
                 ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -135,6 +196,36 @@ fun WebDAVSyncSheet(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = DS.Spacing.sm)) {
+                    Text(
+                        text = L10n.text("分片增量同步（推荐）", "Sharded Incremental Sync"),
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                    )
+                    Text(
+                        text = L10n.text(
+                            "书籍与大附件按 SHA-256 去重分片，与 iOS 端双向互通并同步删除墓碑（当前 $tombstoneCount 条）。",
+                            "Deduplicates books & large attachments by SHA-256 and propagates deletion tombstones ($tombstoneCount active)."
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = prefs.webDAVShardedSyncEnabled,
+                    enabled = !isBusy,
+                    onCheckedChange = { enabled ->
+                        scope.launch { container.preferences.setWebDAVShardedSyncEnabled(enabled) }
+                    }
+                )
+            }
 
             if (isBusy) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -208,16 +299,41 @@ fun WebDAVSyncSheet(
                         statusMessage = null
                         saveConfigAndSecrets()
                         runCatching {
-                            val encryptedBytes = container.backupRepository.exportEncryptedJsonBytes(passphrase)
-                            client.uploadEncryptedBytes(serverUrl, remotePath, username, password, encryptedBytes)
-                                .getOrThrow()
-                            container.preferences.setWebDAVLastSyncEpochMs(System.currentTimeMillis())
-                        }.fold(
-                            onSuccess = {
-                                statusMessage = false to L10n.text(
+                            if (prefs.webDAVShardedSyncEnabled) {
+                                val payload = container.backupRepository.makeFullEncryptedPayload(
+                                    tombstoneStore = container.syncTombstoneStore
+                                )
+                                val pushed = shardedService.pushSharded(
+                                    payload = payload,
+                                    passphrase = passphrase,
+                                    serverUrl = serverUrl,
+                                    remotePath = remotePath,
+                                    username = username,
+                                    password = password,
+                                    knownSaltBase64 = prefs.webDAVKnownShardSalt,
+                                    knownKeyFingerprint = prefs.webDAVKnownShardKeyFingerprint,
+                                    knownRemoteBlobs = prefs.webDAVKnownRemoteBlobs.toSet()
+                                )
+                                container.preferences.setWebDAVShardCache(
+                                    saltBase64 = pushed.saltBase64,
+                                    keyFingerprint = pushed.keyFingerprint,
+                                    presentBlobs = pushed.presentBlobs
+                                )
+                                container.preferences.setWebDAVLastSyncEpochMs(System.currentTimeMillis())
+                                pushed.stats.pushSummaryText
+                            } else {
+                                val encryptedBytes = container.backupRepository.exportEncryptedJsonBytes(passphrase)
+                                client.uploadEncryptedBytes(serverUrl, remotePath, username, password, encryptedBytes)
+                                    .getOrThrow()
+                                container.preferences.setWebDAVLastSyncEpochMs(System.currentTimeMillis())
+                                L10n.text(
                                     "已加密上传到 ${remotePath.trim().ifEmpty { "Fugue/fugue-sync.enc.json" }}。",
                                     "Encrypted backup uploaded."
                                 )
+                            }
+                        }.fold(
+                            onSuccess = { msg ->
+                                statusMessage = false to msg
                             },
                             onFailure = { err ->
                                 statusMessage = true to (err.message ?: L10n.text("上传失败。", "Upload failed."))
@@ -241,15 +357,69 @@ fun WebDAVSyncSheet(
                         statusMessage = null
                         saveConfigAndSecrets()
                         runCatching {
-                            val bytes = client.downloadEncryptedBytes(serverUrl, remotePath, username, password)
-                                .getOrThrow()
-                            val summary = container.backupRepository.importEncryptedBytes(bytes, passphrase)
-                            container.flashcardRepository.reload()
-                            container.preferences.setWebDAVLastSyncEpochMs(System.currentTimeMillis())
-                            summary
+                            val policy = SyncTombstonePolicy.Enforce(container.syncTombstoneStore)
+                            if (prefs.webDAVShardedSyncEnabled) {
+                                val shardedAttempt = runCatching {
+                                    val localBooks = container.backupRepository.localBookSnapshots()
+                                    val localAttachments = container.backupRepository.localAttachmentBlobs()
+                                    val pulled = shardedService.pullSharded(
+                                        passphrase = passphrase,
+                                        serverUrl = serverUrl,
+                                        remotePath = remotePath,
+                                        username = username,
+                                        password = password,
+                                        existingBooks = localBooks,
+                                        existingAttachmentBlobs = localAttachments
+                                    )
+                                    val summary = container.backupRepository.applyEncryptedPayload(
+                                        payload = pulled.payload,
+                                        tombstonePolicy = policy
+                                    )
+                                    container.preferences.setWebDAVShardCache(
+                                        saltBase64 = pulled.saltBase64,
+                                        keyFingerprint = pulled.keyFingerprint,
+                                        presentBlobs = pulled.presentBlobs
+                                    )
+                                    summary to pulled.stats.pullSummaryText
+                                }
+                                if (shardedAttempt.isSuccess) {
+                                    container.flashcardRepository.reload()
+                                    container.preferences.setWebDAVLastSyncEpochMs(System.currentTimeMillis())
+                                    val (summary, statMsg) = shardedAttempt.getOrThrow()
+                                    summary.hasWarnings to "$statMsg ${summary.title}：${summary.description}"
+                                } else {
+                                    val err = shardedAttempt.exceptionOrNull()
+                                    if (err is WebDAVSyncException.RemoteNotFound) {
+                                        // Fallback to legacy single encrypted file
+                                        val bytes = client.downloadEncryptedBytes(serverUrl, remotePath, username, password)
+                                            .getOrThrow()
+                                        val summary = container.backupRepository.importEncryptedBytes(
+                                            data = bytes,
+                                            password = passphrase,
+                                            tombstonePolicy = policy
+                                        )
+                                        container.flashcardRepository.reload()
+                                        container.preferences.setWebDAVLastSyncEpochMs(System.currentTimeMillis())
+                                        summary.hasWarnings to "${summary.title}：${summary.description}"
+                                    } else {
+                                        throw err!!
+                                    }
+                                }
+                            } else {
+                                val bytes = client.downloadEncryptedBytes(serverUrl, remotePath, username, password)
+                                    .getOrThrow()
+                                val summary = container.backupRepository.importEncryptedBytes(
+                                    data = bytes,
+                                    password = passphrase,
+                                    tombstonePolicy = policy
+                                )
+                                container.flashcardRepository.reload()
+                                container.preferences.setWebDAVLastSyncEpochMs(System.currentTimeMillis())
+                                summary.hasWarnings to "${summary.title}：${summary.description}"
+                            }
                         }.fold(
-                            onSuccess = { summary ->
-                                statusMessage = summary.hasWarnings to "${summary.title}：${summary.description}"
+                            onSuccess = { pair ->
+                                statusMessage = pair
                             },
                             onFailure = { err ->
                                 statusMessage = true to (err.message ?: L10n.text("拉取导入失败。", "Download & import failed."))
@@ -263,6 +433,18 @@ fun WebDAVSyncSheet(
                 Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.size(6.dp))
                 Text(L10n.text("从云端拉取并合并", "Download & Merge"))
+            }
+
+            if (prefs.webDAVShardedSyncEnabled) {
+                OutlinedButton(
+                    enabled = canSync && !isBusy,
+                    onClick = { showPruneConfirm = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.size(6.dp))
+                    Text(L10n.text("清理云端未引用孤儿分片", "Prune Unused Cloud Shards"))
+                }
             }
 
             TextButton(

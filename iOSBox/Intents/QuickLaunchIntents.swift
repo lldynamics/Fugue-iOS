@@ -22,7 +22,7 @@ struct QuickNewChatIntent: AppIntent {
 struct QuickVoiceNoteIntent: AppIntent {
     static let launchAction: QuickEntryAction = .voiceNote
     static var title: LocalizedStringResource = "开始录音纪要"
-    static var description = IntentDescription("立即打开「夜奔」录音与语音转纪要面板，可绑定到 iPhone 操作按钮。")
+    static var description = IntentDescription("立即打开「夜奔」录音与语音转纪要面板。")
     static var authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     static var openAppWhenRun: Bool { true }
     @available(iOS 26.0, *) static var supportedModes: IntentModes { .foreground }
@@ -40,7 +40,7 @@ struct QuickVoiceNoteIntent: AppIntent {
 struct QuickScanDocumentIntent: AppIntent {
     static let launchAction: QuickEntryAction = .scanDocument
     static var title: LocalizedStringResource = "扫描文档转文字"
-    static var description = IntentDescription("立即打开「夜奔」文档扫描相机并支持本地 OCR 转文字，可绑定到 iPhone 操作按钮。")
+    static var description = IntentDescription("立即打开「夜奔」文档扫描相机，使用本地 OCR 提取文字。")
     static var authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     static var openAppWhenRun: Bool { true }
     @available(iOS 26.0, *) static var supportedModes: IntentModes { .foreground }

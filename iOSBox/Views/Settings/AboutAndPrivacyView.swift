@@ -4,6 +4,7 @@ import SwiftUI
 struct AboutAndPrivacyView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage(AppCompliance.consentKey, store: AppCompliance.consentDefaults) private var hasConsent = false
+    @AppStorage(EmbeddingConsent.key) private var approvedEmbeddingScope = ""
     @AppStorage(SpotlightIndexService.enabledKey) private var spotlightEnabled = false
     @AppStorage(WidgetSnapshotService.showRecentTitlesKey) private var widgetShowRecentTitles = false
 
@@ -30,6 +31,9 @@ struct AboutAndPrivacyView: View {
                 } else {
                     Text("尚未授权，下次发送前会显示接收方并请你确认。")
                         .font(.footnote).foregroundStyle(.secondary)
+                }
+                if !approvedEmbeddingScope.isEmpty {
+                    Button("撤回向量服务授权", role: .destructive) { approvedEmbeddingScope = "" }
                 }
             }
 
@@ -124,6 +128,9 @@ struct BuiltInPrivacyPolicyView: View {
                         title: String(localized: "2. 向第三方服务商的直连传输"),
                         detail: String(localized: "仅在你首次确认数据出境/第三方传输披露后，你主动发送的会话上下文、所选附件、已启用的个人记忆或联网搜索关键词才会从你的设备直接发送至你所配置的模型 API 地址（如 OpenAI、Anthropic、Google Gemini、DeepSeek、OpenRouter、Tavily 或局域网服务）。相关数据的留存与使用受对应服务商自身的隐私条款约束。你可随时在本页点击「撤回发送授权」。")
                     )
+                    Text("使用向量 API 前需要单独授权。生成书架索引会向获授权的服务发送书架文档原文片段。聊天和工具检索会发送查询词和需要生成向量的绑定文档片段。撤回授权后，知识库检索使用本地索引。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
 
                     policyBlock(
                         title: String(localized: "3. 本机存储、备份加密与删除控制"),

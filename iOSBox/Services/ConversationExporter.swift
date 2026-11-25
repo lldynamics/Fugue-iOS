@@ -207,43 +207,70 @@ private struct ShareConversationCardView: View {
     let emoji: String
     let messages: [ChatMessage]
     let speakerResolver: (ChatMessage) -> String
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Text(emoji)
-                    .font(.title2)
-                    .frame(width: 40, height: 40)
-                    .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+        let isDark = colorScheme == .dark
+        let paperBg = isDark
+            ? Color(red: 0.067, green: 0.075, blue: 0.094)
+            : Color(red: 0.980, green: 0.969, blue: 0.941)
+        let cardFill = isDark
+            ? Color(red: 0.102, green: 0.114, blue: 0.141)
+            : Color(red: 0.996, green: 0.992, blue: 0.980)
+        let vermilion = isDark
+            ? Color(red: 0.886, green: 0.494, blue: 0.369)
+            : Color(red: 0.737, green: 0.243, blue: 0.141)
+        let border = isDark ? Color.white.opacity(0.11) : Color.black.opacity(0.09)
+
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                FugueSealMark(character: "奔", size: 34, theme: .vermilion)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.headline)
+                        .font(.system(size: 17, weight: .bold, design: .serif))
+                        .foregroundStyle(.primary)
                         .lineLimit(2)
-                    Text("夜奔")
+                    Text("夜奔 Fugue · 对话书笺")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Text(emoji)
+                    .font(.title3)
             }
 
-            Divider()
+            Divider().overlay(border)
 
             ForEach(messages) { msg in
                 let meta = msg.assistanceMetadata
-                VStack(alignment: msg.role == .user ? .trailing : .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 6) {
                     if msg.role == .user {
-                        Text(cardBodyText(for: msg))
-                            .font(.subheadline)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14))
-                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        HStack(alignment: .top, spacing: 10) {
+                            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                                .fill(vermilion)
+                                .frame(width: 2.5)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("提问")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(vermilion)
+                                Text(cardBodyText(for: msg))
+                                    .font(.system(size: 14.5, weight: .semibold, design: .serif))
+                                    .foregroundStyle(.primary)
+                                    .lineSpacing(4)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(.vertical, 2)
                     } else {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(speakerResolver(msg))
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "sparkle")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(vermilion)
+                                Text(speakerResolver(msg))
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
 
                             if let replyExcerpt = meta.groupReplyToExcerpt, !replyExcerpt.isEmpty {
                                 let quoteLine = meta.groupReplyToSpeaker.map { String(localized: "回复 \($0)：\(replyExcerpt)") } ?? replyExcerpt
@@ -252,16 +279,21 @@ private struct ShareConversationCardView: View {
                                     .foregroundStyle(.secondary)
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 4)
-                                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 7))
+                                    .background(cardFill, in: RoundedRectangle(cornerRadius: 7))
                             }
 
                             Text(cardBodyText(for: msg))
-                                .font(.subheadline)
+                                .font(.system(size: 14, design: .serif))
+                                .lineSpacing(4.5)
                                 .foregroundStyle(.primary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(10)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                        .padding(12)
+                        .background(cardFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(border, lineWidth: 1)
+                        )
                     }
 
                     if !meta.groupReactions.isEmpty {
@@ -272,16 +304,29 @@ private struct ShareConversationCardView: View {
                                     .foregroundStyle(.secondary)
                                     .padding(.horizontal, 7)
                                     .padding(.vertical, 2)
-                                    .background(Color(.secondarySystemBackground), in: Capsule())
+                                    .background(cardFill, in: Capsule())
                             }
                         }
                     }
                 }
             }
+
+            Divider().overlay(border)
+
+            HStack(spacing: 8) {
+                FugueSealMark(character: "夜", size: 18, theme: .vermilion)
+                Text("夜奔 (Fugue) · 本地直连多模型推演")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
         }
-        .padding(20)
-        .frame(width: 420, alignment: .leading)
-        .background(Color(.systemBackground))
+        .padding(24)
+        .frame(width: 430, alignment: .leading)
+        .background(paperBg)
+        .overlay(alignment: .top) {
+            Rectangle().fill(vermilion).frame(height: 3.5)
+        }
     }
 
     private func cardBodyText(for msg: ChatMessage) -> String {

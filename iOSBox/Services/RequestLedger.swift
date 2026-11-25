@@ -111,7 +111,11 @@ enum RequestLedger {
     }
 
     static func costText(_ value: Double, currency: String) -> String {
-        "\(currency) \(value.formatted(.number.precision(.fractionLength(0...6))))"
+        if value > 0 && value < 0.000001 {
+            let threshold = 0.000001.formatted(.number.precision(.fractionLength(6)))
+            return "\(currency) <\(threshold)"
+        }
+        return "\(currency) \(value.formatted(.number.precision(.fractionLength(0...6))))"
     }
 
     static func seconds(_ milliseconds: Int) -> String {

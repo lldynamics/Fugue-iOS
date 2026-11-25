@@ -1,6 +1,19 @@
 import SwiftUI
 import SwiftData
 
+@MainActor
+enum GroupSetupDraftPolicy {
+    static func existingMembers(_ members: [GroupMember], providers: [ProviderConfig]) -> [GroupMember] {
+        members.map { member in
+            var copy = member
+            if let refreshed = AssistancePolicy.resolve(member.target, providers: providers) {
+                copy.target = refreshed
+            }
+            return copy
+        }
+    }
+}
+
 struct GroupSetupSheet: View {
     var existingConversation: Conversation? = nil
     var invitedFriend: BookFriend? = nil
@@ -104,8 +117,12 @@ struct GroupSetupSheet: View {
                 }
 
                 Section {
+                    if existingConversation != nil && members.isEmpty {
+                        Text("该群暂无成员，请选择上方模板或手动添加成员。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                     if availableTargets.isEmpty && members.isEmpty {
-                        Label("请先在「服务商」页面启用至少一个模型后再配置群成员。", systemImage: "exclamationmark.triangle.fill")
+                        Label("请先在「设置」页面启用至少一个模型后再配置群成员。", systemImage: "exclamationmark.triangle.fill")
                             .font(.footnote)
                             .foregroundStyle(.orange)
                     } else {
@@ -165,10 +182,16 @@ struct GroupSetupSheet: View {
                         Text("群成员与模型分配（\(members.count)/6）")
                         Spacer()
                         if availableTargets.count >= 2 {
-                            Button("一键混搭模型") {
+                            Button {
                                 distributeDistinctModels()
+                            } label: {
+                                Text("一键混搭模型")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(preferences.accentTheme.readableText)
+                                    .frame(minHeight: DS.TouchTarget.minimum + 2)
+                                    .contentShape(Rectangle())
                             }
-                            .font(.caption.weight(.semibold))
+                            .buttonStyle(.plain)
                         }
                     }
                 } footer: {
@@ -376,7 +399,7 @@ struct GroupSetupSheet: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                         if !availableTargets.contains(where: { $0.id == m.target.id }) {
-                            Text("模型待连接").font(.caption).foregroundStyle(.orange)
+                            Text("模型待连接").font(.caption).foregroundStyle(DS.StatusText.warning)
                         }
                     }
 
@@ -490,30 +513,33 @@ struct GroupSetupSheet: View {
         }
         .font(.footnote)
 
-        HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             Text("角色色标")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Spacer()
-            ForEach(Array(GroupMember.paletteHexes.enumerated()), id: \.element) { idx, hex in
-                let isChosen = m.accentHex.uppercased() == hex.uppercased()
-                Button {
-                    member.wrappedValue.accentHex = hex
-                } label: {
-                    Circle()
-                        .fill(Color(hex: hex))
-                        .frame(width: 22, height: 22)
-                        .overlay {
-                            if isChosen {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundStyle(.white)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: DS.TouchTarget.minimum + 2), spacing: 0)], alignment: .leading, spacing: 0) {
+                ForEach(Array(GroupMember.paletteHexes.enumerated()), id: \.element) { idx, hex in
+                    let isChosen = m.accentHex.uppercased() == hex.uppercased()
+                    Button {
+                        member.wrappedValue.accentHex = hex
+                    } label: {
+                        Circle()
+                            .fill(Color(hex: hex))
+                            .frame(width: 22, height: 22)
+                            .overlay {
+                                if isChosen {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(.white)
+                                }
                             }
-                        }
+                            .frame(width: DS.TouchTarget.minimum + 2, height: DS.TouchTarget.minimum + 2)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(String(localized: "颜色方案 \(idx + 1)"))
+                    .accessibilityAddTraits(isChosen ? .isSelected : [])
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(String(localized: "颜色方案 \(idx + 1)"))
-                .accessibilityAddTraits(isChosen ? .isSelected : [])
             }
         }
 
@@ -554,23 +580,7 @@ struct GroupSetupSheet: View {
             maxRelayTurns = s.groupMaxRelayTurns
             splitShortBubbles = s.groupSplitShortBubbles
 
-            if !s.groupMembers.isEmpty {
-                let targets = availableTargets
-                members = s.groupMembers.map { m in
-                    var copy = m
-                    if let refreshed = AssistancePolicy.resolve(m.target, providers: providers) {
-                        copy.target = refreshed
-                    } else if !m.isSimulatedPersona, let first = targets.first {
-                        copy.target = first
-                    }
-                    return copy
-                }
-            } else if let defaultTemplate = GroupRoomTemplate.builtInTemplates.first {
-                members = defaultTemplate.instantiate(using: availableTargets)
-                if roomTitle.isEmpty { roomTitle = defaultTemplate.roomTitle }
-                roomEmoji = defaultTemplate.roomEmoji
-                if sharedPrompt.isEmpty { sharedPrompt = defaultTemplate.sharedTopicPrompt }
-            }
+            members = GroupSetupDraftPolicy.existingMembers(s.groupMembers, providers: providers)
         } else if let invitedProfile {
             members = [invitedProfile.inRoom()]
             roomTitle = invitedProfile.name

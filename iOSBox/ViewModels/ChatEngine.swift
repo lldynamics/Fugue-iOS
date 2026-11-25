@@ -27,6 +27,16 @@ final class ChatEngine {
         var host: String { url.host ?? url.absoluteString }
     }
 
+    struct PendingMCPApproval: Identifiable {
+        let id: UUID
+        let conversationID: UUID
+        let serverID: UUID
+        let serverName: String
+        let toolName: String
+        let argumentsSummary: String
+        let continuation: CheckedContinuation<WebpageApprovalDecision, Never>
+    }
+
     struct ActiveGeneration {
         let token: UUID
         let task: Task<Void, Never>
@@ -54,7 +64,7 @@ final class ChatEngine {
         let message: ChatMessage
         let candidates: [ResolvedModelTarget]
         let kind: RequestKind
-        let systemPromptOverride: String?
+        var systemPromptOverride: String?
         var temperatureOverride: Double? = nil
         var appendToExisting: Bool = false
         var tools: [LLMToolDefinition] = []
@@ -62,17 +72,23 @@ final class ChatEngine {
         var bookTurn: BookTurn? = nil
         var knowledgeChapterLimits: [UUID: Int]?
         var userProvidedURLs: Set<String> = []
+        var isDeepResearch: Bool = false
+        var forceNativeSearch: Bool = false
     }
 
     @ObservationIgnored var activeGenerations: [UUID: ActiveGeneration] = [:]
     @ObservationIgnored var activeTitleTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored var activeSummaryTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored let search: @Sendable (String) async throws -> SearchEvidence
+    @ObservationIgnored let hasCustomSearchHandler: Bool
     @ObservationIgnored let stream: @Sendable (LLMChatRequest) -> AsyncThrowingStream<LLMStreamEvent, Error>
     @ObservationIgnored let webpageReader: (@Sendable (URL) async throws -> ReadablePage)?
+    @ObservationIgnored let imageGenerator: (@Sendable (_ prompt: String, _ size: ImageAspectSize, _ referenceImage: (data: Data, mimeType: String)?) async throws -> AgentToolRunner.GeneratedImageToolOutput)?
     @ObservationIgnored let persistNewTurn: (ModelContext) throws -> Void
     @ObservationIgnored var customWebpageApprovalHandler: (@MainActor (URL, UUID) async -> WebpageApprovalDecision)?
     @ObservationIgnored var approvedWebpageHostsByConversation: [UUID: Set<String>] = [:]
+    @ObservationIgnored var approvedMCPServersByConversation: [UUID: Set<UUID>] = [:]
 
     /// Conversations whose generation has not fully unwound yet (including while stopping).
     var activeConversationIDs: Set<UUID> = []
@@ -81,31 +97,35 @@ final class ChatEngine {
     /// Assistant messages currently generating inline flashcards or quizzes.
     var generatingStudyMessageIDs: Set<UUID> = []
     var pendingWebpageApprovals: [PendingWebpageApproval] = []
+    var pendingMCPApprovals: [PendingMCPApproval] = []
 
     convenience init(
         stream: @escaping @Sendable (LLMChatRequest) -> AsyncThrowingStream<LLMStreamEvent, Error> = { LLMClient.streamChat($0) }
     ) {
-        self.init(search: { try await Self.defaultSearch($0) }, stream: stream)
+        self.init(search: { try await Self.defaultSearch($0) }, hasCustomSearchHandler: false, stream: stream)
     }
 
     init(
         search: @escaping @Sendable (String) async throws -> SearchEvidence,
+        hasCustomSearchHandler: Bool = true,
         persistNewTurn: @escaping (ModelContext) throws -> Void = { try $0.save() },
         stream: @escaping @Sendable (LLMChatRequest) -> AsyncThrowingStream<LLMStreamEvent, Error> = { LLMClient.streamChat($0) },
         webpageReader: (@Sendable (URL) async throws -> ReadablePage)? = nil,
-        webpageApprovalHandler: (@MainActor (URL, UUID) async -> WebpageApprovalDecision)? = nil
+        webpageApprovalHandler: (@MainActor (URL, UUID) async -> WebpageApprovalDecision)? = nil,
+        imageGenerator: (@Sendable (_ prompt: String, _ size: ImageAspectSize, _ referenceImage: (data: Data, mimeType: String)?) async throws -> AgentToolRunner.GeneratedImageToolOutput)? = nil
     ) {
         self.persistNewTurn = persistNewTurn
         self.search = search
+        self.hasCustomSearchHandler = hasCustomSearchHandler
         self.stream = stream
         self.webpageReader = webpageReader
         self.customWebpageApprovalHandler = webpageApprovalHandler
+        self.imageGenerator = imageGenerator
     }
 
     nonisolated private static func defaultSearch(_ query: String) async throws -> SearchEvidence {
         try AppCompliance.requireConsent()
-        let key = KeychainService.shared.loadSecret(account: TavilySearchClient.keychainAccount)
-        return try await TavilySearchClient.search(query: query, apiKey: key)
+        return try await WebSearchService.search(query: query)
     }
 
     func isGenerating(in conversationID: UUID) -> Bool {
@@ -118,12 +138,15 @@ final class ChatEngine {
 
     func stopGeneration(for conversationID: UUID) {
         cancelWebpageApprovals(in: conversationID)
+        cancelMCPApprovals(in: conversationID)
         activeGenerations[conversationID]?.task.cancel()
         activeTitleTasks[conversationID]?.cancel()
+        activeSummaryTasks.removeValue(forKey: conversationID)?.cancel()
     }
 
     func stopGenerationAndWait(for conversationID: UUID) async {
         cancelWebpageApprovals(in: conversationID)
+        cancelMCPApprovals(in: conversationID)
         if let generation = activeGenerations[conversationID] {
             generation.task.cancel()
             await generation.task.value
@@ -131,6 +154,10 @@ final class ChatEngine {
         if let titleTask = activeTitleTasks[conversationID] {
             titleTask.cancel()
             await titleTask.value
+        }
+        if let summaryTask = activeSummaryTasks.removeValue(forKey: conversationID) {
+            summaryTask.cancel()
+            await summaryTask.value
         }
     }
 
@@ -413,9 +440,16 @@ final class ChatEngine {
         let toolsToAttach: [LLMToolDefinition]
         if !isArena && kind == .answer && conversation.assistanceSettings.enableAgentTools {
             let omitKnowledge = options.omitKnowledge
-            let hasTavilyKey = !KeychainService.shared.loadSecret(account: TavilySearchClient.keychainAccount).isEmpty
+            let hasSearchEngine = WebSearchService.isConfigured()
             let hasKB = !omitKnowledge && !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty
-            toolsToAttach = AgentToolRunner.definitions(hasTavilyKey: hasTavilyKey, hasKnowledgeBase: hasKB)
+            let hasImageGen = self.imageGenerator != nil || ImageGenerationService.preferredAgentProvider(from: providers) != nil
+            let mcpTools = MCPServerStore.shared.enabledToolDefinitions()
+            toolsToAttach = AgentToolRunner.definitions(
+                hasTavilyKey: hasSearchEngine,
+                hasKnowledgeBase: hasKB,
+                hasImageGeneration: hasImageGen,
+                extraTools: mcpTools
+            )
         } else {
             toolsToAttach = []
         }
@@ -436,12 +470,16 @@ final class ChatEngine {
             if shouldUseTree {
                 replyMsg.parentMessageID = userMsg.id
             }
+            let useDeepResearchSlot = options.useDeepResearch && !isArena && kind == .answer
             var meta = AssistanceMetadata()
             meta.omittedKnowledge = options.omitKnowledge
             meta.omittedMemory = options.omitMemory && conversation.assistanceSettings.usePersonalMemory
             meta.memoryCount = memoryInfo.count
             meta.routeNotice = routeNotice
-            meta.requestedSearchQuery = validatedSearchQuery
+            meta.requestedSearchQuery = useDeepResearchSlot ? nil : validatedSearchQuery
+            if useDeepResearchSlot {
+                meta.deepResearchTrace = DeepResearchTrace(topic: trimmed, isRunning: true)
+            }
             if meta.hasPersistedContent {
                 replyMsg.assistanceMetadata = meta
             }
@@ -457,7 +495,8 @@ final class ChatEngine {
                 tools: toolsToAttach,
                 bookTurn: conversation.activeBookFriend.map { BookTurn(friend: $0, question: Self.promptContent(trimmed, quotedExcerpt: options.quotedExcerpt)) },
                 userProvidedURLs: kind == .answer && original == nil
-                    ? AgentToolRunner.extractUserProvidedURLs(from: [trimmed]) : []
+                    ? AgentToolRunner.extractUserProvidedURLs(from: [trimmed]) : [],
+                isDeepResearch: useDeepResearchSlot
             ))
         }
 
@@ -741,9 +780,16 @@ final class ChatEngine {
         let toolsToAttach: [LLMToolDefinition]
         if !isInArena && groupPersona == nil && conversation.assistanceSettings.enableAgentTools {
             let omitKnowledge = prevMeta.omittedKnowledge
-            let hasTavilyKey = !KeychainService.shared.loadSecret(account: TavilySearchClient.keychainAccount).isEmpty
+            let hasSearchEngine = WebSearchService.isConfigured()
             let hasKB = !omitKnowledge && !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty
-            toolsToAttach = AgentToolRunner.definitions(hasTavilyKey: hasTavilyKey, hasKnowledgeBase: hasKB)
+            let hasImageGen = self.imageGenerator != nil || ImageGenerationService.preferredAgentProvider(from: providers) != nil
+            let mcpTools = MCPServerStore.shared.enabledToolDefinitions()
+            toolsToAttach = AgentToolRunner.definitions(
+                hasTavilyKey: hasSearchEngine,
+                hasKnowledgeBase: hasKB,
+                hasImageGeneration: hasImageGen,
+                extraTools: mcpTools
+            )
         } else {
             toolsToAttach = []
         }
@@ -765,11 +811,15 @@ final class ChatEngine {
         assistantMessage.finishReason = nil
         assistantMessage.isStreaming = true
 
+        let isDeepResearchRetry = !isInArena && groupPersona == nil && prevMeta.deepResearchTrace != nil
         var freshMeta = AssistanceMetadata()
         freshMeta.omittedMemory = prevMeta.omittedMemory
         freshMeta.omittedKnowledge = prevMeta.omittedKnowledge
         freshMeta.memoryCount = memoryInfo.count
-        freshMeta.requestedSearchQuery = prevMeta.requestedSearchQuery
+        freshMeta.requestedSearchQuery = isDeepResearchRetry ? nil : prevMeta.requestedSearchQuery
+        if let prevTrace = prevMeta.deepResearchTrace, isDeepResearchRetry {
+            freshMeta.deepResearchTrace = DeepResearchTrace(topic: prevTrace.topic, isRunning: true)
+        }
         freshMeta.isBookmarked = prevMeta.isBookmarked
         freshMeta.blindArenaRevealed = prevMeta.blindArenaRevealed
         freshMeta.blindArenaBallot = prevMeta.blindArenaBallot
@@ -829,7 +879,8 @@ final class ChatEngine {
             groupSanitizer: sanitizer,
             bookTurn: (groupPersona?.bookFriend ?? conversation.activeBookFriend).map {
                 BookTurn(friend: $0, question: bookQuestion(in: cutoffMessages), memberID: groupPersona?.id)
-            }
+            },
+            isDeepResearch: isDeepResearchRetry
         )
 
         launchStreamingTasks(
@@ -935,9 +986,18 @@ final class ChatEngine {
             sanitizer = nil
         }
 
+        let continuationBackups = (assistantMessage.comparisonGroupID == nil && groupPersona == nil)
+            ? AssistancePolicy.fallbacks(
+                after: resolvedTarget,
+                settings: conversation.assistanceSettings,
+                providers: providers,
+                requiresVision: false
+            )
+            : []
+
         let slot = StreamSlot(
             message: assistantMessage,
-            candidates: [resolvedTarget],
+            candidates: [resolvedTarget] + continuationBackups,
             kind: .continuation,
             systemPromptOverride: effectiveSystemPrompt,
             temperatureOverride: tempOverride,
@@ -1122,7 +1182,8 @@ final class ChatEngine {
         guard conversation.assistanceSettings.usePersonalMemory, !omitMemory else {
             return (base, 0)
         }
-        guard let prompt = try? PersonalMemory.prompt(in: context), prompt.count > 0 else {
+        let projectTags = ProjectWorkspaceStore.shared.workspace(forFolderTag: conversation.folderTag)?.memoryTags
+        guard let prompt = try? PersonalMemory.prompt(in: context, activeProjectTags: projectTags), prompt.count > 0 else {
             return (base, 0)
         }
         let trimmedBase = base.trimmingCharacters(in: .whitespacesAndNewlines)

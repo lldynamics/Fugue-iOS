@@ -46,7 +46,10 @@ object OpenAICompatibleAdapter {
     private data class WireOptions(
         val useUsageOption: Boolean,
         val useNativeSearch: Boolean,
-        val useReasoningContent: Boolean
+        val useReasoningContent: Boolean,
+        val useReasoningParams: Boolean,
+        val useMaxCompletionTokens: Boolean,
+        val useSamplingParams: Boolean
     )
 
     private data class PendingToolCall(
@@ -57,6 +60,24 @@ object OpenAICompatibleAdapter {
 
     fun streamChat(client: LLMClient, request: LLMChatRequest): Flow<LLMStreamEvent> {
         val cache = client.capabilityCache
+        val baseModel = baseModelName(request.modelID)
+        val viaOpenRouter = isOpenRouter(request.baseURL)
+        val isOpenAIReasoning = isOpenAIReasoningModel(baseModel)
+        val directOpenAIHost = isDirectOpenAIHost(request.baseURL)
+        val defaultMaxCompletion = isOpenAIReasoning && !viaOpenRouter
+        val resolvedMaxCompletion = when {
+            cache.isUnsupported(GatewayUnsupportedFeature.MAX_COMPLETION_TOKENS, APIProtocolType.OPEN_AI_COMPATIBLE, request.baseURL, request.modelID) -> false
+            cache.isUnsupported(GatewayUnsupportedFeature.REQUIRES_MAX_COMPLETION_TOKENS, APIProtocolType.OPEN_AI_COMPATIBLE, request.baseURL, request.modelID) -> true
+            else -> defaultMaxCompletion
+        }
+        val hasReasoningParams = reasoningParameters(request).isNotEmpty()
+        val hasMaxTokens = (request.maxOutputTokens ?: 0) > 0
+        val omitSampling = isOpenAIReasoning || baseModel.contains("reasoner")
+        val hasSamplingParams = !omitSampling && (request.temperature != null || request.topP < 0.999)
+        val hasAssistantReasoningContent = !directOpenAIHost &&
+            (!isOpenAIReasoning || viaOpenRouter) &&
+            request.messages.any { it.role == MessageRole.ASSISTANT && it.toolCalls.isNotEmpty() && it.reasoningContent.isNotEmpty() }
+
         val initial = WireOptions(
             useUsageOption = !cache.isUnsupported(
                 GatewayUnsupportedFeature.STREAM_OPTIONS,
@@ -75,6 +96,19 @@ object OpenAICompatibleAdapter {
                 APIProtocolType.OPEN_AI_COMPATIBLE,
                 request.baseURL,
                 request.modelID
+            ),
+            useReasoningParams = !cache.isUnsupported(
+                GatewayUnsupportedFeature.REASONING_PARAMS,
+                APIProtocolType.OPEN_AI_COMPATIBLE,
+                request.baseURL,
+                request.modelID
+            ),
+            useMaxCompletionTokens = resolvedMaxCompletion,
+            useSamplingParams = !cache.isUnsupported(
+                GatewayUnsupportedFeature.SAMPLING_PARAMS,
+                APIProtocolType.OPEN_AI_COMPATIBLE,
+                request.baseURL,
+                request.modelID
             )
         )
 
@@ -87,7 +121,10 @@ object OpenAICompatibleAdapter {
                     request = request,
                     includeUsageOption = state.useUsageOption,
                     includeNativeSearch = state.useNativeSearch,
-                    includeReasoningContent = state.useReasoningContent
+                    includeReasoningContent = state.useReasoningContent,
+                    includeReasoningParams = state.useReasoningParams,
+                    useMaxCompletionTokens = state.useMaxCompletionTokens,
+                    includeSamplingParams = state.useSamplingParams
                 )
                 val bodyStr = compactJson.encodeToString(JsonObject.serializer(), payload)
                 val builder = Request.Builder()
@@ -104,7 +141,8 @@ object OpenAICompatibleAdapter {
             degradeOn400 = { _, detail, state, newlyDisabled ->
                 val lower = detail.lowercase()
                 when {
-                    state.useUsageOption && lower.contains("stream_options") -> {
+                    LLMClient.isUnrecoverable400(lower) -> false to state
+                    state.useUsageOption && (lower.contains("stream_options") || lower.contains("include_usage")) -> {
                         newlyDisabled.add(GatewayUnsupportedFeature.STREAM_OPTIONS)
                         true to state.copy(useUsageOption = false)
                     }
@@ -112,10 +150,55 @@ object OpenAICompatibleAdapter {
                         newlyDisabled.add(GatewayUnsupportedFeature.REASONING_CONTENT)
                         true to state.copy(useReasoningContent = false)
                     }
+                    hasReasoningParams && state.useReasoningParams && (
+                        lower.contains("reasoning_effort") || lower.contains("enable_thinking") ||
+                            lower.contains("thinking_budget") || lower.contains("thinking") || lower.contains("reasoning")
+                        ) -> {
+                        newlyDisabled.add(GatewayUnsupportedFeature.REASONING_PARAMS)
+                        true to state.copy(useReasoningParams = false)
+                    }
+                    hasMaxTokens && state.useMaxCompletionTokens && lower.contains("max_completion_tokens") -> {
+                        newlyDisabled.add(GatewayUnsupportedFeature.MAX_COMPLETION_TOKENS)
+                        true to state.copy(useMaxCompletionTokens = false)
+                    }
+                    hasMaxTokens && !state.useMaxCompletionTokens && lower.contains("max_tokens") && (
+                        lower.contains("max_completion_tokens") || lower.contains("unsupported") ||
+                            lower.contains("not supported") || lower.contains("not allowed")
+                        ) -> {
+                        newlyDisabled.add(GatewayUnsupportedFeature.REQUIRES_MAX_COMPLETION_TOKENS)
+                        true to state.copy(useMaxCompletionTokens = true)
+                    }
+                    hasSamplingParams && state.useSamplingParams && (lower.contains("temperature") || lower.contains("top_p")) -> {
+                        newlyDisabled.add(GatewayUnsupportedFeature.SAMPLING_PARAMS)
+                        true to state.copy(useSamplingParams = false)
+                    }
                     state.useNativeSearch && (lower.contains("web_search") || lower.contains("plugins") ||
                         lower.contains("unknown") || lower.contains("unrecognized")) -> {
                         newlyDisabled.add(GatewayUnsupportedFeature.NATIVE_SEARCH)
                         true to state.copy(useNativeSearch = false)
+                    }
+                    LLMClient.isGenericParameterRejection400(lower) -> when {
+                        state.useNativeSearch -> {
+                            newlyDisabled.add(GatewayUnsupportedFeature.NATIVE_SEARCH)
+                            true to state.copy(useNativeSearch = false)
+                        }
+                        hasReasoningParams && state.useReasoningParams -> {
+                            newlyDisabled.add(GatewayUnsupportedFeature.REASONING_PARAMS)
+                            true to state.copy(useReasoningParams = false)
+                        }
+                        state.useUsageOption -> {
+                            newlyDisabled.add(GatewayUnsupportedFeature.STREAM_OPTIONS)
+                            true to state.copy(useUsageOption = false)
+                        }
+                        hasAssistantReasoningContent && state.useReasoningContent -> {
+                            newlyDisabled.add(GatewayUnsupportedFeature.REASONING_CONTENT)
+                            true to state.copy(useReasoningContent = false)
+                        }
+                        hasMaxTokens && state.useMaxCompletionTokens -> {
+                            newlyDisabled.add(GatewayUnsupportedFeature.MAX_COMPLETION_TOKENS)
+                            true to state.copy(useMaxCompletionTokens = false)
+                        }
+                        else -> false to state
                     }
                     else -> false to state
                 }
@@ -334,7 +417,10 @@ object OpenAICompatibleAdapter {
         request: LLMChatRequest,
         includeUsageOption: Boolean = true,
         includeNativeSearch: Boolean? = null,
-        includeReasoningContent: Boolean = true
+        includeReasoningContent: Boolean = true,
+        includeReasoningParams: Boolean = true,
+        useMaxCompletionTokens: Boolean? = null,
+        includeSamplingParams: Boolean = true
     ): JsonObject {
         val useNativeSearch = includeNativeSearch ?: request.enableNativeSearch
         val sanitizedMessages = LLMClient.sanitizeToolHistory(request.messages)
@@ -478,7 +564,7 @@ object OpenAICompatibleAdapter {
             put("messages", JsonArray(wireMessages.map { JsonObject(it) }))
             put("stream", true)
 
-            val omitSampling = isOpenAIReasoning || baseModel.contains("reasoner")
+            val omitSampling = !includeSamplingParams || isOpenAIReasoning || baseModel.contains("reasoner")
             if (!omitSampling) {
                 request.temperature?.let { put("temperature", it) }
                 if (request.topP < 0.999) {
@@ -486,7 +572,8 @@ object OpenAICompatibleAdapter {
                 }
             }
             request.maxOutputTokens?.takeIf { it > 0 }?.let { maxTokens ->
-                val key = if (isOpenAIReasoning && !viaOpenRouter) "max_completion_tokens" else "max_tokens"
+                val preferCompletionKey = useMaxCompletionTokens ?: (isOpenAIReasoning && !viaOpenRouter)
+                val key = if (preferCompletionKey) "max_completion_tokens" else "max_tokens"
                 put(key, maxTokens)
             }
             if (includeUsageOption) {
@@ -517,8 +604,10 @@ object OpenAICompatibleAdapter {
                     }
                 }
             }
-            for ((k, v) in reasoningParameters(request)) {
-                put(k, v)
+            if (includeReasoningParams) {
+                for ((k, v) in reasoningParameters(request)) {
+                    put(k, v)
+                }
             }
         }
     }

@@ -213,6 +213,9 @@ enum BookLibrary {
         let book = BookVolume(id: prepared.id, title: prepared.title, chapterTitles: prepared.chapterTitles, manuscript: prepared.data)
         context.insert(book)
         do { try context.save() } catch { context.delete(book); throw error }
+        if !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
+            SyncTombstoneStore.shared.removeTombstone(kind: .book, id: prepared.id)
+        }
         return book
     }
 
@@ -293,6 +296,9 @@ enum BookLibrary {
                 context.delete(book)
                 try context.save()
             }
+        }
+        if !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
+            SyncTombstoneStore.shared.recordDeletion(kind: .book, id: removedID)
         }
         Task { await ProjectKnowledgeSearch.shared.invalidate(volumeID: removedID) }
     }

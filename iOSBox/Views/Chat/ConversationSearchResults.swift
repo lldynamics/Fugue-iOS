@@ -13,6 +13,8 @@ struct ConversationSearchResults: View {
     let retry: () -> Void
     var onSelectConversation: ((Conversation) -> Void)? = nil
     var onSelectRoute: ((ConversationMessageRoute) -> Void)? = nil
+    var onSelectBookHit: ((BookSearchHit) -> Void)? = nil
+    var onSelectFlashcardHit: ((FlashcardSearchHit) -> Void)? = nil
 
     var body: some View {
         if session.completed != query {
@@ -20,12 +22,71 @@ struct ConversationSearchResults: View {
         } else if let error = session.error {
             Text(verbatim: error).foregroundStyle(.secondary)
             Button("重试", action: retry)
-        } else if session.results.isEmpty {
+        } else if !session.hasAnyResults {
             ContentUnavailableView.search(text: query.text)
         } else {
             let byID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
             ForEach(session.results) { result in
                 if let chat = byID[result.id] { rows(for: result, chat: chat) }
+            }
+
+            if !session.bookHits.isEmpty {
+                Section("书架文档 (\(session.bookHits.count))") {
+                    ForEach(session.bookHits) { hit in
+                        Button {
+                            onSelectBookHit?(hit)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "book.closed.fill")
+                                        .foregroundStyle(.teal)
+                                    Text(verbatim: hit.bookTitle)
+                                        .fontWeight(.semibold)
+                                        .lineLimit(1)
+                                    Text("·")
+                                    Text(verbatim: hit.sectionTitle)
+                                        .lineLimit(1)
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                Text(hit.excerpt.highlighted)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(3)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            if !session.flashcardHits.isEmpty {
+                Section("助学闪卡 (\(session.flashcardHits.count))") {
+                    ForEach(session.flashcardHits) { hit in
+                        Button {
+                            onSelectFlashcardHit?(hit)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "rectangle.stack.fill")
+                                        .foregroundStyle(.orange)
+                                    Text(verbatim: hit.deckName)
+                                        .fontWeight(.semibold)
+                                        .lineLimit(1)
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                Text(hit.excerpt.highlighted)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(3)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
         }
     }
@@ -48,8 +109,15 @@ struct ConversationSearchResults: View {
             ForEach(result.hits) { hit in
                 let route = ConversationMessageRoute(conversation: chat, messageID: hit.id)
                 let rowLabel = VStack(alignment: .leading, spacing: 4) {
-                    HStack {
+                    HStack(spacing: 6) {
                         Text(hit.speaker)
+                        if let fieldBadge = hit.matchedField.badgeLabel {
+                            Text(fieldBadge)
+                                .font(.caption2.weight(.medium))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Color.secondary.opacity(0.14), in: Capsule())
+                        }
                         if hit.isOtherBranch { Label("其他分支", systemImage: "arrow.triangle.branch") }
                         Spacer()
                         Text(hit.createdAt, format: .dateTime.month().day())
@@ -79,10 +147,69 @@ struct ConversationSearchResults: View {
 
 extension SearchExcerpt {
     var highlighted: AttributedString {
-        var keyword = AttributedString(match)
-        keyword.inlinePresentationIntent = .stronglyEmphasized
-        keyword.backgroundColor = Color.accentColor.opacity(0.2)
-        return AttributedString(before) + keyword + AttributedString(after)
+        if highlightTerms.count <= 1 {
+            guard !match.isEmpty else { return AttributedString(fullSnippet) }
+            var keyword = AttributedString(match)
+            keyword.inlinePresentationIntent = .stronglyEmphasized
+            keyword.backgroundColor = Color.accentColor.opacity(0.2)
+            return AttributedString(before) + keyword + AttributedString(after)
+        }
+        let full = fullSnippet
+        var result = AttributedString(full)
+        let sortedTerms = highlightTerms.sorted { $0.count > $1.count }
+        for term in sortedTerms where !term.isEmpty {
+            var cursor = full.startIndex
+            while cursor < full.endIndex,
+                  let range = full.range(of: term, options: [.caseInsensitive, .diacriticInsensitive], range: cursor..<full.endIndex) {
+                if let attrRange = Range(range, in: result) {
+                    result[attrRange].inlinePresentationIntent = .stronglyEmphasized
+                    result[attrRange].backgroundColor = Color.accentColor.opacity(0.2)
+                }
+                cursor = range.upperBound
+            }
+        }
+        return result
+    }
+}
+
+struct BookSearchHitReaderSheet: View {
+    let hit: BookSearchHit
+    @Environment(\.dismiss) private var dismiss
+    @State private var readingRequest: ReadingRequest?
+    @State private var readingPlace = BookReadingPlace()
+
+    var body: some View {
+        NavigationStack {
+            BookOriginalView(
+                volumeID: hit.volumeID,
+                throughChapter: nil,
+                request: $readingRequest,
+                place: $readingPlace,
+                openShelf: nil,
+                quote: { _ in }
+            )
+            .navigationTitle(hit.bookTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+            .onAppear {
+                let citation = ReadingCitation(
+                    KnowledgePassage(
+                        id: 1,
+                        volumeID: hit.volumeID,
+                        documentTitle: hit.bookTitle,
+                        sectionTitle: hit.sectionTitle,
+                        excerpt: hit.excerpt.fullSnippet,
+                        chapterIndex: hit.chapterIndex,
+                        utf16Offset: hit.utf16Offset
+                    )
+                )
+                readingRequest = ReadingRequest(chapter: hit.chapterIndex, citation: citation)
+            }
+        }
     }
 }
 

@@ -30,8 +30,24 @@ final class PersonalMemory {
 
     @MainActor
     static func prompt(in context: ModelContext) throws -> (text: String, count: Int) {
+        try prompt(in: context, activeProjectTags: nil, scopeStore: .shared)
+    }
+
+    @MainActor
+    static func prompt(
+        in context: ModelContext,
+        activeProjectTags: [String]?,
+        scopeStore: MemoryScopeStore? = nil
+    ) throws -> (text: String, count: Int) {
+        let scopeStore = scopeStore ?? .shared
         let memories = try context.fetch(FetchDescriptor<PersonalMemory>(sortBy: [SortDescriptor(\.createdAt)]))
-            .filter(\.isEnabled).prefix(maximumCount)
+            .filter { memory in
+                memory.isEnabled && MemoryScopeStore.matches(
+                    memoryTags: scopeStore.tags(for: memory.id),
+                    activeProjectTags: activeProjectTags
+                )
+            }
+            .prefix(maximumCount)
             .map { String($0.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maximumCharacters)) }
             .filter { !$0.isEmpty }
         guard !memories.isEmpty else { return ("", 0) }

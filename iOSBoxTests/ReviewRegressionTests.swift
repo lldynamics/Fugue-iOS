@@ -278,6 +278,7 @@ final class ReviewRegressionTests: XCTestCase {
         let stream: AsyncThrowingStream<LLMStreamEvent, Error>
         switch type {
         case .openAICompatible: stream = OpenAICompatibleAdapter.streamChat(req, session: session)
+        case .openAIResponses: stream = OpenAIResponsesAdapter.streamChat(req, session: session)
         case .anthropic: stream = AnthropicAdapter.streamChat(req, session: session)
         case .gemini: stream = GeminiAdapter.streamChat(req, session: session)
         }
@@ -319,6 +320,7 @@ final class ReviewRegressionTests: XCTestCase {
                 let stream: AsyncThrowingStream<LLMStreamEvent, Error>
                 switch type {
                 case .openAICompatible: stream = OpenAICompatibleAdapter.streamChat(req, session: session)
+                case .openAIResponses: stream = OpenAIResponsesAdapter.streamChat(req, session: session)
                 case .anthropic: stream = AnthropicAdapter.streamChat(req, session: session)
                 case .gemini: stream = GeminiAdapter.streamChat(req, session: session)
                 }

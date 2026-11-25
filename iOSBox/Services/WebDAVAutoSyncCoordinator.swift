@@ -85,6 +85,8 @@ final class WebDAVAutoSyncCoordinator {
     private(set) var lastStatusMessage: String?
     private(set) var lastSyncError: String?
     private(set) var remoteMetadata: WebDAVRemoteMetadata?
+    private(set) var lastShardedStats: WebDAVShardedSyncStats?
+    private(set) var remoteUsesShards = false
 
     func markLocalDataChanged() {
         guard !isSyncing else { return }
@@ -103,19 +105,51 @@ final class WebDAVAutoSyncCoordinator {
         }
 
         do {
-            let meta = try await WebDAVSyncService.fetchRemoteMetadata(
+            let (meta, isSharded) = try await resolveRemoteMetadata(
                 serverURL: serverURL,
                 remotePath: remotePath,
                 username: username,
-                password: password
+                password: password,
+                preferSharded: preferences.webDAVShardedSyncEnabled
             )
             remoteMetadata = meta
+            remoteUsesShards = isSharded
             lastSyncError = nil
             return meta
         } catch {
             lastSyncError = error.localizedDescription
             return nil
         }
+    }
+
+    private func resolveRemoteMetadata(
+        serverURL: String,
+        remotePath: String,
+        username: String,
+        password: String,
+        preferSharded: Bool,
+        session: URLSession? = nil
+    ) async throws -> (WebDAVRemoteMetadata, Bool) {
+        if preferSharded {
+            let shardMeta = try await WebDAVShardedSyncService.fetchManifestMetadata(
+                serverURL: serverURL,
+                remotePath: remotePath,
+                username: username,
+                password: password,
+                session: session
+            )
+            if shardMeta.exists {
+                return (shardMeta, true)
+            }
+        }
+        let legacyMeta = try await WebDAVSyncService.fetchRemoteMetadata(
+            serverURL: serverURL,
+            remotePath: remotePath,
+            username: username,
+            password: password,
+            session: session
+        )
+        return (legacyMeta, false)
     }
 
     func syncIfNeeded(
@@ -163,13 +197,15 @@ final class WebDAVAutoSyncCoordinator {
         defer { isSyncing = false }
 
         do {
-            let remoteMeta = try await WebDAVSyncService.fetchRemoteMetadata(
+            let (remoteMeta, isRemoteSharded) = try await resolveRemoteMetadata(
                 serverURL: serverURL,
                 remotePath: remotePath,
                 username: username,
-                password: password
+                password: password,
+                preferSharded: preferences.webDAVShardedSyncEnabled
             )
             remoteMetadata = remoteMeta
+            remoteUsesShards = isRemoteSharded
 
             let cooldown = TimeInterval(preferences.webDAVAutoSyncIntervalMinutes * 60)
             let decision = WebDAVAutoSyncPolicy.decide(
@@ -201,6 +237,7 @@ final class WebDAVAutoSyncCoordinator {
                     password: password,
                     passphrase: passphrase,
                     remoteMeta: remoteMeta,
+                    isRemoteSharded: isRemoteSharded,
                     context: context,
                     preferences: preferences
                 )
@@ -210,7 +247,7 @@ final class WebDAVAutoSyncCoordinator {
                 preferences.webDAVLastAutoSyncSummary = message
 
             case .pushOnly:
-                try await exportAndPush(
+                let stats = try await exportAndPush(
                     serverURL: serverURL,
                     remotePath: remotePath,
                     username: username,
@@ -220,7 +257,7 @@ final class WebDAVAutoSyncCoordinator {
                     preferences: preferences
                 )
                 hasLocalChangesPending = false
-                let message = String(localized: "已自动加密上传最新备份。")
+                let message = stats?.pushSummaryText ?? String(localized: "已自动加密上传最新备份。")
                 lastStatusMessage = message
                 preferences.webDAVLastAutoSyncSummary = message
 
@@ -232,10 +269,11 @@ final class WebDAVAutoSyncCoordinator {
                     password: password,
                     passphrase: passphrase,
                     remoteMeta: remoteMeta,
+                    isRemoteSharded: isRemoteSharded,
                     context: context,
                     preferences: preferences
                 )
-                try await exportAndPush(
+                let stats = try await exportAndPush(
                     serverURL: serverURL,
                     remotePath: remotePath,
                     username: username,
@@ -245,7 +283,8 @@ final class WebDAVAutoSyncCoordinator {
                     preferences: preferences
                 )
                 hasLocalChangesPending = false
-                let message = String(localized: "已双向合并并上传更新：\(summary.title)")
+                let detail = stats.map { " \($0.pushSummaryText)" } ?? ""
+                let message = String(localized: "已双向合并并上传更新：\(summary.title)") + detail
                 lastStatusMessage = message
                 preferences.webDAVLastAutoSyncSummary = message
             }
@@ -276,12 +315,57 @@ final class WebDAVAutoSyncCoordinator {
         remoteMetadata = nil
         lastStatusMessage = nil
         lastSyncError = nil
+        lastShardedStats = nil
+        remoteUsesShards = false
         hasLocalChangesPending = false
         preferences.webDAVAutoSyncEnabled = false
         preferences.webDAVLastRemoteETag = ""
         preferences.webDAVLastRemoteModifiedAt = nil
         preferences.webDAVLastAutoSyncSummary = ""
         preferences.webDAVLastSyncAt = nil
+        preferences.webDAVKnownShardSalt = ""
+        preferences.webDAVKnownShardKeyFingerprint = ""
+        preferences.webDAVKnownRemoteBlobs = []
+    }
+
+    func recordShardState(
+        saltBase64: String,
+        keyFingerprint: String,
+        presentBlobs: [String],
+        stats: WebDAVShardedSyncStats,
+        preferences suppliedPreferences: AppPreferences? = nil
+    ) {
+        let preferences = suppliedPreferences ?? .shared
+        preferences.webDAVKnownShardSalt = saltBase64
+        preferences.webDAVKnownShardKeyFingerprint = keyFingerprint
+        preferences.webDAVKnownRemoteBlobs = presentBlobs
+        lastShardedStats = stats
+        remoteUsesShards = true
+    }
+
+    static func localBookSnapshots(in context: ModelContext) -> [UUID: BookVolume.Snapshot] {
+        let volumes = (try? context.fetch(FetchDescriptor<BookVolume>())) ?? []
+        var result: [UUID: BookVolume.Snapshot] = [:]
+        for vol in volumes {
+            if let snap = try? vol.snapshot() {
+                result[vol.id] = snap
+            }
+        }
+        return result
+    }
+
+    static func localAttachmentBlobs(in context: ModelContext) -> [String: Data] {
+        let messages = (try? context.fetch(FetchDescriptor<ChatMessage>())) ?? []
+        var blobs: [String: Data] = [:]
+        for msg in messages {
+            for att in msg.attachments {
+                if let b64 = att.dataBase64, b64.utf8.count >= WebDAVPayloadSharder.attachmentShardThresholdBytes {
+                    let raw = Data(b64.utf8)
+                    blobs[WebDAVPayloadSharder.sha256Hex(raw)] = raw
+                }
+            }
+        }
+        return blobs
     }
 
     private func pullAndMerge(
@@ -291,25 +375,56 @@ final class WebDAVAutoSyncCoordinator {
         password: String,
         passphrase: String,
         remoteMeta: WebDAVRemoteMetadata,
+        isRemoteSharded: Bool,
         context: ModelContext,
         preferences: AppPreferences
     ) async throws -> ImportSummary {
-        let data = try await WebDAVSyncService.downloadEncryptedData(
-            serverURL: serverURL,
-            remotePath: remotePath,
-            username: username,
-            password: password
-        )
-        let summary = try await EncryptedBackupService.decryptAndApplyAsync(
-            data: data,
-            password: passphrase,
-            to: context
-        )
-        recordSyncedRemoteMetadata(remoteMeta, preferences: preferences)
+        let summary: ImportSummary
+        if isRemoteSharded {
+            let existingBooks = Self.localBookSnapshots(in: context)
+            let existingAttachments = Self.localAttachmentBlobs(in: context)
+            let pulled = try await WebDAVShardedSyncService.pullSharded(
+                passphrase: passphrase,
+                serverURL: serverURL,
+                remotePath: remotePath,
+                username: username,
+                password: password,
+                existingBooks: existingBooks,
+                existingAttachmentBlobs: existingAttachments
+            )
+            summary = try EncryptedBackupService.applyDecryptedPayload(
+                pulled.payload,
+                to: context,
+                tombstonePolicy: .enforce(.shared)
+            )
+            recordShardState(
+                saltBase64: pulled.saltBase64,
+                keyFingerprint: pulled.keyFingerprint,
+                presentBlobs: pulled.presentBlobs,
+                stats: pulled.stats,
+                preferences: preferences
+            )
+            recordSyncedRemoteMetadata(pulled.metadata.exists ? pulled.metadata : remoteMeta, preferences: preferences)
+        } else {
+            let data = try await WebDAVSyncService.downloadEncryptedData(
+                serverURL: serverURL,
+                remotePath: remotePath,
+                username: username,
+                password: password
+            )
+            summary = try await EncryptedBackupService.decryptAndApplyAsync(
+                data: data,
+                password: passphrase,
+                to: context,
+                tombstonePolicy: .enforce(.shared)
+            )
+            recordSyncedRemoteMetadata(remoteMeta, preferences: preferences)
+        }
         WidgetSnapshotService.shared.sync(context: context, forceReload: true)
         return summary
     }
 
+    @discardableResult
     private func exportAndPush(
         serverURL: String,
         remotePath: String,
@@ -318,8 +433,35 @@ final class WebDAVAutoSyncCoordinator {
         passphrase: String,
         context: ModelContext,
         preferences: AppPreferences
-    ) async throws {
-        let payload = try EncryptedBackupService.makeExportPayload(context: context)
+    ) async throws -> WebDAVShardedSyncStats? {
+        let payload = try EncryptedBackupService.makeExportPayload(
+            context: context,
+            tombstoneStore: .shared
+        )
+
+        if preferences.webDAVShardedSyncEnabled {
+            let result = try await WebDAVShardedSyncService.pushSharded(
+                payload: payload,
+                passphrase: passphrase,
+                serverURL: serverURL,
+                remotePath: remotePath,
+                username: username,
+                password: password,
+                knownSaltBase64: preferences.webDAVKnownShardSalt.isEmpty ? nil : preferences.webDAVKnownShardSalt,
+                knownKeyFingerprint: preferences.webDAVKnownShardKeyFingerprint.isEmpty ? nil : preferences.webDAVKnownShardKeyFingerprint,
+                knownRemoteBlobs: Set(preferences.webDAVKnownRemoteBlobs)
+            )
+            recordShardState(
+                saltBase64: result.saltBase64,
+                keyFingerprint: result.keyFingerprint,
+                presentBlobs: result.presentBlobs,
+                stats: result.stats,
+                preferences: preferences
+            )
+            recordSyncedRemoteMetadata(result.metadata, preferences: preferences)
+            return result.stats
+        }
+
         let encryptedData = try await Task.detached(priority: .userInitiated) {
             try EncryptedBackupService.encryptPayload(payload, password: passphrase)
         }.value
@@ -341,6 +483,9 @@ final class WebDAVAutoSyncCoordinator {
                 password: password
             )) ?? putMeta
         }
+        lastShardedStats = nil
+        remoteUsesShards = false
         recordSyncedRemoteMetadata(finalMeta, preferences: preferences)
+        return nil
     }
 }

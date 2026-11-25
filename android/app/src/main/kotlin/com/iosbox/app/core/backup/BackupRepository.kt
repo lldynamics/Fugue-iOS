@@ -24,6 +24,7 @@ import com.iosbox.app.core.storage.FugueDatabase
 import com.iosbox.app.core.storage.FlashcardRepository
 import com.iosbox.app.core.storage.PersonalMemoryEntity
 import com.iosbox.app.core.storage.PersonaProfileEntity
+import com.iosbox.app.core.storage.ProjectKnowledgeSearch
 import com.iosbox.app.core.storage.ProviderEntity
 import com.iosbox.app.core.storage.RequestRecordEntity
 import com.iosbox.app.core.storage.RestoreBlobBatch
@@ -45,7 +46,8 @@ class BackupRepository(
     private val secretStore: SecretStore,
     private val flashcardRepository: FlashcardRepository,
     private val appVersion: String = "1.0.0",
-    private val draftStore: ChatDraftStore? = null
+    private val draftStore: ChatDraftStore? = null,
+    private val tombstoneStore: SyncTombstoneStore? = null
 ) {
     private val codec = BackupJson.codec
     private val prettyCodec = BackupJson.prettyCodec
@@ -68,7 +70,9 @@ class BackupRepository(
         EncryptedBackupCrypto.encryptPayload(payload, password)
     }
 
-    suspend fun makeArchive(): BackupArchive = withContext(Dispatchers.IO) {
+    suspend fun makeArchive(
+        tombstoneStore: SyncTombstoneStore? = this.tombstoneStore
+    ): BackupArchive = withContext(Dispatchers.IO) {
         val providers = db.providerDao().getAll()
         val presets = db.assistantPresetDao().getAll()
         val conversations = db.conversationDao().getAll()
@@ -280,6 +284,8 @@ class BackupRepository(
             )
         }
 
+        val tombstones = tombstoneStore?.allTombstones()?.takeIf { it.isNotEmpty() }
+
         BackupArchive(
             formatVersion = BackupArchive.CURRENT_FORMAT_VERSION,
             exportedAt = System.currentTimeMillis(),
@@ -292,12 +298,15 @@ class BackupRepository(
             books = bookSnapshots,
             flashcards = flashcards?.takeIf { it.isNotEmpty() },
             personaProfiles = profileElements.takeIf { it.isNotEmpty() },
-            shelfPositions = shelfSnapshots.takeIf { it.isNotEmpty() }
+            shelfPositions = shelfSnapshots.takeIf { it.isNotEmpty() },
+            tombstones = tombstones
         )
     }
 
-    suspend fun makeFullEncryptedPayload(): FullEncryptedPayload = withContext(Dispatchers.IO) {
-        val archive = makeArchive()
+    suspend fun makeFullEncryptedPayload(
+        tombstoneStore: SyncTombstoneStore? = this.tombstoneStore
+    ): FullEncryptedPayload = withContext(Dispatchers.IO) {
+        val archive = makeArchive(tombstoneStore = tombstoneStore)
         val providers = db.providerDao().getAll()
         val bundles = providers.map { p ->
             val headers = runCatching { codec.decodeFromString<List<CustomHeader>>(p.headersJson) }.getOrDefault(emptyList())
@@ -332,15 +341,71 @@ class BackupRepository(
         )
     }
 
+    suspend fun localBookSnapshots(): Map<String, BookVolumeSnapshot> = withContext(Dispatchers.IO) {
+        val result = HashMap<String, BookVolumeSnapshot>()
+        for (b in db.bookVolumeDao().getAll()) {
+            val raw = blobStore.readText(b.manuscriptBlobKey) ?: continue
+            val chapters = runCatching { codec.decodeFromString<List<BookChapterSnapshot>>(raw) }.getOrNull()
+                ?: continue
+            result[b.id.uppercase()] = BookVolumeSnapshot(
+                id = b.id,
+                title = b.title,
+                chapters = chapters,
+                importedAt = b.importedAtEpochMs
+            )
+        }
+        result
+    }
+
+    suspend fun localAttachmentBlobs(): Map<String, ByteArray> = withContext(Dispatchers.IO) {
+        val result = HashMap<String, ByteArray>()
+        for (m in db.chatMessageDao().getAll()) {
+            val attRaw = m.attachmentsBlobKey?.let { blobStore.readText(it) }
+            if (attRaw != null) {
+                val atts = runCatching { codec.decodeFromString<List<MessageAttachment>>(attRaw) }.getOrDefault(emptyList())
+                for (att in atts) {
+                    val b64 = att.dataBase64 ?: continue
+                    val raw = b64.toByteArray(Charsets.UTF_8)
+                    if (raw.size >= WebDAVPayloadSharder.ATTACHMENT_SHARD_THRESHOLD_BYTES) {
+                        result[WebDAVPayloadSharder.sha256Hex(raw)] = raw
+                    }
+                }
+            }
+            val metaRaw = m.assistanceMetadataBlobKey?.let { blobStore.readText(it) }
+            if (metaRaw != null) {
+                val revisions = (runCatching { codec.parseToJsonElement(metaRaw) }.getOrNull() as? JsonObject)
+                    ?.get("revisions") as? JsonArray
+                if (revisions != null) {
+                    for (revEl in revisions) {
+                        val atts = (revEl as? JsonObject)?.get("attachments") as? JsonArray ?: continue
+                        for (attEl in atts) {
+                            val b64 = ((attEl as? JsonObject)?.get("dataBase64") as? JsonPrimitive)
+                                ?.takeIf { it.isString }?.content ?: continue
+                            val raw = b64.toByteArray(Charsets.UTF_8)
+                            if (raw.size >= WebDAVPayloadSharder.ATTACHMENT_SHARD_THRESHOLD_BYTES) {
+                                result[WebDAVPayloadSharder.sha256Hex(raw)] = raw
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+
     suspend fun importPlainJsonBytes(data: ByteArray): ImportSummary = withContext(Dispatchers.IO) {
         if (data.size > EncryptedBackupCrypto.MAXIMUM_FILE_BYTES) throw BackupException.FileTooLarge()
         val archive = decodePlainArchive(data)
         applyArchive(archive)
     }
 
-    suspend fun importEncryptedBytes(data: ByteArray, password: String): ImportSummary = withContext(Dispatchers.IO) {
+    suspend fun importEncryptedBytes(
+        data: ByteArray,
+        password: String,
+        tombstonePolicy: SyncTombstonePolicy = SyncTombstonePolicy.Ignore
+    ): ImportSummary = withContext(Dispatchers.IO) {
         val payload = EncryptedBackupCrypto.decryptPayload(data, password)
-        applyEncryptedPayload(payload)
+        applyEncryptedPayload(payload, tombstonePolicy = tombstonePolicy)
     }
 
     fun decodePlainArchive(data: ByteArray): BackupArchive {
@@ -362,7 +427,10 @@ class BackupRepository(
         throw BackupException.UnrecognizedFormat()
     }
 
-    suspend fun applyEncryptedPayload(payload: FullEncryptedPayload): ImportSummary = withContext(Dispatchers.IO) {
+    suspend fun applyEncryptedPayload(
+        payload: FullEncryptedPayload,
+        tombstonePolicy: SyncTombstonePolicy = SyncTombstonePolicy.Ignore
+    ): ImportSummary = withContext(Dispatchers.IO) {
         if (payload.providerSecrets.map { it.providerID.uppercase() }.toSet().size != payload.providerSecrets.size) {
             throw BackupException.ConflictingIDs()
         }
@@ -380,10 +448,11 @@ class BackupRepository(
             }
         }
         val patchedArchive = payload.archive.copy(providers = patchedProviders)
-        val baseSummary = applyArchive(patchedArchive)
+        val baseSummary = applyArchive(patchedArchive, tombstonePolicy = tombstonePolicy)
 
         val archivedProviders = patchedArchive.providers.associateBy { it.id.uppercase() }
         val localProviders = db.providerDao().getAll().associateBy { it.id.uppercase() }
+        val enforcedStore = (tombstonePolicy as? SyncTombstonePolicy.Enforce)?.store
 
         var confirmedCredentials = 0
         var failedCredentialWrites = 0
@@ -400,6 +469,9 @@ class BackupRepository(
             val raw = bundle.rawBaseURL.trim()
             val source = archivedProviders[id]
             val local = localProviders[id]
+            if (local == null && enforcedStore?.latestDeletion(SyncEntityKinds.PROVIDER, id) != null) {
+                continue
+            }
             val matchesDestination = source != null && local != null &&
                 APIProtocolType.entries.any { it.rawValue == source.protocolRaw } &&
                 local.protocolRaw == source.protocolRaw &&
@@ -470,7 +542,10 @@ class BackupRepository(
         }
     }
 
-    suspend fun applyArchive(archive: BackupArchive): ImportSummary = withContext(Dispatchers.IO) {
+    suspend fun applyArchive(
+        archive: BackupArchive,
+        tombstonePolicy: SyncTombstonePolicy = SyncTombstonePolicy.Ignore
+    ): ImportSummary = withContext(Dispatchers.IO) {
         if (archive.conversations.any { it.messages.size > MAX_IMPORTED_MESSAGES_PER_CONVERSATION }) {
             throw BackupException.ConversationMessageLimit()
         }
@@ -514,6 +589,36 @@ class BackupRepository(
         }
 
         val now = System.currentTimeMillis()
+        val enforcedStore = (tombstonePolicy as? SyncTombstonePolicy.Enforce)?.store
+        val incomingTombstones = archive.tombstones.orEmpty()
+        val effectiveTombstones: Map<SyncTombstoneKey, Long> = if (enforcedStore != null) {
+            val merged = HashMap(enforcedStore.tombstoneMap(now))
+            val cutoff = now - SyncTombstoneStore.RETENTION_MS
+            for (item in incomingTombstones) {
+                if (item.deletedAt < cutoff) continue
+                val k = item.key
+                val prev = merged[k]
+                if (prev == null || item.deletedAt > prev) {
+                    merged[k] = item.deletedAt
+                }
+            }
+            merged
+        } else {
+            emptyMap()
+        }
+        val tombstonesToClear = mutableListOf<SyncTombstoneKey>()
+
+        fun isBlockedByTombstone(kind: String, id: String, entityTimestampMs: Long): Boolean {
+            if (enforcedStore == null) return false
+            val key = SyncTombstoneKey(kind, id.uppercase())
+            val deletedAt = effectiveTombstones[key] ?: return false
+            if (entityTimestampMs > deletedAt) {
+                tombstonesToClear.add(key)
+                return false
+            }
+            return true
+        }
+
         var providersCount = 0
         var presetsCount = 0
         var conversationsCount = 0
@@ -523,6 +628,12 @@ class BackupRepository(
         var memoriesCount = 0
         var booksCount = 0
         var skippedCount = 0
+        var deletedCount = 0
+
+        val blobsToDeleteAfterCommit = mutableListOf<String>()
+        val providersToPurgeSecrets = mutableListOf<Pair<String, List<String>>>()
+        val invalidatedBookIDs = mutableListOf<String>()
+        val draftsToRemove = mutableListOf<String>()
 
         importWithStagedBlobs { staged ->
             draftStore?.migrateLegacy(db.conversationDao().getIDs())
@@ -532,8 +643,9 @@ class BackupRepository(
             val existingMessages = db.chatMessageDao().getAll().associateBy { it.id.uppercase() }
             val existingMessageCounts = existingMessages.values.groupingBy { it.conversationID.uppercase() }.eachCount()
             val existingRequests = db.requestRecordDao().getAllAsc().associateBy { it.id.uppercase() }
-            val existingMemories = db.personalMemoryDao().getAll().map { it.id.uppercase() }.toSet()
-            val existingBooks = db.bookVolumeDao().getAll().map { it.id.uppercase() }.toSet()
+            val existingMemoriesMap = db.personalMemoryDao().getAll().associateBy { it.id.uppercase() }
+            val existingBooksMap = db.bookVolumeDao().getAll().associateBy { it.id.uppercase() }
+            val existingProfilesMap = db.personaProfileDao().getAll().associateBy { it.id.uppercase() }
 
             for (conv in archive.conversations) {
                 if (ChatRepository.canonicalConversationID(conv.id) == null && conv.id.uppercase() !in existingConversations) {
@@ -555,10 +667,100 @@ class BackupRepository(
                 }
             }
 
+            // 1. Propagate tombstones to local records when enforcing sync policy
+            val deletedBookIDs = HashSet<String>()
+            val deletedConvIDs = HashSet<String>()
+            val deletedMemIDs = HashSet<String>()
+            val deletedProviderIDs = HashSet<String>()
+            val deletedPresetIDs = HashSet<String>()
+            val deletedProfileIDs = HashSet<String>()
+
+            if (enforcedStore != null && effectiveTombstones.isNotEmpty()) {
+                for ((id, conv) in existingConversations) {
+                    val deletedAt = effectiveTombstones[SyncTombstoneKey(SyncEntityKinds.CONVERSATION, id)] ?: continue
+                    if (conv.updatedAtEpochMs > deletedAt) {
+                        tombstonesToClear.add(SyncTombstoneKey(SyncEntityKinds.CONVERSATION, id))
+                    } else {
+                        for (m in db.chatMessageDao().getByConversation(id)) {
+                            m.attachmentsBlobKey?.let(blobsToDeleteAfterCommit::add)
+                            m.assistanceMetadataBlobKey?.let(blobsToDeleteAfterCommit::add)
+                        }
+                        conv.assistanceSettingsBlobKey?.let(blobsToDeleteAfterCommit::add)
+                        draftsToRemove.add(id)
+                        db.conversationDao().deleteById(id)
+                        deletedConvIDs.add(id)
+                        deletedCount++
+                    }
+                }
+                for ((id, mem) in existingMemoriesMap) {
+                    val deletedAt = effectiveTombstones[SyncTombstoneKey(SyncEntityKinds.MEMORY, id)] ?: continue
+                    if (mem.createdAtEpochMs > deletedAt) {
+                        tombstonesToClear.add(SyncTombstoneKey(SyncEntityKinds.MEMORY, id))
+                    } else {
+                        db.personalMemoryDao().deleteById(id)
+                        deletedMemIDs.add(id)
+                        deletedCount++
+                    }
+                }
+                for ((id, book) in existingBooksMap) {
+                    val deletedAt = effectiveTombstones[SyncTombstoneKey(SyncEntityKinds.BOOK, id)] ?: continue
+                    if (book.importedAtEpochMs > deletedAt) {
+                        tombstonesToClear.add(SyncTombstoneKey(SyncEntityKinds.BOOK, id))
+                    } else {
+                        blobsToDeleteAfterCommit.add(book.manuscriptBlobKey)
+                        db.shelfReadingStateDao().deleteByBookId(id)
+                        db.bookVolumeDao().deleteById(id)
+                        invalidatedBookIDs.add(id)
+                        deletedBookIDs.add(id)
+                        deletedCount++
+                    }
+                }
+                for ((id, profile) in existingProfilesMap) {
+                    val deletedAt = effectiveTombstones[SyncTombstoneKey(SyncEntityKinds.PERSONA_PROFILE, id)] ?: continue
+                    if (profile.updatedAtEpochMs > deletedAt) {
+                        tombstonesToClear.add(SyncTombstoneKey(SyncEntityKinds.PERSONA_PROFILE, id))
+                    } else {
+                        blobsToDeleteAfterCommit.add(profile.payloadBlobKey)
+                        db.personaProfileDao().deleteById(id)
+                        deletedProfileIDs.add(id)
+                        deletedCount++
+                    }
+                }
+                for ((id, provider) in existingProviders) {
+                    val deletedAt = effectiveTombstones[SyncTombstoneKey(SyncEntityKinds.PROVIDER, id)] ?: continue
+                    if (provider.updatedAtEpochMs > deletedAt) {
+                        tombstonesToClear.add(SyncTombstoneKey(SyncEntityKinds.PROVIDER, id))
+                    } else {
+                        val headerIDs = runCatching {
+                            codec.decodeFromString<List<CustomHeader>>(provider.headersJson).map { it.id }
+                        }.getOrDefault(emptyList())
+                        providersToPurgeSecrets.add(id to headerIDs)
+                        db.providerDao().deleteById(id)
+                        deletedProviderIDs.add(id)
+                        deletedCount++
+                    }
+                }
+                for ((id, preset) in existingPresets) {
+                    val deletedAt = effectiveTombstones[SyncTombstoneKey(SyncEntityKinds.PRESET, id)] ?: continue
+                    if (preset.createdAtEpochMs > deletedAt) {
+                        tombstonesToClear.add(SyncTombstoneKey(SyncEntityKinds.PRESET, id))
+                    } else {
+                        db.assistantPresetDao().deleteById(id)
+                        deletedPresetIDs.add(id)
+                        deletedCount++
+                    }
+                }
+            }
+
+            // 2. Insert incoming entities (skipping anything blocked by an effective tombstone)
             val booksToInsert = mutableListOf<BookVolumeEntity>()
             for (b in incomingBooks) {
                 val id = b.id.uppercase()
-                if (existingBooks.contains(id)) continue
+                if (existingBooksMap.containsKey(id) && id !in deletedBookIDs) continue
+                if (isBlockedByTombstone(SyncEntityKinds.BOOK, id, b.importedAt)) {
+                    skippedCount++
+                    continue
+                }
                 val prepared = preparedBooks.getValue(id)
                 val key = staged.writeText(prepared.encodedJson)
                 booksToInsert.add(
@@ -576,9 +778,12 @@ class BackupRepository(
             for (book in booksToInsert) db.bookVolumeDao().upsert(book)
 
             if (incomingProfiles.isNotEmpty()) {
-                val existingProfiles = db.personaProfileDao().getAll().map { it.id.uppercase() }.toSet()
                 val toInsert = incomingProfiles.mapNotNull { (id, profile) ->
-                    if (existingProfiles.contains(id)) return@mapNotNull null
+                    if (existingProfilesMap.containsKey(id) && id !in deletedProfileIDs) return@mapNotNull null
+                    if (isBlockedByTombstone(SyncEntityKinds.PERSONA_PROFILE, id, archive.exportedAt)) {
+                        skippedCount++
+                        return@mapNotNull null
+                    }
                     val key = staged.writeText(codec.encodeToString(JsonObject.serializer(), profile))
                     PersonaProfileEntity(id = id, payloadBlobKey = key, updatedAtEpochMs = now)
                 }
@@ -590,7 +795,8 @@ class BackupRepository(
                 val existingShelf = db.shelfReadingStateDao().getAll().map { it.bookID.uppercase() }.toSet()
                 val toInsert = shelfPositions.mapNotNull { pos ->
                     val bid = pos.bookID.uppercase()
-                    if (existingShelf.contains(bid)) null
+                    if (existingShelf.contains(bid) || bid in deletedBookIDs) null
+                    else if (enforcedStore != null && effectiveTombstones.containsKey(SyncTombstoneKey(SyncEntityKinds.BOOK, bid))) null
                     else ShelfReadingStateEntity(bid, pos.conversationID?.uppercase(), pos.chapter, pos.paragraph)
                 }
                 if (toInsert.isNotEmpty()) db.shelfReadingStateDao().upsertAll(toInsert)
@@ -634,22 +840,34 @@ class BackupRepository(
                 }
             if (requestsToInsert.isNotEmpty()) db.requestRecordDao().upsertAll(requestsToInsert)
 
-            val memoriesToInsert = incomingMemories.filter { !existingMemories.contains(it.id.uppercase()) }
-                .map { m ->
-                    memoriesCount++
+            val memoriesToInsert = mutableListOf<PersonalMemoryEntity>()
+            for (m in incomingMemories) {
+                val id = m.id.uppercase()
+                if (existingMemoriesMap.containsKey(id) && id !in deletedMemIDs) continue
+                if (isBlockedByTombstone(SyncEntityKinds.MEMORY, id, m.createdAt)) {
+                    skippedCount++
+                    continue
+                }
+                memoriesCount++
+                memoriesToInsert.add(
                     PersonalMemoryEntity(
-                        id = m.id.uppercase(),
+                        id = id,
                         content = m.content,
                         isEnabled = m.isEnabled,
                         createdAtEpochMs = m.createdAt
                     )
-                }
+                )
+            }
             if (memoriesToInsert.isNotEmpty()) db.personalMemoryDao().upsertAll(memoriesToInsert)
 
             val providersToInsert = mutableListOf<ProviderEntity>()
             for (p in archive.providers) {
                 val id = p.id.uppercase()
-                if (existingProviders.containsKey(id)) {
+                if (existingProviders.containsKey(id) && id !in deletedProviderIDs) {
+                    skippedCount++
+                    continue
+                }
+                if (isBlockedByTombstone(SyncEntityKinds.PROVIDER, id, archive.exportedAt)) {
                     skippedCount++
                     continue
                 }
@@ -661,7 +879,11 @@ class BackupRepository(
             val presetsToInsert = mutableListOf<AssistantPresetEntity>()
             for (p in archive.presets) {
                 val id = p.id.uppercase()
-                if (existingPresets.containsKey(id)) {
+                if (existingPresets.containsKey(id) && id !in deletedPresetIDs) {
+                    skippedCount++
+                    continue
+                }
+                if (isBlockedByTombstone(SyncEntityKinds.PRESET, id, archive.exportedAt)) {
                     skippedCount++
                     continue
                 }
@@ -695,8 +917,12 @@ class BackupRepository(
 
             for (c in archive.conversations) {
                 val cid = c.id.uppercase()
-                val existingConv = existingConversations[cid]
-                val missing = c.messages.filter { !existingMessages.containsKey(it.id.uppercase()) }
+                if (isBlockedByTombstone(SyncEntityKinds.CONVERSATION, cid, c.updatedAt)) {
+                    skippedCount++
+                    continue
+                }
+                val existingConv = if (cid in deletedConvIDs) null else existingConversations[cid]
+                val missing = c.messages.filter { !existingMessages.containsKey(it.id.uppercase()) || cid in deletedConvIDs }
 
                 if (existingConv != null) {
                     if (missing.isEmpty()) {
@@ -782,7 +1008,53 @@ class BackupRepository(
             }
         }
 
-        val flashcards = runCatching { flashcardRepository.mergeImported(incomingCards) }
+        // Clean up sidecar blobs/secrets/drafts for tombstoned local records post-commit
+        for (key in blobsToDeleteAfterCommit) runCatching { blobStore.delete(key) }
+        for ((pid, headerIDs) in providersToPurgeSecrets) runCatching { secretStore.deleteProviderSecrets(pid, headerIDs) }
+        for (cid in draftsToRemove) runCatching { draftStore?.remove(cid) }
+        for (bid in invalidatedBookIDs) ProjectKnowledgeSearch.invalidate(bid)
+
+        // Flashcards tombstone propagation & filtered import
+        val filteredCards = if (enforcedStore != null) {
+            val localCardsToDelete = HashSet<String>()
+            for (localCard in flashcardRepository.cards.value) {
+                val id = localCard.id.uppercase()
+                val deletedAt = effectiveTombstones[SyncTombstoneKey(SyncEntityKinds.FLASHCARD, id)] ?: continue
+                val cardTs = maxOf(localCard.createdAt, localCard.lastReviewedAt ?: localCard.createdAt)
+                if (cardTs > deletedAt) {
+                    tombstonesToClear.add(SyncTombstoneKey(SyncEntityKinds.FLASHCARD, id))
+                } else {
+                    localCardsToDelete.add(id)
+                }
+            }
+            if (localCardsToDelete.isNotEmpty()) {
+                deletedCount += runCatching { flashcardRepository.deleteCards(localCardsToDelete) }.getOrDefault(0)
+            }
+            incomingCards.filter { card ->
+                val cardTs = maxOf(card.createdAt, card.lastReviewedAt ?: card.createdAt)
+                !isBlockedByTombstone(SyncEntityKinds.FLASHCARD, card.id, cardTs)
+            }
+        } else {
+            incomingCards
+        }
+
+        val flashcards = runCatching { flashcardRepository.mergeImported(filteredCards) }
+
+        // Persist tombstone state
+        if (enforcedStore != null) {
+            enforcedStore.merge(incoming = incomingTombstones, removing = tombstonesToClear, nowMs = now)
+        } else if (this.tombstoneStore != null) {
+            // Manual restore clears stale tombstones for entities explicitly restored from backup
+            val restoredKeys = mutableListOf<Pair<String, String>>()
+            archive.conversations.forEach { restoredKeys.add(SyncEntityKinds.CONVERSATION to it.id) }
+            incomingMemories.forEach { restoredKeys.add(SyncEntityKinds.MEMORY to it.id) }
+            incomingBooks.forEach { restoredKeys.add(SyncEntityKinds.BOOK to it.id) }
+            incomingProfiles.forEach { restoredKeys.add(SyncEntityKinds.PERSONA_PROFILE to it.first) }
+            archive.providers.forEach { restoredKeys.add(SyncEntityKinds.PROVIDER to it.id) }
+            archive.presets.forEach { restoredKeys.add(SyncEntityKinds.PRESET to it.id) }
+            incomingCards.forEach { restoredKeys.add(SyncEntityKinds.FLASHCARD to it.id) }
+            this.tombstoneStore.removeTombstones(restoredKeys)
+        }
 
         ImportSummary(
             providers = providersCount,
@@ -795,7 +1067,8 @@ class BackupRepository(
             books = booksCount,
             flashcards = flashcards.getOrDefault(0),
             flashcardRestoreFailed = flashcards.isFailure,
-            skipped = skippedCount
+            skipped = skippedCount,
+            deleted = deletedCount
         )
     }
 

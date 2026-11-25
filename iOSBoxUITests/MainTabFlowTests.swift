@@ -15,14 +15,36 @@ final class MainTabFlowTests: XCTestCase {
             if history.waitForExistence(timeout: 5) { history.tap() }
         }
         var failures: [String] = []
-        for (tab, title) in [("对话", "夜奔"), ("好友", "好友与书架"), ("服务商", "服务商与设置"), ("用量", "用量与测速")] {
+        for (tab, title) in [("对话", "夜奔"), ("工作台", "工作台"), ("设置", "服务商与设置"), ("用量", "用量与测速")] {
             if tab != "对话" {
-                var matches = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", tab)).allElementsBoundByIndex
-                if tab == "好友", let sidebar = app.buttons.matching(identifier: "好友与书架").allElementsBoundByIndex.first(where: \.isHittable) {
-                    matches = [sidebar]
+                let closeModal = app.navigationBars.buttons["完成"]
+                if closeModal.exists && closeModal.isHittable {
+                    closeModal.tap()
                 }
-                let button = try XCTUnwrap(matches.first(where: \.isHittable), tab)
-                button.tap()
+                if UIDevice.current.userInterfaceIdiom == .phone, !app.navigationBars["夜奔"].exists {
+                    let history = app.buttons["chat.history"]
+                    if history.waitForExistence(timeout: 5) { history.tap() }
+                }
+                if tab == "设置", UIDevice.current.userInterfaceIdiom == .pad,
+                   let settings = app.buttons.matching(identifier: "设置").allElementsBoundByIndex.first(where: \.isHittable) {
+                    settings.tap()
+                    if app.buttons["服务商与设置"].exists {
+                        app.buttons["服务商与设置"].tap()
+                    }
+                } else if tab == "用量", !app.buttons.matching(NSPredicate(format: "label == %@", "用量")).firstMatch.exists {
+                    let settingsBtn = try XCTUnwrap(app.buttons.matching(identifier: "设置").allElementsBoundByIndex.first(where: \.isHittable), "设置")
+                    settingsBtn.tap()
+                    let ledgerBtn = app.buttons["用量与费用账本"]
+                    XCTAssertTrue(ledgerBtn.waitForExistence(timeout: 5))
+                    ledgerBtn.tap()
+                } else {
+                    var matches = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", tab)).allElementsBoundByIndex
+                    if tab == "工作台", let sidebar = app.buttons.matching(identifier: "工作台").allElementsBoundByIndex.first(where: \.isHittable) {
+                        matches = [sidebar]
+                    }
+                    let button = try XCTUnwrap(matches.first(where: \.isHittable), tab)
+                    button.tap()
+                }
             }
             XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 10), title)
             XCTAssertFalse(app.alerts["本地存储提示"].exists)
@@ -45,7 +67,8 @@ final class MainTabFlowTests: XCTestCase {
         var failures: [String] = []
         var coveredLabels = Set<String>()
         let bottomBar = app.tabBars.allElementsBoundByIndex.first { $0.frame.midY > app.frame.midY }
-        // The floating tab bar also fades content immediately above its frame.
+            ?? app.otherElements.matching(identifier: "workspace.bottomDock").allElementsBoundByIndex.first { $0.frame.midY > app.frame.midY }
+        // The floating tab bar / bottom dock also fades content immediately above its frame.
         let readableBottom = bottomBar.map { $0.frame.minY - 16 } ?? app.frame.maxY
 
         func audit(rechecking labels: Set<String>? = nil) throws {
@@ -68,8 +91,9 @@ final class MainTabFlowTests: XCTestCase {
         }
         try audit()
         if !coveredLabels.isEmpty {
-            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.73))
-            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.41))
+            let dragX = tab == "对话" && UIDevice.current.userInterfaceIdiom == .phone ? 0.38 : 0.5
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: dragX, dy: 0.72))
+            let end = app.coordinate(withNormalizedOffset: CGVector(dx: dragX, dy: 0.38))
             start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
             let top = app.navigationBars.firstMatch.frame.maxY
             for label in coveredLabels {

@@ -315,11 +315,22 @@ struct ArenaComparisonGroupView: View {
             }
         }
         .padding(DS.Spacing.md)
-        .background(DS.Surface.canvas, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
+        .background(DS.Surface.card, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
+        .overlay(alignment: .leading) {
+            UnevenRoundedRectangle(
+                topLeadingRadius: DS.Radius.md,
+                bottomLeadingRadius: DS.Radius.md,
+                bottomTrailingRadius: 0,
+                topTrailingRadius: 0,
+                style: .continuous
+            )
+            .fill(Color(hex: msg.accentHex).opacity(0.85))
+            .frame(width: 3)
+        }
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
                 .strokeBorder(
-                    msg.isSelectedInGroup ? theme.tintColor.opacity(0.42) : DS.Surface.hairline,
+                    msg.isSelectedInGroup ? theme.tintColor.opacity(0.45) : DS.Surface.hairline,
                     lineWidth: 1
                 )
         )

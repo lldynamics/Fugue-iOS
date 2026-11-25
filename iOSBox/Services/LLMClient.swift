@@ -16,7 +16,7 @@ enum LLMError: LocalizedError {
         case .invalidURL(let raw):
             return String(localized: "无效的接口地址：\(raw)")
         case .missingAPIKey(let provider):
-            return String(localized: "请先在「服务商」页面为「\(provider)」配置 API Key（本地服务若免鉴权可忽略）")
+            return String(localized: "请先在「设置」页面为「\(provider)」配置 API Key（本地服务若免鉴权可忽略）")
         case .httpError(let code, let detail):
             return "HTTP \(code)：\(detail)"
         case .apiError(let msg):
@@ -176,7 +176,7 @@ struct LLMChatRequest: Sendable {
         var result: [String] = []
         var seen = Set<String>()
         for raw in [apiKey] + apiKeys {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = LLMClient.sanitizedAPIKey(raw)
             if !trimmed.isEmpty && seen.insert(trimmed).inserted {
                 result.append(trimmed)
             }
@@ -284,6 +284,12 @@ enum GatewayUnsupportedFeature: String, Codable, CaseIterable, Sendable {
     case nativeSearch = "native_search"
     case thinkingConfig = "thinking_config"
     case reasoningContent = "reasoning_content"
+    case reasoningParams = "reasoning_params"
+    case reasoningSummary = "reasoning_summary"
+    case maxCompletionTokens = "max_completion_tokens"
+    case requiresMaxCompletionTokens = "requires_max_completion_tokens"
+    case samplingParams = "sampling_params"
+    case storeFlag = "store_flag"
 }
 
 /// Remembers optional wire parameters that a gateway/model rejected with HTTP 400–422
@@ -672,6 +678,8 @@ enum LLMClient {
         switch request.protocolType {
         case .openAICompatible:
             return OpenAICompatibleAdapter.streamChat(request, session: session)
+        case .openAIResponses:
+            return OpenAIResponsesAdapter.streamChat(request, session: session)
         case .anthropic:
             return AnthropicAdapter.streamChat(request, session: session)
         case .gemini:
@@ -785,7 +793,7 @@ enum LLMClient {
             throw LLMError.invalidURL(baseURL)
         }
         let orderedKeys = keyRouter.orderedKeys(
-            from: [apiKey] + apiKeys,
+            from: ([apiKey] + apiKeys).map(sanitizedAPIKey),
             protocolType: protocolType,
             baseURL: baseURL
         )
@@ -796,7 +804,7 @@ enum LLMClient {
             do {
                 let specs: [ModelSpec]
                 switch protocolType {
-                case .openAICompatible:
+                case .openAICompatible, .openAIResponses:
                     specs = try await OpenAICompatibleAdapter.fetchModels(
                         baseURL: baseURL,
                         apiKey: candidateKey,
@@ -1029,6 +1037,42 @@ enum LLMClient {
 
     // MARK: - Shared HTTP Utilities
 
+    /// Strips outer whitespace/newlines and an accidentally pasted leading `Bearer ` prefix.
+    static func sanitizedAPIKey(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("bearer ") {
+            return String(trimmed.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return trimmed
+    }
+
+    /// Returns `true` when an HTTP 400–422 message clearly indicates an error that cannot be fixed
+    /// by dropping optional wire parameters (wrong model ID, bad key, quota, context overflow, safety).
+    static func isUnrecoverable400(_ lower: String) -> Bool {
+        let patterns = [
+            "model not exist", "model_not_found", "model not found", "does not exist",
+            "no such model", "invalid model", "unknown model", "模型不存在",
+            "api key not valid", "invalid_api_key", "incorrect api key", "invalid api key",
+            "insufficient_quota", "insufficient balance", "quota exceeded", "余额不足",
+            "context_length_exceeded", "maximum context length", "too many tokens",
+            "content_policy", "safety"
+        ]
+        return patterns.contains { lower.contains($0) }
+    }
+
+    /// Returns `true` when an HTTP 400–422 response indicates a generic unknown/extra/unsupported
+    /// parameter rejection (sometimes without naming the offending field verbatim).
+    static func isGenericParameterRejection400(_ lower: String) -> Bool {
+        let patterns = [
+            "unknown", "unrecognized", "unsupported", "unexpected",
+            "extra_forbidden", "extra inputs", "additional properties",
+            "not permitted", "not allowed", "invalid parameter", "invalid field",
+            "invalid request", "bad request", "invalid_argument", "invalid json",
+            "参数错误", "不支持", "请求失败（无详细错误信息）", "请求被服务端拒绝"
+        ]
+        return patterns.contains { lower.contains($0) }
+    }
+
     static func elapsedMs(since start: ContinuousClock.Instant) -> Int {
         let dur = start.duration(to: ContinuousClock.now)
         return Int(dur.components.seconds * 1000) + Int(dur.components.attoseconds / 1_000_000_000_000_000)
@@ -1137,24 +1181,55 @@ enum LLMClient {
 
     static func extractReadableErrorMessage(from data: Data) -> String {
         guard !data.isEmpty else { return String(localized: "请求失败（无详细错误信息）") }
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if let errDict = json["error"] as? [String: Any],
-               let msg = errDict["message"] as? String, !msg.isEmpty {
-                return msg
+        if let parsed = try? JSONSerialization.jsonObject(with: data) {
+            if let dict = parsed as? [String: Any],
+               let extracted = extractMessage(fromErrorDict: dict) {
+                return extracted
             }
-            if let errStr = json["error"] as? String, !errStr.isEmpty {
-                return errStr
-            }
-            if let msg = json["message"] as? String, !msg.isEmpty {
-                return msg
-            }
-            if let detail = json["detail"] as? String, !detail.isEmpty {
-                return detail
+            // Gemini `:streamGenerateContent` frequently wraps HTTP 400 errors in a JSON array: `[{"error": {...}}]`.
+            if let arr = parsed as? [[String: Any]],
+               let first = arr.first,
+               let extracted = extractMessage(fromErrorDict: first) {
+                return extracted
             }
         }
         let raw = String(decoding: data.prefix(600), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return raw.isEmpty ? String(localized: "请求被服务端拒绝") : raw
+    }
+
+    private static func extractMessage(fromErrorDict json: [String: Any]) -> String? {
+        if let errDict = json["error"] as? [String: Any] {
+            if let msg = errDict["message"] as? String, !msg.isEmpty { return msg }
+            if let msg = errDict["msg"] as? String, !msg.isEmpty { return msg }
+            if let detail = errDict["detail"] as? String, !detail.isEmpty { return detail }
+        }
+        if let errStr = json["error"] as? String, !errStr.isEmpty {
+            return errStr
+        }
+        if let msg = json["message"] as? String, !msg.isEmpty {
+            return msg
+        }
+        if let msg = json["msg"] as? String, !msg.isEmpty {
+            return msg
+        }
+        if let detail = json["detail"] as? String, !detail.isEmpty {
+            return detail
+        }
+        // FastAPI / Pydantic validation errors: `{"detail": [{"loc": ["body", "stream_options"], "msg": "..."}]}`
+        if let detailList = json["detail"] as? [[String: Any]], !detailList.isEmpty {
+            let parts = detailList.prefix(3).compactMap { item -> String? in
+                let msg = (item["msg"] as? String) ?? (item["message"] as? String) ?? ""
+                let loc = (item["loc"] as? [Any])?.map { "\($0)" }.joined(separator: ".") ?? ""
+                if !loc.isEmpty && !msg.isEmpty { return "\(loc): \(msg)" }
+                if !msg.isEmpty { return msg }
+                return loc.isEmpty ? nil : loc
+            }
+            if !parts.isEmpty {
+                return parts.joined(separator: "; ")
+            }
+        }
+        return nil
     }
 
     static func composeTextWithDocuments(text: String, attachments: [MessageAttachment], includePDFText: Bool) -> String {

@@ -6,6 +6,8 @@ enum AnthropicAdapter {
     private struct WireOptions: Sendable {
         var useCache: Bool
         var useNativeSearch: Bool
+        var useThinking: Bool
+        var clampMaxTokensTo4096: Bool
     }
 
     static func streamChat(
@@ -26,7 +28,14 @@ enum AnthropicAdapter {
                 protocolType: .anthropic,
                 baseURL: request.baseURL,
                 modelID: request.modelID
-            )
+            ),
+            useThinking: request.enableThinking && request.supportsReasoning && !capabilityCache.isUnsupported(
+                .thinkingConfig,
+                protocolType: .anthropic,
+                baseURL: request.baseURL,
+                modelID: request.modelID
+            ),
+            clampMaxTokensTo4096: false
         )
         return LLMClient.streamWithResilience(
             request: request,
@@ -52,21 +61,35 @@ enum AnthropicAdapter {
                 let payload = buildRequestBody(
                     request,
                     includeCacheControl: state.useCache,
-                    includeNativeSearch: state.useNativeSearch
+                    includeNativeSearch: state.useNativeSearch,
+                    includeThinking: state.useThinking,
+                    maxTokensCap: state.clampMaxTokensTo4096 ? 4096 : nil
                 )
                 urlRequest.httpBody = try JSONSerialization.data(withJSONObject: payload)
                 return urlRequest
             },
             degradeOn400: { _, detail, state, newlyDisabled in
                 let lower = detail.lowercased()
+                if LLMClient.isUnrecoverable400(lower) {
+                    return false
+                }
                 if state.useCache && lower.contains("cache_control") {
                     state.useCache = false
                     newlyDisabled.insert(.promptCaching)
                     return true
                 }
+                if state.useThinking && (lower.contains("thinking") || lower.contains("budget_tokens") || lower.contains("adaptive") || lower.contains("display")) {
+                    state.useThinking = false
+                    newlyDisabled.insert(.thinkingConfig)
+                    return true
+                }
                 if state.useNativeSearch && (lower.contains("web_search") || lower.contains("tools")) {
                     state.useNativeSearch = false
                     newlyDisabled.insert(.nativeSearch)
+                    return true
+                }
+                if !state.clampMaxTokensTo4096 && lower.contains("max_tokens") {
+                    state.clampMaxTokensTo4096 = true
                     return true
                 }
                 return false
@@ -248,7 +271,13 @@ enum AnthropicAdapter {
         continuation.yield(.toolCall(LLMToolCall(id: entry.id, name: entry.name, argumentsJSON: finalJSON)))
     }
 
-    static func buildRequestBody(_ request: LLMChatRequest, includeCacheControl: Bool? = nil, includeNativeSearch: Bool? = nil) -> [String: Any] {
+    static func buildRequestBody(
+        _ request: LLMChatRequest,
+        includeCacheControl: Bool? = nil,
+        includeNativeSearch: Bool? = nil,
+        includeThinking: Bool = true,
+        maxTokensCap: Int? = nil
+    ) -> [String: Any] {
         let useCache = includeCacheControl ?? request.enablePromptCaching
         let useNativeSearch = includeNativeSearch ?? request.enableNativeSearch
         let sanitizedMessages = LLMClient.sanitizeToolHistory(request.messages)
@@ -264,7 +293,7 @@ enum AnthropicAdapter {
                 }
             }
         }
-        let shouldEnableThinking = request.enableThinking && request.supportsReasoning && !hasUnsignedAssistantToolTurn
+        let shouldEnableThinking = includeThinking && request.enableThinking && request.supportsReasoning && !hasUnsignedAssistantToolTurn
         let model = request.modelID.lowercased()
         let usesAdaptiveThinking = ["claude-sonnet-5", "claude-opus-5", "claude-haiku-5", "claude-fable-5",
                                     "claude-mythos-5", "claude-opus-4-7", "claude-opus-4-8"].contains { model.contains($0) }
@@ -436,9 +465,11 @@ enum AnthropicAdapter {
             finalMaxTokens = defaultMaxTokens(for: request.modelID)
         }
 
+        let cappedMaxTokens = maxTokensCap.map { min(finalMaxTokens, $0) } ?? finalMaxTokens
+
         var body: [String: Any] = [
             "model": request.modelID,
-            "max_tokens": finalMaxTokens,
+            "max_tokens": cappedMaxTokens,
             "messages": wireMessages,
             "stream": true
         ]

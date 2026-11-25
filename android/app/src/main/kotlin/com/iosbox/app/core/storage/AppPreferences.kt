@@ -86,7 +86,11 @@ data class UserPreferencesSnapshot(
     val webDAVServerURL: String = "",
     val webDAVUsername: String = "",
     val webDAVRemotePath: String = "Fugue/fugue-sync.enc.json",
-    val webDAVLastSyncEpochMs: Long = 0L
+    val webDAVLastSyncEpochMs: Long = 0L,
+    val webDAVShardedSyncEnabled: Boolean = true,
+    val webDAVKnownShardSalt: String = "",
+    val webDAVKnownShardKeyFingerprint: String = "",
+    val webDAVKnownRemoteBlobs: List<String> = emptyList()
 )
 
 private val Context.prefsDataStore: DataStore<Preferences> by preferencesDataStore(name = "fugue_preferences")
@@ -120,6 +124,10 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
         val WEBDAV_USERNAME = stringPreferencesKey("webdav_username")
         val WEBDAV_REMOTE_PATH = stringPreferencesKey("webdav_remote_path")
         val WEBDAV_LAST_SYNC_MS = longPreferencesKey("webdav_last_sync_ms")
+        val WEBDAV_SHARDED_SYNC_ENABLED = booleanPreferencesKey("webdav_sharded_sync_enabled")
+        val WEBDAV_KNOWN_SHARD_SALT = stringPreferencesKey("webdav_known_shard_salt")
+        val WEBDAV_KNOWN_SHARD_KEY_FP = stringPreferencesKey("webdav_known_shard_key_fp")
+        val WEBDAV_KNOWN_REMOTE_BLOBS = stringPreferencesKey("webdav_known_remote_blobs_json")
     }
 
     private val _state = MutableStateFlow(UserPreferencesSnapshot())
@@ -158,7 +166,11 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
             webDAVUsername = prefs[Keys.WEBDAV_USERNAME].orEmpty(),
             webDAVRemotePath = prefs[Keys.WEBDAV_REMOTE_PATH]?.trim()?.takeIf { it.isNotEmpty() }
                 ?: "Fugue/fugue-sync.enc.json",
-            webDAVLastSyncEpochMs = prefs[Keys.WEBDAV_LAST_SYNC_MS] ?: 0L
+            webDAVLastSyncEpochMs = prefs[Keys.WEBDAV_LAST_SYNC_MS] ?: 0L,
+            webDAVShardedSyncEnabled = prefs[Keys.WEBDAV_SHARDED_SYNC_ENABLED] ?: true,
+            webDAVKnownShardSalt = prefs[Keys.WEBDAV_KNOWN_SHARD_SALT].orEmpty(),
+            webDAVKnownShardKeyFingerprint = prefs[Keys.WEBDAV_KNOWN_SHARD_KEY_FP].orEmpty(),
+            webDAVKnownRemoteBlobs = decodeStringList(prefs[Keys.WEBDAV_KNOWN_REMOTE_BLOBS])
         )
     }
 
@@ -314,6 +326,36 @@ class AppPreferences(context: Context) : CapabilityCacheBackingStore {
     suspend fun setWebDAVLastSyncEpochMs(epochMs: Long) {
         _state.value = _state.value.copy(webDAVLastSyncEpochMs = epochMs)
         appContext.prefsDataStore.edit { it[Keys.WEBDAV_LAST_SYNC_MS] = epochMs }
+    }
+
+    suspend fun setWebDAVShardedSyncEnabled(enabled: Boolean) {
+        _state.value = _state.value.copy(webDAVShardedSyncEnabled = enabled)
+        appContext.prefsDataStore.edit { it[Keys.WEBDAV_SHARDED_SYNC_ENABLED] = enabled }
+    }
+
+    suspend fun setWebDAVShardCache(
+        saltBase64: String,
+        keyFingerprint: String,
+        presentBlobs: List<String>
+    ) {
+        val cleanBlobs = presentBlobs.distinct().sorted()
+        _state.value = _state.value.copy(
+            webDAVKnownShardSalt = saltBase64,
+            webDAVKnownShardKeyFingerprint = keyFingerprint,
+            webDAVKnownRemoteBlobs = cleanBlobs
+        )
+        val encoded = Json.encodeToString(cleanBlobs)
+        appContext.prefsDataStore.edit {
+            it[Keys.WEBDAV_KNOWN_SHARD_SALT] = saltBase64
+            it[Keys.WEBDAV_KNOWN_SHARD_KEY_FP] = keyFingerprint
+            it[Keys.WEBDAV_KNOWN_REMOTE_BLOBS] = encoded
+        }
+    }
+
+    private fun decodeStringList(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching { Json.decodeFromString<List<String>>(raw) }
+            .getOrDefault(emptyList())
     }
 
     private fun decodeMultipliers(raw: String?): Map<String, Double> {
