@@ -97,7 +97,10 @@ struct ComposerOptionsSheet: View {
                     if conversation.isArenaMode {
                         Button("退出对比") { conversation.isArenaMode = false }
                     }
-                    Button("系统提示词与参数", action: onOpenSettings)
+                    Button("系统提示词与参数") {
+                        dismiss()
+                        onOpenSettings()
+                    }
                 }
             }
             .navigationTitle("发送选项")

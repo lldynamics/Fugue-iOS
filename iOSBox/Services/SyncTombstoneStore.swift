@@ -7,6 +7,7 @@ enum SyncEntityKind: String, Codable, Hashable, CaseIterable, Sendable {
     case preset
     case personaProfile
     case provider
+    case readingAnnotation
 }
 
 struct SyncTombstoneKey: Hashable, Sendable {

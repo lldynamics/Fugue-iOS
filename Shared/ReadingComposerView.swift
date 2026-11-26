@@ -5,6 +5,7 @@ struct ReadingComposerView: View {
     let models: [SharedModelEntry]
     let connection: (SharedModelEntry) throws -> SharedConnection
     let persist: (ExternalRunReceipt) throws -> Void
+    let saveDraft: (SharedDraftEntry) throws -> Void
     let close: (UUID?) -> Void
 
     @State private var selection = ""
@@ -19,11 +20,16 @@ struct ReadingComposerView: View {
     @State private var readTask: Task<Void, Never>?
     @State private var session = ReadingSession()
 
+    private var hasPDF: Bool { input.attachments.contains { $0.mimeType == "application/pdf" } }
+
     var body: some View {
         NavigationStack {
             Form {
-                if models.isEmpty {
-                    Text("没有可用模型，请先在「夜奔」的服务商设置中启用模型与系统分享。")
+                if hasPDF {
+                    Text("先将 PDF 原件存入本机草稿，可在「夜奔」中查看、提取文字并选择模型发送。")
+                        .foregroundStyle(.secondary)
+                } else if models.isEmpty {
+                    Text("可以先存为本机草稿。要在这里直接发送，请在「夜奔」的服务商设置中启用系统分享。")
                         .foregroundStyle(.secondary)
                 } else {
                     Section("处理方式") {
@@ -66,6 +72,13 @@ struct ReadingComposerView: View {
                                                 .scaledToFill()
                                                 .frame(width: 72, height: 72)
                                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                        } else if att.kind == .document {
+                                            Label {
+                                                VStack(alignment: .leading) {
+                                                    Text(verbatim: att.fileName)
+                                                    Text(verbatim: att.formattedSize).font(.caption)
+                                                }
+                                            } icon: { Image(systemName: "doc.richtext") }
                                         }
                                     }
                                 }
@@ -82,10 +95,23 @@ struct ReadingComposerView: View {
                         }
                     }.disabled(isReading)
                     Section {
-                        Button("开始处理") { start() }
-                            .disabled(isReading || models.isEmpty || (input.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && input.attachments.isEmpty))
+                        Button("存为草稿，稍后提问") {
+                            do {
+                                let draft = try SharedDraftEntry(input: input, link: urlText, question: customQuestion)
+                                try saveDraft(draft)
+                                close(draft.id)
+                            } catch { self.error = error.localizedDescription }
+                        }
+                        .disabled(isReading || (input.text.isEmpty && urlText.isEmpty && input.attachments.isEmpty && customQuestion.isEmpty))
+                        .accessibilityIdentifier("share.saveDraft")
+                        if !hasPDF {
+                            Button("开始处理") { start() }
+                                .disabled(isReading || models.isEmpty || (input.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && input.attachments.isEmpty))
+                        }
                     } footer: {
-                        Text("预览中的内容将发送给所选服务商，可能产生 API 费用。结果与用量保存在「夜奔」；模型总结不等于事实核查。")
+                        if !hasPDF && !models.isEmpty {
+                            Text("预览中的内容将发送给所选服务商，可能产生 API 费用。结果与用量保存在「夜奔」；模型总结不等于事实核查。")
+                        }
                     }
                 }
 
@@ -155,14 +181,15 @@ struct ReadingComposerView: View {
                 let page = try await URLReader.read(url)
                 try Task.checkCancellation()
                 guard urlText == enteredURL else { return }
-                input = ReadingInput(text: page.text, url: page.url, title: page.title, isTruncated: page.isTruncated)
+                input = ReadingInput(text: page.text, url: page.url, title: page.title, isTruncated: page.isTruncated,
+                                     attachments: input.attachments)
                 urlText = page.url.absoluteString
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
     }
 
     private func start() {
-        guard let model = models.first(where: { $0.id == selection }) else { return }
+        guard !hasPDF, let model = models.first(where: { $0.id == selection }) else { return }
         if !input.attachments.isEmpty && !model.spec.supportsVision {
             error = String(localized: "所选模型未启用识图能力，请选择支持图片的模型。")
             return

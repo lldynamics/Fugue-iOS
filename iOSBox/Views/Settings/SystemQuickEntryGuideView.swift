@@ -3,17 +3,53 @@ import SwiftData
 import SwiftUI
 
 struct SystemQuickEntryGuideView: View {
+    var onDismissSettings: (() -> Void)? = nil
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @AppStorage(WidgetSnapshotService.showRecentTitlesKey) private var showsRecentTitles = false
+    @State private var isTriggeringQuickAction = false
+
+    @MainActor
+    static func triggerQuickEntryPreview(
+        _ action: QuickEntryAction,
+        router: SystemEntryRouter = .shared,
+        onDismissSettings: (() -> Void)?,
+        popNavigation: () -> Void,
+        sheetDismissDelay: Duration = .milliseconds(450),
+        navigationPopDelay: Duration = .milliseconds(100)
+    ) async {
+        if let onDismissSettings {
+            onDismissSettings()
+            if sheetDismissDelay > .zero {
+                try? await Task.sleep(for: sheetDismissDelay)
+            }
+        } else {
+            popNavigation()
+            if navigationPopDelay > .zero {
+                try? await Task.sleep(for: navigationPopDelay)
+            }
+        }
+        router.pendingQuickAction = action
+    }
 
     var body: some View {
         Form {
             Section("立即体验快捷直达") {
                 ForEach(QuickEntryAction.allCases) { action in
                     Button {
-                        SystemEntryRouter.shared.pendingQuickAction = action
-                        dismiss()
+                        guard !isTriggeringQuickAction else { return }
+                        isTriggeringQuickAction = true
+                        let closeSheet = onDismissSettings
+                        let popView = dismiss
+                        Task { @MainActor in
+                            await Self.triggerQuickEntryPreview(
+                                action,
+                                onDismissSettings: closeSheet,
+                                popNavigation: { popView() }
+                            )
+                            isTriggeringQuickAction = false
+                        }
                     } label: {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {

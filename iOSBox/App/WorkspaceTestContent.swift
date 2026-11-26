@@ -6,6 +6,12 @@ import SwiftData
 @MainActor
 enum WorkspaceTestContent {
     static func insert(in context: ModelContext) throws {
+        if ProcessInfo.processInfo.arguments.contains("-ui-test-learning-journal") {
+            let log = EnglishStudyLogEntry(lessonID: UUID(), dateKey: "2026-01-01", lessonTitle: "Archived lesson",
+                shadowingCompletedCount: 2, averagePronunciationScore: 80, spokenTurnCount: 1,
+                recastPairs: [], newChunks: [], tutorSummary: "Saved journal entry")
+            EnglishCoachStore.shared.mergeImported(.init(journalEntries: [log]))
+        }
         if ProcessInfo.processInfo.arguments.contains("-ui-test-personas") {
             var sample = ModelSpec(id: "sample-a")
             sample.catalogStatus = .manual

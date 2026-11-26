@@ -29,6 +29,17 @@ struct ReadingCitation: Equatable, Sendable {
         self.number = number
     }
 
+    var quotedText: String { "《\(documentTitle)》 · \(chapter)\n\(excerpt)" }
+
+    func selecting(_ range: NSRange?) -> Self? {
+        guard let range, range.length > 0, let substring = Range(range, in: excerpt),
+              let utf16Offset, let chapterIndex else { return nil }
+        let (offset, overflow) = utf16Offset.addingReportingOverflow(range.location)
+        guard !overflow, Self.validLocation(index: chapterIndex, offset: offset) != nil else { return nil }
+        return Self(KnowledgePassage(id: number, volumeID: volumeID, documentTitle: documentTitle, sectionTitle: chapter,
+            excerpt: String(excerpt[substring]), chapterIndex: chapterIndex, utf16Offset: offset))
+    }
+
     var marker: String {
         Self.marker(document: documentTitle, chapter: chapter, index: chapterIndex, offset: utf16Offset)
     }
@@ -68,6 +79,7 @@ struct BookReadingPage: Sendable {
     struct Paragraph: Identifiable, Sendable {
         let id: Int
         let text: String
+        let utf16Offset: Int
         let highlight: NSRange?
         let endsCitation: Bool
     }
@@ -110,7 +122,7 @@ struct BookReadingPage: Sendable {
                 let overlap = match.map { NSIntersectionRange($0.range, NSRange(location: utf16End, length: length)) }
                 let local = overlap.flatMap { $0.length > 0 ? NSRange(location: $0.location - utf16End, length: $0.length) : nil }
                 let endsCitation = match.map { local != nil && NSMaxRange($0.range) <= utf16End + length } ?? false
-                paragraphs.append(.init(id: paragraphs.count, text: String(chunk), highlight: local, endsCitation: endsCitation))
+                paragraphs.append(.init(id: paragraphs.count, text: String(chunk), utf16Offset: utf16End, highlight: local, endsCitation: endsCitation))
                 utf16End += length
                 remaining = remaining[chunk.endIndex...]
             }
@@ -131,8 +143,13 @@ struct BookReadingPage: Sendable {
             let text = chapters[i].text
             let length = text.utf16.count
             if let offset = citation.utf16Offset {
-                guard (0..<length).contains(offset),
-                      let result = regex.firstMatch(in: text, options: .anchored, range: NSRange(location: offset, length: length - offset)) else { continue }
+                guard (0..<length).contains(offset) else { continue }
+                let exactRange = NSRange(location: offset, length: citation.excerpt.utf16.count)
+                if exactRange.length <= length - offset,
+                   (text as NSString).substring(with: exactRange) == citation.excerpt {
+                    return (i, exactRange)
+                }
+                guard let result = regex.firstMatch(in: text, options: .anchored, range: NSRange(location: offset, length: length - offset)) else { continue }
                 return (i, result.range)
             }
             var ambiguous = false

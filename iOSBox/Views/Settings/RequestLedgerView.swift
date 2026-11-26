@@ -5,7 +5,16 @@ import Charts
 struct RequestLedgerView: View {
     var onClose: (() -> Void)? = nil
 
+    private struct PricingTarget: Identifiable {
+        let provider: ProviderConfig
+        let modelID: String
+        let modelDisplayName: String
+        var id: String { "\(provider.id.uuidString)::\(modelID)" }
+    }
+
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \RequestRecord.startedAt, order: .reverse) private var records: [RequestRecord]
+    @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     @State private var period: LedgerPeriod = .month
     @State private var referenceDate = Date()
     @State private var providerID: UUID?
@@ -18,6 +27,8 @@ struct RequestLedgerView: View {
     @State private var budgetLimitInput = ""
     @State private var budgetCurrencyInput = "USD"
     @State private var budgetAlertRatioInput = 0.8
+    @State private var pricingTarget: PricingTarget?
+    @State private var autoPriceFeedback: String?
 
     private var theme: DS.AccentTheme { preferences.accentTheme }
 
@@ -57,6 +68,60 @@ struct RequestLedgerView: View {
         }
     }
 
+    private func resolvePricingTarget(for record: RequestRecord) -> PricingTarget? {
+        guard record.kind != .webSearch,
+              let provider = providers.first(where: { $0.id == record.providerID }) else { return nil }
+        return PricingTarget(provider: provider, modelID: record.modelID, modelDisplayName: record.modelDisplayName)
+    }
+
+    private func distinctUnpricedTargets(in modelRows: [RequestRecord]) -> [PricingTarget] {
+        var seen = Set<String>()
+        var list: [PricingTarget] = []
+        for row in modelRows where row.status != .running && row.status != .blocked && !row.hasModelPricing {
+            guard let target = resolvePricingTarget(for: row), seen.insert(target.id).inserted else { continue }
+            list.append(target)
+        }
+        return list
+    }
+
+    private func autoMatchAndBackfillUnpriced(targets: [PricingTarget]) {
+        var matchedModels = 0
+        var backfilledRecords = 0
+        for item in targets {
+            guard let preset = ModelPricingCatalog.match(modelID: item.modelID, baseURL: item.provider.baseURL) else { continue }
+            var models = item.provider.models
+            if let idx = models.firstIndex(where: { $0.id == item.modelID }) {
+                ModelPricingCatalog.apply(preset, to: &models[idx])
+                item.provider.models = models
+                backfilledRecords += RequestLedger.backfillUnpricedRecords(
+                    in: records,
+                    providerID: item.provider.id,
+                    modelID: item.modelID,
+                    spec: models[idx]
+                )
+            } else {
+                var created = ModelSpec(id: item.modelID, displayName: item.modelDisplayName, isEnabled: false)
+                created.catalogStatus = .manual
+                ModelPricingCatalog.apply(preset, to: &created)
+                models.append(created)
+                item.provider.models = models
+                backfilledRecords += RequestLedger.backfillUnpricedRecords(
+                    in: records,
+                    providerID: item.provider.id,
+                    modelID: item.modelID,
+                    spec: created
+                )
+            }
+            matchedModels += 1
+        }
+        if matchedModels > 0 {
+            try? modelContext.save()
+            autoPriceFeedback = String(localized: "已匹配 \(matchedModels) 个模型参考单价，并补算 \(backfilledRecords) 条记录。")
+        } else {
+            autoPriceFeedback = String(localized: "暂无内置同名单价，请手动点击模型设置单价。")
+        }
+    }
+
     var body: some View {
         let rows = filtered
         let modelRows = rows.filter { $0.kind != .webSearch }
@@ -67,6 +132,7 @@ struct RequestLedgerView: View {
         let totals = RequestLedger.costs(modelRows)
         let savings = RequestLedger.cacheSavings(modelRows)
         let unpricedCount = modelRows.filter { $0.status != .running && $0.status != .blocked && !$0.hasModelPricing }.count
+        let unpricedTargets = distinctUnpricedTargets(in: modelRows)
         let monthSpentByCurrency = RequestLedger.costs(
             records.filter { $0.kind != .webSearch && LedgerPeriod.month.includes($0.startedAt) }
         )
@@ -152,12 +218,13 @@ struct RequestLedgerView: View {
                         }
                         let searchCount = rows.count - modelRows.count
                         if searchCount > 0 { Text("含联网搜索 \(searchCount) 次；搜索费用另计。").font(.caption).foregroundStyle(.secondary) }
-                        if totals.count > 1 {
-                            ForEach(totals.keys.sorted(), id: \.self) { currency in
+                        let orderedTotals = RequestLedger.sortedCurrencies(totals)
+                        if orderedTotals.count > 1 {
+                            ForEach(orderedTotals, id: \.self) { currency in
                                 LabeledContent("预估费用", value: RequestLedger.costText(totals[currency] ?? 0, currency: currency))
                             }
                         }
-                        ForEach(savings.keys.sorted(), id: \.self) { currency in
+                        ForEach(RequestLedger.sortedCurrencies(savings), id: \.self) { currency in
                             LabeledContent("缓存已节省", value: RequestLedger.costText(savings[currency] ?? 0, currency: currency))
                                 .foregroundStyle(.primary)
                         }
@@ -165,6 +232,41 @@ struct RequestLedgerView: View {
                         let unpriced = modelRows.filter { $0.status != .running && $0.status != .blocked && $0.estimatedCost == nil }.count
                         Text("缺少用量或单价：\(unpriced) 次（不按零费用计算）")
                             .font(.footnote).foregroundStyle(Color(uiColor: .label))
+
+                        if !unpricedTargets.isEmpty {
+                            if unpricedTargets.count == 1, let single = unpricedTargets.first {
+                                Button {
+                                    pricingTarget = single
+                                } label: {
+                                    Label("补填「\(single.modelDisplayName)」单价并重算", systemImage: "creditcard")
+                                        .font(.footnote.weight(.medium))
+                                }
+                            } else {
+                                Menu {
+                                    Button {
+                                        autoMatchAndBackfillUnpriced(targets: unpricedTargets)
+                                    } label: {
+                                        Label("一键匹配主流参考价并补算", systemImage: "wand.and.stars")
+                                    }
+                                    Divider()
+                                    ForEach(unpricedTargets) { target in
+                                        Button("\(target.provider.name) · \(target.modelDisplayName)") {
+                                            pricingTarget = target
+                                        }
+                                    }
+                                } label: {
+                                    Label("补填 \(unpricedTargets.count) 个未设价模型的单价…", systemImage: "creditcard")
+                                        .font(.footnote.weight(.medium))
+                                }
+                            }
+                        }
+
+                        if let autoPriceFeedback {
+                            Text(autoPriceFeedback)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
                         Text("按请求开始时间归入本地日期。费用采用请求当时的单价，不合并不同币种；可在服务商的模型列表设置单价。")
                             .font(.footnote).foregroundStyle(Color(uiColor: .label))
                     }
@@ -225,7 +327,7 @@ struct RequestLedgerView: View {
                                 }
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
-                                ForEach(group.costs.keys.sorted(), id: \.self) { currency in
+                                ForEach(RequestLedger.sortedCurrencies(group.costs), id: \.self) { currency in
                                     Text(RequestLedger.costText(group.costs[currency] ?? 0, currency: currency)).font(.caption)
                                 }
                             }
@@ -241,8 +343,14 @@ struct RequestLedgerView: View {
                 if !rows.isEmpty {
                     Section("请求明细") {
                         ForEach(Array(rows.prefix(visibleLimit))) { record in
+                            let rowPricingTarget = (!record.hasModelPricing && record.kind != .webSearch && record.status != .running && record.status != .blocked)
+                                ? resolvePricingTarget(for: record)
+                                : nil
                             NavigationLink {
-                                RequestRecordDetailView(record: record)
+                                RequestRecordDetailView(
+                                    record: record,
+                                    provider: providers.first { $0.id == record.providerID }
+                                )
                             } label: {
                                 VStack(alignment: .leading, spacing: 5) {
                                     HStack {
@@ -253,7 +361,9 @@ struct RequestLedgerView: View {
                                                 .font(.caption2.monospacedDigit())
                                                 .foregroundStyle(.secondary)
                                         } else if record.kind != .webSearch, record.status != .running, record.status != .blocked, !record.hasModelPricing {
-                                            Text("未定价").font(.caption).foregroundStyle(.secondary)
+                                            Text("未定价")
+                                                .font(.caption)
+                                                .foregroundStyle(rowPricingTarget != nil ? Color.accentColor : Color.secondary)
                                         }
                                         Text(record.status.title).font(.caption).foregroundStyle(.secondary)
                                     }
@@ -261,6 +371,15 @@ struct RequestLedgerView: View {
                                         .font(.caption).foregroundStyle(.secondary)
                                     Text(record.startedAt, format: .dateTime.month().day().hour().minute().second())
                                         .font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }
+                            .contextMenu {
+                                if let rowPricingTarget {
+                                    Button {
+                                        pricingTarget = rowPricingTarget
+                                    } label: {
+                                        Label("设置模型单价并补算…", systemImage: "creditcard")
+                                    }
                                 }
                             }
                         }
@@ -285,10 +404,13 @@ struct RequestLedgerView: View {
                         .accessibilityIdentifier("usage.budget")
                 }
             }
-            .onChange(of: referenceDate) { _, _ in visibleLimit = 50 }
-            .onChange(of: providerID) { _, _ in modelID = nil; visibleLimit = 50 }
-            .onChange(of: period) { _, _ in visibleLimit = 50 }
-            .onChange(of: modelID) { _, _ in visibleLimit = 50 }
+            .onChange(of: referenceDate) { _, _ in visibleLimit = 50; autoPriceFeedback = nil }
+            .onChange(of: providerID) { _, _ in modelID = nil; visibleLimit = 50; autoPriceFeedback = nil }
+            .onChange(of: period) { _, _ in visibleLimit = 50; autoPriceFeedback = nil }
+            .onChange(of: modelID) { _, _ in visibleLimit = 50; autoPriceFeedback = nil }
+            .sheet(item: $pricingTarget) { target in
+                ModelPricingSheet(provider: target.provider, modelID: target.modelID, defaultBackfill: true)
+            }
             .sheet(isPresented: $showBudgetSheet) {
                 NavigationStack {
                     Form {
@@ -336,7 +458,6 @@ struct RequestLedgerView: View {
                 .presentationDetents([.medium])
             }
         }
-        // A settings link uses the existing navigation stack. The standalone sheet owns its stack.
         if onClose != nil {
             NavigationStack { ledger }
         } else {
@@ -414,13 +535,16 @@ struct RequestLedgerView: View {
     }
 
     private func additionalCostDetail(totals: [String: Double], savings: [String: Double], unpricedCount: Int) -> String? {
-        let currencies = totals.keys.sorted()
+        let currencies = RequestLedger.sortedCurrencies(totals)
         guard let first = currencies.first else { return nil }
-        var details = currencies.dropFirst().map { RequestLedger.costText(totals[$0] ?? 0, currency: $0) }
+        var details = currencies.dropFirst(2).map { RequestLedger.costText(totals[$0] ?? 0, currency: $0) }
         if unpricedCount > 0 {
             details.insert(String(localized: "另有 \(unpricedCount) 次未定价"), at: 0)
         } else if currencies.count == 1, let saved = savings[first], saved > 0 {
             details.append(String(localized: "缓存省 \(RequestLedger.costText(saved, currency: first))"))
+        } else if let topSavedCurrency = RequestLedger.sortedCurrencies(savings).first,
+                  let saved = savings[topSavedCurrency], saved > 0 {
+            details.append(String(localized: "缓存省 \(RequestLedger.costText(saved, currency: topSavedCurrency))"))
         }
         return details.isEmpty ? nil : details.joined(separator: " · ")
     }
@@ -457,6 +581,8 @@ struct RequestLedgerView: View {
 
 struct RequestRecordDetailView: View {
     let record: RequestRecord
+    var provider: ProviderConfig? = nil
+    @State private var showPricingSheet = false
 
     var body: some View {
         Form {
@@ -509,12 +635,28 @@ struct RequestRecordDetailView: View {
                             LabeledContent("缓存已节省", value: RequestLedger.costText(saved, currency: currency))
                                 .foregroundStyle(DS.StatusText.success)
                         }
-                    } else { Text("用量或单价不完整，费用未知。") }
+                    } else {
+                        Text("用量或单价不完整，费用未知。")
+                        if !record.hasModelPricing, provider != nil {
+                            Button {
+                                showPricingSheet = true
+                            } label: {
+                                Label("设置该模型单价并补算", systemImage: "creditcard")
+                            }
+                        }
+                    }
                     Text("按服务商返回用量与已设单价（含缓存单价快照）估算，不含阶梯价格和额外收费。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-        }.navigationTitle("请求详情").navigationBarTitleDisplayMode(.inline)
+        }
+        .navigationTitle("请求详情")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showPricingSheet) {
+            if let provider {
+                ModelPricingSheet(provider: provider, modelID: record.modelID, defaultBackfill: true)
+            }
+        }
     }
 
     private func metric(_ title: LocalizedStringKey, value: Int?) -> some View {

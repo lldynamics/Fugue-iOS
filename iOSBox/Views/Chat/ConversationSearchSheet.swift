@@ -2,7 +2,10 @@ import SwiftUI
 import SwiftData
 
 struct ConversationSearchSheet: View {
+    let conversation: Conversation
     let messages: [ChatMessage]
+    let anchor: UUID?
+    @State private var showsDirectory = false
     let onSelectMessage: (UUID) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -27,9 +30,25 @@ struct ConversationSearchSheet: View {
     }
 
     var body: some View {
+        if showsDirectory {
+            QuestionDirectorySheet(conversation: conversation, jump: onSelectMessage)
+        } else { findMessages }
+    }
+
+    private var findMessages: some View {
         NavigationStack {
             List {
                 let current = request
+                let adjacent = Self.neighboringQuestions(in: messages, at: anchor)
+                Section("按提问跳转") {
+                    Button { showsDirectory = true } label: { Label("问题目录", systemImage: "list.number") }
+                    HStack {
+                        questionButton("上一问", icon: "chevron.backward", target: adjacent.previous, key: .leftArrow)
+                        Spacer()
+                        questionButton("下一问", icon: "chevron.forward", target: adjacent.next, key: .rightArrow)
+                    }
+                    .buttonStyle(.borderless)
+                }
                 Section {
                     Toggle("仅显示已收藏消息", isOn: $onlyBookmarked)
                 }
@@ -110,4 +129,21 @@ struct ConversationSearchSheet: View {
             }
         }
     }
+    private func questionButton(_ title: LocalizedStringKey, icon: String, target: UUID?, key: KeyEquivalent) -> some View {
+        Button {
+            if let target { onSelectMessage(target); dismiss() }
+        } label: { Label(title, systemImage: icon) }
+            .keyboardShortcut(key, modifiers: [.command, .option])
+            .accessibilityLabel(Text(title))
+            .disabled(target == nil)
+    }
+
+    static func neighboringQuestions(in messages: [ChatMessage], at anchor: UUID?) -> (previous: UUID?, next: UUID?) {
+        let index = messages.firstIndex { $0.id == anchor } ?? messages.endIndex
+        func question(_ item: ChatMessage) -> Bool { item.role == .user && !item.assistanceMetadata.isContextDivider }
+        let previous = messages[..<index].last(where: question)?.id
+        let next = index < messages.endIndex ? messages[(index + 1)...].first(where: question)?.id : nil
+        return (previous, next)
+    }
+
 }

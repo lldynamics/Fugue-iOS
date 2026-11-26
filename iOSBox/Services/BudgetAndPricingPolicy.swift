@@ -1,29 +1,5 @@
 import Foundation
-
-enum PricingMultiplierPolicy {
-    static let defaultMultiplier: Double = 1.0
-    static let minMultiplier: Double = 0.01
-    static let maxMultiplier: Double = 100.0
-    static let presets: [Double] = [0.2, 0.5, 1.0, 1.5, 2.0, 7.2]
-
-    static func sanitize(_ raw: Double?) -> Double {
-        guard let raw, raw.isFinite, raw > 0 else { return defaultMultiplier }
-        return min(max(raw, minMultiplier), maxMultiplier)
-    }
-
-    static func effectivePrice(_ base: Double?, multiplier: Double) -> Double? {
-        guard let base, base.isFinite, base >= 0 else { return nil }
-        return base * sanitize(multiplier)
-    }
-
-    static func formatted(_ multiplier: Double) -> String {
-        let value = sanitize(multiplier)
-        if abs(value - value.rounded()) < 0.0001 {
-            return "\(Int(value.rounded()))x"
-        }
-        return String(format: "%.2gx", value)
-    }
-}
+import SwiftData
 
 enum MonthlyBudgetLevel: Equatable {
     case unconfigured
@@ -87,5 +63,32 @@ enum MonthlyBudgetEvaluator {
             remaining: remaining,
             level: level
         )
+    }
+
+    @MainActor
+    static func evaluateCurrentMonth(
+        in context: ModelContext,
+        preferences: AppPreferences,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> MonthlyBudgetEvaluation {
+        let limit = preferences.monthlyBudgetLimit
+        let currency = preferences.monthlyBudgetCurrency
+        let alertRatio = preferences.monthlyBudgetAlertRatio
+        guard limit.isFinite, limit > 0,
+              let interval = calendar.dateInterval(of: .month, for: now) else {
+            return evaluate(spentByCurrency: [:], limit: 0, currency: currency, alertRatio: alertRatio)
+        }
+        let start = interval.start
+        let end = interval.end
+        let searchRaw = RequestKind.webSearch.rawValue
+        let descriptor = FetchDescriptor<RequestRecord>(
+            predicate: #Predicate<RequestRecord> {
+                $0.startedAt >= start && $0.startedAt < end && $0.kindRaw != searchRaw
+            }
+        )
+        let monthRecords = (try? context.fetch(descriptor)) ?? []
+        let spentByCurrency = RequestLedger.costs(monthRecords)
+        return evaluate(spentByCurrency: spentByCurrency, limit: limit, currency: currency, alertRatio: alertRatio)
     }
 }

@@ -94,7 +94,7 @@ struct EnglishRoleplaySheetView: View {
                 Button {
                     slowPlayback.toggle()
                 } label: {
-                    Text(slowPlayback ? "0.75x 慢速" : "1.0x 常速")
+                    Text(slowPlayback ? String(localized: "0.75x 慢速") : String(localized: "1.0x 常速"))
                         .font(.caption2.monospacedDigit().weight(.semibold))
                         .foregroundStyle(slowPlayback ? theme.readableText : DS.Surface.inkSecondary)
                         .padding(.horizontal, 10)
@@ -295,7 +295,7 @@ struct EnglishRoleplaySheetView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isSending)
-                .accessibilityLabel(speechCoach.isRecording ? "停止英文录音" : "开口说英文")
+                .accessibilityLabel(speechCoach.isRecording ? String(localized: "停止英文录音") : String(localized: "开口说英文"))
 
                 TextField("开口说或输入英文回答…", text: $draftInput, axis: .vertical)
                     .textInputAutocapitalization(.sentences)

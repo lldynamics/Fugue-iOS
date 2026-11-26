@@ -4,7 +4,14 @@ import Observation
 @MainActor
 @Observable
 final class EnglishCoachStore {
-    static let shared = EnglishCoachStore()
+    static let shared: EnglishCoachStore = {
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("-ui-test-learning-journal") {
+            return EnglishCoachStore(fileURL: URL.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        }
+        #endif
+        return EnglishCoachStore()
+    }()
 
     struct PersistedState: Codable {
         var hasCompletedOnboarding: Bool = false

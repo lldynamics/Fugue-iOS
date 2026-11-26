@@ -71,7 +71,14 @@ struct SkillPresetEntityQuery: EntityStringQuery {
     }
 
     @MainActor
-    func all(context suppliedContext: ModelContext? = nil) throws -> [SkillPresetEntity] {
+    func all(
+        context suppliedContext: ModelContext? = nil,
+        preferences: AppPreferences = .shared,
+        lockController: AppLockController = .shared
+    ) throws -> [SkillPresetEntity] {
+        if ShortcutService.isAppLocked(preferences: preferences, lockController: lockController) {
+            return SkillPresetEntity.builtInWorkflowSkills
+        }
         let context = suppliedContext ?? AppRuntime.persistence.container.mainContext
         DataSeeder.seedIfNeeded(context: context)
         let presets = try context.fetch(FetchDescriptor<AssistantPreset>(sortBy: [SortDescriptor(\.sortOrder)]))
@@ -80,7 +87,7 @@ struct SkillPresetEntityQuery: EntityStringQuery {
                 id: "preset:\(p.id.uuidString)",
                 name: "\(p.iconEmoji) \(p.name)",
                 subtitle: p.subtitle,
-                systemPrompt: p.systemPrompt,
+                systemPrompt: "",
                 userPrefix: ""
             )
         }
@@ -92,7 +99,9 @@ struct RunSkillIntent: AppIntent {
     static var title: LocalizedStringResource = "运行 AI 技能"
     static var description = IntentDescription("调用「夜奔」中的自定义助手或结构化技能（如提取账单 JSON、提炼待办、翻译总结），支持绑定操作按钮与快捷指令流水线。")
     static var authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+    #if compiler(>=6.2)
     @available(iOS 26.0, *) static var supportedModes: IntentModes { [.background, .foreground(.dynamic)] }
+    #endif
 
     @Parameter(title: "AI 技能")
     var skill: SkillPresetEntity
@@ -116,6 +125,7 @@ struct RunSkillIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        try ShortcutService.requireUnlocked()
         var processedImage: MessageAttachment?
         if let image {
             if let url = image.fileURL {
@@ -160,11 +170,15 @@ struct RunSkillIntent: AppIntent {
             if let answer = try await ShortcutService.answer(for: conversation, within: .seconds(20)) {
                 return .result(value: answer, dialog: "\(answer)")
             }
+            #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 try await continueInForeground("模型仍在生成，请在「夜奔」中继续。")
             } else {
                 try await requestToContinueInForeground("模型仍在生成，请在「夜奔」中继续。")
             }
+            #else
+            try await requestToContinueInForeground("模型仍在生成，请在「夜奔」中继续。")
+            #endif
             SystemEntryRouter.shared.conversationID = conversation.id
             guard let answer = try await ShortcutService.answer(for: conversation, within: .seconds(300)) else {
                 throw LLMError.apiError(String(localized: "请求耗时过长，已保留部分结果，请在对话中重答。"))

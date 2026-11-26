@@ -20,8 +20,17 @@ struct PersonalMemoryView: View {
                         Spacer()
                         Toggle("启用记忆", isOn: Binding(get: { memory.isEnabled }, set: {
                             let old = memory.isEnabled
+                            let previousEdit = memory.updatedTimestamp
                             memory.isEnabled = $0
-                            do { try context.save() } catch { memory.isEnabled = old; self.error = error.localizedDescription }
+                            memory.updatedTimestamp = Date().timeIntervalSince1970
+                            do {
+                                try context.save()
+                                WebDAVAutoSyncCoordinator.shared.markWorkspaceChanged(in: context)
+                            } catch {
+                                memory.isEnabled = old
+                                memory.updatedTimestamp = previousEdit
+                                self.error = error.localizedDescription
+                            }
                         }))
                         .labelsHidden()
                         .accessibilityLabel(String(localized: "启用记忆") + ": " + memory.content)
@@ -61,6 +70,7 @@ struct PersonalMemoryView: View {
                     SyncTombstoneStore.shared.recordDeletion(kind: .memory, id: id)
                 }
                 context.processPendingChanges()
+                try PresetKnowledgeStore.shared.removeFromMemoryCollections([id])
             }
         } catch { self.error = error.localizedDescription }
     }
@@ -109,7 +119,10 @@ private struct MemoryEditorSheet: View {
             try context.save()
             let transaction = ModelContext(context.container)
             let items = try transaction.fetch(FetchDescriptor<PersonalMemory>())
-            if let item = items.first(where: { $0.id == draft.id }) { item.content = text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            if let item = items.first(where: { $0.id == draft.id }) {
+                item.content = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                item.updatedTimestamp = Date().timeIntervalSince1970
+            }
             else {
                 guard items.count < PersonalMemory.maximumCount else { return }
                 transaction.insert(PersonalMemory(id: draft.id, content: text.trimmingCharacters(in: .whitespacesAndNewlines)))

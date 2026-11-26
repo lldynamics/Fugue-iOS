@@ -259,11 +259,12 @@ struct FullTextIndexStats: Equatable, Sendable {
 actor FullTextSearchIndex {
     static let shared = FullTextSearchIndex()
 
-    private static let schemaVersion: Int32 = 1
+    private static let schemaVersion: Int32 = 2
     private static let transientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     private let databaseURL: URL?
     private var db: OpaquePointer?
+    private var walBackupExclusionApplied = false
 
     init(databaseURL: URL? = FullTextSearchIndex.defaultDatabaseURL()) {
         self.databaseURL = databaseURL
@@ -346,10 +347,20 @@ actor FullTextSearchIndex {
 
     private func applyFileProtectionIfNeeded() {
         guard let databaseURL else { return }
-        try? FileManager.default.setAttributes(
-            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
-            ofItemAtPath: databaseURL.path
-        )
+        var backupExclusion = URLResourceValues()
+        backupExclusion.isExcludedFromBackup = true
+        for candidate in [
+            databaseURL,
+            URL(fileURLWithPath: databaseURL.path + "-wal"),
+            URL(fileURLWithPath: databaseURL.path + "-shm")
+        ] where FileManager.default.fileExists(atPath: candidate.path) {
+            try? FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: candidate.path
+            )
+            var mutableURL = candidate
+            try? mutableURL.setResourceValues(backupExclusion)
+        }
     }
 
     private func configureAndMigrate(_ handle: OpaquePointer) throws {
@@ -361,7 +372,10 @@ actor FullTextSearchIndex {
         try exec(handle, "PRAGMA temp_store = MEMORY;")
 
         let currentVersion = querySingleInt32(handle, sql: "PRAGMA user_version;") ?? 0
-        if currentVersion != Self.schemaVersion {
+        if currentVersion == 1 {
+            // V2 indexes filenames independently of reasoning and retains manuscript source offsets.
+            try exec(handle, "DROP TABLE IF EXISTS search_docs; DROP TABLE IF EXISTS search_meta;")
+        } else if currentVersion != Self.schemaVersion {
             try exec(handle, """
             DROP TABLE IF EXISTS search_docs;
             DROP TABLE IF EXISTS search_meta;
@@ -448,6 +462,124 @@ actor FullTextSearchIndex {
     struct IndexedBookVolumeSummary: Equatable, Sendable {
         let title: String
         let chunkCount: Int
+    }
+
+    struct IndexedConversationSyncState: Sendable {
+        let conversationEpochs: [String: Double]
+        let messageAttachmentNames: [String: String]
+    }
+
+    /// Returns cached conversation timestamps and already-extracted message attachment filenames so
+    /// incremental search extraction never needs to fault multi-megabyte external attachment blobs.
+    func indexedConversationSyncState() throws -> IndexedConversationSyncState {
+        let handle = try ensureOpen()
+        var convEpochs: [String: Double] = [:]
+        var msgTitles: [String: String] = [:]
+
+        let convStmt = try prepare(handle, "SELECT doc_key, updated_at FROM search_meta WHERE entity_type = ?;")
+        defer { sqlite3_finalize(convStmt) }
+        bindText(convStmt, 1, FTSIndexEntityType.conversation.rawValue)
+        while sqlite3_step(convStmt) == SQLITE_ROW {
+            convEpochs[columnString(convStmt, 0)] = sqlite3_column_double(convStmt, 1)
+        }
+
+        let msgStmt = try prepare(handle, "SELECT doc_key, title FROM search_meta WHERE entity_type = ?;")
+        defer { sqlite3_finalize(msgStmt) }
+        bindText(msgStmt, 1, FTSIndexEntityType.message.rawValue)
+        while sqlite3_step(msgStmt) == SQLITE_ROW {
+            msgTitles[columnString(msgStmt, 0)] = columnString(msgStmt, 1)
+        }
+
+        return IndexedConversationSyncState(
+            conversationEpochs: convEpochs,
+            messageAttachmentNames: msgTitles
+        )
+    }
+
+    /// Removes indexed global-search book chunks for `volumeID` so subsequent searches re-index updated chapters.
+    func invalidateBookVolume(_ volumeID: UUID) throws {
+        let handle = try ensureOpen()
+        let parentKey = volumeID.uuidString
+        try withTransaction(handle) {
+            let delFTS = try prepare(handle, "DELETE FROM search_docs WHERE entity_type = ? AND parent_id = ?;")
+            defer { sqlite3_finalize(delFTS) }
+            bindText(delFTS, 1, FTSIndexEntityType.bookChunk.rawValue)
+            bindText(delFTS, 2, parentKey)
+            try stepDone(handle, delFTS)
+
+            let delMeta = try prepare(handle, "DELETE FROM search_meta WHERE entity_type = ? AND parent_id = ?;")
+            defer { sqlite3_finalize(delMeta) }
+            bindText(delMeta, 1, FTSIndexEntityType.bookChunk.rawValue)
+            bindText(delMeta, 2, parentKey)
+            try stepDone(handle, delMeta)
+        }
+    }
+
+    /// Updates FTS5 global-search book chunks for a single `BookVolume` in place (e.g. after background OCR).
+    func indexBookVolume(
+        volumeID: UUID,
+        title: String,
+        importedAt: Date,
+        chapters: [BookChapter]
+    ) throws {
+        let handle = try ensureOpen()
+        let volumeKey = volumeID.uuidString
+        var existingFingerprints: [String: String] = [:]
+
+        let selectStmt = try prepare(
+            handle,
+            "SELECT doc_key, fingerprint FROM search_meta WHERE entity_type = ? AND parent_id = ?;"
+        )
+        defer { sqlite3_finalize(selectStmt) }
+        bindText(selectStmt, 1, FTSIndexEntityType.bookChunk.rawValue)
+        bindText(selectStmt, 2, volumeKey)
+        while sqlite3_step(selectStmt) == SQLITE_ROW {
+            existingFingerprints[columnString(selectStmt, 0)] = columnString(selectStmt, 1)
+        }
+
+        var docs: [FTSIndexedDocument] = []
+        docs.reserveCapacity(chapters.count)
+        for (chapIdx, chapter) in chapters.enumerated() {
+            let cleanText = chapter.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanText.isEmpty else { continue }
+            let docKey = "book:\(volumeKey):\(chapIdx)"
+            var hash: UInt64 = 14_695_981_039_346_656_037
+            let prime: UInt64 = 1_099_511_628_211
+            for part in [volumeKey, title, "\(chapIdx)", "\(chapter.text.utf8.count)"] {
+                for byte in part.utf8 {
+                    hash ^= UInt64(byte)
+                    hash = hash &* prime
+                }
+                hash ^= 0xFF
+                hash = hash &* prime
+            }
+            let fp = String(hash, radix: 16)
+            docs.append(FTSIndexedDocument(
+                docKey: docKey,
+                entityType: .bookChunk,
+                parentID: volumeKey,
+                itemID: "\(volumeKey):\(chapIdx)",
+                title: title,
+                subtitle: chapter.title,
+                rawBody: chapter.text,
+                rawAux: chapter.title,
+                folderTag: nil,
+                isBookmarked: false,
+                isOtherBranch: false,
+                role: nil,
+                speaker: nil,
+                chapterIndex: chapIdx,
+                utf16Offset: 0,
+                createdAt: importedAt,
+                updatedAt: importedAt,
+                fingerprint: fp
+            ))
+        }
+
+        let incomingKeys = Set(docs.map(\.docKey))
+        let deletedKeys = existingFingerprints.keys.filter { !incomingKeys.contains($0) }
+        let changedDocs = docs.filter { existingFingerprints[$0.docKey] != $0.fingerprint }
+        try applyDocumentChanges(handle: handle, deletedKeys: deletedKeys, changedDocs: changedDocs)
     }
 
     /// Returns `parent_id -> (title, indexedChunkCount)` for already-indexed book volumes so search
@@ -937,6 +1069,10 @@ actor FullTextSearchIndex {
         do {
             try body()
             try exec(handle, "COMMIT;")
+            if !walBackupExclusionApplied {
+                walBackupExclusionApplied = true
+                applyFileProtectionIfNeeded()
+            }
         } catch {
             try? exec(handle, "ROLLBACK;")
             throw error

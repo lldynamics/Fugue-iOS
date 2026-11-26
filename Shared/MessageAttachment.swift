@@ -14,6 +14,13 @@ enum AttachmentKind: String, Codable {
     case document
 }
 
+struct AttachmentTextCoverage: Codable, Hashable, Sendable {
+    let totalPages: Int
+    let pagesWithText: Int
+    let ocrPages: Int
+    let isTruncated: Bool
+}
+
 struct MessageAttachment: Codable, Hashable, Identifiable {
     var id: UUID = UUID()
     var kind: AttachmentKind
@@ -22,6 +29,13 @@ struct MessageAttachment: Codable, Hashable, Identifiable {
     var dataBase64: String?
     var extractedText: String?
     var byteSize: Int
+    var textCoverage: AttachmentTextCoverage? = nil
+    /// A reviewed PDF must be delivered as a file even on the Chat Completions endpoint.
+    var sendOriginalPDF: Bool? = nil
+
+    var hasRequestedPDFFile: Bool {
+        sendOriginalPDF == true && kind == .document && mimeType == "application/pdf" && dataBase64 != nil
+    }
 
     var formattedSize: String {
         ByteCountFormatter.string(fromByteCount: Int64(byteSize), countStyle: .file)

@@ -94,8 +94,21 @@ enum ModelPricingCatalog {
             cacheWritePerMillion: 3.75
         ),
         Preset(
+            id: "claude-opus-4-5",
+            label: "Claude Opus 4.5 / 4.6 / 4.7 ($5 / $25)",
+            matchPrefixes: [
+                "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
+                "claude-opus-4.7", "claude-opus-4.6", "claude-opus-4.5"
+            ],
+            currency: "USD",
+            inputPerMillion: 5.0,
+            outputPerMillion: 25.0,
+            cacheReadPerMillion: 0.50,
+            cacheWritePerMillion: 6.25
+        ),
+        Preset(
             id: "claude-opus-4",
-            label: "Claude Opus 4 ($15 / $75)",
+            label: "Claude Opus 4 / 4.1 ($15 / $75)",
             matchPrefixes: ["claude-opus-4"],
             currency: "USD",
             inputPerMillion: 15.0,
@@ -144,9 +157,19 @@ enum ModelPricingCatalog {
             cacheWritePerMillion: nil
         ),
         Preset(
+            id: "gemini-2.5-flash-lite",
+            label: "Gemini 2.5 Flash-Lite / 2.0 Flash ($0.1 / $0.4)",
+            matchPrefixes: ["gemini-2.5-flash-lite", "gemini-2.0-flash-lite", "gemini-2.0-flash"],
+            currency: "USD",
+            inputPerMillion: 0.10,
+            outputPerMillion: 0.40,
+            cacheReadPerMillion: 0.025,
+            cacheWritePerMillion: nil
+        ),
+        Preset(
             id: "gemini-2.5-flash",
             label: "Gemini 2.5 Flash ($0.3 / $2.5)",
-            matchPrefixes: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-3-flash"],
+            matchPrefixes: ["gemini-2.5-flash", "gemini-3-flash"],
             currency: "USD",
             inputPerMillion: 0.30,
             outputPerMillion: 2.50,
@@ -155,8 +178,55 @@ enum ModelPricingCatalog {
         )
     ]
 
-    /// Matches the most specific preset (longest matching token) against a model ID using token boundaries.
-    static func match(modelID: String) -> Preset? {
+    private static let usdDeepSeekReasoner = Preset(
+        id: "deepseek-reasoner",
+        label: "DeepSeek-R1 ($0.55 / $2.19)",
+        matchPrefixes: ["deepseek-reasoner", "deepseek-r1"],
+        currency: "USD",
+        inputPerMillion: 0.55,
+        outputPerMillion: 2.19,
+        cacheReadPerMillion: 0.14,
+        cacheWritePerMillion: nil
+    )
+
+    private static let usdDeepSeekChat = Preset(
+        id: "deepseek-chat",
+        label: "DeepSeek-V3 ($0.27 / $1.10)",
+        matchPrefixes: ["deepseek-chat", "deepseek-v3"],
+        currency: "USD",
+        inputPerMillion: 0.27,
+        outputPerMillion: 1.10,
+        cacheReadPerMillion: 0.07,
+        cacheWritePerMillion: nil
+    )
+
+    static func isUSDAggregator(baseURL: String?) -> Bool {
+        guard let raw = baseURL?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return false
+        }
+        let candidate = raw.contains("://") ? raw : "https://\(raw)"
+        guard let host = URLComponents(string: candidate)?.host?.lowercased() else {
+            return false
+        }
+        let usdDomains = [
+            "openrouter.ai",
+            "together.xyz",
+            "together.ai",
+            "fireworks.ai",
+            "groq.com",
+            "deepinfra.com",
+            "siliconflow.com",
+            "cerebras.ai",
+            "sambanova.ai",
+            "hyperbolic.xyz",
+            "nebius.com"
+        ]
+        return usdDomains.contains { host == $0 || host.hasSuffix(".\($0)") }
+    }
+
+    /// Matches the most specific preset (longest matching token) against a model ID using token boundaries,
+    /// using USD rates when `baseURL` points to a known USD-billed aggregator/router.
+    static func match(modelID: String, baseURL: String? = nil) -> Preset? {
         let lower = modelID.lowercased()
         var best: (preset: Preset, length: Int)?
         for preset in presets {
@@ -167,7 +237,28 @@ enum ModelPricingCatalog {
                 }
             }
         }
-        return best?.preset
+        guard let matched = best?.preset else { return nil }
+        if matched.currency == "CNY" && isUSDAggregator(baseURL: baseURL) {
+            switch matched.id {
+            case "deepseek-reasoner":
+                return usdDeepSeekReasoner
+            case "deepseek-chat":
+                return usdDeepSeekChat
+            default:
+                let fx = 7.2
+                return Preset(
+                    id: matched.id,
+                    label: matched.label,
+                    matchPrefixes: matched.matchPrefixes,
+                    currency: "USD",
+                    inputPerMillion: (matched.inputPerMillion / fx * 1000).rounded() / 1000,
+                    outputPerMillion: (matched.outputPerMillion / fx * 1000).rounded() / 1000,
+                    cacheReadPerMillion: matched.cacheReadPerMillion.map { ($0 / fx * 1000).rounded() / 1000 },
+                    cacheWritePerMillion: matched.cacheWritePerMillion.map { ($0 / fx * 1000).rounded() / 1000 }
+                )
+            }
+        }
+        return matched
     }
 
     private static func isASCIIAlphanumeric(_ char: Character) -> Bool {
@@ -205,5 +296,6 @@ enum ModelPricingCatalog {
         spec.cacheReadPricePerMillion = preset.cacheReadPerMillion
         spec.cacheWritePricePerMillion = preset.cacheWritePerMillion
         spec.priceCurrency = preset.currency
+        spec.priceSource = .manual
     }
 }

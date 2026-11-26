@@ -112,7 +112,7 @@ struct AudioTranscriptionSheet: View {
                                 tintColor: preferences.accentTheme.tintColor
                             )
                             HStack {
-                                Text(recorder.isPaused ? "已暂停" : "正在录音")
+                                Text(recorder.isPaused ? String(localized: "已暂停") : String(localized: "正在录音"))
                                     .font(.caption.weight(.medium))
                                     .foregroundStyle(recorder.isPaused ? .orange : .red)
                                 Spacer()
@@ -211,7 +211,7 @@ struct AudioTranscriptionSheet: View {
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                             .disabled(recorder.isRecording || isTranscribing)
-                            .accessibilityLabel(recorder.isPlayingPreview ? "停止试听" : "试听")
+                            .accessibilityLabel(recorder.isPlayingPreview ? String(localized: "停止试听") : String(localized: "试听"))
 
                             Button {
                                 requestTranscribe()

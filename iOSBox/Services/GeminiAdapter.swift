@@ -74,7 +74,8 @@ enum GeminiAdapter {
                     newlyDisabled.insert(.thinkingConfig)
                     return true
                 }
-                if state.includeNativeSearch && (lower.contains("google_search") || lower.contains("tools")) {
+                let mentionsNativeSearch = LLMClient.mentionsNativeSearchIdentifier(lower)
+                if state.includeNativeSearch && (mentionsNativeSearch || (request.tools.isEmpty && (lower.contains("tools") || lower.contains("tool")))) {
                     state.includeNativeSearch = false
                     newlyDisabled.insert(.nativeSearch)
                     return true
@@ -84,7 +85,13 @@ enum GeminiAdapter {
                     newlyDisabled.insert(.samplingParams)
                     return true
                 }
-                if LLMClient.isGenericParameterRejection400(lower) && hasThinkingConfig && state.includeThinkingConfig {
+                let mentionsCustomToolsOnly = !request.tools.isEmpty
+                    && !mentionsNativeSearch
+                    && (lower.contains("tools") || lower.contains("tool"))
+                if !mentionsCustomToolsOnly
+                    && LLMClient.isGenericParameterRejection400(lower)
+                    && hasThinkingConfig
+                    && state.includeThinkingConfig {
                     state.includeThinkingConfig = false
                     newlyDisabled.insert(.thinkingConfig)
                     return true
@@ -191,15 +198,19 @@ enum GeminiAdapter {
                                 )))
                                 accumulatedThought = ""
                             }
-                        } else if let sig, !sig.isEmpty, text.isEmpty {
-                            // Gemini frequently delivers `thoughtSignature` on a trailing empty-text part.
-                            continuation.yield(.thinkingBlock(LLMThinkingBlock(
-                                thinking: accumulatedThought,
-                                signature: sig
-                            )))
-                            accumulatedThought = ""
-                        } else if !text.isEmpty {
-                            continuation.yield(.contentDelta(text))
+                        } else {
+                            if let sig, !sig.isEmpty {
+                                // Gemini 2.5/3 delivers `thoughtSignature` on trailing empty-text
+                                // or non-empty visible text parts.
+                                continuation.yield(.thinkingBlock(LLMThinkingBlock(
+                                    thinking: accumulatedThought,
+                                    signature: sig
+                                )))
+                                accumulatedThought = ""
+                            }
+                            if !text.isEmpty {
+                                continuation.yield(.contentDelta(text))
+                            }
                         }
                     }
                 }

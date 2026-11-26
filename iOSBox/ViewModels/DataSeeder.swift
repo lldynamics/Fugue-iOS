@@ -3,15 +3,15 @@ import SwiftData
 
 @MainActor
 enum DataSeeder {
-    nonisolated private static let seededKey = "com.iosbox.hasSeededInitialData.v1"
     nonisolated private static let presetsSeededKey = "com.iosbox.hasSeededPresets.v1"
     nonisolated private static let dailyPresetsSeededKey = "com.iosbox.hasSeededDailyPresets.v2"
 
     nonisolated static func resetSeedFlagsForRebuiltStore(in defaults: UserDefaults = .standard) {
-        defaults.removeObject(forKey: seededKey)
         defaults.removeObject(forKey: presetsSeededKey)
         defaults.removeObject(forKey: dailyPresetsSeededKey)
     }
+
+    nonisolated static func hasSeededInstallation(_ defaults: UserDefaults) -> Bool { defaults.bool(forKey: presetsSeededKey) }
 
     static func seedIfNeeded(context: ModelContext) {
         let canPersistFlags = PersistenceController.canCommitUserData(in: context)
@@ -43,33 +43,7 @@ enum DataSeeder {
             }
         }
 
-        if !UserDefaults.standard.bool(forKey: seededKey) {
-            let providerDescriptor = FetchDescriptor<ProviderConfig>()
-            let existingProviders = (try? context.fetchCount(providerDescriptor)) ?? 0
-            if existingProviders == 0 {
-                let starterIDs = ["deepseek", "openrouter", "anthropic", "gemini"]
-                for (idx, templateID) in starterIDs.enumerated() {
-                    if let tpl = ProviderTemplate.catalog.first(where: { $0.id == templateID }) {
-                        let provider = ProviderConfig(
-                            name: tpl.name,
-                            protocolType: tpl.protocolType,
-                            baseURL: tpl.baseURL,
-                            iconSymbol: tpl.iconSymbol,
-                            accentHex: tpl.accentHex,
-                            isEnabled: true,
-                            sortOrder: idx,
-                            models: tpl.suggestedModels,
-                            notes: tpl.note
-                        )
-                        context.insert(provider)
-                    }
-                }
-            }
-            if canPersistFlags {
-                UserDefaults.standard.set(true, forKey: seededKey)
-            }
-        }
-
+        // Provider templates live in the setup picker. Accounts are created by the user.
         // Move credentials saved in plaintext custom headers (pre-secret-header data) into the Keychain.
         for provider in (try? context.fetch(FetchDescriptor<ProviderConfig>())) ?? [] {
             provider.moveSensitiveHeadersToKeychain()

@@ -67,6 +67,7 @@ final class ChatEngine {
     @ObservationIgnored var activeGenerations: [UUID: ActiveGeneration] = [:]
     @ObservationIgnored var activeTitleTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored var activeSummaryTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored var activeSummaryTokens: [UUID: UUID] = [:]
     @ObservationIgnored var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored let search: @Sendable (String) async throws -> SearchEvidence
     @ObservationIgnored let hasCustomSearchHandler: Bool
@@ -122,7 +123,9 @@ final class ChatEngine {
         cancelWebpageApprovals(in: conversationID)
         activeGenerations[conversationID]?.task.cancel()
         activeTitleTasks[conversationID]?.cancel()
+        activeSummaryTokens.removeValue(forKey: conversationID)
         activeSummaryTasks.removeValue(forKey: conversationID)?.cancel()
+        updateBackgroundExecution()
     }
 
     func stopGenerationAndWait(for conversationID: UUID) async {
@@ -135,10 +138,12 @@ final class ChatEngine {
             titleTask.cancel()
             await titleTask.value
         }
+        activeSummaryTokens.removeValue(forKey: conversationID)
         if let summaryTask = activeSummaryTasks.removeValue(forKey: conversationID) {
             summaryTask.cancel()
             await summaryTask.value
         }
+        updateBackgroundExecution()
     }
 
     func availableTargets(from providers: [ProviderConfig]) -> [ResolvedModelTarget] {
@@ -202,19 +207,36 @@ final class ChatEngine {
                 guard let basePrimary = conversation.primaryTarget else { return nil }
 
                 if kind != .shortcut && conversation.assistanceSettings.automaticRouting {
-                    guard let routed = AssistancePolicy.route(
+                    if let routed = AssistancePolicy.route(
                         primary: basePrimary,
                         settings: conversation.assistanceSettings,
                         text: text,
                         attachments: attachments,
                         providers: providers
-                    ) else {
-                        return nil
+                    ) {
+                        if routed.id != basePrimary.id {
+                            routeNotice = String(localized: "已按输入类型选择：\(routed.providerName) · \(routed.modelDisplayName)")
+                        }
+                        chosenPrimary = routed
+                    } else {
+                        let intendedTarget: ResolvedModelTarget
+                        if requiresVision {
+                            intendedTarget = conversation.assistanceSettings.imageTarget ?? basePrimary
+                        } else if AssistancePolicy.isCode(text: text, attachments: attachments),
+                                  let code = conversation.assistanceSettings.codeTarget {
+                            intendedTarget = code
+                        } else {
+                            intendedTarget = basePrimary
+                        }
+                        let earlyBackups = AssistancePolicy.fallbacks(
+                            after: intendedTarget,
+                            settings: conversation.assistanceSettings,
+                            providers: providers,
+                            requiresVision: requiresVision
+                        )
+                        guard !earlyBackups.isEmpty else { return nil }
+                        chosenPrimary = intendedTarget
                     }
-                    if routed.id != basePrimary.id {
-                        routeNotice = String(localized: "已按输入类型选择：\(routed.providerName) · \(routed.modelDisplayName)")
-                    }
-                    chosenPrimary = routed
                 } else if let live = AssistancePolicy.resolve(basePrimary, providers: providers) {
                     chosenPrimary = live
                 } else {
@@ -367,6 +389,8 @@ final class ChatEngine {
             userMeta.quotedExcerpt = String(quote.prefix(1200))
             userMsg.assistanceMetadata = userMeta
         }
+        userMsg.assistanceMetadata.selectedMemoryIDs = options.selectedMemoryIDs
+        userMsg.assistanceMetadata.omittedMemory = options.omitMemory
         if options.omitKnowledge { userMsg.assistanceMetadata.omittedKnowledge = true }
         userMsg.parentMessageID = resolvedParentID
         userMsg.conversation = conversation
@@ -384,10 +408,14 @@ final class ChatEngine {
             messages: priorBranchMessages + [userMsg],
             limit: conversation.contextMessageLimit
         )
+        if original != nil {
+            invalidateStaleRollingSummaryIfNeeded(in: conversation, branchMessages: priorBranchMessages + [userMsg])
+        }
 
         let memoryInfo = prepareMemory(
             conversation: conversation,
             omitMemory: options.omitMemory,
+            selectedIDs: options.selectedMemoryIDs,
             context: context
         )
 
@@ -447,6 +475,7 @@ final class ChatEngine {
                 replyMsg.parentMessageID = userMsg.id
             }
             var meta = AssistanceMetadata()
+            meta.selectedMemoryIDs = options.selectedMemoryIDs
             meta.omittedKnowledge = options.omitKnowledge
             meta.omittedMemory = options.omitMemory && conversation.assistanceSettings.usePersonalMemory
             meta.memoryCount = memoryInfo.count
@@ -506,6 +535,10 @@ final class ChatEngine {
 
     func insertContextDivider(in conversation: Conversation, context: ModelContext) {
         guard !isGenerating(in: conversation.id) else { return }
+        activeSummaryTokens.removeValue(forKey: conversation.id)
+        activeSummaryTasks.removeValue(forKey: conversation.id)?.cancel()
+        RollingContextSummaryStore.shared.clear(for: conversation.id)
+        updateBackgroundExecution()
         let useTree = ConversationTree.usesTree(conversation)
         let parentID = useTree
             ? (ConversationTree.currentAnchorID(in: conversation) ?? ConversationTree.virtualRootID)
@@ -544,6 +577,7 @@ final class ChatEngine {
     func toggleBookmark(for message: ChatMessage, context: ModelContext) {
         var meta = message.assistanceMetadata
         meta.isBookmarked.toggle()
+        meta.bookmarkUpdatedTimestamp = Date().timeIntervalSince1970
         let isBookmarkedNow = meta.isBookmarked
         if meta.hasPersistedContent {
             message.assistanceMetadata = meta
@@ -580,7 +614,8 @@ final class ChatEngine {
         let attachmentsSnapshot = userMessage.attachments
         let nextAssistantMeta = active[(idx + 1)...].first(where: { $0.role == .assistant })?.assistanceMetadata
         let preservedOptions = GenerationOptions(
-            omitMemory: nextAssistantMeta?.omittedMemory ?? false,
+            selectedMemoryIDs: userMessage.assistanceMetadata.selectedMemoryIDs ?? nextAssistantMeta?.selectedMemoryIDs,
+            omitMemory: userMessage.assistanceMetadata.omittedMemory || nextAssistantMeta?.omittedMemory == true,
             omitKnowledge: userMessage.assistanceMetadata.omittedKnowledge || nextAssistantMeta?.omittedKnowledge == true,
             searchQuery: nextAssistantMeta?.requestedSearchQuery,
             quotedExcerpt: userMessage.assistanceMetadata.quotedExcerpt,
@@ -605,7 +640,7 @@ final class ChatEngine {
         in conversation: Conversation,
         context: ModelContext
     ) async {
-        if isGenerating(in: conversation.id) || activeTitleTasks[conversation.id] != nil {
+        if isGenerating(in: conversation.id) || activeTitleTasks[conversation.id] != nil || activeSummaryTasks[conversation.id] != nil {
             await stopGenerationAndWait(for: conversation.id)
         }
         let deletedID = message.id
@@ -613,6 +648,7 @@ final class ChatEngine {
         ConversationTree.detachBeforeDeleting(message, in: conversation)
         conversation.messages.removeAll { $0.id == deletedID }
         context.delete(message)
+        invalidateStaleRollingSummaryIfNeeded(in: conversation)
         conversation.updatedAt = Date()
         guard (try? context.save()) != nil else { return }
         let spotlight = SpotlightIndexService.shared
@@ -682,6 +718,15 @@ final class ChatEngine {
         return target.flatMap { AssistancePolicy.resolve($0, providers: providers) }
     }
 
+    func replyFallbacks(for message: ChatMessage, after target: ResolvedModelTarget, in conversation: Conversation,
+                        providers: [ProviderConfig], requiresVision: Bool = false) -> [ResolvedModelTarget] {
+        guard !conversation.isGroupMode, !conversation.isArenaMode, !message.isSynthesis,
+              message.comparisonGroupID == nil, message.assistanceMetadata.groupMemberID == nil,
+              message.assistanceMetadata.groupMemberName?.isEmpty != false else { return [] }
+        return AssistancePolicy.fallbacks(after: target, settings: conversation.assistanceSettings,
+                                          providers: providers, requiresVision: requiresVision)
+    }
+
     func regenerate(
         assistantMessage: ChatMessage,
         overrideTarget: ResolvedModelTarget? = nil,
@@ -700,6 +745,16 @@ final class ChatEngine {
         let active = ConversationTree.activeMessages(in: conversation)
         guard let targetIdx = active.firstIndex(where: { $0.id == assistantMessage.id }) else { return }
 
+        if let existingSummary = RollingContextSummaryStore.shared.summary(for: conversation.id) {
+            let summaryIdx = active.firstIndex(where: { $0.id == existingSummary.lastCoveredMessageID })
+            if summaryIdx == nil || targetIdx <= summaryIdx! {
+                activeSummaryTokens.removeValue(forKey: conversation.id)
+                activeSummaryTasks.removeValue(forKey: conversation.id)?.cancel()
+                RollingContextSummaryStore.shared.clear(for: conversation.id)
+                updateBackgroundExecution()
+            }
+        }
+
         let cutoffMessages = Array(active[..<targetIdx]).filter { msg in
             if let gid = assistantMessage.comparisonGroupID, msg.comparisonGroupID == gid {
                 return false
@@ -709,6 +764,9 @@ final class ChatEngine {
 
         let prevMeta = assistantMessage.assistanceMetadata
         let groupPersona = replyPersona(for: assistantMessage, in: conversation, target: resolvedTarget)
+        let preferEnglishGroup = groupPersona != nil
+            ? GroupDiscussionCoordinator.prefersEnglishPrompts(in: cutoffMessages)
+            : false
         var personaExcerpts: [PersonaExcerpt]?
 
         let historySnapshot: [LLMPromptMessage]
@@ -717,6 +775,7 @@ final class ChatEngine {
                 messages: cutoffMessages,
                 for: groupPersona,
                 limit: conversation.contextMessageLimit,
+                preferEnglish: preferEnglishGroup,
                 recordReferences: { personaExcerpts = $0 }
             )
         } else {
@@ -736,17 +795,14 @@ final class ChatEngine {
         let memoryInfo = prepareMemory(
             conversation: conversation,
             omitMemory: prevMeta.omittedMemory,
+            selectedIDs: prevMeta.selectedMemoryIDs,
             context: context
         )
 
         let requiresVision = historySnapshot.last?.attachments.contains(where: { $0.kind == .image }) ?? false
         let isInArena = assistantMessage.comparisonGroupID != nil
-        let backups = (isInArena || groupPersona != nil) ? [] : AssistancePolicy.fallbacks(
-            after: resolvedTarget,
-            settings: conversation.assistanceSettings,
-            providers: providers,
-            requiresVision: requiresVision
-        )
+        let backups = replyFallbacks(for: assistantMessage, after: resolvedTarget, in: conversation,
+                                    providers: providers, requiresVision: requiresVision)
 
         let toolsToAttach: [LLMToolDefinition]
         if !isInArena && groupPersona == nil && conversation.assistanceSettings.enableAgentTools {
@@ -779,11 +835,14 @@ final class ChatEngine {
         assistantMessage.isStreaming = true
 
         var freshMeta = AssistanceMetadata()
+        freshMeta.arenaDecisions = prevMeta.arenaDecisions
+        freshMeta.selectedMemoryIDs = prevMeta.selectedMemoryIDs
         freshMeta.omittedMemory = prevMeta.omittedMemory
         freshMeta.omittedKnowledge = prevMeta.omittedKnowledge
         freshMeta.memoryCount = memoryInfo.count
         freshMeta.requestedSearchQuery = prevMeta.requestedSearchQuery
         freshMeta.isBookmarked = prevMeta.isBookmarked
+        freshMeta.bookmarkUpdatedTimestamp = prevMeta.bookmarkUpdatedTimestamp
         freshMeta.isExcludedFromContext = prevMeta.isExcludedFromContext
         freshMeta.revisions = preservedRevisions
         freshMeta.activeRevisionIndex = nil
@@ -809,7 +868,6 @@ final class ChatEngine {
         let tempOverride: Double?
         let sanitizer: GroupStreamSanitizer?
         if let groupPersona {
-            let preferEnglish = GroupDiscussionCoordinator.prefersEnglishPrompts(in: cutoffMessages)
             effectiveSystemPrompt = GroupDiscussionCoordinator.buildSystemPrompt(
                 for: groupPersona,
                 activeMembers: conversation.activeGroupMembers.isEmpty ? [groupPersona] : conversation.activeGroupMembers,
@@ -817,7 +875,7 @@ final class ChatEngine {
                 intent: prevMeta.groupSpeechIntent ?? .openPerspective,
                 baseSystemPrompt: memoryInfo.systemPrompt,
                 allowPass: false,
-                preferEnglish: preferEnglish
+                preferEnglish: preferEnglishGroup
             )
             tempOverride = groupPersona.temperature
             sanitizer = GroupStreamSanitizer(
@@ -880,6 +938,9 @@ final class ChatEngine {
 
         let prevMeta = assistantMessage.assistanceMetadata
         let groupPersona = replyPersona(for: assistantMessage, in: conversation, target: resolvedTarget)
+        let preferEnglishGroup = groupPersona != nil
+            ? GroupDiscussionCoordinator.prefersEnglishPrompts(in: upToMessage)
+            : false
         var personaExcerpts: [PersonaExcerpt]?
 
         let continuationCue = "Continue writing directly from the exact point where your previous message stopped. Do not repeat any text already written or add introductory remarks."
@@ -890,6 +951,7 @@ final class ChatEngine {
                 for: groupPersona,
                 limit: conversation.contextMessageLimit,
                 trailingCueIfNeeded: continuationCue,
+                preferEnglish: preferEnglishGroup,
                 recordReferences: { personaExcerpts = $0 }
             )
         } else {
@@ -910,6 +972,7 @@ final class ChatEngine {
         let memoryInfo = prepareMemory(
             conversation: conversation,
             omitMemory: prevMeta.omittedMemory,
+            selectedIDs: prevMeta.selectedMemoryIDs,
             context: context
         )
 
@@ -924,7 +987,6 @@ final class ChatEngine {
         let tempOverride: Double?
         let sanitizer: GroupStreamSanitizer?
         if let groupPersona {
-            let preferEnglish = GroupDiscussionCoordinator.prefersEnglishPrompts(in: upToMessage)
             effectiveSystemPrompt = GroupDiscussionCoordinator.buildSystemPrompt(
                 for: groupPersona,
                 activeMembers: conversation.activeGroupMembers.isEmpty ? [groupPersona] : conversation.activeGroupMembers,
@@ -932,7 +994,7 @@ final class ChatEngine {
                 intent: prevMeta.groupSpeechIntent ?? .openPerspective,
                 baseSystemPrompt: memoryInfo.systemPrompt,
                 allowPass: false,
-                preferEnglish: preferEnglish
+                preferEnglish: preferEnglishGroup
             )
             tempOverride = groupPersona.temperature
             sanitizer = GroupStreamSanitizer(
@@ -946,14 +1008,7 @@ final class ChatEngine {
             sanitizer = nil
         }
 
-        let continuationBackups = (assistantMessage.comparisonGroupID == nil && groupPersona == nil)
-            ? AssistancePolicy.fallbacks(
-                after: resolvedTarget,
-                settings: conversation.assistanceSettings,
-                providers: providers,
-                requiresVision: false
-            )
-            : []
+        let continuationBackups = replyFallbacks(for: assistantMessage, after: resolvedTarget, in: conversation, providers: providers)
 
         let slot = StreamSlot(
             message: assistantMessage,
@@ -1046,6 +1101,7 @@ final class ChatEngine {
             if src.assistanceMetadataData != nil {
                 var meta = src.assistanceMetadata
                 meta.revisions = []
+                meta.arenaDecisions = nil
                 meta.activeRevisionIndex = nil
                 if meta.hasPersistedContent {
                     copy.assistanceMetadata = meta
@@ -1077,8 +1133,25 @@ final class ChatEngine {
         updateBackgroundExecution()
     }
 
+    func invalidateStaleRollingSummaryIfNeeded(
+        in conversation: Conversation,
+        branchMessages: [ChatMessage]? = nil
+    ) {
+        guard let summary = RollingContextSummaryStore.shared.summary(for: conversation.id) else { return }
+        let active = branchMessages ?? ConversationTree.activeMessages(in: conversation)
+        let latestDividerID = active.last(where: { $0.assistanceMetadata.isContextDivider })?.id
+        let collapsed = eligiblePromptContext(active)
+        let dropped = RollingContextSummaryStore.droppedMessages(from: collapsed, limit: conversation.contextMessageLimit)
+        if !RollingContextSummaryStore.isSummaryValid(summary, dropped: dropped, latestContextDividerID: latestDividerID) {
+            activeSummaryTokens.removeValue(forKey: conversation.id)
+            activeSummaryTasks.removeValue(forKey: conversation.id)?.cancel()
+            RollingContextSummaryStore.shared.clear(for: conversation.id)
+            updateBackgroundExecution()
+        }
+    }
+
     func updateBackgroundExecution() {
-        if activeGenerations.isEmpty && activeTitleTasks.isEmpty {
+        if activeGenerations.isEmpty && activeTitleTasks.isEmpty && activeSummaryTasks.isEmpty {
             endBackgroundTaskIfNeeded()
         } else if backgroundTaskID == .invalid {
             backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "iOSBox.LLMStreaming") { [weak self] in
@@ -1097,6 +1170,11 @@ final class ChatEngine {
         for titleTask in activeTitleTasks.values {
             titleTask.cancel()
         }
+        activeSummaryTokens.removeAll()
+        for summaryTask in activeSummaryTasks.values {
+            summaryTask.cancel()
+        }
+        activeSummaryTasks.removeAll()
         endBackgroundTaskIfNeeded()
     }
 
@@ -1134,13 +1212,16 @@ final class ChatEngine {
     func prepareMemory(
         conversation: Conversation,
         omitMemory: Bool,
+        selectedIDs: Set<UUID>? = nil,
         context: ModelContext
     ) -> (systemPrompt: String, count: Int) {
         let base = conversation.systemPrompt
         guard conversation.assistanceSettings.usePersonalMemory, !omitMemory else {
             return (base, 0)
         }
-        guard let prompt = try? PersonalMemory.prompt(in: context), prompt.count > 0 else {
+        let scope = conversation.assistanceSettings.scopedMemoryIDs
+        let allowed = selectedIDs.map { selection in scope.map(selection.intersection) ?? selection } ?? scope
+        guard let prompt = try? PersonalMemory.prompt(in: context, allowedIDs: allowed), prompt.count > 0 else {
             return (base, 0)
         }
         let trimmedBase = base.trimmingCharacters(in: .whitespacesAndNewlines)

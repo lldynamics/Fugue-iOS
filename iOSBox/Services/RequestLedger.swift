@@ -19,9 +19,50 @@ enum LedgerPeriod: String, CaseIterable, Identifiable {
 }
 
 enum RequestLedger {
+    /// Approximate USD multiplier used strictly to order multi-currency summaries by spend magnitude
+    /// without merging distinct currencies into a synthetic sum.
+    private static func approximateUSDMultiplier(for currency: String) -> Double {
+        switch currency.uppercased() {
+        case "USD": return 1.0
+        case "EUR": return 1.08
+        case "GBP": return 1.27
+        case "CNY": return 0.14
+        case "HKD": return 0.128
+        case "JPY": return 0.0067
+        default: return 1.0
+        }
+    }
+
+    static func sortedCurrencies(_ totals: [String: Double]) -> [String] {
+        totals.keys.sorted { lhs, rhs in
+            let lhsAmount = max(0, totals[lhs] ?? 0)
+            let rhsAmount = max(0, totals[rhs] ?? 0)
+            let lhsUSD = lhsAmount * approximateUSDMultiplier(for: lhs)
+            let rhsUSD = rhsAmount * approximateUSDMultiplier(for: rhs)
+            if abs(lhsUSD - rhsUSD) > 1e-12 {
+                return lhsUSD > rhsUSD
+            }
+            if lhsAmount != rhsAmount {
+                return lhsAmount > rhsAmount
+            }
+            if (lhs == "USD") != (rhs == "USD") {
+                return lhs == "USD"
+            }
+            return lhs < rhs
+        }
+    }
+
     static func costOverviewText(totals: [String: Double], modelRecords: [RequestRecord], requestCount: Int) -> String {
-        if let currency = totals.keys.sorted().first, let amount = totals[currency] {
-            return costText(amount, currency: currency)
+        let ordered = sortedCurrencies(totals)
+        if !ordered.isEmpty {
+            if ordered.count == 1, let currency = ordered.first, let amount = totals[currency] {
+                return costText(amount, currency: currency)
+            }
+            let first = ordered[0]
+            let second = ordered[1]
+            let combined = "\(costText(totals[first] ?? 0, currency: first)) + \(costText(totals[second] ?? 0, currency: second))"
+            let extraCount = ordered.count - 2
+            return extraCount > 0 ? "\(combined) +\(extraCount)" : combined
         }
         guard requestCount > 0 else { return "0" }
         guard !modelRecords.isEmpty else { return String(localized: "搜索费用另计") }
@@ -120,5 +161,37 @@ enum RequestLedger {
 
     static func seconds(_ milliseconds: Int) -> String {
         String(format: "%.2f s", Double(milliseconds) / 1000)
+    }
+
+    /// Backfills missing pricing on historical records for a specific provider + model without overwriting records that already had prices.
+    @MainActor
+    @discardableResult
+    static func backfillUnpricedRecords(
+        in records: [RequestRecord],
+        providerID: UUID,
+        modelID: String,
+        spec: ModelSpec
+    ) -> Int {
+        guard let inPrice = RequestRecord.validPrice(spec.inputPricePerMillion),
+              let outPrice = RequestRecord.validPrice(spec.outputPricePerMillion),
+              let currency = spec.priceCurrency,
+              RequestRecord.currencies.contains(currency) else { return 0 }
+        let readPrice = RequestRecord.validPrice(spec.cacheReadPricePerMillion)
+        let writePrice = RequestRecord.validPrice(spec.cacheWritePricePerMillion)
+        var updatedCount = 0
+        var cacheBatch: [UUID: CachePriceSnapshotStore.Pair] = [:]
+        for record in records where record.providerID == providerID && record.modelID == modelID && record.kind != .webSearch && !record.hasModelPricing {
+            record.inputPricePerMillion = inPrice
+            record.outputPricePerMillion = outPrice
+            record.currency = currency
+            if readPrice != nil || writePrice != nil {
+                cacheBatch[record.id] = .init(read: readPrice, write: writePrice)
+            }
+            updatedCount += 1
+        }
+        if !cacheBatch.isEmpty {
+            CachePriceSnapshotStore.shared.setBatch(cacheBatch)
+        }
+        return updatedCount
     }
 }

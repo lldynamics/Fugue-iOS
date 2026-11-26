@@ -1,6 +1,7 @@
 import Foundation
 
 struct AssistanceSettings: Codable, Equatable {
+    var scopedMemoryIDs: Set<UUID>?
     var usePersonalMemory = false
     var automaticRouting = false
     var imageTarget: ResolvedModelTarget?
@@ -59,6 +60,7 @@ struct AssistanceSettings: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        scopedMemoryIDs = try c.decodeIfPresent(Set<UUID>.self, forKey: .scopedMemoryIDs)
         usePersonalMemory = try c.decodeIfPresent(Bool.self, forKey: .usePersonalMemory) ?? false
         automaticRouting = try c.decodeIfPresent(Bool.self, forKey: .automaticRouting) ?? false
         imageTarget = try c.decodeIfPresent(ResolvedModelTarget.self, forKey: .imageTarget)
@@ -84,6 +86,7 @@ struct AssistanceSettings: Codable, Equatable {
 }
 
 struct GenerationOptions: Equatable, Sendable {
+    var selectedMemoryIDs: Set<UUID>?
     var omitMemory = false
     var omitKnowledge = false
     var searchQuery: String?
@@ -237,6 +240,8 @@ struct ToolCallRecord: Codable, Equatable, Sendable, Identifiable {
 }
 
 struct AssistanceMetadata: Codable {
+    var arenaDecisions: [ArenaDecision]?
+    var selectedMemoryIDs: Set<UUID>?
     var memoryCount = 0
     var omittedMemory = false
     var omittedKnowledge = false
@@ -247,6 +252,7 @@ struct AssistanceMetadata: Codable {
     var isContextDivider = false
     var isExcludedFromContext = false
     var isBookmarked = false
+    var bookmarkUpdatedTimestamp: Double?
     var quotedExcerpt: String?
     var revisions: [MessageRevision] = []
     var activeRevisionIndex: Int?
@@ -274,6 +280,8 @@ struct AssistanceMetadata: Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        arenaDecisions = try c.decodeIfPresent([ArenaDecision].self, forKey: .arenaDecisions)
+        selectedMemoryIDs = try c.decodeIfPresent(Set<UUID>.self, forKey: .selectedMemoryIDs)
         memoryCount = try c.decodeIfPresent(Int.self, forKey: .memoryCount) ?? 0
         omittedMemory = try c.decodeIfPresent(Bool.self, forKey: .omittedMemory) ?? false
         omittedKnowledge = try c.decodeIfPresent(Bool.self, forKey: .omittedKnowledge) ?? false
@@ -284,6 +292,7 @@ struct AssistanceMetadata: Codable {
         isContextDivider = try c.decodeIfPresent(Bool.self, forKey: .isContextDivider) ?? false
         isExcludedFromContext = try c.decodeIfPresent(Bool.self, forKey: .isExcludedFromContext) ?? false
         isBookmarked = try c.decodeIfPresent(Bool.self, forKey: .isBookmarked) ?? false
+        bookmarkUpdatedTimestamp = try c.decodeIfPresent(Double.self, forKey: .bookmarkUpdatedTimestamp)
         quotedExcerpt = try c.decodeIfPresent(String.self, forKey: .quotedExcerpt)
         revisions = try c.decodeIfPresent([MessageRevision].self, forKey: .revisions) ?? []
         activeRevisionIndex = try c.decodeIfPresent(Int.self, forKey: .activeRevisionIndex)
@@ -334,9 +343,9 @@ struct AssistanceMetadata: Codable {
     }
 
     var hasPersistedContent: Bool {
-        memoryCount > 0 || omittedMemory || omittedKnowledge || requestedSearchQuery != nil || search != nil ||
+        arenaDecisions?.isEmpty == false || selectedMemoryIDs != nil || memoryCount > 0 || omittedMemory || omittedKnowledge || requestedSearchQuery != nil || search != nil ||
         routeNotice != nil || !fallbackNotices.isEmpty || isContextDivider || isExcludedFromContext ||
-        isBookmarked || quotedExcerpt != nil || !revisions.isEmpty || activeRevisionIndex != nil ||
+        isBookmarked || bookmarkUpdatedTimestamp != nil || quotedExcerpt != nil || !revisions.isEmpty || activeRevisionIndex != nil ||
         !proposedMemories.isEmpty || !handledMemories.isEmpty || !toolCalls.isEmpty ||
         isPersonaSimulation || personaExcerpts?.isEmpty == false || bookReply != nil || sourceNotice != nil || groupMemberID != nil || groupMemberName != nil || groupReplyToExcerpt != nil ||
         !groupReactions.isEmpty || groupAskedHost || groupSpeechIntent != nil || knowledgeEvidence != nil
@@ -373,16 +382,28 @@ enum AssistancePolicy {
 
     static let maxFallbackTargets = 5
 
+    /// Retains each saved position so settings can identify stale or duplicate entries.
+    static func fallbackAvailability(after primaryID: String?, configured: [ResolvedModelTarget],
+                                     available: [ResolvedModelTarget], requiresVision: Bool = false) -> [ResolvedModelTarget?] {
+        guard let primaryID else { return Array(repeating: nil, count: configured.count) }
+        var seen = Set([primaryID])
+        return configured.enumerated().map { index, candidate in
+            guard index < maxFallbackTargets, seen.insert(candidate.id).inserted,
+                  let live = available.first(where: { $0.id == candidate.id }),
+                  !requiresVision || live.supportsVision else { return nil }
+            return live
+        }
+    }
+
     @MainActor
     static func fallbacks(after primary: ResolvedModelTarget, settings: AssistanceSettings,
                           providers: [ProviderConfig], requiresVision: Bool) -> [ResolvedModelTarget] {
-        guard settings.fallbackEnabled else { return [] }
-        var seen: Set<String> = [primary.id]
-        return settings.fallbackTargets.prefix(maxFallbackTargets).compactMap { candidate in
-            guard let resolved = resolve(candidate, providers: providers, requiresVision: requiresVision),
-                  seen.insert(resolved.id).inserted else { return nil }
-            return resolved
-        }
+        guard settings.fallbackEnabled, !settings.fallbackTargets.isEmpty else { return [] }
+        let configured = Array(settings.fallbackTargets.prefix(maxFallbackTargets))
+        let providerIDs = Set(configured.map(\.providerID))
+        let available = ProviderConfig.readyTargets(in: providers.filter { providerIDs.contains($0.id) })
+        return fallbackAvailability(after: primary.id, configured: configured, available: available,
+                                    requiresVision: requiresVision).compactMap { $0 }
     }
 
     static func mayFallback(

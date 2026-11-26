@@ -39,7 +39,15 @@ struct ChatStartModeMenu: View {
     @State private var preferences = AppPreferences.shared
 
     var body: some View {
-        if preferences.showsArena || !preferences.simpleDailyMode {
+        if preferences.simpleDailyMode && preferences.showsArena {
+            Button(action: onOpenArena) {
+                Label("多模型对比", systemImage: "square.split.2x1")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minHeight: DS.TouchTarget.minimum)
+            }
+            .accessibilityIdentifier("chatComposer.compareModels")
+            .disabled(isGenerating)
+        } else if !preferences.simpleDailyMode {
             Menu {
                 if preferences.showsArena {
                     Button(action: onOpenArena) { Label("多模型对比", systemImage: "square.split.2x1") }
@@ -96,13 +104,16 @@ struct ComposerBarView: View {
     @Environment(\.horizontalSizeClass) private var widthClass
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.usesPhoneWorkspace) private var usesPhoneWorkspace
+    @Environment(\.modelContext) private var modelContext
     @State private var isCapabilityDrawerOpen = false
+    @State private var budgetEvaluation: MonthlyBudgetEvaluation?
+    @State private var dismissedBudgetNotice = false
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
     @State private var showCameraPicker = false
     @State private var showDocumentScanner = false
     @State private var showFileImporter = false
-    @State private var isRunningLocalOCR = false
+    @State private var attachmentReview: DraftAttachmentReview?
     @State private var searchQueryAutoSync = false
     @State private var speech = SpeechService.shared
     @State private var preferences = AppPreferences.shared
@@ -150,6 +161,14 @@ struct ComposerBarView: View {
             return nil
         }
         return String(localized: "当前为「仅 @ 点名」模式，输入 @ 选择要回答的群成员")
+    }
+
+    private func refreshMonthlyBudgetNotice() {
+        guard preferences.monthlyBudgetLimit > 0 else {
+            budgetEvaluation = nil
+            return
+        }
+        budgetEvaluation = MonthlyBudgetEvaluator.evaluateCurrentMonth(in: modelContext, preferences: preferences)
     }
 
     /// Images attached while the target model(s) aren't flagged as vision-capable.
@@ -287,16 +306,11 @@ struct ComposerBarView: View {
                 if draft.attachments.contains(where: { $0.kind == .image }) {
                     HStack(spacing: DS.Spacing.sm) {
                         Button {
-                            convertPendingImagesWithLocalOCR()
+                            attachmentReview = DraftAttachmentReview(sources: draft.attachments.filter { $0.kind == .image }, recognize: true)
                         } label: {
                             HStack(spacing: 6) {
-                                if isRunningLocalOCR {
-                                    ProgressView().controlSize(.mini)
-                                } else {
-                                    Image(systemName: "doc.text.viewfinder")
-                                        .font(.caption.weight(.semibold))
-                                }
-                                Text(isRunningLocalOCR ? "正在本地识别文字…" : "本地 OCR 转文字（免识图 / 省 Token）")
+                                Image(systemName: "doc.text.viewfinder").font(.caption.weight(.semibold))
+                                Text("本地 OCR 转文字（免识图 / 省 Token）")
                                     .font(.caption.weight(.medium))
                             }
                             .foregroundStyle(theme.readableText)
@@ -305,7 +319,7 @@ struct ComposerBarView: View {
                             .background(theme.softFill, in: Capsule())
                         }
                         .buttonStyle(.plain)
-                        .disabled(isRunningLocalOCR || draft.processingAttachments > 0)
+                        .disabled(draft.processingAttachments > 0)
 
                         Spacer(minLength: 0)
                     }
@@ -327,6 +341,46 @@ struct ComposerBarView: View {
                     .foregroundStyle(DS.StatusText.warning)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)
+            }
+
+            if !dismissedBudgetNotice,
+               let eval = budgetEvaluation,
+               (eval.level == .warning || eval.level == .exceeded) {
+                HStack(spacing: 8) {
+                    Button {
+                        onOpenModelPicker()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: eval.level == .exceeded ? "exclamationmark.octagon.fill" : "gauge.with.dots.needle.67percent")
+                                .font(.caption2)
+                            Text(
+                                eval.level == .exceeded
+                                    ? String(localized: "已达本月预算上限（\(RequestLedger.costText(eval.spent, currency: eval.currency))）· 点此切换轻量模型")
+                                    : String(localized: "已用本月预算 \(Int((eval.ratio * 100).rounded()))% · 剩余 \(RequestLedger.costText(eval.remaining, currency: eval.currency))")
+                            )
+                            .font(.caption2.weight(.medium))
+                            .lineLimit(1)
+                        }
+                        .foregroundStyle(eval.level == .exceeded ? DS.StatusText.error : DS.StatusText.warning)
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer(minLength: 0)
+
+                    Button {
+                        dismissedBudgetNotice = true
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(4)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("关闭预算提示")
+                }
+                .padding(.horizontal, 14)
+                .accessibilityIdentifier("chatComposer.budgetBanner")
             }
 
             if !draft.isLoaded {
@@ -359,12 +413,25 @@ struct ComposerBarView: View {
         }
         .padding(.top, DS.Spacing.xs)
         .onAppear {
+            refreshMonthlyBudgetNotice()
             guard let entry = phoneEntry else { return }
             phoneEntry = nil
             switch entry {
             case .writing: inputFocus.wrappedValue = true
             case .attachments: isCapabilityDrawerOpen = true
             }
+        }
+        .onChange(of: isGenerating) { wasGen, isGen in
+            if wasGen && !isGen {
+                refreshMonthlyBudgetNotice()
+            }
+        }
+        .onChange(of: preferences.monthlyBudgetLimit) { _, _ in
+            dismissedBudgetNotice = false
+            refreshMonthlyBudgetNotice()
+        }
+        .onChange(of: preferences.monthlyBudgetCurrency) { _, _ in
+            refreshMonthlyBudgetNotice()
         }
         .onChange(of: draft.text) { _, newText in
             if requestOptions.useSearch && searchQueryAutoSync {
@@ -485,6 +552,16 @@ struct ComposerBarView: View {
                 draft.attachmentError = error.localizedDescription
             }
         }
+        .sheet(item: $attachmentReview) { review in
+            DraftAttachmentReviewSheet(review: review) { format, text, coverage in
+                guard draft.isLoaded, !draft.isDeleted else { throw DraftAttachmentReview.ReviewError.changed }
+                let updated = try review.applying(format, text: text, coverage: coverage, to: draft.attachments)
+                if updated != draft.attachments {
+                    draft.attachments = updated
+                    draft.save()
+                }
+            }
+        }
         .alert("附件提示", isPresented: Binding(
             get: { draft.attachmentError != nil },
             set: { if !$0 { draft.attachmentError = nil } }
@@ -510,10 +587,19 @@ struct ComposerBarView: View {
                 draft.attachmentError = String(localized: "当前设备不支持文档相机扫描，可通过「相册」或「拍照」导入图片后点击本地 OCR 转文字。")
             }
         }
-        .onDisappear {
-            if speech.isRecording {
-                speech.stopDictation()
+        .onChange(of: conversation.id) { oldID, newID in
+            if Self.handleConversationSwitch(
+                from: oldID,
+                to: newID,
+                speech: speech,
+                dictationBaseText: &dictationBaseText
+            ) {
+                isCapabilityDrawerOpen = false
+                debouncedEstimateText = draft.text
             }
+        }
+        .onDisappear {
+            speech.stopDictationIfActive()
         }
     }
 
@@ -986,7 +1072,7 @@ struct ComposerBarView: View {
                     .accessibilityIdentifier("chatComposer.model")
             } else {
                 Button("发送") {
-                    if speech.isRecording { speech.stopDictation() }
+                    speech.stopDictationIfActive()
                     onSend()
                 }
                 .disabled(!canSend)
@@ -1046,11 +1132,33 @@ struct ComposerBarView: View {
     }
 
     private func startDictation() {
-        dictationBaseText = draft.text
+        let targetConversationID = conversation.id
+        let targetDraft = draft
+        let baseText = targetDraft.text
+        dictationBaseText = baseText
         speech.startDictation { transcript in
-            let prefix = dictationBaseText.trimmingCharacters(in: .whitespacesAndNewlines)
-            draft.text = prefix.isEmpty ? transcript : "\(prefix) \(transcript)"
+            guard conversation.id == targetConversationID else { return }
+            targetDraft.text = Self.applyingDictationTranscript(transcript, toBase: baseText)
         }
+    }
+
+    @MainActor
+    @discardableResult
+    static func handleConversationSwitch(
+        from oldID: UUID,
+        to newID: UUID,
+        speech: SpeechService,
+        dictationBaseText: inout String
+    ) -> Bool {
+        guard oldID != newID else { return false }
+        speech.stopDictationIfActive()
+        dictationBaseText = ""
+        return true
+    }
+
+    static func applyingDictationTranscript(_ transcript: String, toBase baseText: String) -> String {
+        let prefix = baseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return prefix.isEmpty ? transcript : "\(prefix) \(transcript)"
     }
 
     private var inputRow: some View {
@@ -1091,7 +1199,7 @@ struct ComposerBarView: View {
 
                     if conversation.isGroupMode && canSend {
                         Button {
-                            if speech.isRecording { speech.stopDictation() }
+                            speech.stopDictationIfActive()
                             onSend()
                         } label: {
                             Image(systemName: "arrow.up.circle.fill")
@@ -1106,7 +1214,7 @@ struct ComposerBarView: View {
                 }
             } else if !writingFirst || !needsModel {
                 Button {
-                    if speech.isRecording { speech.stopDictation() }
+                    speech.stopDictationIfActive()
                     if isCapabilityDrawerOpen {
                         withAnimation(.snappy(duration: 0.18)) {
                             isCapabilityDrawerOpen = false
@@ -1429,53 +1537,38 @@ struct ComposerBarView: View {
 
     private func appendAttachment(_ attachment: MessageAttachment) { draft.append(attachment) }
 
-    private func convertPendingImagesWithLocalOCR() {
-        guard !isRunningLocalOCR else { return }
-        let snapshot = draft.attachments
-        guard snapshot.contains(where: { $0.kind == .image }) else { return }
-        isRunningLocalOCR = true
-        draft.attachmentError = nil
-        Task {
-            let result = await DocumentOCRService.convertImageAttachmentsToOCRDocument(snapshot)
-            await MainActor.run {
-                isRunningLocalOCR = false
-                if let doc = result.document, !result.convertedIDs.isEmpty {
-                    let convertedSet = Set(result.convertedIDs)
-                    draft.attachments.removeAll { convertedSet.contains($0.id) }
-                    appendAttachment(doc)
-                } else {
-                    draft.attachmentError = String(localized: "未从所选图片中识别出可读文字，可直接保留原图发送。")
-                }
-            }
-        }
-    }
-
     @ViewBuilder
     private func pendingAttachmentChip(_ item: MessageAttachment) -> some View {
         ZStack(alignment: .topTrailing) {
-            if let uiImg = item.cachedImage {
-                Image(uiImage: uiImg)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 58, height: 58)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
-            } else {
-                HStack(spacing: DS.Spacing.xs) {
-                    Image(systemName: item.mimeType == "application/pdf" ? "doc.richtext.fill" : "doc.text.fill")
-                        .foregroundStyle(theme.readableText)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(item.fileName)
-                            .font(.caption2.weight(.medium))
-                            .lineLimit(1)
-                        Text(item.formattedSize)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+            Button {
+                attachmentReview = DraftAttachmentReview(sources: [item], recognize: false)
+            } label: {
+                if let uiImg = item.cachedImage {
+                    Image(uiImage: uiImg)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 58, height: 58)
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
+                } else {
+                    HStack(spacing: DS.Spacing.xs) {
+                        Image(systemName: item.mimeType == "application/pdf" ? "doc.richtext.fill" : "doc.text.fill")
+                            .foregroundStyle(theme.readableText)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(item.fileName)
+                                .font(.caption2.weight(.medium))
+                                .lineLimit(1)
+                            Text(item.formattedSize)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .padding(.horizontal, 10)
+                    .frame(height: 48)
+                    .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
                 }
-                .padding(.horizontal, 10)
-                .frame(height: 48)
-                .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("预览附件 \(item.fileName)")
 
             Button {
                 draft.attachments.removeAll { $0.id == item.id }

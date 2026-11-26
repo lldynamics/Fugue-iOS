@@ -1,6 +1,116 @@
 import CoreSpotlight
 import SwiftUI
 import SwiftData
+import UIKit
+
+@MainActor
+final class MultiSceneLockShieldCoordinator {
+    static let shared = MultiSceneLockShieldCoordinator()
+
+    private var sceneWindows: [ObjectIdentifier: UIWindow] = [:]
+    private var isVisible = false
+    private weak var activeController: AppLockController?
+
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: UIScene.willConnectNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let windowScene = notification.object as? UIWindowScene else { return }
+            MainActor.assumeIsolated {
+                self?.syncWindow(for: windowScene)
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIScene.didActivateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let windowScene = notification.object as? UIWindowScene else { return }
+            MainActor.assumeIsolated {
+                self?.syncWindow(for: windowScene)
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIScene.didDisconnectNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let windowScene = notification.object as? UIWindowScene else { return }
+            MainActor.assumeIsolated {
+                self?.removeWindow(for: windowScene)
+            }
+        }
+    }
+
+    var mountedWindowCount: Int {
+        sceneWindows.values.filter { !$0.isHidden }.count
+    }
+
+    @discardableResult
+    func update(visible: Bool, controller: AppLockController) -> Bool {
+        isVisible = visible
+        activeController = controller
+        // Ensure legacy single-scene presenter window stays hidden so we never double-mount overlays.
+        AppLockWindowPresenter.shared.update(visible: false, controller: controller)
+
+        let connectedWindowScenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let validSceneIDs = Set(connectedWindowScenes.map(ObjectIdentifier.init))
+        for staleID in sceneWindows.keys where !validSceneIDs.contains(staleID) {
+            if let old = sceneWindows.removeValue(forKey: staleID) {
+                old.isHidden = true
+                old.rootViewController = nil
+            }
+        }
+
+        for scene in connectedWindowScenes {
+            syncWindow(for: scene)
+        }
+        return mountedWindowCount > 0
+    }
+
+    private func syncWindow(for scene: UIWindowScene) {
+        let key = ObjectIdentifier(scene)
+        if isVisible, let controller = activeController {
+            let overlay: UIWindow
+            if let existing = sceneWindows[key], existing.windowScene === scene {
+                overlay = existing
+                if let hosting = overlay.rootViewController as? UIHostingController<AppLockOverlayView> {
+                    hosting.rootView = AppLockOverlayView(controller: controller)
+                }
+            } else {
+                let hosting = UIHostingController(rootView: AppLockOverlayView(controller: controller))
+                hosting.view.backgroundColor = .clear
+                let created = UIWindow(windowScene: scene)
+                created.rootViewController = hosting
+                created.windowLevel = .alert + 5
+                created.backgroundColor = .clear
+                sceneWindows[key] = created
+                overlay = created
+            }
+            overlay.isHidden = false
+            if scene.activationState == .foregroundActive || scene.windows.contains(where: \.isKeyWindow) {
+                overlay.makeKeyAndVisible()
+            }
+        } else if let existing = sceneWindows[key] {
+            let wasKey = existing.isKeyWindow
+            existing.isHidden = true
+            if wasKey {
+                existing.resignKey()
+                scene.windows.first(where: { $0 !== existing && !$0.isHidden })?.makeKey()
+            }
+        }
+    }
+
+    private func removeWindow(for scene: UIWindowScene) {
+        let key = ObjectIdentifier(scene)
+        if let existing = sceneWindows.removeValue(forKey: key) {
+            existing.isHidden = true
+            existing.rootViewController = nil
+        }
+    }
+}
 
 @main
 struct iOSBoxApp: App {
@@ -21,7 +131,9 @@ struct iOSBoxApp: App {
             let schema = Schema(versionedSchema: CurrentSchema.self)
             let container = try! ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
             _runtime = State(initialValue: AppRuntime(store: .init(container: container, startupNotice: nil)))
-            if testingWorkspaces { try! WorkspaceTestContent.insert(in: container.mainContext) }
+            if testingWorkspaces && !ProcessInfo.processInfo.arguments.contains("-ui-test-empty-workspace") {
+                try! WorkspaceTestContent.insert(in: container.mainContext)
+            }
             if let rawPort = ProcessInfo.processInfo.environment["UI_TEST_MODEL_PORT"], let port = UInt16(rawPort) {
                 var model = ModelSpec(id: "fixture-chat")
                 model.catalogStatus = .manual
@@ -162,7 +274,23 @@ struct iOSBoxApp: App {
                 }
             }
         }
+        .onChange(of: AppPreferences.shared.appLockEnabled, initial: true) { _, lockEnabled in
+            #if DEBUG && targetEnvironment(simulator)
+            if testingPicker || testingWorkspaces { return }
+            #endif
+            let context = runtime.store.container.mainContext
+            SpotlightIndexService.shared.handleAppLockChange(
+                lockEnabled: lockEnabled,
+                in: PersistenceController.canCommitUserData(in: context) ? context : nil
+            )
+            LiveActivityCoordinator.shared.handleAppLockChange(lockEnabled: lockEnabled)
+            if PersistenceController.canCommitUserData(in: context) {
+                WidgetSnapshotService.shared.sync(context: context, forceReload: true)
+            }
+        }
     }
+
+    @State private var hasMountedSceneLockWindow = false
 
     @ViewBuilder
     private var appContent: some View {
@@ -189,13 +317,21 @@ struct iOSBoxApp: App {
                     }
                 }
             }
+            .opacity(shouldShowLockOverlay ? 0 : 1)
+            .allowsHitTesting(!shouldShowLockOverlay)
+            .accessibilityHidden(shouldShowLockOverlay)
 
-            if shouldShowLockOverlay {
+            // Only render inline fallback if no UIWindowScene shield window is currently attached,
+            // avoiding duplicate interactive Face ID overlays in the same scene.
+            if shouldShowLockOverlay && !hasMountedSceneLockWindow {
                 AppLockOverlayView(controller: lockController)
             }
         }
         .onChange(of: shouldShowLockOverlay, initial: true) { _, visible in
-            AppLockWindowPresenter.shared.update(visible: visible, controller: lockController)
+            hasMountedSceneLockWindow = MultiSceneLockShieldCoordinator.shared.update(
+                visible: visible,
+                controller: lockController
+            )
         }
     }
 }

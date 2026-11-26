@@ -154,6 +154,19 @@ struct AppearanceSettingsView: View {
                 Text("思考流式输出期间会显示限高实时预览窗；开启自动折叠后，正文开始输出时会自动收起思考过程。")
             }
 
+            Section {
+                Picker("图片上传画质", selection: $preferences.imageUploadQuality) {
+                    ForEach(ImageUploadQuality.allCases) { quality in
+                        Text(quality.label).tag(quality)
+                    }
+                }
+                .accessibilityIdentifier("appearance.imageUploadQuality")
+            } header: {
+                Text("图片与附件")
+            } footer: {
+                Text("标准（1600px）可显著节省上传流量与视觉 Token 消耗；高清（2400px）适合密集小字与表格截图 OCR；原图（最高 4096px）尽可能保留原始像素细节。")
+            }
+
             if !preferences.recentModelIDs.isEmpty {
                 Section("快捷记录") {
                     Button(role: .destructive) {

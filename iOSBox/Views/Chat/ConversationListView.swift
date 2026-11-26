@@ -54,12 +54,14 @@ struct ConversationListView: View {
     @State private var searchScope: GlobalSearchScope = .all
     @State private var searchIncludeReasoning = true
     @State private var selectedBookSearchHit: BookSearchHit?
+    @State private var pendingSearchHitRoute: (chat: Conversation, onPhone: Bool)?
     @State private var selectedFilterTag: String? = nil
     @State private var showOnlyBookmarked = false
     @State private var tagEditingConversation: Conversation?
     @State private var tagDraft: String = ""
     @State private var pendingDeletion: Conversation?
     @State private var deletionError: String?
+    @State private var deletionUndo: ConversationDeletionUndo?
     @State private var showGroupSetup = false
     @State private var showBookmarksHub = false
     @State private var showQuickKeySetup = false
@@ -289,10 +291,50 @@ struct ConversationListView: View {
         .sheet(item: $batchExportItem) { item in
             BatchExportShareSheet(items: [item.url])
         }
-        .sheet(item: $selectedBookSearchHit) { hit in
-            BookSearchHitReaderSheet(hit: hit)
+        .sheet(item: $selectedBookSearchHit, onDismiss: {
+            guard let route = pendingSearchHitRoute else { return }
+            pendingSearchHitRoute = nil
+            if route.onPhone { openPhoneChat(route.chat, entry: .writing) }
+            else { openConversation(route.chat) }
+        }) { hit in
+            BookSearchHitReaderSheet(hit: hit) { citation, existing in
+                let chat = existing ?? newDraft(arenaMode: false)
+                let draft = ChatDraftStore.shared.state(for: chat.id)
+                if existing == nil {
+                    do {
+                        try draft.addReadingCitation(citation)
+                        modelContext.insert(chat)
+                        try modelContext.save()
+                    } catch {
+                        if chat.modelContext != nil { modelContext.delete(chat) }
+                        try? ChatDraftStore.shared.remove(chat.id)
+                        throw error
+                    }
+                } else { try draft.addReadingCitation(citation) }
+                pendingSearchHitRoute = (chat, usesPhoneWorkspace)
+                selectedBookSearchHit = nil
+            }
         }
         .safeAreaInset(edge: .bottom) {
+            if let undo = deletionUndo {
+                HStack {
+                    Text("已删除 \(undo.snapshots.count) 段对话")
+                    Spacer()
+                    Button("撤销删除") {
+                        do {
+                            try undo.restore(in: modelContext, drafts: .shared, summaries: .shared)
+                            deletionUndo = nil
+                        } catch { deletionError = error.localizedDescription }
+                    }
+                    .accessibilityIdentifier("history.undoDeletion")
+                }
+                .padding()
+                .background(.regularMaterial)
+                .task(id: undo.id) {
+                    try? await Task.sleep(for: .seconds(15))
+                    if !Task.isCancelled, deletionUndo?.id == undo.id { deletionUndo = nil }
+                }
+            }
             if let error = SystemIntegration.shared.error {
                 Text(error).font(.caption).foregroundStyle(DS.StatusText.warning).padding(8)
             }
@@ -300,7 +342,8 @@ struct ConversationListView: View {
         .alert("删除这段对话？", isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
                presenting: pendingDeletion) { chat in
             Button("取消", role: .cancel) { }
-            Button("删除", role: .destructive) { deleteConversation(chat) }
+            Button("删除", role: .destructive) { deleteConversations([chat], allowUndo: true) }
+            Button("立即永久删除", role: .destructive) { deleteConversations([chat], allowUndo: false) }
         } message: { chat in
             Text("将删除「\(chat.title)」及其所有消息和草稿。")
         }
@@ -373,7 +416,10 @@ struct ConversationListView: View {
                     if let workspaceNavigation { workspaceNavigation.openWorkshop(section) }
                     else { selectSection?(1) }
                 },
-                onResumeReading: openConversation,
+                onResumeReading: { chat in
+                    SystemEntryRouter.shared.openOriginalForChatID = chat.id
+                    openConversation(chat)
+                },
                 onOpenSettings: {
                     if let workspaceNavigation { workspaceNavigation.openSettings() }
                     else { selectSection?(2) }
@@ -751,6 +797,7 @@ struct ConversationListView: View {
             titleVisibility: .visible
         ) {
             Button("全部删除", role: .destructive) { deleteBatchSelected() }
+            Button("立即永久删除", role: .destructive) { deleteBatchSelected(allowUndo: false) }
             Button("取消", role: .cancel) {}
         }
     }
@@ -1130,38 +1177,47 @@ struct ConversationListView: View {
         batchSelectedIDs.removeAll()
     }
 
-    private func deleteBatchSelected() {
+    private func deleteBatchSelected(allowUndo: Bool = true) {
         let targets = conversations.filter { batchSelectedIDs.contains($0.id) }
         isBatchSelecting = false
         batchSelectedIDs.removeAll()
-        for conv in targets {
-            deleteConversation(conv)
-        }
+        deleteConversations(targets, allowUndo: allowUndo)
     }
 
-    /// Waits for any in-flight generation to fully stop before deleting,
-    /// so streaming tasks never write into a deleted conversation.
-    private func deleteConversation(_ conv: Conversation) {
-        Task {
-            await ChatEngine.shared.stopGenerationAndWait(for: conv.id)
-            let id = conv.id
-            if splitSelection?.id == id {
-                splitSelection = conversations.first { $0.id != id }
-            }
-            if splitSearchRoute?.conversation.id == id {
-                splitSearchRoute = nil
-            }
-            if landingDraft?.id == id { landingDraft = newDraft(arenaMode: false) }
-            modelContext.delete(conv)
+    private func deleteConversations(_ selected: [Conversation], allowUndo: Bool) {
+        let ids = Set(selected.map(\.id))
+        Task { @MainActor in
+            for id in ids { await ChatEngine.shared.stopGenerationAndWait(for: id) }
             do {
                 try modelContext.save()
-                if !modelContext.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
-                    SyncTombstoneStore.shared.recordDeletion(kind: .conversation, id: id)
+                let remaining = try modelContext.fetch(FetchDescriptor<Conversation>())
+                let targets = remaining.filter { ids.contains($0.id) }
+                guard !targets.isEmpty else { return }
+                let undo = allowUndo ? try ConversationDeletionUndo(chats: targets, drafts: .shared, summaries: .shared) : nil
+                if let current = splitSelection, ids.contains(current.id) {
+                    splitSelection = remaining.first { !ids.contains($0.id) }
                 }
-                try ChatDraftStore.shared.remove(id)
-                RollingContextSummaryStore.shared.remove(for: id)
-                SpotlightIndexService.shared.removeConversation(id: id)
-            } catch { deletionError = error.localizedDescription }
+                if let id = splitSearchRoute?.conversation.id, ids.contains(id) { splitSearchRoute = nil }
+                if let id = landingDraft?.id, ids.contains(id) { landingDraft = newDraft(arenaMode: false) }
+                let removed = targets.map(\.id)
+                try modelContext.transaction {
+                    for chat in targets { modelContext.delete(chat) }
+                    try modelContext.save()
+                }
+                deletionUndo = undo
+                if !modelContext.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
+                    SyncTombstoneStore.shared.recordDeletions(kind: .conversation, ids: removed)
+                }
+                WebDAVAutoSyncCoordinator.shared.markWorkspaceChanged(in: modelContext)
+                for id in removed {
+                    RollingContextSummaryStore.shared.remove(for: id)
+                    SpotlightIndexService.shared.removeConversation(id: id)
+                    do { try ChatDraftStore.shared.remove(id) } catch { deletionError = error.localizedDescription }
+                }
+            } catch {
+                modelContext.rollback()
+                deletionError = error.localizedDescription
+            }
         }
     }
 
@@ -1201,25 +1257,74 @@ struct ConversationListView: View {
         } catch { deletionError = error.localizedDescription }
     }
 
+    private var hasActiveLocalSheet: Bool {
+        showGroupSetup || showQuickKeySetup || showBookmarksHub || batchExportItem != nil || selectedBookSearchHit != nil
+    }
+
+    private func dismissLocalSheets(keepingBookmarks: Bool = false) {
+        showGroupSetup = false
+        showQuickKeySetup = false
+        batchExportItem = nil
+        pendingSearchHitRoute = nil
+        selectedBookSearchHit = nil
+        if !keepingBookmarks {
+            showBookmarksHub = false
+        }
+    }
+
     private func handleQuickActionIfNeeded() {
         guard let action = SystemEntryRouter.shared.pendingQuickAction else { return }
         SystemEntryRouter.shared.pendingQuickAction = nil
+
+        let hadPresentedModal = workspaceNavigation?.activeModal != nil
+            || hasActiveLocalSheet
+            || ModalPresentationGate.hasActiveOrDismissingModalInWindow()
+
+        workspaceNavigation?.closeModal()
+        closeDrawerAnimated()
+
         switch action {
         case .newChat:
-            if usesPhoneWorkspace { startPhoneChat(.writing) }
-            else { _ = openOrCreateFreshQuickChat() }
+            dismissLocalSheets()
+            let openFreshChat = { @MainActor in
+                if usesPhoneWorkspace { startPhoneChat(.writing) }
+                else { _ = openOrCreateFreshQuickChat() }
+            }
+            if hadPresentedModal {
+                ModalPresentationGate.performWhenClear(
+                    extraCheck: { workspaceNavigation?.activeModal != nil || hasActiveLocalSheet },
+                    action: openFreshChat
+                )
+            } else {
+                openFreshChat()
+            }
         case .voiceNote:
+            dismissLocalSheets()
             if let conv = openOrCreateFreshQuickChat() {
                 SystemEntryRouter.shared.pendingChatToolRequest = ChatToolLaunchRequest(conversationID: conv.id, tool: .voiceNote)
             }
         case .scanDocument:
+            dismissLocalSheets()
             if let conv = openOrCreateFreshQuickChat() {
                 SystemEntryRouter.shared.pendingChatToolRequest = ChatToolLaunchRequest(conversationID: conv.id, tool: .scanDocument)
             }
         case .bookmarks:
-            showGroupSetup = false
-            closeDrawerAnimated()
-            showBookmarksHub = true
+            if showBookmarksHub && workspaceNavigation?.activeModal == nil {
+                dismissLocalSheets(keepingBookmarks: true)
+                return
+            }
+            dismissLocalSheets()
+            ModalPresentationGate.performWhenClear(
+                extraCheck: {
+                    workspaceNavigation?.activeModal != nil
+                        || showGroupSetup
+                        || showQuickKeySetup
+                        || batchExportItem != nil
+                        || selectedBookSearchHit != nil
+                }
+            ) {
+                showBookmarksHub = true
+            }
         }
     }
 

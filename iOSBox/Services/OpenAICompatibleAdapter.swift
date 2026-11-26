@@ -412,13 +412,14 @@ enum OpenAICompatibleAdapter {
             let roleStr = msg.role == .assistant ? "assistant" : "user"
             let combinedText = LLMClient.composeTextWithDocuments(
                 text: msg.content,
-                attachments: msg.attachments,
+                attachments: msg.attachments.filter { !$0.hasRequestedPDFFile || msg.role != .user },
                 includePDFText: true
             )
             let imageAttachments = msg.attachments.filter { $0.kind == .image && $0.dataBase64 != nil }
 
+            let pdfFiles = msg.attachments.filter(\.hasRequestedPDFFile)
             let newContent: Any
-            if imageAttachments.isEmpty || msg.role == .assistant {
+            if (imageAttachments.isEmpty && pdfFiles.isEmpty) || msg.role == .assistant {
                 if combinedText.isEmpty && msg.role == .assistant && !msg.attachments.isEmpty {
                     newContent = "[Generated image: \(msg.attachments.map(\.fileName).joined(separator: ", "))]"
                 } else {
@@ -440,6 +441,13 @@ enum OpenAICompatibleAdapter {
                                 "url": "data:\(img.mimeType);base64,\(base64)"
                             ]
                         ])
+                    }
+                }
+                for pdf in pdfFiles {
+                    if let encoded = pdf.dataBase64 {
+                        parts.append(["type": "file", "file": [
+                            "filename": pdf.fileName, "file_data": "data:application/pdf;base64,\(encoded)"
+                        ]])
                     }
                 }
                 if parts.isEmpty {
@@ -682,6 +690,12 @@ enum OpenAICompatibleAdapter {
         }
         guard items.count <= ModelListTransport.maximumEntries else { throw URLError(.dataLengthExceedsMaximum) }
 
+        var officialPrices: [String: ProviderPricing] = [:]
+        if !items.isEmpty, url.host?.lowercased() == "api.openai.com" {
+            officialPrices = (try? await ProviderPricing.fetchOpenAI(session: session)) ?? [:]
+            try Task.checkCancellation()
+        }
+        let router = isOpenRouter(url.absoluteString)
         var ranked: [(model: ModelSpec, created: Double, position: Int)] = []
         var seen = Set<String>()
         for (position, item) in items.enumerated() {
@@ -697,8 +711,13 @@ enum OpenAICompatibleAdapter {
             let displayName = (item["name"] as? String) ?? id
             let inputs = (item["input_modalities"] ?? architecture?["input_modalities"]) as? [String]
             let efforts = ((item["effort"] as? [String: Any])?["supported_levels"] ?? item["supported_reasoning_efforts"]) as? [String]
-            let spec = ModelSpec(id: id, displayName: displayName, supportsVision: inputs?.contains("image"),
+            var spec = ModelSpec(id: id, displayName: displayName, supportsVision: inputs?.contains("image"),
                                  supportsReasoning: efforts.map { !$0.isEmpty })
+            if router, let pricing = item["pricing"] as? [String: Any] {
+                ProviderPricing.applyRouter(pricing, to: &spec)
+            } else {
+                officialPrices[id]?.apply(to: &spec)
+            }
             ranked.append((spec, (item["created"] as? NSNumber)?.doubleValue ?? 0, position))
         }
         return ranked.sorted {

@@ -70,8 +70,7 @@ final class RequestRecord {
     var currency: String?
 
     init(target: ResolvedModelTarget, spec: ModelSpec?, conversationID: UUID, messageID: UUID,
-         kind: RequestKind, operationID: UUID = UUID(), attempt: Int = 1, now: Date = Date(),
-         pricingMultiplier: Double = 1.0) {
+         kind: RequestKind, operationID: UUID = UUID(), attempt: Int = 1, now: Date = Date()) {
         id = UUID()
         self.operationID = operationID
         self.attempt = attempt
@@ -87,16 +86,13 @@ final class RequestRecord {
         startedAt = now
         outputChunkCount = 0
         isStreamed = true
-        let scale = (pricingMultiplier.isFinite && pricingMultiplier > 0)
-            ? min(max(pricingMultiplier, 0.01), 100.0)
-            : 1.0
-        inputPricePerMillion = Self.validPrice(spec?.inputPricePerMillion).map { $0 * scale }
-        outputPricePerMillion = Self.validPrice(spec?.outputPricePerMillion).map { $0 * scale }
+        inputPricePerMillion = Self.validPrice(spec?.inputPricePerMillion)
+        outputPricePerMillion = Self.validPrice(spec?.outputPricePerMillion)
         currency = spec?.priceCurrency
-        let scaledRead = Self.validPrice(spec?.cacheReadPricePerMillion).map { $0 * scale }
-        let scaledWrite = Self.validPrice(spec?.cacheWritePricePerMillion).map { $0 * scale }
-        if scaledRead != nil || scaledWrite != nil {
-            CachePriceSnapshotStore.shared.set(read: scaledRead, write: scaledWrite, for: id)
+        let readPrice = Self.validPrice(spec?.cacheReadPricePerMillion)
+        let writePrice = Self.validPrice(spec?.cacheWritePricePerMillion)
+        if readPrice != nil || writePrice != nil {
+            CachePriceSnapshotStore.shared.set(read: readPrice, write: writePrice, for: id)
         }
     }
 
@@ -155,7 +151,8 @@ final class RequestRecord {
         return value.isFinite ? value : nil
     }
 
-    /// Positive amount saved by prompt caching relative to uncached input pricing.
+    /// Positive net amount saved by prompt caching relative to uncached input pricing,
+    /// after deducting any cache-write surcharge.
     var estimatedCacheSavings: Double? {
         guard let input = LLMUsage.valid(promptTokens),
               let inPrice = Self.validPrice(inputPricePerMillion),
@@ -163,7 +160,11 @@ final class RequestRecord {
               let cachedRead = LLMUsage.valid(cachedTokens), cachedRead > 0,
               inPrice > readPrice else { return nil }
         let effectiveCached = min(cachedRead, input)
-        let saved = Double(effectiveCached) * (inPrice - readPrice) / 1_000_000
+        let grossSaved = Double(effectiveCached) * (inPrice - readPrice)
+        let cacheWrite = max(LLMUsage.valid(cacheWriteTokens) ?? 0, 0)
+        let writeSurchargeRate = max(0, (cacheWritePricePerMillion ?? inPrice) - inPrice)
+        let writeSurcharge = Double(cacheWrite) * writeSurchargeRate
+        let saved = (grossSaved - writeSurcharge) / 1_000_000
         return saved > 0 && saved.isFinite ? saved : nil
     }
 

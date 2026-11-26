@@ -17,9 +17,13 @@ enum ModelPricingDisplay {
     }
 
     static func label(for model: ModelSpec) -> String {
+        if model.priceSource == .variableRoute { return String(localized: "按实际路由计费") }
         guard let rates = configuredRates(for: model) else { return String(localized: "单价未完整设置") }
         let input = rateText(rates.input)
         let output = rateText(rates.output)
+        if model.priceSource == .openAIShortContext {
+            return String(localized: "\(rates.currency) 输入 \(input) / 输出 \(output) · 每百万 Token（短上下文）")
+        }
         return String(localized: "\(rates.currency) 输入 \(input) / 输出 \(output) · 每百万 Token")
     }
 }
@@ -28,6 +32,12 @@ struct ModelPickerSheet: View {
     enum Mode {
         case single
         case arenaMulti
+    }
+
+    private struct InspectedEntry: Identifiable {
+        let provider: ProviderConfig
+        let modelID: String
+        var id: String { "\(provider.id.uuidString)::\(modelID)" }
     }
 
     let mode: Mode
@@ -46,6 +56,8 @@ struct ModelPickerSheet: View {
     @State private var draftArenaTargets: [ResolvedModelTarget] = []
     @State private var preferences = AppPreferences.shared
     @State private var configuredProviders: [ProviderConfig] = []
+    @State private var pricingEntry: InspectedEntry?
+    @State private var inspectorEntry: InspectedEntry?
 
     private var allEnabledTargets: [(provider: ProviderConfig, spec: ModelSpec, target: ResolvedModelTarget)] {
         configuredProviders.flatMap { provider in
@@ -86,31 +98,20 @@ struct ModelPickerSheet: View {
                     .background(usesPhoneWorkspace ? DS.Surface.canvas : DS.Surface.grouped)
                 } else {
                     List {
-                        if !isSearching {
-                            Section { configureButton }
-                            if mode == .arenaMulti {
-                                Section {
-                                    HStack {
-                                        Image(systemName: "bolt.horizontal.circle.fill")
-                                            .foregroundStyle(Color.accentColor)
-                                        Text("勾选 2–4 个模型，发送消息时将同时并发请求并同屏对比结果。")
-                                            .font(.footnote)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
+                        if !isSearching && mode == .arenaMulti {
                             Section {
-                                Text("能力是本地标记，可能按名称推测；显示的基础单价不含服务商倍率。")
-                                    .font(.footnote).foregroundStyle(.secondary)
+                                HStack {
+                                    Image(systemName: "bolt.horizontal.circle.fill")
+                                        .foregroundStyle(Color.accentColor)
+                                    Text("勾选 2–4 个模型，发送消息时将同时并发请求并同屏对比结果。")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
+                                configureButton
                             }
                         }
 
-                        if isSearching && allEnabledTargets.isEmpty {
-                            Section {
-                                Text("暂无可选模型，请在「设置」中启用模型。")
-                                    .foregroundStyle(.secondary)
-                            }
-                        } else if isSearching && configuredProviders.allSatisfy({ filterModels($0.enabledModels).isEmpty }) {
+                        if isSearching && configuredProviders.allSatisfy({ filterModels($0.models.filter { $0.catalogStatus != .unlisted }).isEmpty }) {
                             Section {
                                 ContentUnavailableView {
                                     Label("没有匹配的模型", systemImage: "magnifyingglass")
@@ -144,16 +145,27 @@ struct ModelPickerSheet: View {
                             }
                         }
 
+                        let lastProviderID = configuredProviders.last?.id
                         ForEach(configuredProviders) { provider in
                             let filteredModels = filterModels(provider.enabledModels)
-                            if !filteredModels.isEmpty || !isSearching {
+                            let discoverable = filterModels(provider.models.filter { !$0.isEnabled && $0.catalogStatus != .unlisted })
+                            if !filteredModels.isEmpty || !discoverable.isEmpty || !isSearching {
                                 Section {
-                                    if filteredModels.isEmpty {
-                                        Text("暂无可选模型，请刷新列表或在「设置」中启用模型。").foregroundStyle(.secondary)
+                                    if filteredModels.isEmpty && discoverable.isEmpty {
+                                        Text("暂无可选模型，请刷新列表。").foregroundStyle(.secondary)
                                     }
                                     ForEach(filteredModels) { spec in
                                         let target = provider.makeTarget(for: spec)
                                         modelRow(target: target, spec: spec, provider: provider, showProviderSubtitle: false)
+                                    }
+                                    if !discoverable.isEmpty {
+                                        if isSearching || filteredModels.isEmpty {
+                                            discoveredRows(discoverable, provider: provider)
+                                        } else {
+                                            DisclosureGroup("更多可启用模型（\(discoverable.count)）") {
+                                                discoveredRows(discoverable, provider: provider)
+                                            }
+                                        }
                                     }
                                 } header: {
                                     HStack(spacing: 6) {
@@ -176,14 +188,19 @@ struct ModelPickerSheet: View {
                                         }
                                     }
                                 } footer: {
-                                    if directory.catalogs[provider.id]?.isLoading == true {
-                                        Text("正在刷新模型列表…")
-                                    } else if directory.catalogs[provider.id]?.error != nil {
-                                        Text("刷新失败，显示已保存的模型。")
-                                    } else if directory.catalogs[provider.id]?.models != nil {
-                                        Text("已刷新，显示已启用的模型。")
-                                    } else {
-                                        Text("显示已保存的模型。")
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        if directory.catalogs[provider.id]?.isLoading == true {
+                                            Text("正在刷新模型列表…")
+                                        } else if directory.catalogs[provider.id]?.error != nil {
+                                            Text("刷新失败，显示已保存的模型。")
+                                        } else if directory.catalogs[provider.id]?.models != nil {
+                                            Text("已刷新，显示已启用的模型。")
+                                        } else {
+                                            Text("显示已保存的模型。")
+                                        }
+                                        if provider.id == lastProviderID && !isSearching {
+                                            Text("模型能力可能根据名称推测，长按模型可修改单价或能力标记。")
+                                        }
                                     }
                                 }
                             }
@@ -199,6 +216,11 @@ struct ModelPickerSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }
+                }
+                if mode == .single && !configuredProviders.isEmpty {
+                    ToolbarItem(placement: .primaryAction) {
+                        configureButton
+                    }
                 }
                 if mode == .arenaMulti {
                     ToolbarItem(placement: .confirmationAction) {
@@ -229,6 +251,12 @@ struct ModelPickerSheet: View {
             }
             .sheet(isPresented: $showingSetup, onDismiss: finishSetup) {
                 FirstModelSetupSheet { verified = $0 }
+            }
+            .sheet(item: $pricingEntry) { item in
+                ModelPricingSheet(provider: item.provider, modelID: item.modelID)
+            }
+            .sheet(item: $inspectorEntry) { item in
+                ModelInspectorSheet(provider: item.provider, modelID: item.modelID)
             }
             .alert("操作失败", isPresented: Binding(get: { selectionError != nil }, set: { if !$0 { selectionError = nil } })) {
                 Button("好", role: .cancel) {}
@@ -384,9 +412,54 @@ struct ModelPickerSheet: View {
                 : Text("置顶 \(provider.name) 的 \(target.modelDisplayName)"))
         }
         .contextMenu {
-            Button("设为默认模型") {
+            Button {
                 if let live = validTargets([target]).first { preferences.defaultTargetID = live.id }
+            } label: {
+                Label("设为默认模型", systemImage: "checkmark.seal")
             }
+            Button {
+                toggleFavorite(provider: provider, modelID: spec.id)
+            } label: {
+                Label(spec.isStarred ? String(localized: "取消常用置顶") : String(localized: "常用置顶"),
+                      systemImage: spec.isStarred ? "star.slash" : "star")
+            }
+            Divider()
+            Button {
+                inspectorEntry = InspectedEntry(provider: provider, modelID: spec.id)
+            } label: {
+                Label("编辑模型与测速…", systemImage: "slider.horizontal.3")
+            }
+            Button {
+                pricingEntry = InspectedEntry(provider: provider, modelID: spec.id)
+            } label: {
+                Label("设置单价…", systemImage: "creditcard")
+            }
+        }
+    }
+
+    private func discoveredRows(_ models: [ModelSpec], provider: ProviderConfig) -> some View {
+        ForEach(models) { spec in
+            Button {
+                do {
+                    let target = try ProviderModelCatalog.enable(modelID: spec.id, on: provider, in: modelContext)
+                    switch mode {
+                    case .single: choose(target)
+                    case .arenaMulti:
+                        guard !draftArenaTargets.contains(where: { $0.id == target.id }), draftArenaTargets.count < 4 else { return }
+                        draftArenaTargets.append(target)
+                    }
+                } catch { selectionError = error.localizedDescription }
+            } label: {
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(verbatim: spec.displayName)
+                        if spec.displayName != spec.id { Text(verbatim: spec.id).font(.caption).foregroundStyle(.secondary) }
+                    }
+                    Spacer()
+                    Text("启用并使用").font(.caption)
+                }
+            }
+            .disabled(mode == .arenaMulti && draftArenaTargets.count >= 4)
         }
     }
 

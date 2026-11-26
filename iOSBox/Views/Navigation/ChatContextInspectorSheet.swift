@@ -50,6 +50,17 @@ struct ChatContextInspectorSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                if !latestSources.isEmpty {
+                    Section("最近回答实际使用的资料") {
+                        ForEach(latestSources, id: \.number) { source in
+                            ReadingCitationButton(citation: source) { citation in
+                                dismiss()
+                                onOpenCitation(citation)
+                            }
+                        }
+                    }
+                }
+
                 Section("当前模型与路由") {
                     if conversation.isGroupMode {
                         LabeledContent("会话模式", value: String(localized: "圆桌群聊 (\(conversation.activeGroupMembers.count) 人)"))
@@ -86,8 +97,7 @@ struct ChatContextInspectorSheet: View {
                         }
                         .foregroundStyle(.primary)
 
-                        Toggle("按内容自动能力路由", isOn: $conversation.assistanceSettings.automaticRouting)
-                        Toggle("429 / 超时自动故障降级", isOn: $conversation.assistanceSettings.fallbackEnabled)
+                        ModelRoutingLink(conversation: conversation)
                     }
                 }
 
@@ -112,17 +122,6 @@ struct ChatContextInspectorSheet: View {
                         } label: {
                             Label("管理绑定书目 (\(boundBooks.count))", systemImage: "books.vertical")
                                 .fontWeight(.medium)
-                        }
-                    }
-                }
-
-                if !latestSources.isEmpty {
-                    Section("最近回答实际使用的资料") {
-                        ForEach(latestSources, id: \.number) { source in
-                            ReadingCitationButton(citation: source) { citation in
-                                dismiss()
-                                onOpenCitation(citation)
-                            }
                         }
                     }
                 }

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 
 enum TranscriptActionMode: Sendable {
     case meetingMinutes
@@ -21,7 +22,7 @@ enum MeetingMinutesPromptBuilder {
 
         let sourceLine: String
         if let label = sourceLabel?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty {
-            sourceLine = "（来源：\(label)）"
+            sourceLine = String(localized: "（来源：\(label)）")
         } else {
             sourceLine = ""
         }
@@ -172,13 +173,13 @@ private enum AudioHTTPExecutor {
                 defer { bytes.task.cancel() }
                 try await LLMClient.validateHTTPResponse(response, bytes: bytes)
                 if response.expectedContentLength > Int64(maxResponseBytes) {
-                    throw URLError(.dataLengthExceedsMaximum)
+                    throw LLMError.apiError(String(localized: "音频响应数据超出大小上限。"))
                 }
                 var data = Data()
                 for try await byte in bytes {
                     try Task.checkCancellation()
                     guard data.count < maxResponseBytes else {
-                        throw URLError(.dataLengthExceedsMaximum)
+                        throw LLMError.apiError(String(localized: "音频响应数据超出大小上限。"))
                     }
                     data.append(byte)
                 }
@@ -216,22 +217,185 @@ enum AudioTranscriptionService {
         "FunAudioLLM/SenseVoiceSmall"
     ]
 
-    static let presetLanguages: [(code: String, label: String)] = [
-        ("", "自动识别"),
-        ("zh", "中文"),
-        ("en", "English"),
-        ("ja", "日本語")
+    static var presetLanguages: [(code: String, label: String)] {
+        [
+            ("", String(localized: "自动识别")),
+            ("zh", "中文"),
+            ("en", "English"),
+            ("ja", "日本語")
+        ]
+    }
+
+    enum AudioCapabilityKind: Sendable {
+        case transcription
+        case speech
+    }
+
+    private static let incompatibleAudioChatOnlyHosts: Set<String> = [
+        "api.deepseek.com",
+        "openrouter.ai",
+        "generativelanguage.googleapis.com",
+        "api.anthropic.com",
+        "api.x.ai",
+        "api.perplexity.ai",
+        "api.moonshot.cn",
+        "api.moonshot.ai",
+        "open.bigmodel.cn",
+        "ark.cn-beijing.volces.com"
     ]
 
+    static func supportsOpenAIAudioTranscriptions(baseURL: String) -> Bool {
+        guard let parsed = normalizedHostAndPath(from: baseURL) else { return false }
+        if parsed.path.hasSuffix("/audio/transcriptions") {
+            return true
+        }
+        return !isKnownChatOnlyNonAudioEndpoint(host: parsed.host, path: parsed.path)
+    }
+
+    static func supportsOpenAIAudioSpeech(baseURL: String) -> Bool {
+        guard let parsed = normalizedHostAndPath(from: baseURL) else { return false }
+        if parsed.path.hasSuffix("/audio/speech") {
+            return true
+        }
+        if parsed.host == "api.groq.com" || parsed.host.hasSuffix(".groq.com") {
+            return false
+        }
+        return !isKnownChatOnlyNonAudioEndpoint(host: parsed.host, path: parsed.path)
+    }
+
+    private static func normalizedHostAndPath(from baseURL: String) -> (host: String, path: String)? {
+        var cleaned = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.hasSuffix("#") {
+            cleaned.removeLast()
+        }
+        while cleaned.hasSuffix("/") {
+            cleaned.removeLast()
+        }
+        guard !cleaned.isEmpty,
+              let components = URLComponents(string: cleaned),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host?.lowercased(),
+              !host.isEmpty else {
+            return nil
+        }
+        return (host, components.path.lowercased())
+    }
+
+    private static func isKnownChatOnlyNonAudioEndpoint(host: String, path: String) -> Bool {
+        if incompatibleAudioChatOnlyHosts.contains(host) {
+            return true
+        }
+        if host.hasSuffix(".deepseek.com") || host.hasSuffix(".openrouter.ai") || host.hasSuffix(".anthropic.com") {
+            return true
+        }
+        if (host == "dashscope.aliyuncs.com" || host == "dashscope-intl.aliyuncs.com" || host.hasSuffix(".aliyuncs.com")),
+           path.contains("compatible-mode") {
+            return true
+        }
+        return false
+    }
+
     @MainActor
-    static func resolveAudioProvider(in providers: [ProviderConfig], preferredID: UUID?) -> ProviderConfig? {
+    static func resolveAudioProvider(
+        in providers: [ProviderConfig],
+        preferredID: UUID?,
+        capability: AudioCapabilityKind = .transcription
+    ) -> ProviderConfig? {
         let eligible = providers.filter {
             !$0.isDeleted && $0.isEnabled && ($0.protocolType == .openAICompatible || $0.protocolType == .openAIResponses) && $0.hasConfiguredChatAPI
         }
         if let preferredID, let exact = eligible.first(where: { $0.id == preferredID }) {
             return exact
         }
-        return eligible.first
+        let compatible = eligible.filter { provider in
+            switch capability {
+            case .speech:
+                return supportsOpenAIAudioSpeech(baseURL: provider.baseURL)
+            case .transcription:
+                return supportsOpenAIAudioTranscriptions(baseURL: provider.baseURL)
+            }
+        }
+        if let fullAudio = compatible.first(where: { supportsOpenAIAudioSpeech(baseURL: $0.baseURL) }) {
+            return fullAudio
+        }
+        return compatible.first
+    }
+
+    @MainActor
+    @discardableResult
+    static func recordAudioLedgerEntry(
+        baseURL: String,
+        modelID: String,
+        isSpeechSynthesis: Bool,
+        status: RequestStatus,
+        httpStatus: Int? = nil,
+        elapsedMs: Int,
+        context suppliedContext: ModelContext? = nil
+    ) -> RequestRecord? {
+        let context: ModelContext
+        let allowFallbackTarget: Bool
+        if let suppliedContext {
+            context = suppliedContext
+            allowFallbackTarget = true
+        } else {
+            let mainContext = AppRuntime.persistence.container.mainContext
+            guard PersistenceController.canCommitUserData(in: mainContext),
+                  mainContext.container.configurations.allSatisfy({ !$0.isStoredInMemoryOnly }) else {
+                return nil
+            }
+            context = mainContext
+            allowFallbackTarget = false
+        }
+
+        let providers = (try? context.fetch(FetchDescriptor<ProviderConfig>(sortBy: [SortDescriptor(\.sortOrder)]))) ?? []
+        let targetHost = normalizedHostAndPath(from: baseURL)?.host ?? ""
+        let matchedProvider = providers.first { p in
+            guard !p.isDeleted else { return false }
+            if p.baseURL.caseInsensitiveCompare(baseURL) == .orderedSame { return true }
+            guard !targetHost.isEmpty else { return false }
+            return normalizedHostAndPath(from: p.baseURL)?.host == targetHost
+        }
+
+        guard matchedProvider != nil || allowFallbackTarget else {
+            return nil
+        }
+
+        let cleanModel = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveModel = cleanModel.isEmpty ? (isSpeechSynthesis ? "tts-1" : "whisper-1") : cleanModel
+        let badge = isSpeechSynthesis ? "TTS" : "ASR"
+        let providerID = matchedProvider?.id ?? UUID()
+        let providerName = matchedProvider?.name ?? (targetHost.isEmpty ? "OpenAI Audio" : targetHost)
+        let protocolType = matchedProvider?.protocolType ?? .openAICompatible
+        let spec = matchedProvider?.models.first(where: { $0.id == effectiveModel })
+
+        let target = ResolvedModelTarget(
+            providerID: providerID,
+            providerName: providerName,
+            protocolType: protocolType,
+            modelID: effectiveModel,
+            modelDisplayName: "\(effectiveModel) (\(badge))",
+            accentHex: "#3F6EF6",
+            supportsVision: false,
+            supportsReasoning: false
+        )
+        let ended = Date()
+        let clampedMs = max(0, elapsedMs)
+        let started = ended.addingTimeInterval(-Double(clampedMs) / 1000.0)
+        let record = RequestRecord(
+            target: target,
+            spec: spec,
+            conversationID: UUID(),
+            messageID: UUID(),
+            kind: .agentTool,
+            now: started
+        )
+        record.isStreamed = false
+        record.httpStatus = httpStatus
+        record.finish(status, elapsedMs: clampedMs, now: ended)
+        context.insert(record)
+        try? context.save()
+        return record
     }
 
     static func sanitizeFileName(_ raw: String) -> String {
@@ -375,7 +539,8 @@ enum AudioTranscriptionService {
         _ request: AudioTranscriptionRequest,
         keyRouter: APIKeyPoolRouter = .shared,
         session: URLSession? = nil,
-        consentDefaults: UserDefaults = AppCompliance.consentDefaults
+        consentDefaults: UserDefaults = AppCompliance.consentDefaults,
+        ledgerContainer: ModelContainer? = nil
     ) async throws -> String {
         guard !request.audioData.isEmpty else {
             throw LLMError.apiError(String(localized: "音频内容为空，无法转写。"))
@@ -396,27 +561,69 @@ enum AudioTranscriptionService {
             language: request.language
         )
 
-        let (data, contentType) = try await AudioHTTPExecutor.executeWithKeyRotation(
-            baseURL: request.baseURL,
-            primaryKey: request.apiKey,
-            extraKeys: request.apiKeys,
-            keyRouter: keyRouter,
-            session: session ?? AudioHTTPExecutor.defaultSession,
-            maxResponseBytes: maxResponseBytes,
-            consentDefaults: consentDefaults
-        ) { activeKey in
-            var req = URLRequest(url: endpoint)
-            req.httpMethod = "POST"
-            req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-            req.setValue("application/json, text/plain", forHTTPHeaderField: "Accept")
-            if !activeKey.isEmpty {
-                req.setValue("Bearer \(activeKey)", forHTTPHeaderField: "Authorization")
+        let shouldRecordLedger = ledgerContainer != nil || session == nil
+        let startInstant = ContinuousClock.now
+        do {
+            let (data, contentType) = try await AudioHTTPExecutor.executeWithKeyRotation(
+                baseURL: request.baseURL,
+                primaryKey: request.apiKey,
+                extraKeys: request.apiKeys,
+                keyRouter: keyRouter,
+                session: session ?? AudioHTTPExecutor.defaultSession,
+                maxResponseBytes: maxResponseBytes,
+                consentDefaults: consentDefaults
+            ) { activeKey in
+                var req = URLRequest(url: endpoint)
+                req.httpMethod = "POST"
+                req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                req.setValue("application/json, text/plain", forHTTPHeaderField: "Accept")
+                if !activeKey.isEmpty {
+                    req.setValue("Bearer \(activeKey)", forHTTPHeaderField: "Authorization")
+                }
+                LLMClient.applyCustomHeaders(request.customHeaders, to: &req)
+                req.httpBody = body
+                return req
             }
-            LLMClient.applyCustomHeaders(request.customHeaders, to: &req)
-            req.httpBody = body
-            return req
+            let transcript = try parseTranscriptionResponse(data: data, contentType: contentType)
+            if shouldRecordLedger {
+                let d = startInstant.duration(to: .now)
+                let elapsedMs = Int(d.components.seconds * 1000) + Int(d.components.attoseconds / 1_000_000_000_000_000)
+                await MainActor.run {
+                    _ = recordAudioLedgerEntry(
+                        baseURL: request.baseURL,
+                        modelID: request.model,
+                        isSpeechSynthesis: false,
+                        status: .succeeded,
+                        httpStatus: 200,
+                        elapsedMs: elapsedMs,
+                        context: ledgerContainer?.mainContext
+                    )
+                }
+            }
+            return transcript
+        } catch {
+            if shouldRecordLedger, !(error is AppCompliance.ConsentRequired) {
+                let d = startInstant.duration(to: .now)
+                let elapsedMs = Int(d.components.seconds * 1000) + Int(d.components.attoseconds / 1_000_000_000_000_000)
+                let status: RequestStatus = (error is CancellationError) ? .cancelled : .failed
+                let httpCode: Int? = {
+                    if case let LLMError.httpError(code, _) = error { return code }
+                    return nil
+                }()
+                await MainActor.run {
+                    _ = recordAudioLedgerEntry(
+                        baseURL: request.baseURL,
+                        modelID: request.model,
+                        isSpeechSynthesis: false,
+                        status: status,
+                        httpStatus: httpCode,
+                        elapsedMs: elapsedMs,
+                        context: ledgerContainer?.mainContext
+                    )
+                }
+            }
+            throw error
         }
-        return try parseTranscriptionResponse(data: data, contentType: contentType)
     }
 }
 
@@ -457,7 +664,8 @@ enum CloudSpeechSynthesizer {
         _ request: CloudTTSRequest,
         keyRouter: APIKeyPoolRouter = .shared,
         session: URLSession? = nil,
-        consentDefaults: UserDefaults = AppCompliance.consentDefaults
+        consentDefaults: UserDefaults = AppCompliance.consentDefaults,
+        ledgerContainer: ModelContainer? = nil
     ) async throws -> Data {
         let prepared = prepareInputText(request.input)
         guard !prepared.isEmpty else {
@@ -466,29 +674,70 @@ enum CloudSpeechSynthesizer {
         let endpoint = try EndpointResolver.audioSpeechEndpoint(baseURL: request.baseURL)
         let body = try buildRequestBody(model: request.model, voice: request.voice, input: prepared)
 
-        let (data, _) = try await AudioHTTPExecutor.executeWithKeyRotation(
-            baseURL: request.baseURL,
-            primaryKey: request.apiKey,
-            extraKeys: request.apiKeys,
-            keyRouter: keyRouter,
-            session: session ?? AudioHTTPExecutor.defaultSession,
-            maxResponseBytes: maxAudioResponseBytes,
-            consentDefaults: consentDefaults
-        ) { activeKey in
-            var req = URLRequest(url: endpoint)
-            req.httpMethod = "POST"
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.setValue("audio/mpeg, audio/*", forHTTPHeaderField: "Accept")
-            if !activeKey.isEmpty {
-                req.setValue("Bearer \(activeKey)", forHTTPHeaderField: "Authorization")
+        let shouldRecordLedger = ledgerContainer != nil || session == nil
+        let startInstant = ContinuousClock.now
+        do {
+            let (data, _) = try await AudioHTTPExecutor.executeWithKeyRotation(
+                baseURL: request.baseURL,
+                primaryKey: request.apiKey,
+                extraKeys: request.apiKeys,
+                keyRouter: keyRouter,
+                session: session ?? AudioHTTPExecutor.defaultSession,
+                maxResponseBytes: maxAudioResponseBytes,
+                consentDefaults: consentDefaults
+            ) { activeKey in
+                var req = URLRequest(url: endpoint)
+                req.httpMethod = "POST"
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.setValue("audio/mpeg, audio/*", forHTTPHeaderField: "Accept")
+                if !activeKey.isEmpty {
+                    req.setValue("Bearer \(activeKey)", forHTTPHeaderField: "Authorization")
+                }
+                LLMClient.applyCustomHeaders(request.customHeaders, to: &req)
+                req.httpBody = body
+                return req
             }
-            LLMClient.applyCustomHeaders(request.customHeaders, to: &req)
-            req.httpBody = body
-            return req
+            guard !data.isEmpty else {
+                throw LLMError.emptyResponse
+            }
+            if shouldRecordLedger {
+                let d = startInstant.duration(to: .now)
+                let elapsedMs = Int(d.components.seconds * 1000) + Int(d.components.attoseconds / 1_000_000_000_000_000)
+                await MainActor.run {
+                    _ = AudioTranscriptionService.recordAudioLedgerEntry(
+                        baseURL: request.baseURL,
+                        modelID: request.model,
+                        isSpeechSynthesis: true,
+                        status: .succeeded,
+                        httpStatus: 200,
+                        elapsedMs: elapsedMs,
+                        context: ledgerContainer?.mainContext
+                    )
+                }
+            }
+            return data
+        } catch {
+            if shouldRecordLedger, !(error is AppCompliance.ConsentRequired) {
+                let d = startInstant.duration(to: .now)
+                let elapsedMs = Int(d.components.seconds * 1000) + Int(d.components.attoseconds / 1_000_000_000_000_000)
+                let status: RequestStatus = (error is CancellationError) ? .cancelled : .failed
+                let httpCode: Int? = {
+                    if case let LLMError.httpError(code, _) = error { return code }
+                    return nil
+                }()
+                await MainActor.run {
+                    _ = AudioTranscriptionService.recordAudioLedgerEntry(
+                        baseURL: request.baseURL,
+                        modelID: request.model,
+                        isSpeechSynthesis: true,
+                        status: status,
+                        httpStatus: httpCode,
+                        elapsedMs: elapsedMs,
+                        context: ledgerContainer?.mainContext
+                    )
+                }
+            }
+            throw error
         }
-        guard !data.isEmpty else {
-            throw LLMError.emptyResponse
-        }
-        return data
     }
 }

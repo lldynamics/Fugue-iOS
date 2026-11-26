@@ -14,10 +14,11 @@ enum ChatActiveSheet: Identifiable, Equatable {
     case bookProgress
     case bookInvitation
     case search
+    case questionDirectory
     case modelSetup
     case audioTranscription
     case synthesis(UUID)
-    case shareFile(URL)
+    case conversationExport
 
     var id: String {
         switch self {
@@ -32,10 +33,11 @@ enum ChatActiveSheet: Identifiable, Equatable {
         case .bookProgress: return "bookProgress"
         case .bookInvitation: return "bookInvitation"
         case .search: return "search"
+        case .questionDirectory: return "questionDirectory"
         case .modelSetup: return "modelSetup"
         case .audioTranscription: return "audioTranscription"
         case .synthesis(let groupID): return "synthesis-\(groupID.uuidString)"
-        case .shareFile(let url): return "share-\(url.absoluteString)"
+        case .conversationExport: return "conversationExport"
         }
     }
 }

@@ -74,10 +74,36 @@ final class BookVolume {
         var title: String
         var chapters: [BookChapter]
         var importedAt: Date
+        /// The stable ID is retained by citations when background OCR enriches the manuscript.
+        var manuscriptID: UUID? = nil
+
+        func validatedManuscript() throws -> PreparedBook {
+            let prepared = try PreparedBook(BookManuscript(title: title, chapters: chapters))
+            if let manuscriptID, manuscriptID != prepared.id { throw BackupError.conflictingIDs }
+            guard prepared.id != id else { return prepared }
+            // Earlier exports have no manuscript digest. Progressive OCR was the only
+            // in-place change and emits ordered, unique localized page labels.
+            guard id.uuid.6 >> 4 == 8, id.uuid.8 >> 6 == 2,
+                  Self.isPDFManuscript(chapters) else { throw BackupError.conflictingIDs }
+            return prepared
+        }
+
+        static func isPDFManuscript(_ chapters: [BookChapter]) -> Bool {
+            var previous = 0
+            for chapter in chapters {
+                guard let page = BackgroundPDFOCRQueue.extractPageNumber(from: chapter.title),
+                      page > previous,
+                      chapter.title == "Page \(page)" || chapter.title == "第 \(page) 页" else { return false }
+                previous = page
+            }
+            return !chapters.isEmpty
+        }
     }
 
     func snapshot() throws -> Snapshot {
-        try Snapshot(id: id, title: title, chapters: JSONDecoder().decode([BookChapter].self, from: manuscript), importedAt: importedAt)
+        let data = manuscript
+        return try Snapshot(id: id, title: title, chapters: JSONDecoder().decode([BookChapter].self, from: data),
+                            importedAt: importedAt, manuscriptID: BookManuscript.identifier(for: data))
     }
 }
 

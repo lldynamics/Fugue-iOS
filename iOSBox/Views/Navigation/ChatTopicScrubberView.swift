@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 
 /// Whisper-quiet vertical chapter tick rail along the trailing edge of long conversations.
@@ -7,9 +8,20 @@ struct ChatTopicScrubberView: View {
         let id: UUID
         let index: Int
         let preview: String
+
+        static func questions(in messages: [ChatMessage]) -> [Self] {
+            let questions = messages.filter { $0.role == .user && !$0.assistanceMetadata.isContextDivider }
+            return questions.enumerated().map { index, item in
+                var preview = item.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if preview.isEmpty { preview = item.attachments.map(\.fileName).joined(separator: ", ") }
+                if preview.isEmpty { preview = item.assistanceMetadata.quotedExcerpt ?? "" }
+                return Self(id: item.id, index: index, preview: String(preview.prefix(160)))
+            }
+        }
     }
 
     let milestones: [PromptMilestone]
+    let openDirectory: () -> Void
     let onSelectMilestone: (UUID) -> Void
 
     @State private var activeIndex: Int?
@@ -86,7 +98,72 @@ struct ChatTopicScrubberView: View {
                 }
                 .frame(width: 24, height: CGFloat(items.count) * 10 + 16)
             }
-            .accessibilityHidden(true)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("问题目录")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { openDirectory() }
+        }
+    }
+}
+
+
+struct QuestionDirectorySheet: View {
+    let conversation: Conversation
+    let jump: (UUID) -> Void
+    @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedOther: ChatTopicScrubberView.PromptMilestone?
+    @State private var error: String?
+
+    var body: some View {
+        let active = ChatTopicScrubberView.PromptMilestone.questions(in: ConversationTree.activeMessages(in: conversation))
+        let activeIDs = Set(active.map(\.id))
+        let others = ChatTopicScrubberView.PromptMilestone.questions(in: conversation.sortedMessages.filter { !activeIDs.contains($0.id) })
+        let siblings = ConversationTree.branchSiblingsMap(in: conversation)
+        NavigationStack {
+            List {
+                Section("当前分支") {
+                    ForEach(active) { question in
+                        Button {
+                            dismiss()
+                            jump(question.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("第 \(question.index + 1) 问").font(.caption).foregroundStyle(.secondary)
+                                Text(verbatim: question.preview)
+                                if let variants = siblings[question.id], variants.count > 1 {
+                                    Label("\(variants.count) 个分支", systemImage: "arrow.triangle.branch")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+                if !others.isEmpty {
+                    Section("其他分支") {
+                        ForEach(others) { question in
+                            Button { selectedOther = question } label: { Text(verbatim: question.preview) }
+                                .disabled(ChatEngine.shared.isGenerating(in: conversation.id))
+                        }
+                    }
+                }
+            }
+            .navigationTitle("问题目录")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+            .confirmationDialog("切换至这个问题所在的分支？", isPresented: Binding(get: { selectedOther != nil },
+                                 set: { if !$0 { selectedOther = nil } }), presenting: selectedOther) { question in
+                Button("切换分支并定位") {
+                    guard !ChatEngine.shared.isGenerating(in: conversation.id),
+                          let message = conversation.messages.first(where: { $0.id == question.id }) else { return }
+                    let previous = conversation.activeLeafMessageID
+                    ConversationTree.switchBranch(to: message, in: conversation)
+                    do { try context.save(); dismiss(); jump(message.id) }
+                    catch { conversation.activeLeafMessageID = previous; self.error = error.localizedDescription }
+                }
+            }
+            .alert("无法更新对话记录", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("好") { }
+            } message: { Text(error ?? "") }
         }
     }
 }

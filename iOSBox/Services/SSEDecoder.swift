@@ -4,6 +4,8 @@ import Foundation
 /// unlike a producer task, do not read ahead into an unbounded event queue.
 enum SSEDecoder {
     static let defaultMaximumBytes = 2 * 1024 * 1024
+    static let maximumStreamBytes = 32 * 1024 * 1024
+    static let maximumEvents = 200_000
 
     static func events<Bytes: AsyncSequence>(
         _ bytes: Bytes,
@@ -62,7 +64,7 @@ enum SSEDecoder {
                 while let byte = try await bytes.next() {
                     try Task.checkCancellation()
                     streamBytes += 1
-                    guard streamBytes <= 32 * 1024 * 1024 else { throw LLMError.interruptedStream }
+                    guard streamBytes <= SSEDecoder.maximumStreamBytes else { throw LLMError.interruptedStream }
                     if skipLF { skipLF = false; if byte == 10 { continue } }
                     if byte == 13 || byte == 10 {
                         bytesSinceTouch = 0
@@ -70,7 +72,7 @@ enum SSEDecoder {
                         skipLF = byte == 13
                         if let event = try finishLine() {
                             emittedEvents += 1
-                            guard emittedEvents <= 12_000 else { throw LLMError.interruptedStream }
+                            guard emittedEvents <= SSEDecoder.maximumEvents else { throw LLMError.interruptedStream }
                             return event
                         }
                     } else {

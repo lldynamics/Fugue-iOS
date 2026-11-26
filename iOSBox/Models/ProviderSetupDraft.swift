@@ -72,8 +72,8 @@ struct ProviderSetupDraft: Equatable, Identifiable {
         name = candidate.providerName
         iconSymbol = candidate.iconSymbol
         accentHex = candidate.accentHex
-        var newProtocol = candidate.protocolType
-        if serviceID == ProviderTemplate.openAIResponses.id {
+        var newProtocol = candidate.explicitProtocol ?? candidate.protocolType
+        if candidate.explicitProtocol == nil, serviceID == ProviderTemplate.openAIResponses.id {
             name = ProviderTemplate.openAIResponses.setupName
             let path = URL(string: baseURL)?.standardized.path
             if path?.hasSuffix("/chat/completions") == true {
@@ -84,6 +84,9 @@ struct ProviderSetupDraft: Equatable, Identifiable {
         }
         protocolType = newProtocol
         importedModels = candidate.suggestedModels
+        if let extractedModel = candidate.extractedModelID, !extractedModel.isEmpty {
+            manualModelID = extractedModel
+        }
         if !candidate.apiKey.isEmpty { apiKey = candidate.apiKey }
     }
 
@@ -110,14 +113,39 @@ extension ProviderTemplate {
         }
     }
 
-    /// Only identify distinct issuer prefixes at the two official destinations.
+    /// Identify distinct issuer prefixes when pasted against a mismatched official destination.
+    /// Custom relay hosts return nil so proxy gateways that pass upstream keys keep working.
     static func mismatchedIssuer(apiKey: String, baseURL: String) -> ProviderTemplate? {
         let key = LLMClient.sanitizedAPIKey(apiKey)
-        if OpenAICompatibleAdapter.isOpenRouter(baseURL), key.hasPrefix("sk-proj-") || key.hasPrefix("sk-svcacct-") {
+        guard !key.isEmpty, let host = URLComponents(string: baseURL)?.host?.lowercased() else { return nil }
+        let officialHosts: Set<String> = [
+            "api.openai.com", "openrouter.ai", "api.deepseek.com", "api.siliconflow.cn",
+            "api.anthropic.com", "generativelanguage.googleapis.com", "api.groq.com",
+            "api.x.ai", "dashscope.aliyuncs.com", "api.moonshot.cn", "open.bigmodel.cn"
+        ]
+        guard officialHosts.contains(host) && !OpenAICompatibleAdapter.isOpenRouter(baseURL) || OpenAICompatibleAdapter.isOpenRouter(baseURL) else {
+            return nil
+        }
+        let isKnownOfficial = officialHosts.contains(host) || OpenAICompatibleAdapter.isOpenRouter(baseURL)
+        guard isKnownOfficial else { return nil }
+
+        if key.hasPrefix("sk-or-"), !OpenAICompatibleAdapter.isOpenRouter(baseURL) {
+            return openRouter
+        }
+        if (key.hasPrefix("sk-proj-") || key.hasPrefix("sk-svcacct-")), host != "api.openai.com" {
             return openAIResponses
         }
-        if URLComponents(string: baseURL)?.host?.lowercased() == "api.openai.com", key.hasPrefix("sk-or-") {
-            return openRouter
+        if key.hasPrefix("sk-ant-"), host != "api.anthropic.com" {
+            return catalog.first { $0.id == "anthropic" }
+        }
+        if key.hasPrefix("AIza"), host != "generativelanguage.googleapis.com" {
+            return catalog.first { $0.id == "gemini" }
+        }
+        if key.hasPrefix("gsk_"), host != "api.groq.com" {
+            return groq
+        }
+        if key.hasPrefix("xai-"), host != "api.x.ai" {
+            return xai
         }
         return nil
     }

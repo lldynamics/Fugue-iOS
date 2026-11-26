@@ -3,6 +3,28 @@ import SwiftData
 
 @MainActor
 enum ShortcutService {
+    struct AppLockedError: LocalizedError, Equatable {
+        var errorDescription: String? {
+            String(localized: "「夜奔」已开启隐私锁，请先打开应用并完成解锁后再运行此快捷指令。")
+        }
+    }
+
+    static func isAppLocked(
+        preferences: AppPreferences = .shared,
+        lockController: AppLockController = .shared
+    ) -> Bool {
+        preferences.appLockEnabled && lockController.isLocked
+    }
+
+    static func requireUnlocked(
+        preferences: AppPreferences = .shared,
+        lockController: AppLockController = .shared
+    ) throws {
+        if isAppLocked(preferences: preferences, lockController: lockController) {
+            throw AppLockedError()
+        }
+    }
+
     static func recipient(for modelID: String, context suppliedContext: ModelContext? = nil) throws -> String {
         let context = suppliedContext ?? AppRuntime.persistence.container.mainContext
         let providers = try context.fetch(FetchDescriptor<ProviderConfig>(sortBy: [SortDescriptor(\.sortOrder)]))
@@ -14,7 +36,10 @@ enum ShortcutService {
     static func start(text: String, modelID: String, image: MessageAttachment? = nil,
                       context suppliedContext: ModelContext? = nil,
                       engine suppliedEngine: ChatEngine? = nil,
-                      consentDefaults: UserDefaults = AppCompliance.consentDefaults) throws -> Conversation {
+                      consentDefaults: UserDefaults = AppCompliance.consentDefaults,
+                      preferences: AppPreferences = .shared,
+                      lockController: AppLockController = .shared) throws -> Conversation {
+        try requireUnlocked(preferences: preferences, lockController: lockController)
         let context = suppliedContext ?? AppRuntime.persistence.container.mainContext
         let engine = suppliedEngine ?? .shared
         let providers = try context.fetch(FetchDescriptor<ProviderConfig>(sortBy: [SortDescriptor(\.sortOrder)]))
@@ -81,8 +106,11 @@ enum ShortcutService {
         image: MessageAttachment? = nil,
         context suppliedContext: ModelContext? = nil,
         engine suppliedEngine: ChatEngine? = nil,
-        consentDefaults: UserDefaults = AppCompliance.consentDefaults
+        consentDefaults: UserDefaults = AppCompliance.consentDefaults,
+        preferences: AppPreferences = .shared,
+        lockController: AppLockController = .shared
     ) throws -> Conversation {
+        try requireUnlocked(preferences: preferences, lockController: lockController)
         let context = suppliedContext ?? AppRuntime.persistence.container.mainContext
         let engine = suppliedEngine ?? .shared
         let providers = try context.fetch(FetchDescriptor<ProviderConfig>(sortBy: [SortDescriptor(\.sortOrder)]))

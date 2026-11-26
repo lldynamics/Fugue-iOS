@@ -145,6 +145,11 @@ extension SearchExcerpt {
 
 struct BookSearchHitReaderSheet: View {
     let hit: BookSearchHit
+    let onQuote: (ReadingCitation, Conversation?) throws -> Void
+    @Query(sort: \Conversation.updatedAt, order: .reverse) private var conversations: [Conversation]
+    @State private var pendingQuote: ReadingCitation?
+    @State private var selectingConversation = false
+    @State private var quoteError: String?
     @Environment(\.dismiss) private var dismiss
     @State private var readingRequest: ReadingRequest?
     @State private var readingPlace = BookReadingPlace()
@@ -157,7 +162,7 @@ struct BookSearchHitReaderSheet: View {
                 request: $readingRequest,
                 place: $readingPlace,
                 openShelf: nil,
-                quote: { _ in }
+                quote: { citation in pendingQuote = citation; selectingConversation = true }
             )
             .navigationTitle(hit.bookTitle)
             .navigationBarTitleDisplayMode(.inline)
@@ -166,22 +171,38 @@ struct BookSearchHitReaderSheet: View {
                     Button("关闭") { dismiss() }
                 }
             }
+            .sheet(isPresented: $selectingConversation) {
+                NavigationStack {
+                    List {
+                        Button("在新对话中提问") { select(nil) }
+                        if !conversations.isEmpty {
+                            Section("选择已有对话") {
+                                ForEach(conversations) { chat in
+                                    Button { select(chat) } label: { Text(verbatim: chat.title) }
+                                }
+                            }
+                        }
+                    }
+                    .navigationTitle("将引文加入草稿")
+                    .toolbar { ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { selectingConversation = false }
+                    } }
+                    .alert("无法更新对话记录", isPresented: Binding(
+                        get: { quoteError != nil }, set: { if !$0 { quoteError = nil } }
+                    )) { Button("好") { } } message: { Text(quoteError ?? "") }
+                }
+            }
             .onAppear {
-                let citation = ReadingCitation(
-                    KnowledgePassage(
-                        id: 1,
-                        volumeID: hit.volumeID,
-                        documentTitle: hit.bookTitle,
-                        sectionTitle: hit.sectionTitle,
-                        excerpt: hit.excerpt.fullSnippet,
-                        chapterIndex: hit.chapterIndex,
-                        utf16Offset: hit.utf16Offset
-                    )
-                )
-                readingRequest = ReadingRequest(chapter: hit.chapterIndex, citation: citation)
+                readingRequest = ReadingRequest(chapter: hit.chapterIndex, citation: hit.citation)
             }
         }
     }
+    private func select(_ chat: Conversation?) {
+        guard let pendingQuote else { return }
+        do { try onQuote(pendingQuote, chat) }
+        catch { quoteError = error.localizedDescription }
+    }
+
 }
 
 struct ConversationSearchDestination: View {

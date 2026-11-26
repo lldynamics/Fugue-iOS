@@ -2,12 +2,13 @@ import Foundation
 import Security
 
 enum SystemEntryError: LocalizedError {
-    case unavailable, noModel, invalidInput, timeout, storage, importFailed, credentials(OSStatus)
+    case unavailable, noModel, invalidInput, pdfLimit, timeout, storage, importFailed, credentials(OSStatus)
     var errorDescription: String? {
         switch self {
         case .unavailable: return String(localized: "共享空间不可用，请检查主 App 与分享扩展的 App Group 签名配置。")
         case .noModel: return String(localized: "没有可用模型，请先在「夜奔」的服务商设置中启用模型与系统分享。")
-        case .invalidInput: return String(localized: "请提供文字、网页链接或有效图片。")
+        case .invalidInput: return String(localized: "请提供文字、网页链接、图片或有效的 PDF 文件。")
+        case .pdfLimit: return String(localized: "每次可分享一个 PDF，原文件上限为 16 MB。")
         case .timeout: return String(localized: "分享处理已超时，已保留收到的内容。可回到「夜奔」查看并重答。")
         case .storage: return String(localized: "结果保存失败，请保留当前窗口并重试。")
         case .importFailed: return String(localized: "部分分享结果尚未导入，将在下次打开时重试。")
@@ -115,6 +116,23 @@ struct SharedConnectionKeychain {
     func delete(id: UUID) { SecItemDelete(query(id) as CFDictionary) }
 }
 
+/// A local hand-off from the share extension. Its ID also identifies the resulting draft.
+struct SharedDraftEntry: Codable {
+    var id = UUID()
+    var createdAt = Date()
+    let title: String
+    let text: String
+    let attachments: [MessageAttachment]
+
+    init(input: ReadingInput, link: String, question: String) throws {
+        let parts = [question, link, input.text].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        text = parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
+        attachments = input.attachments
+        guard !text.isEmpty || !attachments.isEmpty else { throw SystemEntryError.invalidInput }
+        title = String(input.title.prefix(300))
+    }
+}
+
 struct SystemEntryStore {
     let directory: URL
     init(directory: URL) { self.directory = directory }
@@ -128,6 +146,28 @@ struct SystemEntryStore {
 
     func saveModels(_ models: [SharedModelEntry]) throws {
         try write(JSONEncoder().encode(models), to: directory.appendingPathComponent("models.json"))
+    }
+
+    private var draftInbox: URL { directory.appendingPathComponent("PendingDrafts", isDirectory: true) }
+
+    func saveDraft(_ draft: SharedDraftEntry) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let data = try encoder.encode(draft)
+        guard data.count <= 32 * 1024 * 1024 else { throw SystemEntryError.storage }
+        try write(data, to: draftInbox.appendingPathComponent(draft.id.uuidString + ".json"))
+    }
+
+    func draftFiles() throws -> [URL] {
+        guard FileManager.default.fileExists(atPath: draftInbox.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(at: draftInbox, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+    }
+
+    func readDraft(_ file: URL) throws -> SharedDraftEntry {
+        let entry = try JSONDecoder().decode(SharedDraftEntry.self, from: boundedData(file, limit: 32 * 1024 * 1024))
+        guard file.deletingPathExtension().lastPathComponent == entry.id.uuidString else { throw SystemEntryError.importFailed }
+        return entry
     }
 
     func save(_ receipt: ExternalRunReceipt) throws {

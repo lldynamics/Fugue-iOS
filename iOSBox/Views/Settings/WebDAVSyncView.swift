@@ -1,30 +1,145 @@
 import SwiftUI
 import SwiftData
 
+struct WebDAVDraftConfig: Equatable {
+    static let defaultRemotePath = "Fugue/fugue-sync.enc.json"
+
+    var serverURL: String = ""
+    var username: String = ""
+    var password: String = ""
+    var remotePath: String = Self.defaultRemotePath
+    var syncPassphrase: String = ""
+
+    var normalizedServerURL: String {
+        serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var normalizedUsername: String {
+        username.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var normalizedRemotePath: String {
+        let clean = remotePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? Self.defaultRemotePath : clean
+    }
+
+    var normalized: WebDAVDraftConfig {
+        WebDAVDraftConfig(
+            serverURL: normalizedServerURL,
+            username: normalizedUsername,
+            password: password,
+            remotePath: normalizedRemotePath,
+            syncPassphrase: syncPassphrase
+        )
+    }
+
+    var canAuthenticate: Bool {
+        !normalizedServerURL.isEmpty && !normalizedUsername.isEmpty && !password.isEmpty
+    }
+
+    var canSyncEncrypted: Bool {
+        canAuthenticate && EncryptedBackupService.isValidExportPassword(syncPassphrase)
+    }
+
+    var hasAnyConfiguredValue: Bool {
+        !normalizedServerURL.isEmpty
+            || !normalizedUsername.isEmpty
+            || !password.isEmpty
+            || !syncPassphrase.isEmpty
+            || normalizedRemotePath != Self.defaultRemotePath
+    }
+
+    var validationError: String? {
+        if !normalizedServerURL.isEmpty {
+            do {
+                _ = try WebDAVSyncService.resolvedTarget(serverURL: normalizedServerURL, remotePath: normalizedRemotePath)
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        if !syncPassphrase.isEmpty && !EncryptedBackupService.isValidExportPassword(syncPassphrase) {
+            return String(localized: "同步加密密码至少需要 8 位字符。")
+        }
+        return nil
+    }
+
+    func hasUnsavedChanges(comparedTo saved: WebDAVDraftConfig) -> Bool {
+        normalized != saved.normalized
+    }
+
+    func canSave(comparedTo saved: WebDAVDraftConfig) -> Bool {
+        hasUnsavedChanges(comparedTo: saved) && validationError == nil
+    }
+
+    func shouldAutoSaveOnDisappear(comparedTo saved: WebDAVDraftConfig) -> Bool {
+        guard canSave(comparedTo: saved), hasAnyConfiguredValue else { return false }
+        let cleanSaved = saved.normalized
+        if !cleanSaved.normalizedServerURL.isEmpty && normalizedServerURL.isEmpty { return false }
+        if !cleanSaved.normalizedUsername.isEmpty && normalizedUsername.isEmpty { return false }
+        if !cleanSaved.password.isEmpty && password.isEmpty { return false }
+        if !cleanSaved.syncPassphrase.isEmpty && syncPassphrase.isEmpty { return false }
+        return true
+    }
+
+    @MainActor
+    static func load(
+        from preferences: AppPreferences,
+        passwordAccount: String = WebDAVSyncService.webDAVPasswordAccount,
+        passphraseAccount: String = WebDAVSyncService.webDAVPassphraseAccount
+    ) -> WebDAVDraftConfig {
+        WebDAVDraftConfig(
+            serverURL: preferences.webDAVServerURL,
+            username: preferences.webDAVUsername,
+            password: KeychainService.shared.loadSecret(account: passwordAccount),
+            remotePath: preferences.webDAVRemotePath,
+            syncPassphrase: KeychainService.shared.loadSecret(account: passphraseAccount)
+        ).normalized
+    }
+
+    @MainActor
+    func persist(
+        to preferences: AppPreferences,
+        passwordAccount: String = WebDAVSyncService.webDAVPasswordAccount,
+        passphraseAccount: String = WebDAVSyncService.webDAVPassphraseAccount
+    ) {
+        let clean = normalized
+        preferences.webDAVServerURL = clean.serverURL
+        preferences.webDAVUsername = clean.username
+        preferences.webDAVRemotePath = clean.remotePath
+        if clean.password.isEmpty {
+            KeychainService.shared.deleteSecret(account: passwordAccount)
+        } else {
+            _ = KeychainService.shared.saveSecret(clean.password, account: passwordAccount)
+        }
+        if clean.syncPassphrase.isEmpty {
+            KeychainService.shared.deleteSecret(account: passphraseAccount)
+        } else {
+            _ = KeychainService.shared.saveSecret(clean.syncPassphrase, account: passphraseAccount)
+        }
+    }
+}
+
 struct WebDAVSyncView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var preferences = AppPreferences.shared
     @State private var coordinator = WebDAVAutoSyncCoordinator.shared
 
-    @State private var serverURL = ""
-    @State private var username = ""
-    @State private var password = ""
-    @State private var remotePath = "Fugue/fugue-sync.enc.json"
-    @State private var syncPassphrase = ""
+    @State private var draft = WebDAVDraftConfig()
+    @State private var savedDraft = WebDAVDraftConfig()
+    @State private var hasLoadedInitialDraft = false
 
     @State private var isBusy = false
     @State private var statusMessage: String?
     @State private var statusIsError = false
     @State private var showClearConfirm = false
+    @State private var confirmCloudOverwrite = false
 
     private var canAuthenticate: Bool {
-        !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !password.isEmpty
+        draft.canAuthenticate
     }
 
     private var canSyncEncrypted: Bool {
-        canAuthenticate && EncryptedBackupService.isValidExportPassword(syncPassphrase)
+        draft.canSyncEncrypted
     }
 
     private var activeBusy: Bool {
@@ -36,7 +151,7 @@ struct WebDAVSyncView: View {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("WebDAV 地址").font(.caption).foregroundStyle(.secondary)
-                    TextField("例如：https://dav.jianguoyun.com/dav/", text: $serverURL)
+                    TextField("例如：https://dav.jianguoyun.com/dav/", text: $draft.serverURL)
                         .accessibilityLabel("WebDAV 地址")
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -44,19 +159,19 @@ struct WebDAVSyncView: View {
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("账号 / 用户名").font(.caption).foregroundStyle(.secondary)
-                    TextField("请输入账号", text: $username)
+                    TextField("请输入账号", text: $draft.username)
                         .accessibilityLabel("账号 / 用户名")
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("WebDAV 密码 / 应用专用密码").font(.caption).foregroundStyle(.secondary)
-                    SecureField("请输入密码", text: $password)
+                    SecureField("请输入密码", text: $draft.password)
                         .accessibilityLabel("WebDAV 密码 / 应用专用密码")
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("远端文件路径").font(.caption).foregroundStyle(.secondary)
-                    TextField("例如：Fugue/fugue-sync.enc.json", text: $remotePath)
+                    TextField("例如：Fugue/fugue-sync.enc.json", text: $draft.remotePath)
                         .accessibilityLabel("远端文件路径")
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -70,9 +185,39 @@ struct WebDAVSyncView: View {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("同步加密密码（至少 8 位）").font(.caption).foregroundStyle(.secondary)
-                    SecureField("请输入加密密码", text: $syncPassphrase)
+                    SecureField("请输入加密密码", text: $draft.syncPassphrase)
                         .accessibilityLabel("同步加密密码（至少 8 位）")
                 }
+
+                if let validationError = draft.validationError {
+                    Label(validationError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                } else if draft.hasUnsavedChanges(comparedTo: savedDraft) {
+                    Label("有未保存的配置修改", systemImage: "pencil.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                } else if savedDraft.hasAnyConfiguredValue {
+                    Label("配置已保存至本机与钥匙串", systemImage: "checkmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.green)
+                }
+
+                Button {
+                    saveConfig()
+                    statusMessage = String(localized: "已安全保存 WebDAV 配置与凭据。")
+                    statusIsError = false
+                } label: {
+                    Label("保存配置", systemImage: "checkmark.shield")
+                }
+                .disabled(activeBusy || !draft.canSave(comparedTo: savedDraft))
+
+                Button {
+                    Task { await runTestConnection() }
+                } label: {
+                    Label("测试连接", systemImage: "antenna.radiowaves.left.and.right")
+                }
+                .disabled(!canAuthenticate || activeBusy)
             } header: {
                 Text("端到端备份加密密码")
             } footer: {
@@ -113,48 +258,34 @@ struct WebDAVSyncView: View {
 
             Section {
                 Button {
-                    saveConfig()
-                    statusMessage = String(localized: "已安全保存 WebDAV 配置与凭据。")
-                    statusIsError = false
-                } label: {
-                    Label("保存配置", systemImage: "checkmark.shield")
-                }
-                .disabled(activeBusy)
-
-                Button {
-                    Task { await runTestConnection() }
-                } label: {
-                    Label("测试连接", systemImage: "antenna.radiowaves.left.and.right")
-                }
-                .disabled(!canAuthenticate || activeBusy)
-
-                Button {
-                    Task { await runCheckRemoteStatus() }
-                } label: {
-                    Label("检查云端备份状态", systemImage: "arrow.triangle.2.circlepath.icloud")
-                }
-                .disabled(!canAuthenticate || activeBusy)
-
-                Button {
                     Task { await runSmartBidirectionalSync() }
                 } label: {
-                    Label("智能双向同步", systemImage: "icloud.and.arrow.up.and.down")
+                    Label("立即同步", systemImage: "icloud.and.arrow.up.and.down")
                 }
                 .disabled(!canSyncEncrypted || activeBusy || !PersistenceController.canCommitUserData(in: modelContext))
 
-                Button {
-                    Task { await runEncryptedUpload() }
-                } label: {
-                    Label("加密上传到云端", systemImage: "icloud.and.arrow.up")
-                }
-                .disabled(!canSyncEncrypted || activeBusy || !PersistenceController.canCommitUserData(in: modelContext))
+                DisclosureGroup("高级同步操作") {
+                    Button {
+                        Task { await runCheckRemoteStatus() }
+                    } label: {
+                        Label("检查云端备份状态", systemImage: "arrow.triangle.2.circlepath.icloud")
+                    }
+                    .disabled(!canAuthenticate || activeBusy)
 
-                Button {
-                    Task { await runEncryptedDownloadAndMerge() }
-                } label: {
-                    Label("从云端拉取并合并", systemImage: "icloud.and.arrow.down")
+                    Button {
+                        confirmCloudOverwrite = true
+                    } label: {
+                        Label("用本机副本覆盖云端", systemImage: "icloud.and.arrow.up")
+                    }
+                    .disabled(!canSyncEncrypted || activeBusy || !PersistenceController.canCommitUserData(in: modelContext))
+
+                    Button {
+                        Task { await runEncryptedDownloadAndMerge() }
+                    } label: {
+                        Label("从云端拉取并合并", systemImage: "icloud.and.arrow.down")
+                    }
+                    .disabled(!canSyncEncrypted || activeBusy || !PersistenceController.canCommitUserData(in: modelContext))
                 }
-                .disabled(!canSyncEncrypted || activeBusy || !PersistenceController.canCommitUserData(in: modelContext))
             } header: {
                 Text("同步操作")
             }
@@ -199,7 +330,7 @@ struct WebDAVSyncView: View {
                 }
             }
 
-            if !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !password.isEmpty || !syncPassphrase.isEmpty {
+            if draft.hasAnyConfiguredValue || savedDraft.hasAnyConfiguredValue {
                 Section {
                     Button("清除本地 WebDAV 凭据", role: .destructive) {
                         showClearConfirm = true
@@ -211,11 +342,21 @@ struct WebDAVSyncView: View {
         .navigationTitle("WebDAV 加密云同步")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            serverURL = preferences.webDAVServerURL
-            username = preferences.webDAVUsername
-            remotePath = preferences.webDAVRemotePath
-            password = KeychainService.shared.loadSecret(account: WebDAVSyncService.webDAVPasswordAccount)
-            syncPassphrase = KeychainService.shared.loadSecret(account: WebDAVSyncService.webDAVPassphraseAccount)
+            let loaded = WebDAVDraftConfig.load(from: preferences)
+            draft = loaded
+            savedDraft = loaded
+            hasLoadedInitialDraft = true
+        }
+        .onDisappear {
+            if hasLoadedInitialDraft && draft.shouldAutoSaveOnDisappear(comparedTo: savedDraft) {
+                saveConfig()
+            }
+        }
+        .confirmationDialog("覆盖云端备份？", isPresented: $confirmCloudOverwrite, titleVisibility: .visible) {
+            Button("覆盖云端文件", role: .destructive) { Task { await runEncryptedUpload() } }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这将用本机当前数据替换云端文件；其他设备尚未合并的内容可能丢失。")
         }
         .alert("确认清除 WebDAV 配置？", isPresented: $showClearConfirm) {
             Button("取消", role: .cancel) {}
@@ -266,23 +407,19 @@ struct WebDAVSyncView: View {
     }
 
     private func saveConfig() {
-        preferences.webDAVServerURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        preferences.webDAVUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanPath = remotePath.trimmingCharacters(in: .whitespacesAndNewlines)
-        preferences.webDAVRemotePath = cleanPath.isEmpty ? "Fugue/fugue-sync.enc.json" : cleanPath
-        _ = KeychainService.shared.saveSecret(password, account: WebDAVSyncService.webDAVPasswordAccount)
-        _ = KeychainService.shared.saveSecret(syncPassphrase, account: WebDAVSyncService.webDAVPassphraseAccount)
+        let clean = draft.normalized
+        clean.persist(to: preferences)
+        draft = clean
+        savedDraft = clean
     }
 
     private func clearAllCredentials() {
-        serverURL = ""
-        username = ""
-        password = ""
-        syncPassphrase = ""
-        remotePath = "Fugue/fugue-sync.enc.json"
+        let cleared = WebDAVDraftConfig()
+        draft = cleared
+        savedDraft = cleared
         preferences.webDAVServerURL = ""
         preferences.webDAVUsername = ""
-        preferences.webDAVRemotePath = "Fugue/fugue-sync.enc.json"
+        preferences.webDAVRemotePath = WebDAVDraftConfig.defaultRemotePath
         KeychainService.shared.deleteSecret(account: WebDAVSyncService.webDAVPasswordAccount)
         KeychainService.shared.deleteSecret(account: WebDAVSyncService.webDAVPassphraseAccount)
         coordinator.clearCachedState(preferences: preferences)
@@ -291,18 +428,23 @@ struct WebDAVSyncView: View {
     }
 
     private func runTestConnection() async {
-        saveConfig()
         isBusy = true
         statusMessage = nil
         defer { isBusy = false }
+        let candidate = draft.normalized
         do {
             try await WebDAVSyncService.testConnection(
-                serverURL: preferences.webDAVServerURL,
-                username: preferences.webDAVUsername,
-                password: password
+                serverURL: candidate.serverURL,
+                username: candidate.username,
+                password: candidate.password
             )
+            if candidate.validationError == nil {
+                saveConfig()
+                statusMessage = String(localized: "WebDAV 连接验证成功，已保存当前配置。")
+            } else {
+                statusMessage = String(localized: "WebDAV 服务器连接验证成功，请补全有效同步加密密码后保存。")
+            }
             statusIsError = false
-            statusMessage = String(localized: "WebDAV 连接验证成功，可以开始加密同步。")
         } catch {
             statusIsError = true
             statusMessage = error.localizedDescription
@@ -349,7 +491,8 @@ struct WebDAVSyncView: View {
                 context: modelContext,
                 tombstoneStore: .shared
             )
-            let pass = syncPassphrase
+            let pass = draft.syncPassphrase
+            let currentPassword = draft.password
             let encryptedData = try await Task.detached(priority: .userInitiated) {
                 try EncryptedBackupService.encryptPayload(payload, password: pass)
             }.value
@@ -358,7 +501,7 @@ struct WebDAVSyncView: View {
                 serverURL: preferences.webDAVServerURL,
                 remotePath: preferences.webDAVRemotePath,
                 username: preferences.webDAVUsername,
-                password: password
+                password: currentPassword
             )
             var finalMeta = putMeta
             if finalMeta.etag == nil && finalMeta.lastModified == nil {
@@ -366,7 +509,7 @@ struct WebDAVSyncView: View {
                     serverURL: preferences.webDAVServerURL,
                     remotePath: preferences.webDAVRemotePath,
                     username: preferences.webDAVUsername,
-                    password: password
+                    password: currentPassword
                 )) ?? putMeta
             }
             coordinator.recordSyncedRemoteMetadata(finalMeta, uploadedWorkspaceChangeID: workspaceChangeID, preferences: preferences)
@@ -384,21 +527,23 @@ struct WebDAVSyncView: View {
         statusMessage = nil
         defer { isBusy = false }
         do {
+            let currentPassword = draft.password
+            let currentPassphrase = draft.syncPassphrase
             let meta = try? await WebDAVSyncService.fetchRemoteMetadata(
                 serverURL: preferences.webDAVServerURL,
                 remotePath: preferences.webDAVRemotePath,
                 username: preferences.webDAVUsername,
-                password: password
+                password: currentPassword
             )
             let data = try await WebDAVSyncService.downloadEncryptedData(
                 serverURL: preferences.webDAVServerURL,
                 remotePath: preferences.webDAVRemotePath,
                 username: preferences.webDAVUsername,
-                password: password
+                password: currentPassword
             )
             let summary = try await EncryptedBackupService.decryptAndApplyAsync(
                 data: data,
-                password: syncPassphrase,
+                password: currentPassphrase,
                 to: modelContext,
                 tombstonePolicy: .enforce(.shared)
             )

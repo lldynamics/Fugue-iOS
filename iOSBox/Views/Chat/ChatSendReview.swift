@@ -11,7 +11,15 @@ struct ChatSendReview: Identifiable {
     let searchQuery: String?
     let requestCount: String?
     let inputEstimates: [InputEstimate]
-    let send: () -> Void
+    var budgetNotice: String?
+    var adjustModels: (() -> Void)?
+    var memories: [MemoryItem] = []
+    let send: (Set<UUID>?) -> Void
+
+    struct MemoryItem: Identifiable {
+        let id: UUID
+        let content: String
+    }
 
     struct InputEstimate: Identifiable {
         let id: String
@@ -22,7 +30,8 @@ struct ChatSendReview: Identifiable {
 
 struct ChatSendReviewSheet: View {
     let review: ChatSendReview
-    let confirm: () -> Void
+    let confirm: (Set<UUID>?) -> Void
+    @State private var excluded = Set<UUID>()
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -40,7 +49,15 @@ struct ChatSendReviewSheet: View {
                             LabeledContent("本条附件", value: String(review.attachmentCount))
                         }
                         if review.memoryCount > 0 {
-                            LabeledContent("个人记忆", value: String(review.memoryCount))
+                            DisclosureGroup {
+                                ForEach(review.memories) { item in
+                                    Toggle(item.content, isOn: Binding(get: { !excluded.contains(item.id) }, set: { included in
+                                        if included { excluded.remove(item.id) } else { excluded.insert(item.id) }
+                                    }))
+                                }
+                            } label: {
+                                LabeledContent("个人记忆", value: String(review.memories.count - excluded.count))
+                            }
                         }
                         if review.knowledgeCount > 0 {
                             LabeledContent("检索相关片段的资料", value: String(review.knowledgeCount))
@@ -56,13 +73,20 @@ struct ChatSendReviewSheet: View {
                 if let count = review.requestCount {
                     Section {
                         LabeledContent("预计请求", value: count)
+                        if let budgetNotice = review.budgetNotice {
+                            Text(verbatim: budgetNotice).font(.subheadline.weight(.medium))
+                                .accessibilityIdentifier("sendReview.budget")
+                            if let adjustModels = review.adjustModels {
+                                Button("调整参与模型或发言设置", action: adjustModels)
+                            }
+                        }
                         ForEach(review.inputEstimates) { estimate in
                             LabeledContent(estimate.name, value: estimate.cost ?? String(localized: "输入价格未知"))
                         }
                     } header: {
                         Text("请求数与输入费用估算")
                     } footer: {
-                        Text("仅估算首轮回答的输入费用。检索结果、输出、标题、重试及联网费用按实际用量计费。")
+                        Text("仅估算已安排发言的输入费用。后续接力、检索结果、输出、标题、重试及联网费用按实际用量计费。")
                     }
                 }
             }
@@ -70,7 +94,9 @@ struct ChatSendReviewSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("发送", action: confirm) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("发送") { confirm(Set(review.memories.map(\.id)).subtracting(excluded)) }
+                }
             }
         }
     }

@@ -18,6 +18,7 @@ struct AssistantEditorSheet: View {
     @State private var enableThinking: Bool = true
     @State private var thinkingBudgetTokens: Int = 4096
     @State private var maxOutputTokens: Int = 0
+    @State private var memoryIDs: Set<UUID>?
     @State private var knowledgeVolumeIDs: [UUID] = []
     @State private var savedNewPreset: AssistantPreset?
     @State private var bindingError: String?
@@ -143,6 +144,7 @@ struct AssistantEditorSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    NavigationLink("可使用的个人记忆") { MemoryScopePicker(selection: $memoryIDs) }
                 } header: {
                     Text("专属知识库 (NotebookLM 模式)")
                 } footer: {
@@ -199,7 +201,10 @@ struct AssistantEditorSheet: View {
     private func loadBindings() {
         do {
             let bindings = try PresetKnowledgeStore.shared.readableBindings()
-            if let preset { knowledgeVolumeIDs = bindings[preset.id.uuidString] ?? [] }
+            if let preset {
+                knowledgeVolumeIDs = bindings[preset.id.uuidString] ?? []
+                memoryIDs = bindings[PresetKnowledgeStore.memoryKey(preset.id)].map(Set.init)
+            }
             needsBindingReload = false
             damagedBindings = false
         } catch {
@@ -250,8 +255,7 @@ struct AssistantEditorSheet: View {
             record = created
         }
         do {
-            try modelContext.save()
-            try PresetKnowledgeStore.shared.setVolumeIDs(knowledgeVolumeIDs, for: record.id)
+            try PresetKnowledgeStore.shared.setBindings(volumes: knowledgeVolumeIDs, memories: memoryIDs, for: record.id) { try modelContext.save() }
             dismiss()
         } catch {
             damagedBindings = error is DecodingError

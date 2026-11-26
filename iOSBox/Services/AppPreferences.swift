@@ -66,6 +66,7 @@ final class AppPreferences {
         static let hapticFeedbackEnabled = "iosbox.pref.hapticFeedbackEnabled"
         static let autoCollapseReasoning = "iosbox.pref.autoCollapseReasoning"
         static let defaultTarget = "iosbox.pref.defaultTarget"
+        static let defaultFallbackTarget = "iosbox.pref.defaultFallbackTarget"
         static let defaultAssistant = "iosbox.pref.defaultAssistant"
         static let recentModelIDs = "iosbox.pref.recentModelIDs"
         static let customGroupTemplates = "iosbox.pref.customGroupTemplates"
@@ -80,7 +81,6 @@ final class AppPreferences {
         static let monthlyBudgetLimit = "iosbox.pref.monthlyBudgetLimit"
         static let monthlyBudgetCurrency = "iosbox.pref.monthlyBudgetCurrency"
         static let monthlyBudgetAlertRatio = "iosbox.pref.monthlyBudgetAlertRatio"
-        static let providerPricingMultipliers = "iosbox.pref.providerPricingMultipliers"
         static let webDAVServerURL = "iosbox.pref.webDAVServerURL"
         static let webDAVUsername = "iosbox.pref.webDAVUsername"
         static let webDAVRemotePath = "iosbox.pref.webDAVRemotePath"
@@ -127,14 +127,6 @@ final class AppPreferences {
         didSet {
             let clean = min(max(monthlyBudgetAlertRatio.isFinite ? monthlyBudgetAlertRatio : 0.8, 0.5), 0.95)
             defaults.set(clean, forKey: Keys.monthlyBudgetAlertRatio)
-        }
-    }
-
-    var providerPricingMultipliers: [String: Double] {
-        didSet {
-            if let data = try? JSONEncoder().encode(providerPricingMultipliers) {
-                defaults.set(data, forKey: Keys.providerPricingMultipliers)
-            }
         }
     }
 
@@ -283,6 +275,10 @@ final class AppPreferences {
         didSet { defaults.set(defaultTargetID, forKey: Keys.defaultTarget) }
     }
 
+    var defaultFallbackTargetID: String? {
+        didSet { defaults.set(defaultFallbackTargetID, forKey: Keys.defaultFallbackTarget) }
+    }
+
     var defaultAssistantID: UUID? {
         didSet { defaults.set(defaultAssistantID?.uuidString, forKey: Keys.defaultAssistant) }
     }
@@ -294,8 +290,16 @@ final class AppPreferences {
 
     func newChat(providers: [ProviderConfig], presets: [AssistantPreset], arena: Bool = false) -> Conversation {
         let ready = ProviderConfig.readyTargets(in: providers)
+        let primary = initialTarget(from: ready)
         let chat = Conversation(title: Conversation.defaultTitle, isArenaMode: arena && ready.count >= 2,
-                                primaryTarget: initialTarget(from: ready), arenaTargets: Array(ready.prefix(2)))
+                                primaryTarget: primary, arenaTargets: Array(ready.prefix(2)))
+        if !arena,
+           let fallbackID = defaultFallbackTargetID,
+           fallbackID != primary?.id,
+           let fallback = ready.first(where: { $0.id == fallbackID }) {
+            chat.assistanceSettings.fallbackTargets = [fallback]
+            chat.assistanceSettings.fallbackEnabled = true
+        }
         if let preset = presets.first(where: { $0.id == defaultAssistantID }) { chat.applyPreset(preset) }
         return chat
     }
@@ -352,6 +356,7 @@ final class AppPreferences {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.defaultTargetID = defaults.string(forKey: Keys.defaultTarget)
+        self.defaultFallbackTargetID = defaults.string(forKey: Keys.defaultFallbackTarget)
         self.defaultAssistantID = defaults.string(forKey: Keys.defaultAssistant).flatMap(UUID.init(uuidString:))
         self.audioTranscriptionProviderID = defaults.string(forKey: Keys.audioTranscriptionProviderID).flatMap(UUID.init(uuidString:))
         let storedASRModel = defaults.string(forKey: Keys.audioTranscriptionModel)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -407,12 +412,6 @@ final class AppPreferences {
         self.monthlyBudgetCurrency = storedCurrency.isEmpty ? "USD" : storedCurrency
         let storedAlert = defaults.double(forKey: Keys.monthlyBudgetAlertRatio)
         self.monthlyBudgetAlertRatio = (storedAlert.isFinite && storedAlert >= 0.5 && storedAlert <= 0.95) ? storedAlert : 0.8
-        if let multData = defaults.data(forKey: Keys.providerPricingMultipliers),
-           let decodedMult = try? JSONDecoder().decode([String: Double].self, from: multData) {
-            self.providerPricingMultipliers = decodedMult
-        } else {
-            self.providerPricingMultipliers = [:]
-        }
         self.webDAVServerURL = defaults.string(forKey: Keys.webDAVServerURL) ?? ""
         self.webDAVUsername = defaults.string(forKey: Keys.webDAVUsername) ?? ""
         let storedRemotePath = defaults.string(forKey: Keys.webDAVRemotePath)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -436,28 +435,16 @@ final class AppPreferences {
         }
         self.privacyBlurOnBackground = defaults.bool(forKey: Keys.privacyBlurOnBackground)
         self.autoRollingSummaryEnabled = defaults.bool(forKey: Keys.autoRollingSummaryEnabled)
-        self.moduleGroupChatEnabled = defaults.object(forKey: Keys.moduleGroupChatEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleGroupChatEnabled)
+        // Persist the initial choice once, before a fresh install gets its first-launch seed flag.
+        for key in [Keys.moduleGroupChatEnabled, Keys.moduleEnglishCoachEnabled] where defaults.object(forKey: key) == nil {
+            defaults.set(DataSeeder.hasSeededInstallation(defaults), forKey: key)
+        }
+        self.moduleGroupChatEnabled = defaults.bool(forKey: Keys.moduleGroupChatEnabled)
         self.moduleBookFriendsEnabled = defaults.object(forKey: Keys.moduleBookFriendsEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleBookFriendsEnabled)
-        self.moduleEnglishCoachEnabled = defaults.object(forKey: Keys.moduleEnglishCoachEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleEnglishCoachEnabled)
+        self.moduleEnglishCoachEnabled = defaults.bool(forKey: Keys.moduleEnglishCoachEnabled)
         self.moduleArenaEnabled = defaults.object(forKey: Keys.moduleArenaEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleArenaEnabled)
         self.moduleUsageTabEnabled = defaults.object(forKey: Keys.moduleUsageTabEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleUsageTabEnabled)
         self.imageUploadQuality = ImageUploadQuality.current(defaults: defaults)
-    }
-
-    func pricingMultiplier(for providerID: UUID) -> Double {
-        PricingMultiplierPolicy.sanitize(providerPricingMultipliers[providerID.uuidString.uppercased()])
-    }
-
-    func setPricingMultiplier(_ value: Double?, for providerID: UUID) {
-        let key = providerID.uuidString.uppercased()
-        let clean = PricingMultiplierPolicy.sanitize(value)
-        var updated = providerPricingMultipliers
-        if abs(clean - PricingMultiplierPolicy.defaultMultiplier) < 0.0001 {
-            updated.removeValue(forKey: key)
-        } else {
-            updated[key] = clean
-        }
-        providerPricingMultipliers = updated
     }
 
     func recordRecentModel(_ target: ResolvedModelTarget, maxCount: Int = 8) {

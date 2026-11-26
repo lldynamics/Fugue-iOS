@@ -45,6 +45,9 @@ struct AssistantListView: View {
     @State private var showGroupSetup = false
     @State private var pickingBookFile = false
     @State private var importingBook = false
+    @State private var startingLibraryDiscussion = false
+    @State private var createdLibraryChatID: UUID?
+    @State private var showingReadingNotes = false
     @State private var bookToRemove: BookVolume?
     @State private var bookError: String?
     @State private var preferences = AppPreferences.shared
@@ -89,6 +92,9 @@ struct AssistantListView: View {
                     .listRowBackground(Color.clear)
                 }
 
+                if preferences.showsArena {
+                    NavigationLink { ArenaDecisionLibrary() } label: { Label("模型对比记录", systemImage: "checkmark.bubble") }
+                }
                 switch activeSection {
                 case .friends:
                     PersonaDirectorySection(invite: { invitedProfile = $0 }, allowsGroupInvitations: preferences.showsGroupChat)
@@ -113,6 +119,9 @@ struct AssistantListView: View {
             .background(DS.Surface.grouped)
             .onAppear { reconcileVisibleSection() }
             .onChange(of: visibleSections) { _, _ in reconcileVisibleSection() }
+            .safeAreaInset(edge: .bottom) {
+                if UIDevice.current.userInterfaceIdiom != .phone { OptionalModuleControls() }
+            }
             .navigationTitle(UIDevice.current.userInterfaceIdiom == .phone ? activeSection.title : String(localized: "工作台"))
             .toolbar {
                 if let onClose {
@@ -123,6 +132,13 @@ struct AssistantListView: View {
                 } else if activeSection == .presets {
                     ToolbarItem(placement: .topBarLeading) {
                         EditButton()
+                            .accessibilityIdentifier("assistants.editPresets")
+                    }
+                }
+                if onClose != nil && activeSection == .presets {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        EditButton()
+                            .accessibilityIdentifier("assistants.editPresets")
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -140,20 +156,37 @@ struct AssistantListView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showBookFriends) {
-                BookFriendSetupSheet(initialBookID: preselectedBookID) { chat in
-                    SystemEntryRouter.shared.conversationID = chat.id
+            .sheet(isPresented: $showingReadingNotes, onDismiss: routeCreatedLibraryChatIfNeeded) {
+                ShelfReadingNotesSheet { citation in
+                    do {
+                        guard let book = try BookLibrary.find(citation.volumeID, in: modelContext) else { throw BookImportError.unavailable }
+                        let target = preferences.initialTarget(from: ProviderConfig.readyTargets(in: providers))
+                        let chat = try BookLibrary.companion(for: book, newDiscussion: false, target: target, in: modelContext)
+                        try ChatDraftStore.shared.state(for: chat.id).addReadingCitation(citation)
+                        createdLibraryChatID = chat.id
+                        showingReadingNotes = false
+                    } catch { bookError = error.localizedDescription }
                 }
             }
-            .sheet(isPresented: $showGroupSetup) {
+            .sheet(isPresented: $showBookFriends, onDismiss: routeCreatedLibraryChatIfNeeded) {
+                BookFriendSetupSheet(initialBookID: preselectedBookID) { chat in
+                    createdLibraryChatID = chat.id
+                    showBookFriends = false
+                }
+            }
+            .sheet(isPresented: $showGroupSetup, onDismiss: routeCreatedLibraryChatIfNeeded) {
                 GroupCreationFlow(providers: providers, presets: presets) { created in
-                    SystemEntryRouter.shared.conversationID = created.id
+                    createdLibraryChatID = created.id
+                    showGroupSetup = false
                 }
             }
             .sheet(item: $invitedProfile) { PersonaInvitationView(member: $0) }
-            .sheet(item: $inviting) { chat in
+            .sheet(item: $inviting, onDismiss: routeCreatedLibraryChatIfNeeded) { chat in
                 if let friend = chat.activeBookFriend {
-                    BookInvitationSheet(friend: friend) { SystemEntryRouter.shared.conversationID = $0.id }
+                    BookInvitationSheet(friend: friend) { opened in
+                        createdLibraryChatID = opened.id
+                        inviting = nil
+                    }
                 }
             }
             .sheet(item: $editingPreset) { preset in
@@ -161,6 +194,12 @@ struct AssistantListView: View {
             }
             .sheet(isPresented: $showCreateSheet) {
                 AssistantEditorSheet(preset: nil)
+            }
+            .sheet(isPresented: $startingLibraryDiscussion, onDismiss: routeCreatedLibraryChatIfNeeded) {
+                LibraryDiscussionSheet { chat in
+                    createdLibraryChatID = chat.id
+                    startingLibraryDiscussion = false
+                }
             }
             .sheet(isPresented: $showEnglishCoach) {
                 EnglishCoachHubView(onClose: { showEnglishCoach = false })
@@ -281,7 +320,7 @@ struct AssistantListView: View {
                         let deletedPresetID = preset.id
                         do {
                             try modelContext.save()
-                            try PresetKnowledgeStore.shared.setVolumeIDs([], for: deletedPresetID) {
+                            try PresetKnowledgeStore.shared.setBindings(volumes: [], memories: nil, for: deletedPresetID) {
                                 try modelContext.transaction { modelContext.delete(preset); try modelContext.save() }
                             }
                             if !modelContext.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
@@ -468,7 +507,7 @@ struct AssistantListView: View {
                             FriendActionLabel(title: "私聊", icon: "bubble.left")
                         }
                         .accessibilityLabel(Text("与 \(friend.name) 私聊"))
-                        if !preferences.simpleDailyMode {
+                        if preferences.showsGroupChat {
                             Button { inviting = chat } label: {
                                 FriendActionLabel(title: "邀请进群", icon: "person.2.badge.plus")
                             }
@@ -484,6 +523,10 @@ struct AssistantListView: View {
 
     private var bookshelfSection: some View {
         Section {
+            if books.isEmpty { LocalReadingSampleButton() }
+            else {
+                Button { startingLibraryDiscussion = true } label: { Label("用一组资料新建对话", systemImage: "books.vertical") }
+            }
             Button {
                 pickingBookFile = true
             } label: {
@@ -497,6 +540,7 @@ struct AssistantListView: View {
                 }
             }
             .disabled(importingBook)
+            Button { showingReadingNotes = true } label: { Label("阅读笔记", systemImage: "book.and.pencil") }
 
             ForEach(ocrQueue.orderedJobs) { job in
                 VStack(alignment: .leading, spacing: 6) {
@@ -605,10 +649,18 @@ struct AssistantListView: View {
         .accessibilityLabel(Text("《\(book.title)》的书籍操作"))
     }
 
+    private func routeCreatedLibraryChatIfNeeded() {
+        guard let id = createdLibraryChatID else { return }
+        createdLibraryChatID = nil
+        onClose?()
+        SystemEntryRouter.shared.conversationID = id
+    }
+
     private func startKnowledgeChat(with book: BookVolume, newDiscussion: Bool = false) {
         do {
             let target = preferences.initialTarget(from: ProviderConfig.readyTargets(in: providers))
             let chat = try BookLibrary.companion(for: book, newDiscussion: newDiscussion, target: target, in: modelContext)
+            onClose?()
             SystemEntryRouter.shared.openOriginalForChatID = newDiscussion ? nil : chat.id
             SystemEntryRouter.shared.conversationID = chat.id
         } catch { bookError = error.localizedDescription }

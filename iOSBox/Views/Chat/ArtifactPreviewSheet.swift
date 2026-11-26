@@ -37,30 +37,55 @@ enum ArtifactDocumentBuilder {
     }
 
     /// Strips active script blocks, embedded HTML/object containers, XML processing/entity directives,
+    /// SMIL mutation tags (`<set>`, `<animate attributeName="on*|href">`), external CSS `@import`/`url(...)`,
     /// inline event handlers (`on*=`), and non-fragment `href`/`xlink:href` URLs from SVG markup so
     /// previewed or exported `.svg` files cannot execute scripts or fetch remote resources.
     static func sanitizedSVG(_ rawSVG: String) -> String {
         var sanitized = rawSVG
-        let patterns: [String] = [
+        let removalPatterns: [String] = [
             // XML declarations that can pull external DTDs or stylesheets
             #"(?is)<!DOCTYPE\b[\s\S]*?(?:\[[\s\S]*?\]\s*)?>"#,
             #"(?is)<!ENTITY\b[\s\S]*?>"#,
             #"(?is)<\?xml-stylesheet\b[\s\S]*?\?>"#,
-            // Executable or embedded container tags (including optional XML namespace prefix)
-            #"(?is)<(?:[a-z0-9_-]+:)?(?:script|foreignObject|iframe|object|embed|applet)\b[^>]*>[\s\S]*?</(?:[a-z0-9_-]+:)?(?:script|foreignObject|iframe|object|embed|applet)\s*>"#,
-            #"(?is)</?(?:[a-z0-9_-]+:)?(?:script|foreignObject|iframe|object|embed|applet)\b[^>]*>"#,
-            // Inline DOM event handler attributes (onload, onclick, onerror, etc.)
-            #"(?is)\s+on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)"#,
-            // Non-fragment href / xlink:href (blocks javascript:, data:text/html, external URLs; keeps local #id refs)
-            #"(?is)\s+(?:[a-z0-9_-]+:)?href\s*=\s*(?:"\s*(?!#)[^"]*"|'\s*(?!#)[^']*'|(?![#\"'])[^\s>]+)"#
+            // Executable, container, or SMIL <set> tags (including optional XML namespace prefix)
+            #"(?is)<(?:[a-z0-9_-]+:)?(?:script|foreignObject|iframe|object|embed|applet|set)\b[^>]*>[\s\S]*?</(?:[a-z0-9_-]+:)?(?:script|foreignObject|iframe|object|embed|applet|set)\s*>"#,
+            #"(?is)</?(?:[a-z0-9_-]+:)?(?:script|foreignObject|iframe|object|embed|applet|set)\b[^>]*>"#,
+            // SMIL <animate*> mutating href / xlink:href / on* event attributes
+            #"(?is)<(?:[a-z0-9_-]+:)?animate[a-z0-9_-]*\b[^>]*\battributeName\s*=\s*(?:"\s*(?:[a-z0-9_-]+:)?(?:href|on[a-z0-9_-]+)[^"]*"|'\s*(?:[a-z0-9_-]+:)?(?:href|on[a-z0-9_-]+)[^']*'|(?:\s*)(?:[a-z0-9_-]+:)?(?:href|on[a-z0-9_-]+)\b)[^>]*>[\s\S]*?</(?:[a-z0-9_-]+:)?animate[a-z0-9_-]*\s*>"#,
+            #"(?is)<(?:[a-z0-9_-]+:)?animate[a-z0-9_-]*\b[^>]*\battributeName\s*=\s*(?:"\s*(?:[a-z0-9_-]+:)?(?:href|on[a-z0-9_-]+)[^"]*"|'\s*(?:[a-z0-9_-]+:)?(?:href|on[a-z0-9_-]+)[^']*'|(?:\s*)(?:[a-z0-9_-]+:)?(?:href|on[a-z0-9_-]+)\b)[^>]*>"#,
+            // External CSS @import rules and remote/executable url(...) references (preserves local url(#id))
+            #"(?is)@import\b[^;{}<>]*(?:;|$)"#,
+            #"(?is)url\(\s*['"]?\s*(?:https?:|ftp:|//|javascript:|vbscript:|data:\s*text/html)[^)]*\)"#
         ]
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern) {
-                sanitized = regex.stringByReplacingMatches(
-                    in: sanitized,
-                    range: NSRange(sanitized.startIndex..., in: sanitized),
-                    withTemplate: ""
-                )
+        let spaceAttributePatterns: [String] = [
+            // Inline DOM event handler attributes even without leading whitespace (e.g. <svg/onload=...> or "x"onload="...")
+            #"(?is)(?:[\s/]+|(?<=["']))on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*?(?=/?>|\s|$))"#,
+            // Non-fragment href / xlink:href even without leading whitespace (blocks javascript:, data:text/html, vbscript:, external URLs; keeps local #id refs)
+            #"(?is)(?:[\s/]+|(?<=["']))(?:[a-z0-9_-]+:)?href\s*=\s*(?:"\s*(?!#)[^"]*"|'\s*(?!#)[^']*'|(?![#"'\s>])(?:[^\s/>]|/(?!>))+)"#
+        ]
+
+        for _ in 0..<8 {
+            let previous = sanitized
+            for pattern in removalPatterns {
+                if let regex = try? NSRegularExpression(pattern: pattern) {
+                    sanitized = regex.stringByReplacingMatches(
+                        in: sanitized,
+                        range: NSRange(sanitized.startIndex..., in: sanitized),
+                        withTemplate: ""
+                    )
+                }
+            }
+            for pattern in spaceAttributePatterns {
+                if let regex = try? NSRegularExpression(pattern: pattern) {
+                    sanitized = regex.stringByReplacingMatches(
+                        in: sanitized,
+                        range: NSRange(sanitized.startIndex..., in: sanitized),
+                        withTemplate: " "
+                    )
+                }
+            }
+            if sanitized == previous {
+                break
             }
         }
         return sanitized
@@ -731,6 +756,7 @@ struct SandboxedArtifactWebView: UIViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+        webView.allowsLinkPreview = false
         webView.isOpaque = false
         webView.backgroundColor = .clear
 
@@ -758,6 +784,7 @@ struct SandboxedArtifactWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
+        uiView.allowsLinkPreview = false
         uiView.configuration.defaultWebpagePreferences.allowsContentJavaScript = allowsJavaScript
         if context.coordinator.ruleListInstalled {
             if context.coordinator.loadedHTML != html {

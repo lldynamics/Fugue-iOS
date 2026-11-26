@@ -8,6 +8,7 @@ final class PersonalMemory {
     var content: String
     var isEnabled: Bool
     var createdAt: Date
+    var updatedTimestamp: Double?
 
     init(id: UUID = UUID(), content: String, isEnabled: Bool = true, createdAt: Date = Date()) {
         self.id = id
@@ -24,15 +25,21 @@ final class PersonalMemory {
         var content: String
         var isEnabled: Bool
         var createdAt: Date
+        var updatedTimestamp: Double? = nil
     }
 
-    var snapshot: Snapshot { Snapshot(id: id, content: content, isEnabled: isEnabled, createdAt: createdAt) }
+    var snapshot: Snapshot { Snapshot(id: id, content: content, isEnabled: isEnabled, createdAt: createdAt, updatedTimestamp: updatedTimestamp) }
 
     @MainActor
-    static func prompt(in context: ModelContext) throws -> (text: String, count: Int) {
-        let memories = try context.fetch(FetchDescriptor<PersonalMemory>(sortBy: [SortDescriptor(\.createdAt)]))
-            .filter(\.isEnabled)
-            .prefix(maximumCount)
+    static func entries(in context: ModelContext, allowedIDs: Set<UUID>? = nil) throws -> [PersonalMemory] {
+        try context.fetch(FetchDescriptor<PersonalMemory>(sortBy: [SortDescriptor(\.createdAt)]))
+            .filter { $0.isEnabled && (allowedIDs?.contains($0.id) ?? true) }
+            .prefix(maximumCount).map { $0 }
+    }
+
+    @MainActor
+    static func prompt(in context: ModelContext, allowedIDs: Set<UUID>? = nil) throws -> (text: String, count: Int) {
+        let memories = try entries(in: context, allowedIDs: allowedIDs)
             .map { String($0.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maximumCharacters)) }
             .filter { !$0.isEmpty }
         guard !memories.isEmpty else { return ("", 0) }

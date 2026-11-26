@@ -23,12 +23,12 @@ final class ShareViewController: UIViewController {
                 let input = try await ShareInputLoader.load(extensionContext?.inputItems as? [NSExtensionItem] ?? [])
                 try Task.checkCancellation()
                 let store = try SystemEntryStore()
-                let models = try store.models()
+                let models = (try? store.models()) ?? []
                 presentContent(AnyView(ReadingComposerView(input: input, models: models, connection: { entry in
                     // Recheck the manifest immediately before sending; revoked entries fail closed.
                     guard try store.models().contains(entry) else { throw SystemEntryError.noModel }
                     return try SharedConnectionKeychain().load(id: entry.connectionID)
-                }, persist: { try store.save($0) }, close: { [weak self] _ in
+                }, persist: { try store.save($0) }, saveDraft: { try store.saveDraft($0) }, close: { [weak self] _ in
                     self?.extensionContext?.completeRequest(returningItems: nil)
                 })))
             } catch is CancellationError {

@@ -9,6 +9,7 @@ struct SearchExcerpt: Sendable {
     let match: String
     let after: String
     let highlightTerms: [String]
+    var sourceRange: NSRange? = nil
 
     var fullSnippet: String {
         before + match + after
@@ -25,6 +26,7 @@ struct SearchExcerpt: Sendable {
             before = (start == text.startIndex ? "" : "…") + text[start..<range.lowerBound]
             match = String(text[range])
             after = text[range.upperBound..<end] + (end == text.endIndex ? "" : "…")
+            sourceRange = NSRange(start..<end, in: text)
             highlightTerms = [trimmed]
             return
         }
@@ -43,6 +45,7 @@ struct SearchExcerpt: Sendable {
         before = (start == text.startIndex ? "" : "…") + text[start..<anchor.lowerBound]
         match = String(text[anchor])
         after = text[anchor.upperBound..<end] + (end == text.endIndex ? "" : "…")
+        sourceRange = NSRange(start..<end, in: text)
         highlightTerms = terms
     }
 
@@ -58,7 +61,7 @@ struct SearchExcerpt: Sendable {
                     before: hit.before,
                     match: hit.match,
                     after: hit.after,
-                    highlightTerms: terms
+                    highlightTerms: terms, sourceRange: hit.sourceRange
                 )
             }
         }
@@ -68,11 +71,12 @@ struct SearchExcerpt: Sendable {
         return SearchExcerpt(before: "", match: "", after: preview, highlightTerms: terms)
     }
 
-    init(before: String, match: String, after: String, highlightTerms: [String]) {
+    init(before: String, match: String, after: String, highlightTerms: [String], sourceRange: NSRange? = nil) {
         self.before = before
         self.match = match
         self.after = after
         self.highlightTerms = highlightTerms
+        self.sourceRange = sourceRange
     }
 }
 
@@ -172,7 +176,10 @@ struct ConversationSearchResult: Identifiable, Sendable {
             } else if includeReasoning, let excerpt = SearchExcerpt(in: message.reasoningContent, query: query) {
                 matches.append((message, excerpt, .reasoning))
             } else {
-                let attachmentNames = message.attachments.map(\.fileName).joined(separator: " ")
+                let attachmentNames = AttachmentSearchMetadataCache.shared.joinedFileNames(
+                    for: message.id,
+                    data: message.attachmentsData
+                )
                 if let excerpt = SearchExcerpt(in: attachmentNames, query: query) {
                     matches.append((message, excerpt, .attachment))
                 } else if includeReasoning {
@@ -212,7 +219,7 @@ struct BookSearchHit: Identifiable, Hashable, Sendable {
     let bookTitle: String
     let sectionTitle: String
     let chapterIndex: Int
-    let utf16Offset: Int
+    let citation: ReadingCitation?
     let excerpt: SearchExcerpt
 
     static func == (lhs: BookSearchHit, rhs: BookSearchHit) -> Bool {
@@ -274,11 +281,97 @@ private func deterministicFingerprint(_ parts: String...) -> String {
     return String(hash, radix: 16)
 }
 
+// MARK: - Lightweight Attachment Metadata Cache
+
+/// Caches attachment filenames keyed by `(messageID, byteCount, edgeDigest)` so repeated searches
+/// never re-parse multi-megabyte base64 attachment JSON blobs.
+final class AttachmentSearchMetadataCache: @unchecked Sendable {
+    static let shared = AttachmentSearchMetadataCache()
+
+    private struct Entry {
+        let byteCount: Int
+        let edgeDigest: UInt64
+        let fileNames: [String]
+        let joinedNames: String
+    }
+
+    private struct FileNameProbe: Decodable {
+        let fileName: String
+    }
+
+    private let lock = NSLock()
+    private var entries: [UUID: Entry] = [:]
+    private let maxEntries = 4_096
+
+    func fileNames(for messageID: UUID, data: Data) -> [String] {
+        guard !data.isEmpty else { return [] }
+        let count = data.count
+        let digest = Self.computeEdgeDigest(data)
+        if let hit = lock.withLock({ entries[messageID] }),
+           hit.byteCount == count,
+           hit.edgeDigest == digest {
+            return hit.fileNames
+        }
+
+        let names: [String] = autoreleasepool {
+            guard let parsed = try? JSONDecoder().decode([FileNameProbe].self, from: data),
+                  !parsed.isEmpty else {
+                return []
+            }
+            return parsed.map(\.fileName)
+        }
+        let joined = names.joined(separator: " ")
+        lock.withLock {
+            if entries.count >= maxEntries {
+                entries.removeAll(keepingCapacity: true)
+            }
+            entries[messageID] = Entry(
+                byteCount: count,
+                edgeDigest: digest,
+                fileNames: names,
+                joinedNames: joined
+            )
+        }
+        return names
+    }
+
+    func joinedFileNames(for messageID: UUID, data: Data) -> String {
+        guard !data.isEmpty else { return "" }
+        let count = data.count
+        let digest = Self.computeEdgeDigest(data)
+        if let hit = lock.withLock({ entries[messageID] }),
+           hit.byteCount == count,
+           hit.edgeDigest == digest {
+            return hit.joinedNames
+        }
+        return fileNames(for: messageID, data: data).joined(separator: " ")
+    }
+
+    private static func computeEdgeDigest(_ data: Data) -> UInt64 {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        let prime: UInt64 = 1_099_511_628_211
+        let headCount = min(data.count, 256)
+        for byte in data.prefix(headCount) {
+            hash ^= UInt64(byte)
+            hash = hash &* prime
+        }
+        if data.count > 256 {
+            let tailCount = min(data.count - 256, 256)
+            for byte in data.suffix(tailCount) {
+                hash ^= UInt64(byte)
+                hash = hash &* prime
+            }
+        }
+        return hash
+    }
+}
+
 @ModelActor
 private actor ModelContainerFTSExtractor {
     func extractSnapshot(
         includeBooks: Bool,
-        indexedBookSummaries: [String: FullTextSearchIndex.IndexedBookVolumeSummary] = [:]
+        indexedBookSummaries: [String: FullTextSearchIndex.IndexedBookVolumeSummary] = [:],
+        indexedSyncState: FullTextSearchIndex.IndexedConversationSyncState? = nil
     ) throws -> IndexedModelSnapshot {
         try Task.checkCancellation()
         let chats = try modelContext.fetch(
@@ -293,7 +386,6 @@ private actor ModelContainerFTSExtractor {
         var convTags: [UUID: String] = [:]
 
         let decoder = JSONDecoder()
-        struct FileNameProbe: Decodable { let fileName: String }
 
         for chat in chats {
             try Task.checkCancellation()
@@ -302,6 +394,10 @@ private actor ModelContainerFTSExtractor {
             if let cleanTag, !cleanTag.isEmpty {
                 convTags[chat.id] = cleanTag
             }
+
+            let chatDocKey = "chat:\(chat.id.uuidString)"
+            let chatUnchangedInIndex = indexedSyncState?.conversationEpochs[chatDocKey]
+                .map { abs($0 - chat.updatedAt.timeIntervalSince1970) < 0.000_5 } ?? false
 
             let memberLabels = chat.groupMembers.map(\.displayLabel).joined(separator: " ")
             let convAux = [cleanTag ?? "", memberLabels].filter { !$0.isEmpty }.joined(separator: " ")
@@ -312,7 +408,7 @@ private actor ModelContainerFTSExtractor {
                 "\(chat.messages.count)"
             )
             convDocs.append(FTSIndexedDocument(
-                docKey: "chat:\(chat.id.uuidString)",
+                docKey: chatDocKey,
                 entityType: .conversation,
                 parentID: chat.id.uuidString,
                 itemID: chat.id.uuidString,
@@ -345,13 +441,18 @@ private actor ModelContainerFTSExtractor {
                     compGroups[msg.id] = group
                 }
 
-                let attachmentNames: String = autoreleasepool {
-                    if !msg.attachmentsData.isEmpty,
-                       let parsed = try? decoder.decode([FileNameProbe].self, from: msg.attachmentsData),
-                       !parsed.isEmpty {
-                        return parsed.map(\.fileName).joined(separator: " ")
-                    }
-                    return ""
+                let msgDocKey = "msg:\(msg.id.uuidString)"
+                let attachmentNames: String
+                if !msg.isStreaming,
+                   (chatUnchangedInIndex || msg.role == .user),
+                   let alreadyIndexedNames = indexedSyncState?.messageAttachmentNames[msgDocKey] {
+                    // Avoid faulting `@Attribute(.externalStorage) var attachmentsData` from disk!
+                    attachmentNames = alreadyIndexedNames
+                } else {
+                    attachmentNames = AttachmentSearchMetadataCache.shared.joinedFileNames(
+                        for: msg.id,
+                        data: msg.attachmentsData
+                    )
                 }
 
                 let speaker = msg.role == .user
@@ -370,11 +471,11 @@ private actor ModelContainerFTSExtractor {
                 )
 
                 msgDocs.append(FTSIndexedDocument(
-                    docKey: "msg:\(msg.id.uuidString)",
+                    docKey: msgDocKey,
                     entityType: .message,
                     parentID: chat.id.uuidString,
                     itemID: msg.id.uuidString,
-                    title: "",
+                    title: attachmentNames,
                     subtitle: speaker,
                     rawBody: msg.content,
                     rawAux: aux,
@@ -400,9 +501,10 @@ private actor ModelContainerFTSExtractor {
                 try Task.checkCancellation()
                 let volumeKey = vol.id.uuidString
                 // BookVolume.id is content-addressed (SHA-256 of manuscript); when already indexed
-                // with matching title, skip faulting the multi-megabyte external manuscript blob.
+                // with matching title and chapter count, skip faulting the external manuscript blob.
                 if let existing = indexedBookSummaries[volumeKey],
                    existing.title == vol.title,
+                   existing.chunkCount == vol.chapterTitles.count,
                    existing.chunkCount > 0 {
                     retainedBookVolumeIDs.insert(volumeKey)
                     continue
@@ -421,7 +523,7 @@ private actor ModelContainerFTSExtractor {
                             itemID: "\(volumeKey):\(chapIdx)",
                             title: vol.title,
                             subtitle: chapter.title,
-                            rawBody: cleanText,
+                            rawBody: chapter.text,
                             rawAux: chapter.title,
                             folderTag: nil,
                             isBookmarked: false,
@@ -498,11 +600,13 @@ actor ConversationHistorySearch {
         let wantConversations = request.scope == .all || request.scope == .conversations
         let wantBooks = (request.scope == .all || request.scope == .books) && request.tag == nil && !request.bookmarkedChatsOnly
 
+        let convSyncState = wantConversations ? (try? await index.indexedConversationSyncState()) : nil
         let bookSummaries = wantBooks ? ((try? await index.indexedBookVolumeSummaries()) ?? [:]) : [:]
         let extractor = ModelContainerFTSExtractor(modelContainer: container)
         let snapshot = try await extractor.extractSnapshot(
             includeBooks: wantBooks,
-            indexedBookSummaries: bookSummaries
+            indexedBookSummaries: bookSummaries,
+            indexedSyncState: convSyncState
         )
         try Task.checkCancellation()
 
@@ -611,17 +715,23 @@ actor ConversationHistorySearch {
                 guard let vid = UUID(uuidString: hit.parentID),
                       let chapIdx = hit.chapterIndex,
                       seenChapters.insert(hit.docKey).inserted else { continue }
-                let offset = Self.findMatchUTF16Offset(in: hit.rawBody, query: trimmedQuery)
                 let excerpt = SearchExcerpt.fallbackSnippet(in: hit.rawBody, query: trimmedQuery)
                     ?? SearchExcerpt.fallbackSnippet(in: hit.subtitle, query: trimmedQuery)
                 guard let excerpt else { continue }
+                let citation = excerpt.sourceRange.flatMap { span -> ReadingCitation? in
+                    guard let range = Range(span, in: hit.rawBody) else { return nil }
+                    return ReadingCitation(KnowledgePassage(
+                        id: 1, volumeID: vid, documentTitle: hit.title, sectionTitle: hit.subtitle,
+                        excerpt: String(hit.rawBody[range]), chapterIndex: chapIdx, utf16Offset: span.location
+                    ))
+                }
                 output.books.append(BookSearchHit(
                     id: hit.docKey,
                     volumeID: vid,
                     bookTitle: hit.title,
                     sectionTitle: hit.subtitle,
                     chapterIndex: chapIdx,
-                    utf16Offset: offset,
+                    citation: citation,
                     excerpt: excerpt
                 ))
             }
@@ -661,17 +771,7 @@ actor ConversationHistorySearch {
         return (nil, .content)
     }
 
-    private static func findMatchUTF16Offset(in text: String, query: String) -> Int {
-        if let range = text.localizedStandardRange(of: query) {
-            return text[..<range.lowerBound].utf16.count
-        }
-        for term in SearchTokenizer.queryHighlightTerms(for: query) {
-            if let range = text.localizedStandardRange(of: term) {
-                return text[..<range.lowerBound].utf16.count
-            }
-        }
-        return 0
-    }
+
 }
 
 // MARK: - Observable Session for UI
@@ -732,18 +832,19 @@ struct MessageSearchText: Sendable {
     let id: UUID
     let content: String
     let reasoning: String
-    let attachments: Data
+    let attachmentNames: [String]
     let metadata: Data?
 
     init(_ message: ChatMessage) {
         id = message.id
         content = message.content
         reasoning = message.reasoningContent
-        attachments = message.attachmentsData
+        attachmentNames = AttachmentSearchMetadataCache.shared.fileNames(
+            for: message.id,
+            data: message.attachmentsData
+        )
         metadata = message.assistanceMetadataData
     }
-
-    private struct FileName: Decodable { let fileName: String }
 
     // Run the text scan on the generic executor using values from the visible branch.
     nonisolated static func matches(in messages: [Self], query: String, bookmarksOnly: Bool) async throws -> [Match] {
@@ -757,7 +858,7 @@ struct MessageSearchText: Sendable {
                 if bookmarksOnly { results.append(Match(id: row.id, excerpt: nil)) }
                 continue
             }
-            let attachmentNames = (try? decoder.decode([FileName].self, from: row.attachments))?.map(\.fileName) ?? []
+            let attachmentNames = row.attachmentNames
             let excerpt = SearchExcerpt(in: row.content, query: query)
                 ?? SearchExcerpt(in: row.reasoning, query: query)
                 ?? attachmentNames.lazy.compactMap { SearchExcerpt(in: $0, query: query) }.first

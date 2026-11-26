@@ -46,12 +46,16 @@ extension ChatEngine {
         context.insert(secondReply)
 
         let meta = assistantMessage.assistanceMetadata
+        secondReply.assistanceMetadata.selectedMemoryIDs = meta.selectedMemoryIDs
+        secondReply.assistanceMetadata.omittedMemory = meta.omittedMemory
         if meta.omittedKnowledge { secondReply.assistanceMetadata.omittedKnowledge = true }
         let memoryInfo = prepareMemory(
             conversation: conversation,
             omitMemory: meta.omittedMemory,
+            selectedIDs: meta.selectedMemoryIDs,
             context: context
         )
+        secondReply.assistanceMetadata.memoryCount = memoryInfo.count
         try? context.save()
 
         let slot = StreamSlot(
@@ -173,10 +177,49 @@ extension ChatEngine {
         let group = conversation.messages.filter { $0.comparisonGroupID == groupID }
         guard group.contains(where: { $0.id == reply.id }),
               !reply.isSynthesis || (ArenaSynthesis.isComplete(reply) && ArenaSynthesis.isCurrent(reply, in: group)) else { return }
-        let previous = group.map { ($0, $0.isSelectedInGroup) }
-        for message in group { message.isSelectedInGroup = message.id == reply.id }
-        do { try context.save() } catch {
-            for (message, selected) in previous { message.isSelectedInGroup = selected }
+        let previousSelection = group.map { ($0, $0.isSelectedInGroup) }
+        let previousReplyParent = reply.parentMessageID
+        let siblingIDs = Set(group.filter { $0.id != reply.id }.map(\.id))
+        let reparentedChildren: [(ChatMessage, UUID?)]
+        if ConversationTree.usesTree(conversation), !siblingIDs.isEmpty {
+            let directChildren = conversation.messages.filter { msg in
+                guard msg.comparisonGroupID != groupID, let pid = msg.parentMessageID else { return false }
+                return siblingIDs.contains(pid)
+            }
+            reparentedChildren = directChildren.map { ($0, $0.parentMessageID) }
+        } else {
+            reparentedChildren = []
+        }
+        let previousActiveLeaf = conversation.activeLeafMessageID
+
+        for message in group {
+            message.isSelectedInGroup = message.id == reply.id
+        }
+        if ConversationTree.usesTree(conversation) {
+            if reply.parentMessageID == nil,
+               let sharedParent = group.compactMap(\.parentMessageID).first(where: { !siblingIDs.contains($0) }) {
+                reply.parentMessageID = sharedParent
+            }
+            for (child, _) in reparentedChildren {
+                child.parentMessageID = reply.id
+            }
+            if let activeLeaf = conversation.activeLeafMessageID,
+               siblingIDs.contains(activeLeaf) || activeLeaf == reply.id {
+                ConversationTree.switchBranch(to: reply, in: conversation)
+            }
+        }
+
+        do {
+            try context.save()
+        } catch {
+            for (message, selected) in previousSelection {
+                message.isSelectedInGroup = selected
+            }
+            reply.parentMessageID = previousReplyParent
+            for (child, oldParent) in reparentedChildren {
+                child.parentMessageID = oldParent
+            }
+            conversation.activeLeafMessageID = previousActiveLeaf
             throw error
         }
     }

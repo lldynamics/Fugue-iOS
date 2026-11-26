@@ -187,13 +187,18 @@ enum OfficeDocumentReader {
         for (sheetName, path) in sheetTargets.prefix(maxSheets) {
             try Task.checkCancellation()
             guard let sheetBytes = try readOptional(path, xmlEntryLimit) else { continue }
-            let sheetText = try parseWorksheetXML(sheetBytes, sharedStrings: sharedStrings)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !sheetText.isEmpty else { continue }
             let cleanSheetName = String(
                 sheetName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300)
             )
             let chapterTitle = cleanSheetName.isEmpty ? String(localized: "工作表") : cleanSheetName
+            let remainingSheetBudget = BookManuscript.maximumTextBytes - totalBytes - chapterTitle.utf8.count
+            guard remainingSheetBudget > 0 else { throw BookImportError.textLimit }
+            let sheetText = try parseWorksheetXML(
+                sheetBytes,
+                sharedStrings: sharedStrings,
+                maxOutputBytes: remainingSheetBudget
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sheetText.isEmpty else { continue }
             let added = chapterTitle.utf8.count + sheetText.utf8.count
             guard added <= BookManuscript.maximumTextBytes - totalBytes else { throw BookImportError.textLimit }
             totalBytes += added
@@ -475,8 +480,15 @@ enum OfficeDocumentReader {
         return sheets
     }
 
-    private static func parseWorksheetXML(_ data: Data, sharedStrings: [String]) throws -> String {
+    private static func parseWorksheetXML(
+        _ data: Data,
+        sharedStrings: [String],
+        maxOutputBytes: Int = BookManuscript.maximumTextBytes
+    ) throws -> String {
         var rows: [String] = []
+        var materializedBytes = 0
+        var currentRowBytes = 0
+        var cleanedSharedStrings = [String?](repeating: nil, count: sharedStrings.count)
         var inRow = false
         var rowLimitHit = false
         var currentRow: [(Int, String)] = []
@@ -489,17 +501,21 @@ enum OfficeDocumentReader {
         var inInlineText = false
         var valBuf = ""
 
+        let control = XMLParseControl()
         try parseXML(
             data,
+            control: control,
             onStart: { name, attrs in
                 switch name {
                 case "row":
                     if rows.count >= maxRowsPerSheet {
                         rowLimitHit = true
+                        control.stopCleanly()
                         return
                     }
                     inRow = true
                     currentRow = []
+                    currentRowBytes = 0
                     nextCol = 0
                 case "c":
                     if inRow {
@@ -522,7 +538,13 @@ enum OfficeDocumentReader {
                 }
             },
             onChars: { str in
-                if inCell && (inValue || inInlineText) { valBuf += str }
+                if inCell && (inValue || inInlineText) {
+                    if str.utf8.count > maxOutputBytes - materializedBytes - currentRowBytes - valBuf.utf8.count {
+                        control.abort(with: .textLimit)
+                        return
+                    }
+                    valBuf += str
+                }
             },
             onEnd: { name in
                 switch name {
@@ -531,23 +553,41 @@ enum OfficeDocumentReader {
                 case "c":
                     if inCell && cellCol >= 0 && cellCol < maxColsPerRow {
                         let raw = valBuf.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let resolved: String
+                        let clean: String
                         switch cellType {
                         case "s":
                             if let idx = Int(raw), sharedStrings.indices.contains(idx) {
-                                resolved = sharedStrings[idx]
+                                if let cached = cleanedSharedStrings[idx] {
+                                    clean = cached
+                                } else {
+                                    let rawShared = sharedStrings[idx]
+                                    if rawShared.utf8.count > maxOutputBytes {
+                                        control.abort(with: .textLimit)
+                                        return
+                                    }
+                                    let normalized = rawShared.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                                    cleanedSharedStrings[idx] = normalized
+                                    clean = normalized
+                                }
                             } else {
-                                resolved = ""
+                                clean = ""
                             }
                         case "b":
-                            if raw == "1" || raw.lowercased() == "true" { resolved = "TRUE" }
-                            else if raw.isEmpty { resolved = "" }
-                            else { resolved = "FALSE" }
+                            if raw == "1" || raw.lowercased() == "true" { clean = "TRUE" }
+                            else if raw.isEmpty { clean = "" }
+                            else { clean = "FALSE" }
                         default:
-                            resolved = raw
+                            clean = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
                         }
-                        let clean = resolved.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-                        if !clean.isEmpty { currentRow.append((cellCol, clean)) }
+                        if !clean.isEmpty {
+                            let cellUTF8 = clean.utf8.count + (currentRow.isEmpty ? 0 : 3)
+                            if cellUTF8 > maxOutputBytes - materializedBytes - currentRowBytes {
+                                control.abort(with: .textLimit)
+                                return
+                            }
+                            currentRowBytes += cellUTF8
+                            currentRow.append((cellCol, clean))
+                        }
                     }
                     inCell = false
                     inValue = false
@@ -559,8 +599,17 @@ enum OfficeDocumentReader {
                         for (col, val) in currentRow where col <= maxCol {
                             dense[col] = val
                         }
-                        rows.append(dense.joined(separator: " | "))
+                        let rowLine = dense.joined(separator: " | ")
+                        let addedRowBytes = rowLine.utf8.count + (rows.isEmpty ? 0 : 1)
+                        if addedRowBytes > maxOutputBytes - materializedBytes {
+                            control.abort(with: .textLimit)
+                            return
+                        }
+                        materializedBytes += addedRowBytes
+                        rows.append(rowLine)
                     }
+                    currentRow = []
+                    currentRowBytes = 0
                     inRow = false
                 default: break
                 }
@@ -659,6 +708,7 @@ enum OfficeDocumentReader {
 
     private static func parseXML(
         _ data: Data,
+        control: XMLParseControl = XMLParseControl(),
         onStart: @escaping (String, [String: String]) -> Void,
         onChars: @escaping (String) -> Void = { _ in },
         onEnd: @escaping (String) -> Void = { _ in }
@@ -668,19 +718,51 @@ enum OfficeDocumentReader {
         if probe.contains("<!ENTITY") || probe.contains("<!DOCTYPE") {
             throw BookImportError.invalidBook
         }
-        let delegate = OOXMLParserDelegate(onStart: onStart, onChars: onChars, onEnd: onEnd)
         let parser = XMLParser(data: data)
+        control.bind(parser)
+        let delegate = OOXMLParserDelegate(control: control, onStart: onStart, onChars: onChars, onEnd: onEnd)
         parser.delegate = delegate
         parser.shouldResolveExternalEntities = false
         parser.externalEntityResolvingPolicy = .never
-        guard parser.parse(), parser.parserError == nil, !delegate.aborted else {
+        let succeeded = parser.parse()
+        if let customError = control.abortError {
+            throw customError
+        }
+        if control.stoppedCleanly {
+            try Task.checkCancellation()
+            return
+        }
+        guard succeeded, parser.parserError == nil, !delegate.aborted else {
             try Task.checkCancellation()
             throw BookImportError.invalidBook
         }
     }
 }
 
+private final class XMLParseControl {
+    private weak var parser: XMLParser?
+    private(set) var abortError: BookImportError?
+    private(set) var stoppedCleanly = false
+
+    func bind(_ parser: XMLParser) {
+        self.parser = parser
+    }
+
+    func abort(with error: BookImportError) {
+        guard abortError == nil else { return }
+        abortError = error
+        parser?.abortParsing()
+    }
+
+    func stopCleanly() {
+        guard abortError == nil else { return }
+        stoppedCleanly = true
+        parser?.abortParsing()
+    }
+}
+
 private final class OOXMLParserDelegate: NSObject, XMLParserDelegate {
+    private let control: XMLParseControl
     private let onStart: (String, [String: String]) -> Void
     private let onChars: (String) -> Void
     private let onEnd: (String) -> Void
@@ -688,10 +770,12 @@ private final class OOXMLParserDelegate: NSObject, XMLParserDelegate {
     private(set) var aborted = false
 
     init(
+        control: XMLParseControl,
         onStart: @escaping (String, [String: String]) -> Void,
         onChars: @escaping (String) -> Void,
         onEnd: @escaping (String) -> Void
     ) {
+        self.control = control
         self.onStart = onStart
         self.onChars = onChars
         self.onEnd = onEnd
@@ -704,6 +788,7 @@ private final class OOXMLParserDelegate: NSObject, XMLParserDelegate {
         qualifiedName qName: String?,
         attributes attributeDict: [String: String]
     ) {
+        guard control.abortError == nil, !control.stoppedCleanly else { return }
         depth += 1
         guard depth <= 128, !Task.isCancelled else {
             aborted = true
@@ -715,9 +800,11 @@ private final class OOXMLParserDelegate: NSObject, XMLParserDelegate {
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
-        guard !aborted, !Task.isCancelled else {
-            aborted = true
-            parser.abortParsing()
+        guard !aborted, control.abortError == nil, !control.stoppedCleanly, !Task.isCancelled else {
+            if control.abortError == nil && !control.stoppedCleanly {
+                aborted = true
+                parser.abortParsing()
+            }
             return
         }
         onChars(string)
@@ -733,6 +820,7 @@ private final class OOXMLParserDelegate: NSObject, XMLParserDelegate {
         namespaceURI: String?,
         qualifiedName qName: String?
     ) {
+        guard control.abortError == nil, !control.stoppedCleanly else { return }
         let name = elementName.split(separator: ":").last?.lowercased() ?? ""
         onEnd(name)
         if depth > 0 { depth -= 1 }

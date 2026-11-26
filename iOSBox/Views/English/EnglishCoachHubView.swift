@@ -21,6 +21,7 @@ struct EnglishCoachHubView: View {
     }
 
     var onClose: (() -> Void)? = nil
+    var journalOnly = false
 
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
@@ -62,6 +63,21 @@ struct EnglishCoachHubView: View {
     }
 
     var body: some View {
+        if journalOnly {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: DS.Spacing.lg) {
+                    ForEach(store.journalEntries) { journalEntryCard($0) }
+                }.padding(DS.Spacing.lg)
+            }
+            .background(DS.Surface.grouped)
+            .navigationTitle("学习日志")
+            .onDisappear { speechCoach.stopSpeaking() }
+        } else {
+            coach
+        }
+    }
+
+    private var coach: some View {
         NavigationStack {
             Group {
                 if !store.hasCompletedOnboarding {
@@ -166,7 +182,7 @@ struct EnglishCoachHubView: View {
             } message: {
                 Text("AI 外教会结合你的学情记忆，围绕该主题定制表达与跟读句。")
             }
-            .alert("手动添加发音薄弱词", isPresented: $showAddWeakWordAlert) {
+            .alert("手动添加跟读练习词", isPresented: $showAddWeakWordAlert) {
                 TextField("输入英文单词，如 schedule / rural", text: $newWeakWordDraft)
                     .textInputAutocapitalization(.never)
                 Button("取消", role: .cancel) { newWeakWordDraft = "" }
@@ -278,7 +294,7 @@ struct EnglishCoachHubView: View {
                             Text("定制你的无课本 AI 英语私教")
                                 .font(.system(.title3, design: .serif).weight(.bold))
                                 .foregroundStyle(.primary)
-                            Text("每天自动排课 · 逐词跟读纠音 · 情景陪练 · 持续学情记忆")
+                            Text("每天自动排课 · 逐词跟读对照 · 情景陪练 · 持续学情记忆")
                                 .font(.caption)
                                 .foregroundStyle(DS.Surface.inkSecondary)
                         }
@@ -609,14 +625,14 @@ struct EnglishCoachHubView: View {
                     Text("准备好开始今天的英语开口了吗？")
                         .font(.headline)
                         .foregroundStyle(.primary)
-                    Text("包含 3 个高频地道短语、阶梯逐词跟读纠音与沉浸情景对话。")
+                    Text("包含 3 个高频地道短语、阶梯逐词跟读对照与沉浸情景对话。")
                         .font(.caption)
                         .foregroundStyle(DS.Surface.inkSecondary)
                 }
             }
 
             if !store.memory.weakWords.isEmpty || !store.memory.grammarBlindspots.isEmpty {
-                Text("将自动融合复习你近期记录的 \(store.memory.weakWords.count) 个发音薄弱词与 \(store.memory.grammarBlindspots.count) 处表达盲区。")
+                Text("将自动融合复习你近期记录的 \(store.memory.weakWords.count) 个跟读练习词与 \(store.memory.grammarBlindspots.count) 处表达盲区。")
                     .font(.caption)
                     .foregroundStyle(theme.readableText)
                     .padding(10)
@@ -886,7 +902,7 @@ struct EnglishCoachHubView: View {
                 Label("尚无学习日志记录", systemImage: "book.pages")
                     .font(.headline)
                     .foregroundStyle(.primary)
-                Text("每完成一节今日微课或情景语音陪练，系统都会自动在此沉淀你的发音跟读得分、地道表达对照以及 AI 外教的成长点评。")
+                Text("每完成一节今日微课或情景语音陪练，系统都会自动在此沉淀你的跟读文本匹配度、地道表达对照以及 AI 外教的成长点评。")
                     .font(.subheadline)
                     .foregroundStyle(DS.Surface.inkSecondary)
                     .lineSpacing(3)
@@ -919,7 +935,7 @@ struct EnglishCoachHubView: View {
 
                 if let avg = entry.averagePronunciationScore {
                     DSBadge(
-                        text: String(localized: "跟读 \(avg) 分"),
+                        text: String(localized: "平均文本匹配度 \(avg)%"),
                         icon: "waveform",
                         style: .accent(.teal)
                     )
@@ -1080,7 +1096,7 @@ struct EnglishCoachHubView: View {
         // 3. Pronunciation Weak Words
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             HStack {
-                Label("发音薄弱词本 (\(store.memory.weakWords.count))", systemImage: "ear.badge.waveform")
+                Label("跟读练习词本 (\(store.memory.weakWords.count))", systemImage: "ear.badge.waveform")
                     .font(.subheadline.weight(.bold))
                 Spacer()
                 Button {
@@ -1097,7 +1113,7 @@ struct EnglishCoachHubView: View {
             }
 
             if store.memory.weakWords.isEmpty {
-                Text("跟读训练中漏读或发音偏离的单词会自动收录于此，并在后续每日微课中自然复现。")
+                Text("跟读时未匹配到的单词会自动收录于此，并在后续每日微课中自然复现。")
                     .font(.caption)
                     .foregroundStyle(DS.Surface.inkSecondary)
             } else {
@@ -1111,7 +1127,7 @@ struct EnglishCoachHubView: View {
                                 DSBadge(text: String(localized: "偏差 \(item.missCount) 次"), style: .accent(.vermilion))
                             }
                             if !item.heardAs.isEmpty {
-                                Text("曾被听成：\(item.heardAs.joined(separator: " / "))")
+                                Text("曾被识别为：\(item.heardAs.joined(separator: " / "))")
                                     .font(.caption2)
                                     .foregroundStyle(DS.Surface.inkSecondary)
                             }

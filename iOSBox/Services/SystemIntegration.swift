@@ -372,6 +372,27 @@ enum ExternalReceiptImporter {
     }
 
     @MainActor
+    static func importDraft(_ entry: SharedDraftEntry, context: ModelContext, drafts: ChatDraftStore,
+                            tombstones: SyncTombstoneStore = .shared) throws {
+        let id = entry.id
+        guard tombstones.latestDeletion(kind: .conversation, id: id) == nil else { return }
+        var lookup = FetchDescriptor<Conversation>(predicate: #Predicate { $0.id == id })
+        lookup.fetchLimit = 1
+        guard try context.fetch(lookup).isEmpty else { return }
+        try AttachmentProcessor.validate(entry.attachments)
+        let chat = Conversation(id: id, title: entry.title.isEmpty ? String(localized: "分享草稿") : entry.title)
+        chat.createdAt = entry.createdAt
+        chat.updatedAt = entry.createdAt
+        try drafts.save(ChatDraft(text: entry.text, attachments: entry.attachments), for: id)
+        context.insert(chat)
+        do { try context.save() }
+        catch {
+            context.delete(chat)
+            throw error
+        }
+    }
+
+    @MainActor
     static func drain(_ store: SystemEntryStore, context: ModelContext) throws {
         let configurations = context.container.configurations
         guard PersistenceController.canCommitUserData(in: context) else { return }
@@ -381,6 +402,15 @@ enum ExternalReceiptImporter {
         for (url, receipt) in batch.entries {
             do {
                 _ = try importReceipt(receipt, context: context)
+                if durable { try FileManager.default.removeItem(at: url) }
+            } catch { failed = true }
+        }
+        for url in try store.draftFiles() {
+            do {
+                try autoreleasepool {
+                    let entry = try store.readDraft(url)
+                    try importDraft(entry, context: context, drafts: .shared)
+                }
                 if durable { try FileManager.default.removeItem(at: url) }
             } catch { failed = true }
         }

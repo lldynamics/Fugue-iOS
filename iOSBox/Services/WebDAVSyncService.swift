@@ -419,6 +419,30 @@ enum WebDAVSyncService {
     }
 
     @discardableResult
+    static func uploadEncryptedFile(
+        _ fileURL: URL,
+        serverURL rawServerURL: String,
+        remotePath: String,
+        username: String,
+        password: String,
+        ifMatchETag: String? = nil,
+        ifNoneMatchStar: Bool = false,
+        session: URLSession? = nil
+    ) async throws -> WebDAVRemoteMetadata {
+        try await uploadRawFile(
+            fileURL,
+            contentType: "application/json; charset=utf-8",
+            serverURL: rawServerURL,
+            remotePath: remotePath,
+            username: username,
+            password: password,
+            ifMatchETag: ifMatchETag,
+            ifNoneMatchStar: ifNoneMatchStar,
+            session: session
+        )
+    }
+
+    @discardableResult
     static func uploadRawData(
         _ data: Data,
         contentType: String,
@@ -431,6 +455,44 @@ enum WebDAVSyncService {
         session: URLSession? = nil
     ) async throws -> WebDAVRemoteMetadata {
         guard data.count <= BackupService.maximumFileBytes else {
+            throw WebDAVSyncError.payloadTooLarge
+        }
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("webdav-upload-\(UUID().uuidString).tmp")
+        try data.write(to: tempURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        return try await uploadRawFile(
+            tempURL,
+            contentType: contentType,
+            serverURL: rawServerURL,
+            remotePath: remotePath,
+            username: username,
+            password: password,
+            ifMatchETag: ifMatchETag,
+            ifNoneMatchStar: ifNoneMatchStar,
+            session: session
+        )
+    }
+
+    @discardableResult
+    static func uploadRawFile(
+        _ fileURL: URL,
+        contentType: String,
+        serverURL rawServerURL: String,
+        remotePath: String,
+        username: String,
+        password: String,
+        ifMatchETag: String? = nil,
+        ifNoneMatchStar: Bool = false,
+        session: URLSession? = nil
+    ) async throws -> WebDAVRemoteMetadata {
+        let resourceValues = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard resourceValues.isRegularFile == true,
+              let fileSize = resourceValues.fileSize else {
+            throw WebDAVSyncError.httpError(0)
+        }
+        guard fileSize <= BackupService.maximumFileBytes else {
             throw WebDAVSyncError.payloadTooLarge
         }
         let resolved = try resolvedTarget(serverURL: rawServerURL, remotePath: remotePath)
@@ -461,14 +523,14 @@ enum WebDAVSyncService {
         put.httpMethod = "PUT"
         put.setValue(auth, forHTTPHeaderField: "Authorization")
         put.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        put.setValue(String(fileSize), forHTTPHeaderField: "Content-Length")
         if let etag = ifMatchETag?.trimmingCharacters(in: .whitespacesAndNewlines), !etag.isEmpty {
             put.setValue(etag, forHTTPHeaderField: "If-Match")
         } else if ifNoneMatchStar {
             put.setValue("*", forHTTPHeaderField: "If-None-Match")
         }
-        put.httpBody = data
 
-        let (_, response) = try await activeSession.data(for: put)
+        let (_, response) = try await activeSession.upload(for: put, fromFile: fileURL)
         guard let http = response as? HTTPURLResponse else {
             throw WebDAVSyncError.httpError(0)
         }

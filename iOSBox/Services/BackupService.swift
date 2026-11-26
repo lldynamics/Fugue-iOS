@@ -6,7 +6,7 @@ import SwiftData
 /// Full local backup without account credentials. Recreated providers retain their IDs for
 /// conversation references and start disabled with their own local Keychain accounts.
 struct BackupArchive: Codable {
-    static let currentFormatVersion = 7
+    static let currentFormatVersion = 8
 
     var formatVersion: Int
     var exportedAt: Date
@@ -21,6 +21,8 @@ struct BackupArchive: Codable {
     var shelfPositions: [ShelfReadingState.Position]? = nil
     var tombstones: [SyncTombstone]? = nil
     var englishCoach: EnglishCoachStore.PersistedState? = nil
+    var annotations: [ReadingAnnotation.Snapshot]? = nil
+    var memoryCollections: [NamedMemoryCollection]? = nil
 }
 
 struct ProviderBackup: Codable {
@@ -36,6 +38,7 @@ struct ProviderBackup: Codable {
     /// Secret headers are exported with an empty value (the value lives in the Keychain).
     var customHeaders: [CustomHeader]
     var notes: String
+    var updatedAt: Date? = nil
 }
 
 struct PresetBackup: Codable {
@@ -54,6 +57,7 @@ struct PresetBackup: Codable {
     var isBuiltIn: Bool
     var sortOrder: Int
     var knowledgeVolumeIDs: [UUID]? = nil
+    var memoryIDs: [UUID]? = nil
 }
 
 struct ConversationBackup: Codable {
@@ -81,6 +85,7 @@ struct ConversationBackup: Codable {
     var messages: [MessageBackup]
     var organizationEdits: ConversationOrganizationEdits?
     var legacyImportID: UUID?
+    var messageChanges: [UUID: MessagePresenceChange]? = nil
 
     mutating func resolveLinkedPersonas(_ profiles: [UUID: GroupMember]) {
         guard !profiles.isEmpty, var settings = assistanceSettings else { return }
@@ -157,6 +162,7 @@ struct ConversationBackup: Codable {
         config.assistanceSettings = (assistanceSettings ?? AssistanceSettings()).forPersonaBackup
         config.legacyImportID = nil
         config.organizationEdits = nil
+        config.messageChanges = nil
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return UUID(contentOf: try encoder.encode(config))
@@ -266,15 +272,26 @@ struct ImportSummary: Equatable {
     var failedCredentialWrites = 0
     var restoredProfiles = 0
     var knowledgeRestoreFailed = false
+    var memoryCollections = 0
+    var memoryCollectionWriteFailed = false
+    var annotations = 0
+    var drafts = 0
+    var conflictingDrafts = 0
+    var draftFailures = 0
 
     var hasWarnings: Bool {
-        !credentialConflicts.isEmpty || failedCredentialWrites > 0 || knowledgeRestoreFailed
+        !credentialConflicts.isEmpty || failedCredentialWrites > 0 || knowledgeRestoreFailed || memoryCollectionWriteFailed || draftFailures > 0
     }
     var title: String { hasWarnings ? String(localized: "备份需继续处理") : String(localized: "导入完成") }
 
     var description: String {
         var parts: [String] = []
         if restoredProfiles > 0 { parts.append(String(localized: "人物档案 \(restoredProfiles) 个")) }
+        if memoryCollections > 0 { parts.append(String(localized: "记忆集合 \(memoryCollections) 个")) }
+        if annotations > 0 { parts.append(String(localized: "读书摘录 \(annotations) 条")) }
+        if drafts > 0 { parts.append(String(localized: "未发送草稿 \(drafts) 份")) }
+        if conflictingDrafts > 0 { parts.append(String(localized: "\(conflictingDrafts) 份不同版本已另存至「找回的草稿」分组")) }
+        if draftFailures > 0 { parts.append(String(localized: "有 \(draftFailures) 份草稿未能写入，可以重新导入")) }
         if restoredConversations > 0 {
             parts.append(String(localized: "已恢复 \(restoredConversations) 个原对话"))
         }
@@ -298,6 +315,7 @@ struct ImportSummary: Equatable {
             let list = parts.joined(separator: String(localized: "，"))
             lines.append(String(localized: "已导入：\(list)。"))
         }
+        if memoryCollectionWriteFailed { lines.append(String(localized: "记忆集合未能写入，可重新导入备份。")) }
         if providers > 0 {
             lines.append(String(localized: "请在服务商设置中核对导入的连接地址，再启用服务商。"))
         }
@@ -343,6 +361,18 @@ enum BackupService {
             for message in chat.messages {
                 try count(message.content)
                 try count(message.reasoningContent)
+                for decision in message.assistanceMetadata?.arenaDecisions ?? [] {
+                    try count(decision.question)
+                    try count(decision.reason)
+                    for tag in decision.tags { try count(tag) }
+                    for answer in decision.answers {
+                        try count(answer.content)
+                        for attachment in answer.attachments {
+                            try count(attachment.dataBase64)
+                            try count(attachment.extractedText)
+                        }
+                    }
+                }
                 for attachment in message.attachments {
                     try count(attachment.dataBase64)
                     try count(attachment.extractedText)
@@ -412,6 +442,12 @@ enum BackupService {
         let requests = try context.fetch(FetchDescriptor<RequestRecord>(sortBy: [SortDescriptor(\.startedAt)]))
         let memories = try context.fetch(FetchDescriptor<PersonalMemory>(sortBy: [SortDescriptor(\.createdAt)]))
         let bindings = try knowledgeStore.readableBindings()
+        let memoryIDs = Set(memories.map(\.id))
+        let collections: [NamedMemoryCollection] = tombstoneStore == nil ? NamedMemoryCollection.read(bindings).map { group in
+            var snapshot = group
+            snapshot.memoryIDs = group.memoryIDs.filter { memoryIDs.contains($0) }
+            return snapshot
+        } : []
         let tombstones = tombstoneStore?.allTombstones() ?? []
         let isPersistent = !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly)
         let englishSnapshot = isPersistent ? EnglishCoachStore.shared.snapshotForBackup() : nil
@@ -434,7 +470,8 @@ enum BackupService {
                         }
                         return copy
                     },
-                    notes: p.notes
+                    notes: p.notes,
+                    updatedAt: p.updatedAt
                 )
             },
             presets: presets.map { p in
@@ -446,7 +483,7 @@ enum BackupService {
                     maxOutputTokens: p.maxOutputTokens, contextMessageLimit: p.contextMessageLimit,
                     enableThinking: p.enableThinking, thinkingBudgetTokens: p.thinkingBudgetTokens,
                     isBuiltIn: p.isBuiltIn, sortOrder: p.sortOrder,
-                    knowledgeVolumeIDs: volumeIDs.isEmpty ? nil : volumeIDs
+                    knowledgeVolumeIDs: volumeIDs.isEmpty ? nil : volumeIDs, memoryIDs: bindings[PresetKnowledgeStore.memoryKey(p.id)]
                 )
             },
             conversations: try conversations.map {
@@ -464,12 +501,14 @@ enum BackupService {
             personaProfiles: try context.fetch(FetchDescriptor<PersonaProfile>()).map { try $0.member().portableProfile },
             shelfPositions: try context.fetch(FetchDescriptor<ShelfReadingState>()).map(\.position),
             tombstones: tombstones.isEmpty ? nil : tombstones,
-            englishCoach: englishSnapshot
+            englishCoach: englishSnapshot,
+            annotations: try context.fetch(FetchDescriptor<ReadingAnnotation>()).map(\.snapshot),
+            memoryCollections: collections.isEmpty ? nil : collections
         )
     }
 
     @MainActor
-    private static func snapshot(_ c: Conversation, forExport: Bool = false, includeMessages: Bool = true) -> ConversationBackup {
+    static func snapshot(_ c: Conversation, forExport: Bool = false, includeMessages: Bool = true) -> ConversationBackup {
         let messages = includeMessages ? c.sortedMessages : []
         let exportedError = String(localized: "请求失败，详细错误仅保留在原设备。")
         func diagnostic(_ message: ChatMessage) -> String? {
@@ -523,7 +562,8 @@ enum BackupService {
                     createdAt: m.createdAt
                 )
             },
-            organizationEdits: c.backupState.organizationEdits, legacyImportID: c.backupState.legacyImportID
+            organizationEdits: c.backupState.organizationEdits, legacyImportID: c.backupState.legacyImportID,
+            messageChanges: c.backupState.messageChanges
         )
     }
 
@@ -533,10 +573,17 @@ enum BackupService {
         try context.save()
         let saved = snapshot(conversation)
         do {
+            var changes = conversation.backupState.messageChanges ?? [:]
+            MessagePresenceChange.record(saved.messages.map(\.id), deleted: true, in: &changes)
+            conversation.backupState.messageChanges = changes
             for message in conversation.messages { context.delete(message) }
             conversation.messages.removeAll()
             conversation.activeLeafMessageID = nil
             try context.save()
+            WebDAVAutoSyncCoordinator.shared.markWorkspaceChanged(in: context)
+            if !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
+                RollingContextSummaryStore.shared.remove(for: conversation.id)
+            }
             return saved
         } catch {
             context.rollback()
@@ -549,6 +596,7 @@ enum BackupService {
         let archive = BackupArchive(formatVersion: BackupArchive.currentFormatVersion, exportedAt: Date(),
                                     appVersion: "", providers: [], presets: [], conversations: [saved])
         try apply(.full(archive), to: context)
+        WebDAVAutoSyncCoordinator.shared.markWorkspaceChanged(in: context)
     }
 
     static func encode(_ archive: BackupArchive) throws -> Data {
@@ -600,7 +648,12 @@ enum BackupService {
     private struct PostCommitSidecarUpdates {
         var cachePrices: [UUID: CachePriceSnapshotStore.Pair] = [:]
         var presetKnowledgeBindings: [UUID: [UUID]] = [:]
+        var presetMemoryBindings: [UUID: [UUID]] = [:]
+        var updatedPresetKnowledgeBindings: [UUID: [UUID]] = [:]
+        var updatedPresetMemoryBindings: [UUID: Set<UUID>?] = [:]
         var deletedConversationIDs: [UUID] = []
+        var clearedHistoryIDs: [UUID] = []
+        var enrichedBookIDs: [UUID] = []
         var deletedBookIDs: [UUID] = []
         var deletedPresetIDs: [UUID] = []
         var deletedMemoryIDs: [UUID] = []
@@ -642,15 +695,44 @@ enum BackupService {
         }
         if case .full(let archive) = backup {
             let survivingPresetIDs = archive.presets.map(\.id).filter { !sidecars.deletedPresetIDs.contains($0) }
-            do { try knowledgeStore.restoreNewBindings(sidecars.presetKnowledgeBindings, retrying: survivingPresetIDs) }
+            do {
+                for (presetID, volumes) in sidecars.updatedPresetKnowledgeBindings {
+                    let memories = sidecars.updatedPresetMemoryBindings[presetID] ?? nil
+                    try knowledgeStore.setBindings(volumes: volumes, memories: memories, for: presetID) {}
+                }
+                try knowledgeStore.restoreNewBindings(sidecars.presetKnowledgeBindings, memories: sidecars.presetMemoryBindings, retrying: survivingPresetIDs)
+            }
             catch { summary.knowledgeRestoreFailed = true }
+            do {
+                try knowledgeStore.removeFromMemoryCollections(Set(sidecars.deletedMemoryIDs))
+                if case .ignore = tombstonePolicy {
+                    summary.memoryCollections = try knowledgeStore.restoreMemoryCollections(archive.memoryCollections ?? [],
+                                                                                           survivingIDs: sidecars.survivingMemoryIDs)
+                }
+            } catch { summary.memoryCollectionWriteFailed = true }
         }
         for presetID in sidecars.deletedPresetIDs {
-            try? knowledgeStore.setVolumeIDs([], for: presetID)
+            try? knowledgeStore.setBindings(volumes: [], memories: nil, for: presetID) {}
         }
         for bookID in sidecars.deletedBookIDs {
             try? knowledgeStore.removeVolume(bookID)
-            Task { await ProjectKnowledgeSearch.shared.invalidate(volumeID: bookID) }
+            Task {
+                await ProjectKnowledgeSearch.shared.invalidate(volumeID: bookID)
+                if isPersistent {
+                    try? await FullTextSearchIndex.shared.invalidateBookVolume(bookID)
+                }
+            }
+        }
+        for bookID in sidecars.enrichedBookIDs where isPersistent {
+            Task {
+                await ProjectKnowledgeSearch.shared.invalidate(volumeID: bookID)
+                await BookReferenceSearch.shared.invalidate(bookID: bookID)
+                try? await FullTextSearchIndex.shared.invalidateBookVolume(bookID)
+            }
+        }
+        for id in sidecars.clearedHistoryIDs where isPersistent {
+            RollingContextSummaryStore.shared.remove(for: id)
+            SpotlightIndexService.shared.removeConversation(id: id)
         }
         for convID in sidecars.deletedConversationIDs {
             try? ChatDraftStore.shared.remove(convID)
@@ -689,6 +771,7 @@ enum BackupService {
 
         switch backup {
         case .full(let archive):
+            guard archive.formatVersion <= BackupArchive.currentFormatVersion else { throw BackupError.newerFormat(archive.formatVersion) }
             let localProviders = try txContext.fetch(FetchDescriptor<ProviderConfig>())
             let localPresets = try txContext.fetch(FetchDescriptor<AssistantPreset>())
             var existingConversations = Dictionary(uniqueKeysWithValues:
@@ -735,6 +818,10 @@ enum BackupService {
                 .compactMapValues { $0.max(by: { $0.attempt < $1.attempt })?.id }
             let incomingMemories = archive.memories ?? []
             let incomingBooks = archive.books ?? []
+            let collections = archive.memoryCollections ?? []
+            guard unique(collections.map(\.id)), collections.allSatisfy(\.isValid) else { throw BackupError.unrecognizedFormat }
+            let annotations = archive.annotations ?? []
+            guard unique(annotations.map(\.id)), annotations.allSatisfy(\.isValid) else { throw BackupError.unrecognizedFormat }
 
             guard unique(archive.providers.map(\.id)),
                   unique(archive.presets.map(\.id)),
@@ -755,7 +842,7 @@ enum BackupService {
                 }
             }
 
-            let existingMessages = Dictionary(uniqueKeysWithValues:
+            var existingMessages = Dictionary(uniqueKeysWithValues:
                 try txContext.fetch(FetchDescriptor<ChatMessage>()).map { ($0.id, $0) })
             for conversation in archive.conversations {
                 for incoming in conversation.messages {
@@ -769,6 +856,7 @@ enum BackupService {
             var existingProviders = Set(localProviders.map(\.id))
             var existingPresets = Set(localPresets.map(\.id))
             var existingMemories = Set(localMemories.map(\.id))
+            let memoriesByID = Dictionary(uniqueKeysWithValues: localMemories.map { ($0.id, $0) })
 
             if enforcingTombstones && !mergedTombstones.isEmpty {
                 for localBook in try txContext.fetch(FetchDescriptor<BookVolume>()) {
@@ -788,7 +876,7 @@ enum BackupService {
                     }
                 }
                 for localMem in localMemories {
-                    if isBlockedByTombstone(kind: .memory, id: localMem.id, timestamp: localMem.createdAt) {
+                    if isBlockedByTombstone(kind: .memory, id: localMem.id, timestamp: localMem.updatedTimestamp.map(Date.init(timeIntervalSince1970:)) ?? localMem.createdAt) {
                         txContext.delete(localMem)
                         existingMemories.remove(localMem.id)
                         sidecars.deletedMemoryIDs.append(localMem.id)
@@ -830,16 +918,39 @@ enum BackupService {
 
             var chapterCounts = try Dictionary(uniqueKeysWithValues:
                 txContext.fetch(FetchDescriptor<BookVolume>()).map { ($0.id, $0.chapterTitles.count) })
+            if !annotations.isEmpty || mergedTombstones.keys.contains(where: { $0.kind == .readingAnnotation }) {
+                var saved = Dictionary(uniqueKeysWithValues: try txContext.fetch(FetchDescriptor<ReadingAnnotation>()).map { ($0.id, $0) })
+                for (id, item) in saved where isBlockedByTombstone(kind: .readingAnnotation, id: id, timestamp: item.updatedAt) {
+                    saved.removeValue(forKey: id)
+                    txContext.delete(item)
+                    summary.deleted += 1
+                }
+                for item in annotations {
+                    if isBlockedByTombstone(kind: .readingAnnotation, id: item.id, timestamp: item.effectiveUpdatedAt) { continue }
+                    if let local = saved[item.id] {
+                        guard enforcingTombstones && item.effectiveUpdatedAt > local.updatedAt else { continue }
+                        local.apply(item)
+                    } else {
+                        txContext.insert(ReadingAnnotation(item))
+                    }
+                    if !enforcingTombstones { sidecars.manuallyRestoredItems.append((.readingAnnotation, item.id)) }
+                    summary.annotations += 1
+                }
+            }
             func checkedProgress(_ friend: BookFriend?) -> BookFriend? {
                 friend.map { $0.validatingRestoredProgress(chapterCount: chapterCounts[$0.bookID]) }
             }
             for book in incomingBooks {
-                let prepared = try PreparedBook(BookManuscript(title: book.title, chapters: book.chapters))
-                guard prepared.id == book.id else { throw BackupError.conflictingIDs }
+                let prepared = try book.validatedManuscript()
                 if isBlockedByTombstone(kind: .book, id: book.id, timestamp: book.importedAt) {
                     continue
                 }
-                if try BookLibrary.find(book.id, in: txContext) == nil {
+                if let local = try BookLibrary.find(book.id, in: txContext) {
+                    if let updated = try mergePDFPages(book, into: local) {
+                        chapterCounts[book.id] = updated
+                        sidecars.enrichedBookIDs.append(book.id)
+                    }
+                } else {
                     txContext.insert(BookVolume(id: book.id, title: book.title, chapterTitles: prepared.chapterTitles,
                                                 manuscript: prepared.data, importedAt: book.importedAt))
                     chapterCounts[book.id] = prepared.chapterTitles.count
@@ -856,27 +967,47 @@ enum BackupService {
                 chat.assistanceSettings?.privatePersona?.profileID != nil ||
                     chat.assistanceSettings?.groupMembers.contains { $0.profileID != nil } == true
             }) {
-                for saved in try txContext.fetch(FetchDescriptor<PersonaProfile>()) { linkedProfiles[saved.id] = try saved.member() }
-                for var member in profiles where linkedProfiles[member.id] == nil {
+                var savedProfilesByID: [UUID: PersonaProfile] = [:]
+                for saved in try txContext.fetch(FetchDescriptor<PersonaProfile>()) {
+                    savedProfilesByID[saved.id] = saved
+                    linkedProfiles[saved.id] = try saved.member()
+                }
+                for var member in profiles {
                     guard member.profileID == member.id, !member.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BackupError.unrecognizedFormat }
                     if isBlockedByTombstone(kind: .personaProfile, id: member.id, timestamp: nil) { continue }
                     member.bookFriend = checkedProgress(member.bookFriend)
+                    let portable = member.portableProfile
+                    if let existingSaved = savedProfilesByID[member.id] {
+                        if enforcingTombstones, linkedProfiles[member.id]?.portableProfile != portable {
+                            existingSaved.name = portable.name
+                            existingSaved.memberData = try JSONEncoder().encode(portable)
+                            linkedProfiles[member.id] = portable
+                            summary.restoredProfiles += 1
+                        }
+                        continue
+                    }
                     let saved = try PersonaProfile(member)
                     txContext.insert(saved)
-                    linkedProfiles[saved.id] = member.portableProfile
+                    savedProfilesByID[saved.id] = saved
+                    linkedProfiles[saved.id] = portable
                     summary.restoredProfiles += 1
                     if !enforcingTombstones { sidecars.manuallyRestoredItems.append((.personaProfile, member.id)) }
                 }
             }
             for point in positions {
                 guard let book = try BookLibrary.find(point.bookID, in: txContext),
-                      book.chapterTitles.indices.contains(point.chapter), point.paragraph >= 0,
-                      try ShelfReadingState.find(point.bookID, in: txContext) == nil else { continue }
-                let state = ShelfReadingState(bookID: point.bookID)
+                      book.chapterTitles.indices.contains(point.chapter), point.paragraph >= 0 else { continue }
+                let existing = try ShelfReadingState.find(point.bookID, in: txContext)
+                if let existing {
+                    guard enforcingTombstones, let timestamp = point.updatedTimestamp,
+                          timestamp > (existing.updatedTimestamp ?? 0) else { continue }
+                }
+                let state = existing ?? ShelfReadingState(bookID: point.bookID)
                 state.conversationID = point.conversationID
                 state.chapter = point.chapter
                 state.paragraph = point.paragraph
-                txContext.insert(state)
+                state.updatedTimestamp = point.updatedTimestamp
+                if existing == nil { txContext.insert(state) }
             }
 
             for snapshot in incomingRequests where recordsByID[snapshot.id] == nil {
@@ -891,23 +1022,46 @@ enum BackupService {
                 summary.requests += 1
             }
 
-            for mem in incomingMemories where !existingMemories.contains(mem.id) {
-                if isBlockedByTombstone(kind: .memory, id: mem.id, timestamp: mem.createdAt) { continue }
-                txContext.insert(PersonalMemory(
+            for mem in incomingMemories {
+                if isBlockedByTombstone(kind: .memory, id: mem.id, timestamp: mem.updatedTimestamp.map(Date.init(timeIntervalSince1970:)) ?? mem.createdAt) { continue }
+                if existingMemories.contains(mem.id), let local = memoriesByID[mem.id] {
+                    guard enforcingTombstones, let timestamp = mem.updatedTimestamp,
+                          timestamp > (local.updatedTimestamp ?? 0) else { continue }
+                    local.content = mem.content
+                    local.isEnabled = mem.isEnabled
+                    local.updatedTimestamp = timestamp
+                    continue
+                }
+                let memory = PersonalMemory(
                     id: mem.id,
                     content: mem.content,
                     isEnabled: mem.isEnabled,
                     createdAt: mem.createdAt
-                ))
+                )
+                memory.updatedTimestamp = mem.updatedTimestamp
+                txContext.insert(memory)
                 existingMemories.insert(mem.id)
                 summary.memories += 1
                 if !enforcingTombstones { sidecars.manuallyRestoredItems.append((.memory, mem.id)) }
             }
             sidecars.survivingMemoryIDs = existingMemories
 
+            let localProvidersByID = Dictionary(uniqueKeysWithValues:
+                localProviders.filter { existingProviders.contains($0.id) }.map { ($0.id, $0) })
+            let localPresetsByID = Dictionary(uniqueKeysWithValues:
+                localPresets.filter { existingPresets.contains($0.id) }.map { ($0.id, $0) })
+
             for p in archive.providers {
-                if isBlockedByTombstone(kind: .provider, id: p.id, timestamp: nil) { continue }
-                guard !existingProviders.contains(p.id) else { summary.skipped += 1; continue }
+                if isBlockedByTombstone(kind: .provider, id: p.id, timestamp: p.updatedAt) { continue }
+                if existingProviders.contains(p.id) {
+                    if let local = localProvidersByID[p.id],
+                       mergeExistingProvider(p, into: local, enforcingTombstones: enforcingTombstones) {
+                        summary.providers += 1
+                    } else {
+                        summary.skipped += 1
+                    }
+                    continue
+                }
                 let provider = ProviderConfig(
                     id: p.id, name: p.name,
                     protocolType: APIProtocolType(rawValue: p.protocolRaw) ?? .openAICompatible,
@@ -916,15 +1070,31 @@ enum BackupService {
                     sortOrder: p.sortOrder, models: p.models,
                     customHeaders: p.customHeaders, notes: p.notes, isRestored: true
                 )
+                if let incomingUpdated = p.updatedAt {
+                    provider.updatedAt = incomingUpdated
+                }
                 txContext.insert(provider)
+                existingProviders.insert(p.id)
                 summary.providers += 1
                 if !enforcingTombstones { sidecars.manuallyRestoredItems.append((.provider, p.id)) }
             }
 
             for p in archive.presets {
                 if isBlockedByTombstone(kind: .preset, id: p.id, timestamp: nil) { continue }
-                guard !existingPresets.contains(p.id) else { summary.skipped += 1; continue }
+                if existingPresets.contains(p.id) {
+                    if enforcingTombstones,
+                       let local = localPresetsByID[p.id],
+                       mergeExistingPreset(p, into: local) {
+                        sidecars.updatedPresetKnowledgeBindings[p.id] = p.knowledgeVolumeIDs ?? []
+                        sidecars.updatedPresetMemoryBindings[p.id] = p.memoryIDs.map(Set.init)
+                        summary.presets += 1
+                    } else {
+                        summary.skipped += 1
+                    }
+                    continue
+                }
                 sidecars.presetKnowledgeBindings[p.id] = p.knowledgeVolumeIDs ?? []
+                sidecars.presetMemoryBindings[p.id] = p.memoryIDs
                 txContext.insert(AssistantPreset(
                     id: p.id, name: p.name, iconEmoji: p.iconEmoji, subtitle: p.subtitle,
                     systemPrompt: p.systemPrompt, temperature: p.temperature,
@@ -933,6 +1103,7 @@ enum BackupService {
                     enableThinking: p.enableThinking, thinkingBudgetTokens: p.thinkingBudgetTokens,
                     isBuiltIn: p.isBuiltIn, sortOrder: p.sortOrder
                 ))
+                existingPresets.insert(p.id)
                 summary.presets += 1
                 if !enforcingTombstones { sidecars.manuallyRestoredItems.append((.preset, p.id)) }
             }
@@ -952,6 +1123,50 @@ enum BackupService {
                         settings.groupMembers[index].bookFriend = checkedProgress(settings.groupMembers[index].bookFriend)
                     }
                     c.assistanceSettings = settings
+                }
+                let localChat = existingConversations[c.id]
+                var changes = localChat?.backupState.messageChanges ?? [:]
+                if enforcingTombstones || localChat == nil {
+                    for (id, remote) in c.messageChanges ?? [:] where remote.supersedes(changes[id]) {
+                        changes[id] = remote
+                    }
+                }
+                if enforcingTombstones {
+                    c.messages.removeAll { changes[$0.id]?.deleted == true }
+                    if let leaf = c.activeLeafMessageID, changes[leaf]?.deleted == true { c.activeLeafMessageID = nil }
+                    if let localChat {
+                        let removed = localChat.messages.filter { changes[$0.id]?.deleted == true }
+                        let removedIDs = Set(removed.map(\.id))
+                        if !removed.isEmpty {
+                            for message in localChat.messages {
+                                if let parent = message.parentMessageID, removedIDs.contains(parent) {
+                                    message.parentMessageID = ConversationTree.virtualRootID
+                                }
+                            }
+                            localChat.messages.removeAll { removedIDs.contains($0.id) }
+                            if let leaf = localChat.activeLeafMessageID, removedIDs.contains(leaf) {
+                                localChat.activeLeafMessageID = localChat.sortedMessages.last?.id
+                            }
+                            for message in removed {
+                                existingMessages.removeValue(forKey: message.id)
+                                txContext.delete(message)
+                            }
+                            sidecars.clearedHistoryIDs.append(localChat.id)
+                            summary.deleted += removed.count
+                        }
+                    }
+                    for index in c.messages.indices {
+                        if let parent = c.messages[index].parentMessageID, changes[parent]?.deleted == true {
+                            c.messages[index].parentMessageID = ConversationTree.virtualRootID
+                        }
+                    }
+                } else {
+                    let restoredIDs = c.messages.map(\.id).filter { changes[$0]?.deleted == true }
+                    MessagePresenceChange.record(restoredIDs, deleted: false, in: &changes)
+                }
+                c.messageChanges = changes.isEmpty ? nil : changes
+                if let localChat, localChat.backupState.messageChanges != c.messageChanges {
+                    localChat.backupState.messageChanges = c.messageChanges
                 }
                 let missing = c.messages.filter { existingMessages[$0.id] == nil }
                 let conversation: Conversation
@@ -996,9 +1211,22 @@ enum BackupService {
                         var localMeta = localMsg.assistanceMetadata
                         var metaMutated = mergeReplies(incomingMsg, into: localMsg, metadata: &localMeta,
                                                        requests: recordsByID)
-                        if incomingMeta.isBookmarked && !localMeta.isBookmarked {
+                        if enforcingTombstones, let timestamp = incomingMeta.bookmarkUpdatedTimestamp,
+                           timestamp > (localMeta.bookmarkUpdatedTimestamp ?? 0) {
+                            localMeta.isBookmarked = incomingMeta.isBookmarked
+                            localMeta.bookmarkUpdatedTimestamp = timestamp
+                            metaMutated = true
+                        } else if incomingMeta.isBookmarked && !localMeta.isBookmarked &&
+                                    localMeta.bookmarkUpdatedTimestamp == nil && incomingMeta.bookmarkUpdatedTimestamp == nil {
                             localMeta.isBookmarked = true
                             metaMutated = true
+                        }
+                        if let incoming = incomingMeta.arenaDecisions, !incoming.isEmpty {
+                            let decisions = ArenaDecision.merged(localMeta.arenaDecisions ?? [], incoming)
+                            if decisions != localMeta.arenaDecisions {
+                                localMeta.arenaDecisions = decisions
+                                metaMutated = true
+                            }
                         }
                         for reaction in incomingMeta.groupReactions where !localMeta.groupReactions.contains(where: { $0.id == reaction.id }) {
                             localMeta.groupReactions.append(reaction)
@@ -1151,6 +1379,114 @@ enum BackupService {
         return summary
     }
 
+    private static func mergeExistingProvider(
+        _ incoming: ProviderBackup,
+        into local: ProviderConfig,
+        enforcingTombstones: Bool
+    ) -> Bool {
+        var changed = false
+        // Never overwrite baseURL, protocolRaw, or customHeaders on an existing local provider so
+        // local Keychain credentials stay bound to their approved destination.
+        if enforcingTombstones, let incomingUpdated = incoming.updatedAt, incomingUpdated > local.updatedAt {
+            if local.name != incoming.name { local.name = incoming.name; changed = true }
+            if local.iconSymbol != incoming.iconSymbol { local.iconSymbol = incoming.iconSymbol; changed = true }
+            if local.accentHex != incoming.accentHex { local.accentHex = incoming.accentHex; changed = true }
+            if local.sortOrder != incoming.sortOrder { local.sortOrder = incoming.sortOrder; changed = true }
+            if local.notes != incoming.notes { local.notes = incoming.notes; changed = true }
+            let deduplicatedIncoming = ProviderConfig.deduplicated(incoming.models)
+            if local.models != deduplicatedIncoming {
+                local.models = deduplicatedIncoming
+                changed = true
+            }
+            if !incoming.isEnabled && local.isEnabled {
+                local.isEnabled = false
+                changed = true
+            }
+            local.updatedAt = incomingUpdated
+            return changed
+        }
+
+        // Backfill missing pricing on matching models (and missing model entries during sync) non-destructively.
+        let incomingByID = Dictionary(ProviderConfig.deduplicated(incoming.models).map { ($0.id, $0) },
+                                      uniquingKeysWith: { first, _ in first })
+        var updatedModels = local.models
+        var modelsMutated = false
+        for idx in updatedModels.indices {
+            guard let remoteSpec = incomingByID[updatedModels[idx].id] else { continue }
+            if updatedModels[idx].inputPricePerMillion == nil, let price = remoteSpec.inputPricePerMillion {
+                updatedModels[idx].inputPricePerMillion = price
+                updatedModels[idx].priceCurrency = remoteSpec.priceCurrency
+                modelsMutated = true
+            }
+            if updatedModels[idx].outputPricePerMillion == nil, let price = remoteSpec.outputPricePerMillion {
+                updatedModels[idx].outputPricePerMillion = price
+                updatedModels[idx].priceCurrency = remoteSpec.priceCurrency
+                modelsMutated = true
+            }
+        }
+        if enforcingTombstones {
+            let knownIDs = Set(updatedModels.map(\.id))
+            for spec in ProviderConfig.deduplicated(incoming.models) where !knownIDs.contains(spec.id) {
+                updatedModels.append(spec)
+                modelsMutated = true
+            }
+        }
+        if modelsMutated {
+            let previousUpdatedAt = local.updatedAt
+            local.models = updatedModels
+            if !enforcingTombstones {
+                local.updatedAt = previousUpdatedAt
+            }
+            changed = true
+        }
+        return changed
+    }
+
+    private static func mergeExistingPreset(_ incoming: PresetBackup, into local: AssistantPreset) -> Bool {
+        var changed = false
+        if local.name != incoming.name { local.name = incoming.name; changed = true }
+        if local.iconEmoji != incoming.iconEmoji { local.iconEmoji = incoming.iconEmoji; changed = true }
+        if local.subtitle != incoming.subtitle { local.subtitle = incoming.subtitle; changed = true }
+        if local.systemPrompt != incoming.systemPrompt { local.systemPrompt = incoming.systemPrompt; changed = true }
+        if local.temperature != incoming.temperature { local.temperature = incoming.temperature; changed = true }
+        if local.useCustomTemperature != incoming.useCustomTemperature { local.useCustomTemperature = incoming.useCustomTemperature; changed = true }
+        if local.topP != incoming.topP { local.topP = incoming.topP; changed = true }
+        if local.maxOutputTokens != incoming.maxOutputTokens { local.maxOutputTokens = incoming.maxOutputTokens; changed = true }
+        if local.contextMessageLimit != incoming.contextMessageLimit { local.contextMessageLimit = incoming.contextMessageLimit; changed = true }
+        if local.enableThinking != incoming.enableThinking { local.enableThinking = incoming.enableThinking; changed = true }
+        if local.thinkingBudgetTokens != incoming.thinkingBudgetTokens { local.thinkingBudgetTokens = incoming.thinkingBudgetTokens; changed = true }
+        if local.sortOrder != incoming.sortOrder { local.sortOrder = incoming.sortOrder; changed = true }
+        return changed
+    }
+
+    private static func mergePDFPages(_ incoming: BookVolume.Snapshot, into local: BookVolume) throws -> Int? {
+        guard BookVolume.Snapshot.isPDFManuscript(incoming.chapters) else { return nil }
+        let existing = try JSONDecoder().decode([BookChapter].self, from: local.manuscript)
+        guard BookVolume.Snapshot.isPDFManuscript(existing) else { return nil }
+        let prefersEnglish = existing.first.map { $0.title.hasPrefix("Page ") } ?? false
+        var pages: [Int: BookChapter] = [:]
+        for chapter in existing {
+            if let page = BackgroundPDFOCRQueue.extractPageNumber(from: chapter.title), pages[page] == nil {
+                pages[page] = chapter
+            }
+        }
+        for chapter in incoming.chapters {
+            guard let page = BackgroundPDFOCRQueue.extractPageNumber(from: chapter.title) else { continue }
+            if pages[page] == nil {
+                var normalized = chapter
+                normalized.title = prefersEnglish ? "Page \(page)" : "第 \(page) 页"
+                pages[page] = normalized
+            }
+        }
+        guard pages.count != existing.count else { return nil }
+        let merged = pages.sorted { $0.key < $1.key }.map(\.value)
+        let data = try BookManuscript(title: local.title, chapters: merged).encoded()
+        local.manuscript = data
+        local.manuscriptByteCount = data.count
+        local.chapterTitles = merged.map(\.title)
+        return merged.count
+    }
+
     private static func mergeOrganization(_ incoming: ConversationBackup, into local: Conversation) -> Bool {
         let remote = incoming.organizationEdits ?? .init()
         var edits = local.backupState.organizationEdits ?? .init()
@@ -1287,6 +1623,7 @@ enum BackupService {
         }
         conversation.backupState.organizationEdits = c.organizationEdits
         conversation.backupState.legacyImportID = c.legacyImportID
+        conversation.backupState.messageChanges = c.messageChanges
         conversation.backupState.lastImportedOrganization = c.organization
         conversation.backupState.lastImportedSettings = .init(digest: try c.configurationDigest(), exportedAt: exportedAt)
         conversation.activeLeafMessageID = c.activeLeafMessageID

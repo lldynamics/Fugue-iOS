@@ -379,6 +379,38 @@ final class GatewayCapabilityCache: @unchecked Sendable {
         defaults?.removeObject(forKey: Self.storageKey)
     }
 
+    func degradedModelCount(protocolType: APIProtocolType, baseURL: String, modelIDs: [String], now: Date = Date()) -> Int {
+        guard !modelIDs.isEmpty else { return 0 }
+        let keys = Set(modelIDs.map { Self.cacheKey(protocolType: protocolType, baseURL: baseURL, modelID: $0) })
+        lock.lock()
+        defer { lock.unlock() }
+        return keys.filter { key in
+            guard let entry = entries[key] else { return false }
+            return now.timeIntervalSince(entry.updatedAt) <= ttlSeconds && !entry.features.isEmpty
+        }.count
+    }
+
+    @discardableResult
+    func clear(protocolType: APIProtocolType, baseURL: String, modelIDs: [String]) -> Int {
+        let keys = Set(modelIDs.map { Self.cacheKey(protocolType: protocolType, baseURL: baseURL, modelID: $0) })
+        guard !keys.isEmpty else { return 0 }
+        lock.lock()
+        var removed = 0
+        for key in keys where entries.removeValue(forKey: key) != nil {
+            removed += 1
+        }
+        let snapshot = entries
+        lock.unlock()
+        if removed > 0 {
+            if snapshot.isEmpty {
+                defaults?.removeObject(forKey: Self.storageKey)
+            } else {
+                persist(snapshot)
+            }
+        }
+        return removed
+    }
+
     private func persist(_ snapshot: [String: Entry]) {
         guard let defaults, let data = try? JSONEncoder().encode(snapshot) else { return }
         defaults.set(data, forKey: Self.storageKey)
@@ -582,6 +614,55 @@ final class APIKeyPoolRouter: @unchecked Sendable {
         lock.lock()
         cooldowns.removeValue(forKey: kHash)
         lock.unlock()
+    }
+
+    func isCooling(
+        key: String,
+        protocolType: APIProtocolType,
+        baseURL: String,
+        now: ContinuousClock.Instant = .now
+    ) -> Bool {
+        remainingCooldownSeconds(key: key, protocolType: protocolType, baseURL: baseURL, now: now) != nil
+    }
+
+    func remainingCooldownSeconds(
+        key: String,
+        protocolType: APIProtocolType,
+        baseURL: String,
+        now: ContinuousClock.Instant = .now
+    ) -> Int? {
+        let trimmed = LLMClient.sanitizedAPIKey(key)
+        guard !trimmed.isEmpty else { return nil }
+        let poolID = Self.poolHash(protocolType: protocolType, baseURL: baseURL)
+        let kHash = Self.keyHash(poolID: poolID, key: trimmed)
+        lock.lock()
+        defer { lock.unlock() }
+        guard let until = cooldowns[kHash] else { return nil }
+        guard now < until else {
+            cooldowns.removeValue(forKey: kHash)
+            return nil
+        }
+        let dur = now.duration(to: until)
+        let secs = Int(dur.components.seconds) + (dur.components.attoseconds > 0 ? 1 : 0)
+        return max(1, secs)
+    }
+
+    func coolingKeyCount(
+        keys: [String],
+        protocolType: APIProtocolType,
+        baseURL: String,
+        now: ContinuousClock.Instant = .now
+    ) -> Int {
+        var seen = Set<String>()
+        var count = 0
+        for raw in keys {
+            let trimmed = LLMClient.sanitizedAPIKey(raw)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            if remainingCooldownSeconds(key: trimmed, protocolType: protocolType, baseURL: baseURL, now: now) != nil {
+                count += 1
+            }
+        }
+        return count
     }
 
     func resetAll() {
@@ -847,10 +928,16 @@ enum LLMClient {
                 }
                 keyRouter.markHealthy(key: candidateKey, protocolType: protocolType, baseURL: baseURL)
                 return specs
-            } catch LLMError.httpError(let code, let msg) where [401, 402, 403, 429].contains(code) && index + 1 < min(orderedKeys.count, 4) {
-                keyRouter.markUnhealthy(key: candidateKey, protocolType: protocolType, baseURL: baseURL, statusCode: code)
-                lastError = LLMError.httpError(code, msg)
-                continue
+            } catch LLMError.httpError(let code, let msg) where [401, 402, 403, 429].contains(code) {
+                if orderedKeys.count > 1 {
+                    keyRouter.markUnhealthy(key: candidateKey, protocolType: protocolType, baseURL: baseURL, statusCode: code)
+                }
+                let err = LLMError.httpError(code, msg)
+                if index + 1 < min(orderedKeys.count, 4) {
+                    lastError = err
+                    continue
+                }
+                throw err
             } catch {
                 throw error
             }
@@ -956,20 +1043,22 @@ enum LLMClient {
                                 continuation.yield(.retrying(httpStatus: code))
                                 continue
                             }
-                            if [401, 402, 403, 429].contains(code),
-                               keyIndex + 1 < orderedKeys.count,
-                               keyRotationsUsed < 3 {
-                                keyRouter.markUnhealthy(
-                                    key: activeKey,
-                                    protocolType: request.protocolType,
-                                    baseURL: request.baseURL,
-                                    statusCode: code,
-                                    retryAfter: statusErr.retryAfterSeconds
-                                )
-                                keyIndex += 1
-                                keyRotationsUsed += 1
-                                continuation.yield(.retrying(httpStatus: code))
-                                continue
+                            if [401, 402, 403, 429].contains(code) {
+                                if orderedKeys.count > 1 {
+                                    keyRouter.markUnhealthy(
+                                        key: activeKey,
+                                        protocolType: request.protocolType,
+                                        baseURL: request.baseURL,
+                                        statusCode: code,
+                                        retryAfter: statusErr.retryAfterSeconds
+                                    )
+                                }
+                                if keyIndex + 1 < orderedKeys.count, keyRotationsUsed < 3 {
+                                    keyIndex += 1
+                                    keyRotationsUsed += 1
+                                    continuation.yield(.retrying(httpStatus: code))
+                                    continue
+                                }
                             }
                             if [429, 502, 503, 504, 529].contains(code),
                                transientRetriesUsed == 0,
@@ -1077,6 +1166,15 @@ enum LLMClient {
             "content_policy", "safety"
         ]
         return patterns.contains { lower.contains($0) }
+    }
+
+    /// Returns `true` when an error body explicitly names a native search / grounding feature
+    /// rather than a generic `tools` schema or function-declaration rejection.
+    static func mentionsNativeSearchIdentifier(_ lower: String) -> Bool {
+        let identifiers = [
+            "web_search", "google_search", "googlesearch", "url_context", "urlcontext", "grounding"
+        ]
+        return identifiers.contains { lower.contains($0) }
     }
 
     /// Returns `true` when an HTTP 400–422 response indicates a generic unknown/extra/unsupported
@@ -1393,7 +1491,13 @@ enum ModelListTransport {
         var fresh = request
         fresh.cachePolicy = .reloadIgnoringLocalCacheData
         fresh.timeoutInterval = 30
-        let (bytes, response) = try await session.bytes(for: fresh, delegate: SameOriginRedirectDelegate.shared)
+        let data = try await boundedData(for: fresh, session: session, maximumBytes: maximumBytes)
+        try validateStructure(data)
+        return (try JSONSerialization.jsonObject(with: data), data.count)
+    }
+
+    static func boundedData(for request: URLRequest, session: URLSession, maximumBytes: Int) async throws -> Data {
+        let (bytes, response) = try await session.bytes(for: request, delegate: SameOriginRedirectDelegate.shared)
         defer { bytes.task.cancel() }
         try await LLMClient.validateHTTPResponse(response, bytes: bytes)
         guard response.expectedContentLength <= Int64(maximumBytes) else { throw URLError(.dataLengthExceedsMaximum) }
@@ -1402,8 +1506,7 @@ enum ModelListTransport {
             guard data.count < maximumBytes else { throw URLError(.dataLengthExceedsMaximum) }
             data.append(byte)
         }
-        try validateStructure(data)
-        return (try JSONSerialization.jsonObject(with: data), data.count)
+        return data
     }
 
     private static func validateStructure(_ data: Data) throws {

@@ -29,9 +29,35 @@ struct DSBadge: View {
         case tinted(Color)
     }
 
-    let text: String
-    var icon: String? = nil
-    var style: Style = .neutral
+    private enum LabelContent {
+        case localized(LocalizedStringKey)
+        case verbatim(String)
+    }
+
+    private let content: LabelContent
+    var icon: String?
+    var style: Style
+
+    init(
+        text: LocalizedStringKey,
+        icon: String? = nil,
+        style: Style = .neutral
+    ) {
+        self.content = .localized(text)
+        self.icon = icon
+        self.style = style
+    }
+
+    @_disfavoredOverload
+    init<S: StringProtocol>(
+        text: S,
+        icon: String? = nil,
+        style: Style = .neutral
+    ) {
+        self.content = .verbatim(String(text))
+        self.icon = icon
+        self.style = style
+    }
 
     var body: some View {
         HStack(spacing: 3) {
@@ -40,7 +66,7 @@ struct DSBadge: View {
                     .font(.system(size: 9, weight: .semibold))
                     .accessibilityHidden(true)
             }
-            Text(text)
+            labelView
                 .font(.caption2.weight(.semibold))
                 .lineLimit(1)
         }
@@ -48,6 +74,16 @@ struct DSBadge: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(backgroundColor, in: Capsule())
+    }
+
+    @ViewBuilder
+    private var labelView: some View {
+        switch content {
+        case .localized(let key):
+            Text(key)
+        case .verbatim(let raw):
+            Text(verbatim: raw)
+        }
     }
 
     private var foregroundColor: Color {

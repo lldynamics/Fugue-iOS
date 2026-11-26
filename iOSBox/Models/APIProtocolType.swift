@@ -123,6 +123,7 @@ struct ModelSpec: Codable, Hashable, Identifiable {
     var cacheReadPricePerMillion: Double?
     var cacheWritePricePerMillion: Double?
     var priceCurrency: String?
+    var priceSource: ModelPriceSource?
     var isFavorite: Bool?
     // Older configurations have no provenance until their next catalog refresh.
     var catalogStatus: CatalogStatus?

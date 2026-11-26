@@ -696,6 +696,13 @@ enum GroupDiscussionCoordinator {
         return sections.joined(separator: "\n\n")
     }
 
+    static func maximumTurnsForUserMessage(speakingMode: GroupSpeakingMode, plannedCount: Int,
+                                           explicitMentions: Bool, activeCount: Int, configuredLimit: Int) -> Int {
+        guard plannedCount > 0 else { return 0 }
+        guard speakingMode == .smartRelay else { return plannedCount }
+        return explicitMentions ? max(plannedCount, configuredLimit) : min(max(configuredLimit, 1), max(activeCount + 1, 2))
+    }
+
     static func selectInitialPlan(
         userText: String,
         activeMembers: [GroupMember],

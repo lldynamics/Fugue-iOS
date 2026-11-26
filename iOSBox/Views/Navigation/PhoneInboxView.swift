@@ -31,6 +31,7 @@ struct PhoneInboxView<Preview: View>: View {
         let recent = conversations.lazy.filter { $0.id != draft?.id && !$0.messages.isEmpty }.prefix(3)
         VStack(spacing: 0) {
             if conversations.isEmpty {
+                searchButton.padding(.horizontal, DS.Spacing.xl)
                 emptyState
             } else {
                 ScrollView {
@@ -111,6 +112,8 @@ struct PhoneInboxView<Preview: View>: View {
             Label("还没有对话", systemImage: "text.bubble")
         } description: {
             Text("在下方写个新问题开始，也可以点 ＋ 附上照片、文件或扫描文档。")
+        } actions: {
+            LocalReadingSampleButton()
         }
         .foregroundStyle(DS.Surface.inkSecondary)
         .frame(maxHeight: .infinity)

@@ -19,7 +19,9 @@ struct AskModelIntent: AppIntent {
     static var title: LocalizedStringResource = "询问指定模型"
     static var description = IntentDescription("将问题发送给你配置的模型并返回文字结果；较长请求可转入「夜奔」继续。")
     static var authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+    #if compiler(>=6.2)
     @available(iOS 26.0, *) static var supportedModes: IntentModes { [.background, .foreground(.dynamic)] }
+    #endif
 
     @Parameter(title: "问题", inputConnectionBehavior: .connectToPreviousIntentResult)
     var question: String
@@ -29,17 +31,22 @@ struct AskModelIntent: AppIntent {
 
     @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
         try Task.checkCancellation()
+        try ShortcutService.requireUnlocked()
         try await confirmTransmission(to: model, includesImage: false)
         let conversation = try ShortcutService.start(text: question, modelID: model.id)
         do {
             if let answer = try await ShortcutService.answer(for: conversation, within: .seconds(20)) {
                 return .result(value: answer, dialog: "\(answer)")
             }
+            #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 try await continueInForeground("模型仍在生成，请在「夜奔」中继续。")
             } else {
                 try await requestToContinueInForeground("模型仍在生成，请在「夜奔」中继续。")
             }
+            #else
+            try await requestToContinueInForeground("模型仍在生成，请在「夜奔」中继续。")
+            #endif
             SystemEntryRouter.shared.conversationID = conversation.id
             guard let answer = try await ShortcutService.answer(for: conversation, within: .seconds(300)) else {
                 throw LLMError.apiError(String(localized: "请求耗时过长，已保留部分结果，请在对话中重答。"))
@@ -56,7 +63,9 @@ struct AnalyzeImageIntent: AppIntent {
     static var title: LocalizedStringResource = "分析图片"
     static var description = IntentDescription("接收截图或照片，发送给指定的视觉模型并返回分析结果。")
     static var authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
+    #if compiler(>=6.2)
     @available(iOS 26.0, *) static var supportedModes: IntentModes { [.background, .foreground(.dynamic)] }
+    #endif
 
     @Parameter(title: "图片", supportedContentTypes: [.image], inputConnectionBehavior: .connectToPreviousIntentResult)
     var image: IntentFile
@@ -66,6 +75,7 @@ struct AnalyzeImageIntent: AppIntent {
     static var parameterSummary: some ParameterSummary { Summary("用 \(\.$model) 分析 \(\.$image)") { \.$question } }
 
     @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        try ShortcutService.requireUnlocked()
         let attachment: MessageAttachment
         if let url = image.fileURL {
             attachment = try await Task.detached { try AttachmentProcessor.processFileURL(url, imageOnly: true) }.value
@@ -88,11 +98,15 @@ struct AnalyzeImageIntent: AppIntent {
             if let answer = try await ShortcutService.answer(for: conversation, within: .seconds(20)) {
                 return .result(value: answer, dialog: "\(answer)")
             }
+            #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 try await continueInForeground("模型仍在生成，请在「夜奔」中继续。")
             } else {
                 try await requestToContinueInForeground("模型仍在生成，请在「夜奔」中继续。")
             }
+            #else
+            try await requestToContinueInForeground("模型仍在生成，请在「夜奔」中继续。")
+            #endif
             SystemEntryRouter.shared.conversationID = conversation.id
             guard let answer = try await ShortcutService.answer(for: conversation, within: .seconds(300)) else {
                 throw LLMError.apiError(String(localized: "请求耗时过长，已保留部分结果，请在对话中重答。"))

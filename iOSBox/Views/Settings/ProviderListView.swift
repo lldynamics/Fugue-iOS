@@ -11,6 +11,12 @@ struct ProviderListView: View {
         let message: String
     }
 
+    private enum ProbeState: Equatable {
+        case testing
+        case ok(ttftMs: Int)
+        case failed(String)
+    }
+
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
@@ -24,11 +30,16 @@ struct ProviderListView: View {
     @State private var isImporting = false
     @State private var showImporter = false
     @State private var showExportPasswordAlert = false
+    @State private var includeDraftsInBackup = false
+    @State private var recoveryPlan: BackupRecoveryPlan?
     @State private var exportPassword = ""
     @State private var pendingEncryptedImportData: Data?
     @State private var importPassword = ""
     @State private var backupAlert: BackupAlert?
     @State private var providerPendingDeletion: ProviderConfig?
+    @State private var probeStates: [UUID: ProbeState] = [:]
+    @State private var isBatchProbing = false
+    @State private var balanceStore = ProviderBalanceStore.shared
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -50,21 +61,39 @@ struct ProviderListView: View {
                     .accessibilityIdentifier("settings.connectModel")
                 }
 
-                if !providers.isEmpty {
-                    Section("已保存的服务商") {
-                        ForEach(providers) { provider in
-                            NavigationLink(value: provider) {
-                                providerRow(provider)
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button(role: .destructive) {
-                                    providerPendingDeletion = provider
+                let accounts = providers.filter { $0.hasAuthentication || !$0.extraAPIKeys.isEmpty || NetworkLocation.isLocalOrPrivate(baseURL: $0.baseURL) }
+                let accountIDs = Set(accounts.map(\.id))
+                let pending = providers.filter { !accountIDs.contains($0.id) }
+                if !accounts.isEmpty {
+                    Section {
+                        providerRows(accounts)
+                    } header: {
+                        HStack {
+                            Text("已保存的服务商")
+                            Spacer()
+                            if accounts.contains(where: \.isReadyForChat) {
+                                Button {
+                                    Task { await probeAllReadyProviders(accounts) }
                                 } label: {
-                                    Label("删除", systemImage: "trash")
+                                    HStack(spacing: 4) {
+                                        if isBatchProbing {
+                                            ProgressView().controlSize(.mini)
+                                        } else {
+                                            Image(systemName: "bolt.horizontal.circle")
+                                        }
+                                        Text(isBatchProbing ? String(localized: "巡检中…") : String(localized: "一键测速"))
+                                    }
+                                    .font(.caption)
                                 }
+                                .buttonStyle(.borderless)
+                                .disabled(isBatchProbing)
                             }
                         }
-                        .onMove(perform: moveProviders)
+                    }
+                }
+                if !pending.isEmpty {
+                    Section {
+                        DisclosureGroup("待配置的服务商（\(pending.count)）") { providerRows(pending) }
                     }
                 }
 
@@ -84,7 +113,7 @@ struct ProviderListView: View {
                 Section("高级功能") {
                     NavigationLink { PersonalMemoryView() } label: { Label("个人长期记忆", systemImage: "brain.head.profile") }
                     NavigationLink { KnowledgeSearchSettingsView() } label: { Label("全文检索与知识库索引", systemImage: "magnifyingglass.circle") }
-                    NavigationLink { SystemQuickEntryGuideView() } label: { Label("小组件、控制中心与操作按钮", systemImage: "square.grid.2x2") }
+                    NavigationLink { SystemQuickEntryGuideView(onDismissSettings: onClose) } label: { Label("小组件、控制中心与操作按钮", systemImage: "square.grid.2x2") }
                     DisclosureGroup("查看支持的 API 协议说明") {
                         ForEach(APIProtocolType.allCases) { proto in
                             HStack(alignment: .top, spacing: 10) {
@@ -133,6 +162,7 @@ struct ProviderListView: View {
                     }
                     .disabled(isExporting || !PersistenceController.canCommitUserData(in: modelContext))
 
+                    Toggle("加密换机备份包含未发送草稿", isOn: $includeDraftsInBackup)
                     Button {
                         exportPassword = ""
                         showExportPasswordAlert = true
@@ -200,11 +230,14 @@ struct ProviderListView: View {
                     if let onClose {
                         Button("完成", action: onClose)
                             .tint(.primary)
-                    } else {
+                    } else if !providers.isEmpty {
                         EditButton()
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if onClose != nil && !providers.isEmpty {
+                        EditButton()
+                    }
                     Button {
                         showAddSheet = true
                     } label: {
@@ -259,6 +292,7 @@ struct ProviderListView: View {
                     provider.deleteAllSecrets()
                     modelContext.delete(provider)
                     try? modelContext.save()
+                    probeStates.removeValue(forKey: deletedProviderID)
                     if !modelContext.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
                         SyncTombstoneStore.shared.recordDeletion(kind: .provider, id: deletedProviderID)
                     }
@@ -279,7 +313,7 @@ struct ProviderListView: View {
                     pendingEncryptedImportData = nil
                     importPassword = ""
                 }
-                Button("解密并导入") {
+                Button("解密并预览") {
                     if let data = pendingEncryptedImportData {
                         let pwd = importPassword
                         pendingEncryptedImportData = nil
@@ -288,12 +322,111 @@ struct ProviderListView: View {
                     }
                 }
             } message: {
-                Text("检测到密码加密备份包，输入密码后将自动恢复数据与 API 凭据。")
+                Text("输入密码后可以查看备份中的资料并选择要恢复的项目。")
             }
         }
         .sheet(item: $connectionDraft) { draft in
             QuickKeySetupSheet(draft: draft) { provider, _ in
                 navigationPath = NavigationPath([provider])
+            }
+        }
+        .sheet(item: $recoveryPlan) { plan in
+            BackupRecoverySheet(plan: plan) { selected in
+                recoveryPlan = nil
+                do {
+                    let summary = try plan.apply(selected, in: modelContext)
+                    backupAlert = BackupAlert(title: summary.title, message: summary.description)
+                } catch {
+                    backupAlert = BackupAlert(title: String(localized: "导入失败"), message: error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    // MARK: - Provider Operations
+
+    private func toggleProviderEnabled(_ provider: ProviderConfig) {
+        let next = !provider.isEnabled
+        provider.isEnabled = next
+        if !next {
+            try? SystemIntegration.shared.setEnabled(false, provider: provider, context: modelContext)
+        }
+        try? modelContext.save()
+    }
+
+    private func cloneProvider(_ source: ProviderConfig) {
+        let baseName = "\(source.name) " + String(localized: "副本")
+        var candidateName = baseName
+        let existingNames = Set(providers.map(\.name))
+        var suffix = 2
+        while existingNames.contains(candidateName) {
+            candidateName = "\(baseName) \(suffix)"
+            suffix += 1
+        }
+        let nonSecretHeaders = source.customHeaders.filter { !$0.isSecret }
+        let cloned = ProviderConfig(
+            name: candidateName,
+            protocolType: source.protocolType,
+            baseURL: source.baseURL,
+            iconSymbol: source.iconSymbol,
+            accentHex: source.accentHex,
+            isEnabled: true,
+            sortOrder: Int(Date().timeIntervalSince1970),
+            models: source.models,
+            customHeaders: nonSecretHeaders,
+            notes: source.notes
+        )
+        if source.idleTimeoutSeconds > 0 {
+            cloned.idleTimeoutSeconds = source.idleTimeoutSeconds
+        }
+        modelContext.insert(cloned)
+        do {
+            try modelContext.save()
+            navigationPath.append(cloned)
+        } catch {
+            modelContext.delete(cloned)
+            cloned.deleteAllSecrets()
+        }
+    }
+
+    @MainActor
+    private func probeSingleProvider(_ provider: ProviderConfig) async {
+        guard let spec = provider.enabledModels.first, provider.hasConfiguredChatAPI else { return }
+        probeStates[provider.id] = .testing
+        do {
+            let result = try await LLMClient.pingModel(
+                providerName: provider.name,
+                protocolType: provider.protocolType,
+                baseURL: provider.baseURL,
+                apiKey: LLMClient.sanitizedAPIKey(provider.apiKey),
+                apiKeys: provider.extraAPIKeys,
+                customHeaders: provider.resolvedCustomHeaders,
+                modelID: spec.id,
+                supportsReasoning: spec.supportsReasoning,
+                idleTimeoutSeconds: provider.customIdleTimeout
+            )
+            probeStates[provider.id] = .ok(ttftMs: result.ttftMs)
+        } catch {
+            probeStates[provider.id] = .failed(ModelSetup.verificationAdvice(for: error, checkingModel: true))
+        }
+    }
+
+    @MainActor
+    private func probeAllReadyProviders(_ displayed: [ProviderConfig]) async {
+        let targets = displayed.filter(\.isReadyForChat)
+        guard !targets.isEmpty else { return }
+        isBatchProbing = true
+        defer { isBatchProbing = false }
+        await withTaskGroup(of: Void.self) { group in
+            for item in targets {
+                group.addTask { @MainActor in
+                    await probeSingleProvider(item)
+                }
+                if ProviderBalanceService.supportsBalanceQuery(protocolType: item.protocolType, baseURL: item.baseURL) {
+                    group.addTask { @MainActor in
+                        await balanceStore.refresh(provider: item)
+                    }
+                }
             }
         }
     }
@@ -305,7 +438,6 @@ struct ProviderListView: View {
         isExporting = true
         defer { isExporting = false }
         do {
-            // Snapshot on the main actor, encode and write off the main thread.
             let archive = try BackupService.makeArchive(context: modelContext)
             let url = try await Task.detached(priority: .userInitiated) {
                 try BackupService.writeToTemporaryFile(BackupService.encode(archive))
@@ -323,7 +455,8 @@ struct ProviderListView: View {
         do {
             let url = try await EncryptedBackupService.exportEncryptedTemporaryFile(
                 context: modelContext,
-                password: password
+                password: password,
+                includeDrafts: includeDraftsInBackup
             )
             exportedJSONURL = url
         } catch {
@@ -355,8 +488,7 @@ struct ProviderListView: View {
             let decoded = try await Task.detached(priority: .userInitiated) {
                 try BackupService.decode(rawData)
             }.value
-            let summary = try BackupService.apply(decoded, to: modelContext)
-            backupAlert = BackupAlert(title: summary.title, message: summary.description)
+            recoveryPlan = try BackupRecoveryPlan(.plain(decoded), in: modelContext)
         } catch {
             backupAlert = BackupAlert(title: String(localized: "导入失败"), message: error.localizedDescription)
         }
@@ -366,21 +498,80 @@ struct ProviderListView: View {
         isImporting = true
         defer { isImporting = false }
         do {
-            let summary = try await EncryptedBackupService.decryptAndApplyAsync(
-                data: data,
-                password: password,
-                to: modelContext
-            )
-            backupAlert = BackupAlert(title: summary.title, message: summary.description)
+            let payload = try await Task.detached(priority: .userInitiated) {
+                try EncryptedBackupService.decryptPayload(data: data, password: password)
+            }.value
+            recoveryPlan = try BackupRecoveryPlan(.encrypted(payload), in: modelContext)
         } catch {
             backupAlert = BackupAlert(title: String(localized: "导入失败"), message: error.localizedDescription)
         }
     }
 
-    /// Persists the new order; the order also drives the model picker's provider sections.
-    private func moveProviders(from source: IndexSet, to destination: Int) {
-        var reordered = providers
-        reordered.move(fromOffsets: source, toOffset: destination)
+    private func providerRows(_ displayed: [ProviderConfig]) -> some View {
+        ForEach(displayed) { provider in
+            NavigationLink(value: provider) { providerRow(provider) }
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    Button {
+                        toggleProviderEnabled(provider)
+                    } label: {
+                        Label(
+                            provider.isEnabled ? String(localized: "停用") : String(localized: "启用"),
+                            systemImage: provider.isEnabled ? "pause.circle" : "play.circle"
+                        )
+                    }
+                    .tint(provider.isEnabled ? .orange : .green)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) { providerPendingDeletion = provider } label: {
+                        Label("删除", systemImage: "trash")
+                    }
+                    Button {
+                        cloneProvider(provider)
+                    } label: {
+                        Label("克隆", systemImage: "doc.on.doc")
+                    }
+                    .tint(.indigo)
+                }
+                .contextMenu {
+                    Button {
+                        toggleProviderEnabled(provider)
+                    } label: {
+                        Label(
+                            provider.isEnabled ? String(localized: "停用该服务商") : String(localized: "启用该服务商"),
+                            systemImage: provider.isEnabled ? "pause.circle" : "play.circle"
+                        )
+                    }
+                    if provider.isReadyForChat {
+                        Button {
+                            Task { await probeSingleProvider(provider) }
+                        } label: {
+                            Label("测试连通性", systemImage: "bolt.horizontal.circle")
+                        }
+                    }
+                    Button {
+                        cloneProvider(provider)
+                    } label: {
+                        Label("克隆服务商配置", systemImage: "doc.on.doc")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        providerPendingDeletion = provider
+                    } label: {
+                        Label("删除", systemImage: "trash")
+                    }
+                }
+        }
+        .onMove { offsets, destination in
+            moveProviders(displayed, from: offsets, to: destination)
+        }
+    }
+
+    private func moveProviders(_ displayed: [ProviderConfig], from source: IndexSet, to destination: Int) {
+        var moved = displayed
+        moved.move(fromOffsets: source, toOffset: destination)
+        let shownIDs = Set(displayed.map(\.id))
+        var iterator = moved.makeIterator()
+        let reordered = providers.map { shownIDs.contains($0.id) ? (iterator.next() ?? $0) : $0 }
         for (index, provider) in reordered.enumerated() where provider.sortOrder != index {
             provider.sortOrder = index
         }
@@ -389,14 +580,26 @@ struct ProviderListView: View {
 
     @ViewBuilder
     private func providerRow(_ provider: ProviderConfig) -> some View {
+        let keyCount = provider.allAPIKeys.count
         let hasKey = provider.hasAuthentication
         let isLocal = NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL)
-        let status: LocalizedStringResource = hasKey ? "Key 已配置" : (isLocal ? "本地地址" : "待填 Key")
-        let statusColor = hasKey || isLocal ? Color.green : Color.orange
+        let statusText: String = {
+            if !provider.isEnabled { return String(localized: "已停用") }
+            if keyCount >= 2 { return String(localized: "Key 池 (\(keyCount))") }
+            if hasKey { return String(localized: "Key 已配置") }
+            if isLocal { return String(localized: "本地地址") }
+            return String(localized: "待填 Key")
+        }()
+        let statusColor: Color = {
+            if !provider.isEnabled { return .secondary }
+            return (hasKey || isLocal) ? .green : .orange
+        }()
+        let trimmedNote = provider.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+
         HStack(spacing: DS.Spacing.md) {
             DSIconTile(
                 systemImage: provider.iconSymbol,
-                tint: Color(hex: provider.accentHex),
+                tint: provider.isEnabled ? Color(hex: provider.accentHex) : .secondary,
                 size: 40,
                 cornerRadius: DS.Radius.sm
             )
@@ -422,14 +625,55 @@ struct ProviderListView: View {
                             .fill(statusColor)
                             .frame(width: 6, height: 6)
                             .accessibilityHidden(true)
-                        Text(status)
+                        Text(statusText)
                             .font(.caption2)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(provider.isEnabled ? .primary : .secondary)
                     }
 
                     Text("已启用 \(provider.enabledModels.count) 个模型")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+
+                    let coolingCount = provider.isEnabled
+                        ? APIKeyPoolRouter.shared.coolingKeyCount(
+                            keys: provider.allAPIKeys,
+                            protocolType: provider.protocolType,
+                            baseURL: provider.baseURL
+                        )
+                        : 0
+                    if coolingCount > 0 {
+                        Text("冷却 \(coolingCount)")
+                            .font(.caption2.monospacedDigit().weight(.medium))
+                            .foregroundStyle(.orange)
+                    }
+
+                    if let balance = balanceStore.snapshot(for: provider) {
+                        Text(verbatim: balance.formattedAvailable)
+                            .font(.caption2.monospacedDigit().weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let probe = probeStates[provider.id] {
+                        switch probe {
+                        case .testing:
+                            ProgressView().controlSize(.mini)
+                        case .ok(let ms):
+                            Text("\(ms) ms")
+                                .font(.caption2.monospacedDigit().weight(.medium))
+                                .foregroundStyle(DS.StatusText.success)
+                        case .failed:
+                            Text("连接异常")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(DS.StatusText.error)
+                        }
+                    }
+                }
+
+                if !trimmedNote.isEmpty {
+                    Text(trimmedNote)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
             }
         }

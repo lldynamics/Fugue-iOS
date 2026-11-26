@@ -14,6 +14,10 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
     private(set) var isSynthesizingCloudSpeech = false
     var speechError: String?
 
+    var isDictationActive: Bool {
+        isRecording || dictationToken != nil
+    }
+
     @ObservationIgnored private let synthesizer = AVSpeechSynthesizer()
     @ObservationIgnored private var activeUtteranceID: ObjectIdentifier?
     @ObservationIgnored private var audioPlayer: AVAudioPlayer?
@@ -24,7 +28,6 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
     @ObservationIgnored private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     @ObservationIgnored private var recognitionTask: SFSpeechRecognitionTask?
     @ObservationIgnored private var activeRecordingHandler: ((String) -> Void)?
-    @ObservationIgnored private var activeLevelHandler: ((Float) -> Void)?
     @ObservationIgnored private var onSpeechFinished: (@MainActor () -> Void)?
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
     @ObservationIgnored private let sessionQueue = DispatchQueue(label: "com.iosbox.speech.audio-session", qos: .userInitiated)
@@ -352,8 +355,7 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
     // MARK: - Speech-to-Text Dictation
 
     func startDictation(
-        onTranscript: @escaping (String) -> Void,
-        onAudioLevel: ((Float) -> Void)? = nil
+        onTranscript: @escaping (String) -> Void
     ) {
         if isRecording || dictationToken != nil {
             stopDictation()
@@ -363,7 +365,6 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
         let token = UUID()
         dictationToken = token
         activeRecordingHandler = onTranscript
-        activeLevelHandler = onAudioLevel
 
         SFSpeechRecognizer.requestAuthorization { [weak self] authStatus in
             Task { @MainActor in
@@ -388,6 +389,13 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
         }
     }
 
+    @discardableResult
+    func stopDictationIfActive() -> Bool {
+        guard isDictationActive else { return false }
+        stopDictation()
+        return true
+    }
+
     func stopDictation() {
         dictationToken = nil
         audioEngine?.stop()
@@ -398,9 +406,24 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
         recognitionRequest = nil
         recognitionTask = nil
         activeRecordingHandler = nil
-        activeLevelHandler = nil
         isRecording = false
         deactivateAudioSessionIfIdle()
+    }
+
+    func beginSimulatedDictationForTesting(onTranscript: @escaping (String) -> Void) {
+        stopDictation()
+        speechError = nil
+        dictationToken = UUID()
+        activeRecordingHandler = onTranscript
+        isRecording = true
+    }
+
+    func emitSimulatedTranscriptForTesting(_ transcript: String, isFinal: Bool = false) {
+        guard dictationToken != nil else { return }
+        activeRecordingHandler?(transcript)
+        if isFinal {
+            stopDictation()
+        }
     }
 
     private func beginAudioCapture() {
@@ -436,13 +459,8 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
                 stopDictation()
                 return
             }
-            let levelEmitter: AudioTapEmitter? = activeLevelHandler == nil ? nil : AudioTapEmitter { [weak self] level in
-                guard let self, self.dictationToken == token else { return }
-                self.activeLevelHandler?(level)
-            }
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
                 request.append(buffer)
-                levelEmitter?.emitIfDue(from: buffer)
             }
             self.audioEngine = engine
             self.recognitionRequest = request
@@ -471,44 +489,5 @@ final class SpeechService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerD
             speechError = error.localizedDescription
             stopDictation()
         }
-    }
-}
-
-private final class AudioTapEmitter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lastEmitTime: CFAbsoluteTime = 0
-    private let handler: @MainActor (Float) -> Void
-
-    init(handler: @escaping @MainActor (Float) -> Void) {
-        self.handler = handler
-    }
-
-    func emitIfDue(from buffer: AVAudioPCMBuffer) {
-        let now = CFAbsoluteTimeGetCurrent()
-        let shouldSend = lock.withLock {
-            guard now - lastEmitTime >= 0.075 else { return false }
-            lastEmitTime = now
-            return true
-        }
-        guard shouldSend else { return }
-        let level = Self.normalizedRMS(from: buffer)
-        Task { @MainActor [handler] in
-            handler(level)
-        }
-    }
-
-    private static func normalizedRMS(from buffer: AVAudioPCMBuffer) -> Float {
-        guard let channelData = buffer.floatChannelData, buffer.frameLength > 0 else { return 0 }
-        let samples = channelData[0]
-        let count = Int(buffer.frameLength)
-        var sum: Float = 0
-        for index in 0..<count {
-            let s = samples[index]
-            sum += s * s
-        }
-        let rms = sqrtf(sum / Float(max(1, count)))
-        // Map typical spoken RMS (~0.005 ... 0.25) smoothly into 0...1.
-        let clamped = min(max(rms * 5.0, 0), 1)
-        return clamped
     }
 }

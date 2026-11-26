@@ -86,13 +86,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Used to dictate chat messages by voice through the microphone."
+            "value": "Used for voice dictation, English speaking practice, and recording voice notes; audio is captured only when you start recording, processed on-device by default, and sent to your configured provider only when you choose cloud transcription."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用于通过麦克风进行语音听写输入对话内容。"
+            "value": "用于语音听写输入、英语口语陪练及录制会议语音纪要；仅在你主动开始录音时采集音频，默认使用设备本地识别，仅在你选择云端转写时发送至你配置的服务商。"
           }
         }
       }
@@ -118,13 +118,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Used to transcribe your voice into chat message text."
+            "value": "Used to transcribe your dictation, English speaking practice, or recorded notes on-device with Apple Speech Recognition (audio stays on your device when offline recognition is supported)."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用于将你的语音实时转换为对话文本输入。"
+            "value": "用于在设备本地使用 Apple 语音识别将你的口述、英语口语练习或会议录音转换为文字（支持离线本地识别时不会上传音频）。"
           }
         }
       }

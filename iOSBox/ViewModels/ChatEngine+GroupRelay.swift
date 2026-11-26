@@ -208,11 +208,24 @@ extension ChatEngine {
             var expectedTitleForAutoGenerate: String?
 
             let limits = conversation.readingChapterLimits
-            let omitKnowledge: Bool
+            let sourceOptions: AssistanceMetadata?
             switch mode {
-            case .afterUserMessage(let question, _, _, _, _, _, _, _): omitKnowledge = question.assistanceMetadata.omittedKnowledge
-            default: omitKnowledge = false
+            case .afterUserMessage(let question, _, _, _, _, _, _, _):
+                sourceOptions = question.assistanceMetadata
+            default:
+                let active = ConversationTree.activeMessages(in: conversation)
+                if let start = active.lastIndex(where: { $0.role == .user }) {
+                    var original = active[start].assistanceMetadata
+                    // Earlier archives recorded per-turn exclusions on the answering messages.
+                    let answers = active[start...].filter { $0.role == .assistant }.map(\.assistanceMetadata)
+                    original.omittedMemory = original.omittedMemory || answers.contains(where: \.omittedMemory)
+                    original.omittedKnowledge = original.omittedKnowledge || answers.contains(where: \.omittedKnowledge)
+                    sourceOptions = original
+                } else {
+                    sourceOptions = nil
+                }
             }
+            let omitKnowledge = sourceOptions?.omittedKnowledge ?? false
             let kbVolumeIDs = omitKnowledge ? [] : conversation.assistanceSettings.knowledgeVolumeIDs
             if !kbVolumeIDs.isEmpty {
                 let q = self.bookQuestion(in: ConversationTree.activeMessages(in: conversation))
@@ -283,6 +296,8 @@ extension ChatEngine {
                             errMeta.groupMemberEmoji = leadMember.avatarEmoji
                             errMeta.requestedSearchQuery = sq
                             errMeta.omittedMemory = omit && conversation.assistanceSettings.usePersonalMemory
+                            errMeta.selectedMemoryIDs = sourceOptions?.selectedMemoryIDs
+                            errMeta.omittedKnowledge = omitKnowledge
                             errMsg.assistanceMetadata = errMeta
                             errMsg.conversation = conversation
                             conversation.messages.append(errMsg)
@@ -301,8 +316,9 @@ extension ChatEngine {
                 }
 
             case .continueDiscussion, .groupVote, .summarize:
-                omitMemory = false
-                memoryInfo = self.prepareMemory(conversation: conversation, omitMemory: false, context: context)
+                omitMemory = sourceOptions?.omittedMemory ?? false
+                memoryInfo = self.prepareMemory(conversation: conversation, omitMemory: omitMemory,
+                                                selectedIDs: sourceOptions?.selectedMemoryIDs, context: context)
             }
 
             if Task.isCancelled || !Self.isAlive(conversation) {
@@ -329,17 +345,18 @@ extension ChatEngine {
                     return
                 }
                 let hasExplicitMentions = planned.contains(where: \.explicitMention)
+                maxRelayTurns = GroupDiscussionCoordinator.maximumTurnsForUserMessage(
+                    speakingMode: speakingMode, plannedCount: planned.count, explicitMentions: hasExplicitMentions,
+                    activeCount: activeMembers.count, configuredLimit: settings.groupMaxRelayTurns
+                )
                 if speakingMode == .smartRelay && !hasExplicitMentions {
                     explicitQueue = [(planned[0].member, planned[0].intent, false)]
-                    maxRelayTurns = min(max(settings.groupMaxRelayTurns, 1), max(activeMembers.count + 1, 2))
                     dynamicSmartRelay = true
                 } else if speakingMode == .smartRelay && hasExplicitMentions {
                     explicitQueue = planned.map { ($0.member, $0.intent, false) }
-                    maxRelayTurns = max(planned.count, settings.groupMaxRelayTurns)
                     dynamicSmartRelay = true
                 } else {
                     explicitQueue = planned.map { ($0.member, $0.intent, !hasExplicitMentions) }
-                    maxRelayTurns = planned.count
                     dynamicSmartRelay = false
                 }
 
@@ -423,6 +440,7 @@ extension ChatEngine {
                 meta.groupMemberTitle = step.member.title
                 meta.groupMemberEmoji = step.member.avatarEmoji
                 meta.groupSpeechIntent = step.intent
+                meta.selectedMemoryIDs = sourceOptions?.selectedMemoryIDs
                 meta.omittedKnowledge = omitKnowledge
                 meta.omittedMemory = omitMemory && settings.usePersonalMemory
                 meta.memoryCount = memoryInfo.count
@@ -580,49 +598,74 @@ extension ChatEngine {
                     enabled: settings.groupSplitShortBubbles,
                     intent: step.intent
                 )
-                if burstParts.count == 2 {
+                if burstParts.count > 1 {
                     replyMsg.content = burstParts[0]
                     try? context.save()
-                    try? await Task.sleep(for: .milliseconds(200))
-                    if !Task.isCancelled && Self.isAlive(conversation) {
+                    roundMessages.append(replyMsg)
+                    var lastEmittedBubble = replyMsg
+
+                    for segIdx in 1..<burstParts.count {
+                        try? await Task.sleep(for: .milliseconds(200))
+                        if Task.isCancelled || !Self.isAlive(conversation) {
+                            if Self.isAlive(lastEmittedBubble) {
+                                if segIdx == 1 {
+                                    lastEmittedBubble.content = fullTextForRouting
+                                } else {
+                                    let remainingText = burstParts[segIdx...].joined(separator: "\n\n")
+                                    lastEmittedBubble.content = lastEmittedBubble.content.isEmpty
+                                        ? remainingText
+                                        : (lastEmittedBubble.content + "\n\n" + remainingText)
+                                }
+                                if finalizedDirective.asksHost {
+                                    var restoredMeta = lastEmittedBubble.assistanceMetadata
+                                    restoredMeta.groupAskedHost = true
+                                    lastEmittedBubble.assistanceMetadata = restoredMeta
+                                }
+                                try? context.save()
+                            }
+                            break
+                        }
+
                         let burstSort = conversation.nextMessageSortIndex()
-                        let secondBubble = ChatMessage(
+                        let extraBubble = ChatMessage(
                             role: .assistant,
-                            content: burstParts[1],
+                            content: burstParts[segIdx],
                             target: target,
                             comparisonGroupID: nil,
                             isSelectedInGroup: true,
                             isStreaming: false,
                             sortIndex: burstSort
                         )
-                        secondBubble.accentHex = step.member.accentHex
-                        secondBubble.parentMessageID = shouldUseTree ? replyMsg.id : nil
-                        var secondMeta = AssistanceMetadata()
-                        secondMeta.groupMemberID = step.member.id
-                        secondMeta.groupMemberName = step.member.name
-                        secondMeta.isPersonaSimulation = step.member.isSimulatedPersona
-                        secondMeta.groupMemberTitle = step.member.title
-                        secondMeta.groupMemberEmoji = step.member.avatarEmoji
-                        secondMeta.omittedKnowledge = replyMsg.assistanceMetadata.omittedKnowledge
-                        secondMeta.bookReply = replyMsg.assistanceMetadata.bookReply
-                        secondMeta.personaExcerpts = replyMsg.assistanceMetadata.personaExcerpts
+                        extraBubble.accentHex = step.member.accentHex
+                        extraBubble.parentMessageID = shouldUseTree ? lastEmittedBubble.id : nil
+                        var extraMeta = AssistanceMetadata()
+                        extraMeta.groupMemberID = step.member.id
+                        extraMeta.groupMemberName = step.member.name
+                        extraMeta.isPersonaSimulation = step.member.isSimulatedPersona
+                        extraMeta.groupMemberTitle = step.member.title
+                        extraMeta.groupMemberEmoji = step.member.avatarEmoji
+                        extraMeta.omittedKnowledge = replyMsg.assistanceMetadata.omittedKnowledge
+                        extraMeta.bookReply = replyMsg.assistanceMetadata.bookReply
+                        extraMeta.personaExcerpts = replyMsg.assistanceMetadata.personaExcerpts
+                        let isLastSegment = segIdx == burstParts.count - 1
                         if finalizedDirective.asksHost {
-                            secondMeta.groupAskedHost = true
-                            var firstMeta = replyMsg.assistanceMetadata
-                            firstMeta.groupAskedHost = false
-                            replyMsg.assistanceMetadata = firstMeta
+                            var prevMeta = lastEmittedBubble.assistanceMetadata
+                            prevMeta.groupAskedHost = false
+                            lastEmittedBubble.assistanceMetadata = prevMeta
+                            if isLastSegment {
+                                extraMeta.groupAskedHost = true
+                            }
                         }
-                        secondBubble.assistanceMetadata = secondMeta
-                        secondBubble.conversation = conversation
-                        conversation.messages.append(secondBubble)
-                        context.insert(secondBubble)
+                        extraBubble.assistanceMetadata = extraMeta
+                        extraBubble.conversation = conversation
+                        conversation.messages.append(extraBubble)
+                        context.insert(extraBubble)
                         if shouldUseTree {
-                            conversation.activeLeafMessageID = secondBubble.id
+                            conversation.activeLeafMessageID = extraBubble.id
                         }
-                        roundMessages.append(replyMsg)
-                        roundMessages.append(secondBubble)
-                    } else {
-                        roundMessages.append(replyMsg)
+                        try? context.save()
+                        roundMessages.append(extraBubble)
+                        lastEmittedBubble = extraBubble
                     }
                 } else {
                     roundMessages.append(replyMsg)

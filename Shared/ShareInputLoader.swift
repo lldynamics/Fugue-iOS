@@ -5,12 +5,16 @@ import UniformTypeIdentifiers
 
 enum ShareInputLoader {
     private static let maximumSharedImageFileBytes = 24 * 1024 * 1024
+    static let maximumSharedPDFBytes = 16 * 1024 * 1024
 
     static func load(_ items: [NSExtensionItem]) async throws -> ReadingInput {
         let providers = items.flatMap { $0.attachments ?? [] }
         var fallbackText = ""
         var fallbackURL: URL?
+        var safariInput: ReadingInput?
         var sharedAttachments: [MessageAttachment] = []
+        var sharedImages = 0
+        var containsPDF = false
         for provider in providers.prefix(12) {
             try Task.checkCancellation()
             if provider.hasItemConformingToTypeIdentifier(UTType.propertyList.identifier),
@@ -19,8 +23,8 @@ enum ShareInputLoader {
                 let text = (data["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 let pageURL = (data["url"] as? String).flatMap(URL.init(string:))
                 let title = String((data["title"] as? String ?? "").prefix(300))
-                if !text.isEmpty {
-                    return ReadingInput(
+                if !text.isEmpty, safariInput == nil {
+                    safariInput = ReadingInput(
                         text: String(text.prefix(URLReader.maximumCharacters)),
                         url: pageURL,
                         title: title,
@@ -31,9 +35,16 @@ enum ShareInputLoader {
                     fallbackURL = fallbackURL ?? pageURL
                 }
             }
-            if sharedAttachments.count < 2, provider.hasItemConformingToTypeIdentifier(UTType.image.identifier),
+            if provider.hasItemConformingToTypeIdentifier(UTType.pdf.identifier) {
+                guard !containsPDF else { throw SystemEntryError.pdfLimit }
+                sharedAttachments.append(try await loadSharedPDF(from: provider))
+                containsPDF = true
+                continue
+            }
+            if sharedImages < 2, provider.hasItemConformingToTypeIdentifier(UTType.image.identifier),
                let imgAttachment = try? await loadSharedImage(from: provider) {
                 sharedAttachments.append(imgAttachment)
+                sharedImages += 1
             }
             if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
                let value = try? await item(provider, type: UTType.url.identifier) {
@@ -48,10 +59,15 @@ enum ShareInputLoader {
                 }
             }
         }
+        if var safariInput {
+            safariInput.attachments = sharedAttachments
+            return safariInput
+        }
         if !sharedAttachments.isEmpty {
             var input = fallbackText.isEmpty ? ReadingInput() : ReadingInput.from(text: fallbackText)
             input.url = fallbackURL ?? input.url
             input.attachments = sharedAttachments
+            if containsPDF { input.title = sharedAttachments.first { $0.mimeType == "application/pdf" }?.fileName ?? "" }
             return input
         }
         if !fallbackText.isEmpty {
@@ -65,6 +81,32 @@ enum ShareInputLoader {
             return ReadingInput.from(text: text)
         }
         throw SystemEntryError.invalidInput
+    }
+
+    private static func loadSharedPDF(from provider: NSItemProvider) async throws -> MessageAttachment {
+        let suggestedName = provider.suggestedName
+        return try await withCheckedThrowingContinuation { continuation in
+            _ = provider.loadFileRepresentation(forTypeIdentifier: UTType.pdf.identifier) { url, error in
+                do {
+                    if let error { throw error }
+                    guard let url, url.isFileURL else { throw SystemEntryError.invalidInput }
+                    let info = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+                    guard info.isRegularFile == true, info.isSymbolicLink == false, let count = info.fileSize,
+                          count > 0, count <= maximumSharedPDFBytes else { throw SystemEntryError.pdfLimit }
+                    // This temporary file is valid only inside the provider callback.
+                    let handle = try FileHandle(forReadingFrom: url)
+                    defer { try? handle.close() }
+                    let data = try handle.read(upToCount: maximumSharedPDFBytes + 1) ?? Data()
+                    guard data.count == count, data.count <= maximumSharedPDFBytes else { throw SystemEntryError.pdfLimit }
+                    guard data.prefix(1024).range(of: Data("%PDF-".utf8)) != nil else { throw SystemEntryError.invalidInput }
+                    let name = suggestedName.flatMap { $0.isEmpty ? nil : $0 } ?? url.lastPathComponent
+                    let stem = String((((name as NSString).lastPathComponent as NSString).deletingPathExtension).prefix(240))
+                    let filename = (stem.isEmpty ? "Document" : stem) + ".pdf"
+                    continuation.resume(returning: MessageAttachment(kind: .document, fileName: filename, mimeType: "application/pdf",
+                                                               dataBase64: data.base64EncodedString(), byteSize: data.count, sendOriginalPDF: true))
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
     }
 
     private static func loadSharedImage(from provider: NSItemProvider) async throws -> MessageAttachment? {

@@ -10,6 +10,7 @@ final class SpotlightIndexService {
     /// Defaults to `false` (opt-in) so private chat snippets are never written to system-wide Spotlight
     /// unless the user explicitly enables it in Settings.
     static let enabledKey = "com.iosbox.spotlightIndexingEnabled.v1"
+    static let persistedIdentifiersKey = "com.iosbox.spotlightPersistedIdentifiers.v1"
     private static let conversationIndexVersionKey = "com.iosbox.spotlightConversationIndexVersion"
     private var removingPreviewRecords = false
 
@@ -21,17 +22,29 @@ final class SpotlightIndexService {
     }
 
     private let defaults: UserDefaults
+    private let preferences: AppPreferences?
     /// Recorded snapshot of indexed entries for verification and testing.
     private(set) var recentIndexedEntries: [String: IndexedEntry] = [:]
+    /// Persisted identifier set across app restarts so unbookmarked items are reliably deleted.
+    private(set) var persistedIdentifiers: Set<String>
+    private(set) var lastDeletedIdentifiers: [String] = []
     private var entryOrder: [String] = []
     private static let maxCachedSnapshotEntries = 400
+    private static let maxPersistedIdentifiers = 5000
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, preferences: AppPreferences? = nil) {
         self.defaults = defaults
+        self.preferences = preferences
+        let stored = defaults.stringArray(forKey: Self.persistedIdentifiersKey) ?? []
+        self.persistedIdentifiers = Set(stored)
+    }
+
+    var isAppLockActive: Bool {
+        (preferences ?? .shared).appLockEnabled
     }
 
     var isEnabled: Bool {
-        defaults.bool(forKey: Self.enabledKey)
+        defaults.bool(forKey: Self.enabledKey) && !isAppLockActive
     }
 
     var needsLegacyPreviewPurge: Bool {
@@ -44,23 +57,42 @@ final class SpotlightIndexService {
     }
 
     func handlePreferenceChange(enabled: Bool) {
-        if !enabled {
+        if !enabled || isAppLockActive {
             clearAllIndexedItems()
         } else {
             syncRecentConversations(in: AppRuntime.persistence.container.mainContext)
         }
     }
 
+    func handleAppLockChange(lockEnabled: Bool, in context: ModelContext? = nil) {
+        if lockEnabled {
+            clearAllIndexedItems()
+        } else if defaults.bool(forKey: Self.enabledKey), let context {
+            syncRecentConversations(in: context)
+        }
+    }
+
     func clearAllIndexedItems() {
         recentIndexedEntries.removeAll()
         entryOrder.removeAll()
+        persistedIdentifiers.removeAll()
+        defaults.removeObject(forKey: Self.persistedIdentifiersKey)
         guard CSSearchableIndex.isIndexingAvailable() else { return }
         CSSearchableIndex.default().deleteAllSearchableItems(completionHandler: nil)
     }
 
     func indexConversation(_ conversation: Conversation) {
+        if isAppLockActive {
+            if !persistedIdentifiers.isEmpty || !recentIndexedEntries.isEmpty {
+                clearAllIndexedItems()
+            }
+            return
+        }
         guard isEnabled else { return }
         let (items, staleMessageKeys) = buildSearchableItems(for: conversation)
+        if !staleMessageKeys.isEmpty {
+            lastDeletedIdentifiers = staleMessageKeys
+        }
         guard !items.isEmpty || !staleMessageKeys.isEmpty else { return }
         guard CSSearchableIndex.isIndexingAvailable() else { return }
         if !staleMessageKeys.isEmpty {
@@ -75,6 +107,10 @@ final class SpotlightIndexService {
         let key = Self.makeIdentifier(conversationID: conversationID, messageID: messageID)
         recentIndexedEntries.removeValue(forKey: key)
         entryOrder.removeAll { $0 == key }
+        if persistedIdentifiers.remove(key) != nil {
+            savePersistedIdentifiers()
+        }
+        lastDeletedIdentifiers = [key]
         guard CSSearchableIndex.isIndexingAvailable() else { return }
         CSSearchableIndex.default().deleteSearchableItems(withIdentifiers: [key], completionHandler: nil)
     }
@@ -82,17 +118,28 @@ final class SpotlightIndexService {
     func removeConversation(id: UUID) {
         let prefix = "msg:\(id.uuidString):"
         let convKey = Self.makeIdentifier(conversationID: id, messageID: nil)
-        let matchingKeys = recentIndexedEntries.keys.filter { $0 == convKey || $0.hasPrefix(prefix) }
+        let knownKeys = Set(recentIndexedEntries.keys).union(persistedIdentifiers)
+        let matchingKeys = knownKeys.filter { $0 == convKey || $0.hasPrefix(prefix) }.sorted()
         for k in matchingKeys {
             recentIndexedEntries.removeValue(forKey: k)
+            persistedIdentifiers.remove(k)
+        }
+        if !matchingKeys.isEmpty {
+            savePersistedIdentifiers()
+            lastDeletedIdentifiers = matchingKeys
         }
         entryOrder.removeAll { $0 == convKey || $0.hasPrefix(prefix) }
         guard CSSearchableIndex.isIndexingAvailable() else { return }
-        CSSearchableIndex.default().deleteSearchableItems(withIdentifiers: [convKey], completionHandler: nil)
+        let identifiersToDelete = matchingKeys.isEmpty ? [convKey] : matchingKeys
+        CSSearchableIndex.default().deleteSearchableItems(withIdentifiers: identifiersToDelete, completionHandler: nil)
         CSSearchableIndex.default().deleteSearchableItems(withDomainIdentifiers: ["\(Self.domainIdentifier).\(id.uuidString)"], completionHandler: nil)
     }
 
     func syncRecentConversations(in context: ModelContext, limit: Int = 80) {
+        if isAppLockActive {
+            clearAllIndexedItems()
+            return
+        }
         if needsLegacyPreviewPurge {
             guard !removingPreviewRecords else { return }
             removingPreviewRecords = true
@@ -117,6 +164,9 @@ final class SpotlightIndexService {
             let (items, stale) = buildSearchableItems(for: conv)
             batchItems.append(contentsOf: items)
             staleKeys.append(contentsOf: stale)
+        }
+        if !staleKeys.isEmpty {
+            lastDeletedIdentifiers = staleKeys
         }
         guard CSSearchableIndex.isIndexingAvailable() else { return }
         if !staleKeys.isEmpty {
@@ -205,16 +255,19 @@ final class SpotlightIndexService {
             ))
         }
 
-        // Prune previously indexed message bookmarks that were un-bookmarked or deleted
+        // Prune previously indexed message bookmarks that were un-bookmarked or deleted (including across restarts)
         let prefix = "msg:\(convID):"
-        let staleKeys = recentIndexedEntries.keys.filter { $0.hasPrefix(prefix) && !activeBookmarkKeys.contains($0) }
+        let knownKeys = Set(recentIndexedEntries.keys).union(persistedIdentifiers)
+        let staleKeys = knownKeys.filter { $0.hasPrefix(prefix) && !activeBookmarkKeys.contains($0) }.sorted()
         for stale in staleKeys {
             recentIndexedEntries.removeValue(forKey: stale)
+            persistedIdentifiers.remove(stale)
         }
         if !staleKeys.isEmpty {
             let staleSet = Set(staleKeys)
             entryOrder.removeAll { staleSet.contains($0) }
         }
+        savePersistedIdentifiers()
 
         return (searchableItems, staleKeys)
     }
@@ -224,10 +277,22 @@ final class SpotlightIndexService {
             entryOrder.append(entry.identifier)
         }
         recentIndexedEntries[entry.identifier] = entry
+        persistedIdentifiers.insert(entry.identifier)
         while entryOrder.count > Self.maxCachedSnapshotEntries {
             let oldest = entryOrder.removeFirst()
             recentIndexedEntries.removeValue(forKey: oldest)
         }
+    }
+
+    private func savePersistedIdentifiers() {
+        var ordered = persistedIdentifiers.sorted()
+        if ordered.count > Self.maxPersistedIdentifiers {
+            let msgKeys = ordered.filter { $0.hasPrefix("msg:") }
+            let convKeys = ordered.filter { !$0.hasPrefix("msg:") }
+            ordered = Array((msgKeys + convKeys).prefix(Self.maxPersistedIdentifiers))
+            persistedIdentifiers = Set(ordered)
+        }
+        defaults.set(ordered, forKey: Self.persistedIdentifiersKey)
     }
 
     nonisolated static func makeIdentifier(conversationID: UUID, messageID: UUID?) -> String {

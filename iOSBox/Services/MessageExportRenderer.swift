@@ -14,6 +14,11 @@ enum MessageExportBlock: Equatable {
 enum MessageExportRenderer {
     static let pageRect = CGRect(x: 0, y: 0, width: 595, height: 842)
     static let shareCardCharacterCap = 3600
+    static let pdfTraitCollection = UITraitCollection(userInterfaceStyle: .light)
+
+    static func pdfColor(_ color: UIColor) -> UIColor {
+        color.resolvedColor(with: pdfTraitCollection)
+    }
 
     static func parseBlocks(from markdown: String) -> [MessageExportBlock] {
         let normalized = markdown
@@ -135,235 +140,237 @@ enum MessageExportRenderer {
         let dateText = dateFormatter.string(from: date)
 
         return renderer.pdfData { ctx in
-            var pageNumber = 0
-            var cursorY: CGFloat = topMargin
+            pdfTraitCollection.performAsCurrent {
+                var pageNumber = 0
+                var cursorY: CGFloat = topMargin
 
-            func beginPageOnly() {
-                if pageNumber > 0 {
-                    drawFooter(pageNumber: pageNumber, in: ctx.cgContext, marginX: marginX, contentWidth: contentWidth)
+                func beginPageOnly() {
+                    if pageNumber > 0 {
+                        drawFooter(pageNumber: pageNumber, in: ctx.cgContext, marginX: marginX, contentWidth: contentWidth)
+                    }
+                    ctx.beginPage()
+                    pageNumber += 1
                 }
-                ctx.beginPage()
-                pageNumber += 1
-            }
 
-            func ensureSpace(_ height: CGFloat) {
-                if cursorY + height > bottomLimit && cursorY > topMargin + 8 {
-                    beginPageOnly()
-                    cursorY = topMargin
+                func ensureSpace(_ height: CGFloat) {
+                    if cursorY + height > bottomLimit && cursorY > topMargin + 8 {
+                        beginPageOnly()
+                        cursorY = topMargin
+                    }
                 }
-            }
 
-            beginPageOnly()
-            cursorY = topMargin
+                beginPageOnly()
+                cursorY = topMargin
 
-            // Header Block
-            let titleText = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? String(localized: "夜奔 · 对话记录")
-                : title
-            let titleAttr = NSAttributedString(
-                string: titleText,
-                attributes: [
-                    .font: UIFont.systemFont(ofSize: 18, weight: .bold),
-                    .foregroundColor: UIColor.label
-                ]
-            )
-            let titleRect = titleAttr.boundingRect(
-                with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading],
-                context: nil
-            )
-            titleAttr.draw(with: CGRect(x: marginX, y: cursorY, width: contentWidth, height: ceil(titleRect.height)),
-                           options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-            cursorY += ceil(titleRect.height) + 4
-
-            let subtitleParts = [speaker.trimmingCharacters(in: .whitespacesAndNewlines), dateText].filter { !$0.isEmpty }
-            if !subtitleParts.isEmpty {
-                let subAttr = NSAttributedString(
-                    string: subtitleParts.joined(separator: "  ·  "),
+                // Header Block
+                let titleText = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? String(localized: "夜奔 · 对话记录")
+                    : title
+                let titleAttr = NSAttributedString(
+                    string: titleText,
                     attributes: [
-                        .font: UIFont.systemFont(ofSize: 10.5, weight: .medium),
-                        .foregroundColor: UIColor.secondaryLabel
+                        .font: UIFont.systemFont(ofSize: 18, weight: .bold),
+                        .foregroundColor: pdfColor(.label)
                     ]
                 )
-                let subRect = subAttr.boundingRect(
+                let titleRect = titleAttr.boundingRect(
                     with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude),
                     options: [.usesLineFragmentOrigin, .usesFontLeading],
                     context: nil
                 )
-                subAttr.draw(with: CGRect(x: marginX, y: cursorY, width: contentWidth, height: ceil(subRect.height)),
-                             options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-                cursorY += ceil(subRect.height) + 8
-            }
+                titleAttr.draw(with: CGRect(x: marginX, y: cursorY, width: contentWidth, height: ceil(titleRect.height)),
+                               options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+                cursorY += ceil(titleRect.height) + 4
 
-            ctx.cgContext.saveGState()
-            ctx.cgContext.setStrokeColor(UIColor.separator.cgColor)
-            ctx.cgContext.setLineWidth(0.75)
-            ctx.cgContext.move(to: CGPoint(x: marginX, y: cursorY))
-            ctx.cgContext.addLine(to: CGPoint(x: marginX + contentWidth, y: cursorY))
-            ctx.cgContext.strokePath()
-            ctx.cgContext.restoreGState()
-            cursorY += 14
-
-            for block in blocks {
-                switch block {
-                case .heading(let level, let text):
-                    let size: CGFloat = level == 1 ? 15.5 : (level == 2 ? 13.8 : 12.2)
-                    let para = NSMutableParagraphStyle()
-                    para.lineSpacing = 3
-                    let attr = NSAttributedString(
-                        string: text,
+                let subtitleParts = [speaker.trimmingCharacters(in: .whitespacesAndNewlines), dateText].filter { !$0.isEmpty }
+                if !subtitleParts.isEmpty {
+                    let subAttr = NSAttributedString(
+                        string: subtitleParts.joined(separator: "  ·  "),
                         attributes: [
-                            .font: UIFont.systemFont(ofSize: size, weight: .bold),
-                            .foregroundColor: UIColor.label,
-                            .paragraphStyle: para
+                            .font: UIFont.systemFont(ofSize: 10.5, weight: .medium),
+                            .foregroundColor: pdfColor(.secondaryLabel)
                         ]
                     )
-                    let h = measureHeight(attr, width: contentWidth)
-                    ensureSpace(h + 8)
-                    cursorY += 4
-                    attr.draw(with: CGRect(x: marginX, y: cursorY, width: contentWidth, height: h),
-                              options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-                    cursorY += h + 6
-
-                case .paragraph(let text):
-                    let para = NSMutableParagraphStyle()
-                    para.lineSpacing = 4
-                    let attr = NSAttributedString(
-                        string: text,
-                        attributes: [
-                            .font: UIFont.systemFont(ofSize: 11.5),
-                            .foregroundColor: UIColor.label,
-                            .paragraphStyle: para
-                        ]
+                    let subRect = subAttr.boundingRect(
+                        with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude),
+                        options: [.usesLineFragmentOrigin, .usesFontLeading],
+                        context: nil
                     )
-                    drawPaginatedText(attr, startX: marginX, width: contentWidth,
-                                      cursorY: &cursorY, topMargin: topMargin,
-                                      bottomLimit: bottomLimit, newPage: beginPageOnly)
-                    cursorY += 8
-
-                case .bullet(let marker, let text):
-                    let indent: CGFloat = 18
-                    let para = NSMutableParagraphStyle()
-                    para.lineSpacing = 3.5
-                    let markerAttr = NSAttributedString(
-                        string: marker,
-                        attributes: [
-                            .font: UIFont.monospacedDigitSystemFont(ofSize: 11.2, weight: .semibold),
-                            .foregroundColor: UIColor.secondaryLabel
-                        ]
-                    )
-                    let bodyAttr = NSAttributedString(
-                        string: text,
-                        attributes: [
-                            .font: UIFont.systemFont(ofSize: 11.5),
-                            .foregroundColor: UIColor.label,
-                            .paragraphStyle: para
-                        ]
-                    )
-                    let h = measureHeight(bodyAttr, width: contentWidth - indent)
-                    ensureSpace(min(h + 4, 48))
-                    markerAttr.draw(at: CGPoint(x: marginX + 2, y: cursorY))
-                    drawPaginatedText(bodyAttr, startX: marginX + indent, width: contentWidth - indent,
-                                      cursorY: &cursorY, topMargin: topMargin,
-                                      bottomLimit: bottomLimit, newPage: beginPageOnly)
-                    cursorY += 5
-
-                case .quote(let text):
-                    let padX: CGFloat = 12
-                    let padY: CGFloat = 8
-                    let innerWidth = contentWidth - padX - 8
-                    let para = NSMutableParagraphStyle()
-                    para.lineSpacing = 3.5
-                    let attr = NSAttributedString(
-                        string: text,
-                        attributes: [
-                            .font: UIFont.systemFont(ofSize: 11),
-                            .foregroundColor: UIColor.secondaryLabel,
-                            .paragraphStyle: para
-                        ]
-                    )
-                    let textHeight = measureHeight(attr, width: innerWidth)
-                    let totalHeight = textHeight + padY * 2
-                    if totalHeight <= (bottomLimit - topMargin) {
-                        ensureSpace(totalHeight + 6)
-                        let box = CGRect(x: marginX, y: cursorY, width: contentWidth, height: totalHeight)
-                        ctx.cgContext.saveGState()
-                        let bgPath = UIBezierPath(roundedRect: box, cornerRadius: 6)
-                        UIColor.secondarySystemFill.setFill()
-                        bgPath.fill()
-                        UIColor.systemBlue.withAlphaComponent(0.7).setFill()
-                        UIBezierPath(roundedRect: CGRect(x: marginX, y: cursorY, width: 3.5, height: totalHeight), cornerRadius: 1.75).fill()
-                        ctx.cgContext.restoreGState()
-                        attr.draw(with: CGRect(x: marginX + padX, y: cursorY + padY, width: innerWidth, height: textHeight),
-                                  options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-                        cursorY += totalHeight + 8
-                    } else {
-                        drawPaginatedText(attr, startX: marginX + padX, width: innerWidth,
-                                          cursorY: &cursorY, topMargin: topMargin,
-                                          bottomLimit: bottomLimit, newPage: beginPageOnly)
-                        cursorY += 8
-                    }
-
-                case .codeBlock(let language, let code):
-                    let pad: CGFloat = 10
-                    let headerHeight: CGFloat = language.isEmpty ? 0 : 16
-                    let para = NSMutableParagraphStyle()
-                    para.lineSpacing = 2.5
-                    let codeAttr = NSAttributedString(
-                        string: code,
-                        attributes: [
-                            .font: UIFont.monospacedSystemFont(ofSize: 9.8, weight: .regular),
-                            .foregroundColor: UIColor.label,
-                            .paragraphStyle: para
-                        ]
-                    )
-                    let codeHeight = measureHeight(codeAttr, width: contentWidth - pad * 2)
-                    let boxHeight = headerHeight + codeHeight + pad * 2
-                    if boxHeight <= (bottomLimit - topMargin) {
-                        ensureSpace(boxHeight + 8)
-                        let box = CGRect(x: marginX, y: cursorY, width: contentWidth, height: boxHeight)
-                        ctx.cgContext.saveGState()
-                        UIColor.tertiarySystemFill.setFill()
-                        UIBezierPath(roundedRect: box, cornerRadius: 7).fill()
-                        ctx.cgContext.restoreGState()
-                        var textY = cursorY + pad
-                        if !language.isEmpty {
-                            let langAttr = NSAttributedString(
-                                string: language.uppercased(),
-                                attributes: [
-                                    .font: UIFont.monospacedSystemFont(ofSize: 8.5, weight: .semibold),
-                                    .foregroundColor: UIColor.secondaryLabel
-                                ]
-                            )
-                            langAttr.draw(at: CGPoint(x: marginX + pad, y: textY - 2))
-                            textY += headerHeight
-                        }
-                        codeAttr.draw(with: CGRect(x: marginX + pad, y: textY, width: contentWidth - pad * 2, height: codeHeight),
-                                      options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-                        cursorY += boxHeight + 8
-                    } else {
-                        drawPaginatedText(codeAttr, startX: marginX + pad, width: contentWidth - pad * 2,
-                                          cursorY: &cursorY, topMargin: topMargin,
-                                          bottomLimit: bottomLimit, newPage: beginPageOnly)
-                        cursorY += 8
-                    }
-
-                case .divider:
-                    ensureSpace(14)
-                    cursorY += 4
-                    ctx.cgContext.saveGState()
-                    ctx.cgContext.setStrokeColor(UIColor.separator.cgColor)
-                    ctx.cgContext.setLineWidth(0.5)
-                    ctx.cgContext.move(to: CGPoint(x: marginX, y: cursorY))
-                    ctx.cgContext.addLine(to: CGPoint(x: marginX + contentWidth, y: cursorY))
-                    ctx.cgContext.strokePath()
-                    ctx.cgContext.restoreGState()
-                    cursorY += 10
+                    subAttr.draw(with: CGRect(x: marginX, y: cursorY, width: contentWidth, height: ceil(subRect.height)),
+                                 options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+                    cursorY += ceil(subRect.height) + 8
                 }
-            }
 
-            if pageNumber > 0 {
-                drawFooter(pageNumber: pageNumber, in: ctx.cgContext, marginX: marginX, contentWidth: contentWidth)
+                ctx.cgContext.saveGState()
+                ctx.cgContext.setStrokeColor(pdfColor(.separator).cgColor)
+                ctx.cgContext.setLineWidth(0.75)
+                ctx.cgContext.move(to: CGPoint(x: marginX, y: cursorY))
+                ctx.cgContext.addLine(to: CGPoint(x: marginX + contentWidth, y: cursorY))
+                ctx.cgContext.strokePath()
+                ctx.cgContext.restoreGState()
+                cursorY += 14
+
+                for block in blocks {
+                    switch block {
+                    case .heading(let level, let text):
+                        let size: CGFloat = level == 1 ? 15.5 : (level == 2 ? 13.8 : 12.2)
+                        let para = NSMutableParagraphStyle()
+                        para.lineSpacing = 3
+                        let attr = NSAttributedString(
+                            string: text,
+                            attributes: [
+                                .font: UIFont.systemFont(ofSize: size, weight: .bold),
+                                .foregroundColor: pdfColor(.label),
+                                .paragraphStyle: para
+                            ]
+                        )
+                        let h = measureHeight(attr, width: contentWidth)
+                        ensureSpace(h + 8)
+                        cursorY += 4
+                        attr.draw(with: CGRect(x: marginX, y: cursorY, width: contentWidth, height: h),
+                                  options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+                        cursorY += h + 6
+
+                    case .paragraph(let text):
+                        let para = NSMutableParagraphStyle()
+                        para.lineSpacing = 4
+                        let attr = NSAttributedString(
+                            string: text,
+                            attributes: [
+                                .font: UIFont.systemFont(ofSize: 11.5),
+                                .foregroundColor: pdfColor(.label),
+                                .paragraphStyle: para
+                            ]
+                        )
+                        drawPaginatedText(attr, startX: marginX, width: contentWidth,
+                                          cursorY: &cursorY, topMargin: topMargin,
+                                          bottomLimit: bottomLimit, newPage: beginPageOnly)
+                        cursorY += 8
+
+                    case .bullet(let marker, let text):
+                        let indent: CGFloat = 18
+                        let para = NSMutableParagraphStyle()
+                        para.lineSpacing = 3.5
+                        let markerAttr = NSAttributedString(
+                            string: marker,
+                            attributes: [
+                                .font: UIFont.monospacedDigitSystemFont(ofSize: 11.2, weight: .semibold),
+                                .foregroundColor: pdfColor(.secondaryLabel)
+                            ]
+                        )
+                        let bodyAttr = NSAttributedString(
+                            string: text,
+                            attributes: [
+                                .font: UIFont.systemFont(ofSize: 11.5),
+                                .foregroundColor: pdfColor(.label),
+                                .paragraphStyle: para
+                            ]
+                        )
+                        let h = measureHeight(bodyAttr, width: contentWidth - indent)
+                        ensureSpace(min(h + 4, 48))
+                        markerAttr.draw(at: CGPoint(x: marginX + 2, y: cursorY))
+                        drawPaginatedText(bodyAttr, startX: marginX + indent, width: contentWidth - indent,
+                                          cursorY: &cursorY, topMargin: topMargin,
+                                          bottomLimit: bottomLimit, newPage: beginPageOnly)
+                        cursorY += 5
+
+                    case .quote(let text):
+                        let padX: CGFloat = 12
+                        let padY: CGFloat = 8
+                        let innerWidth = contentWidth - padX - 8
+                        let para = NSMutableParagraphStyle()
+                        para.lineSpacing = 3.5
+                        let attr = NSAttributedString(
+                            string: text,
+                            attributes: [
+                                .font: UIFont.systemFont(ofSize: 11),
+                                .foregroundColor: pdfColor(.secondaryLabel),
+                                .paragraphStyle: para
+                            ]
+                        )
+                        let textHeight = measureHeight(attr, width: innerWidth)
+                        let totalHeight = textHeight + padY * 2
+                        if totalHeight <= (bottomLimit - topMargin) {
+                            ensureSpace(totalHeight + 6)
+                            let box = CGRect(x: marginX, y: cursorY, width: contentWidth, height: totalHeight)
+                            ctx.cgContext.saveGState()
+                            let bgPath = UIBezierPath(roundedRect: box, cornerRadius: 6)
+                            pdfColor(.secondarySystemFill).setFill()
+                            bgPath.fill()
+                            pdfColor(.systemBlue).withAlphaComponent(0.7).setFill()
+                            UIBezierPath(roundedRect: CGRect(x: marginX, y: cursorY, width: 3.5, height: totalHeight), cornerRadius: 1.75).fill()
+                            ctx.cgContext.restoreGState()
+                            attr.draw(with: CGRect(x: marginX + padX, y: cursorY + padY, width: innerWidth, height: textHeight),
+                                      options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+                            cursorY += totalHeight + 8
+                        } else {
+                            drawPaginatedText(attr, startX: marginX + padX, width: innerWidth,
+                                              cursorY: &cursorY, topMargin: topMargin,
+                                              bottomLimit: bottomLimit, newPage: beginPageOnly)
+                            cursorY += 8
+                        }
+
+                    case .codeBlock(let language, let code):
+                        let pad: CGFloat = 10
+                        let headerHeight: CGFloat = language.isEmpty ? 0 : 16
+                        let para = NSMutableParagraphStyle()
+                        para.lineSpacing = 2.5
+                        let codeAttr = NSAttributedString(
+                            string: code,
+                            attributes: [
+                                .font: UIFont.monospacedSystemFont(ofSize: 9.8, weight: .regular),
+                                .foregroundColor: pdfColor(.label),
+                                .paragraphStyle: para
+                            ]
+                        )
+                        let codeHeight = measureHeight(codeAttr, width: contentWidth - pad * 2)
+                        let boxHeight = headerHeight + codeHeight + pad * 2
+                        if boxHeight <= (bottomLimit - topMargin) {
+                            ensureSpace(boxHeight + 8)
+                            let box = CGRect(x: marginX, y: cursorY, width: contentWidth, height: boxHeight)
+                            ctx.cgContext.saveGState()
+                            pdfColor(.tertiarySystemFill).setFill()
+                            UIBezierPath(roundedRect: box, cornerRadius: 7).fill()
+                            ctx.cgContext.restoreGState()
+                            var textY = cursorY + pad
+                            if !language.isEmpty {
+                                let langAttr = NSAttributedString(
+                                    string: language.uppercased(),
+                                    attributes: [
+                                        .font: UIFont.monospacedSystemFont(ofSize: 8.5, weight: .semibold),
+                                        .foregroundColor: pdfColor(.secondaryLabel)
+                                    ]
+                                )
+                                langAttr.draw(at: CGPoint(x: marginX + pad, y: textY - 2))
+                                textY += headerHeight
+                            }
+                            codeAttr.draw(with: CGRect(x: marginX + pad, y: textY, width: contentWidth - pad * 2, height: codeHeight),
+                                          options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+                            cursorY += boxHeight + 8
+                        } else {
+                            drawPaginatedText(codeAttr, startX: marginX + pad, width: contentWidth - pad * 2,
+                                              cursorY: &cursorY, topMargin: topMargin,
+                                              bottomLimit: bottomLimit, newPage: beginPageOnly)
+                            cursorY += 8
+                        }
+
+                    case .divider:
+                        ensureSpace(14)
+                        cursorY += 4
+                        ctx.cgContext.saveGState()
+                        ctx.cgContext.setStrokeColor(pdfColor(.separator).cgColor)
+                        ctx.cgContext.setLineWidth(0.5)
+                        ctx.cgContext.move(to: CGPoint(x: marginX, y: cursorY))
+                        ctx.cgContext.addLine(to: CGPoint(x: marginX + contentWidth, y: cursorY))
+                        ctx.cgContext.strokePath()
+                        ctx.cgContext.restoreGState()
+                        cursorY += 10
+                    }
+                }
+
+                if pageNumber > 0 {
+                    drawFooter(pageNumber: pageNumber, in: ctx.cgContext, marginX: marginX, contentWidth: contentWidth)
+                }
             }
         }
     }
@@ -378,7 +385,7 @@ enum MessageExportRenderer {
         let dir = try exportDirectory()
         let base = sanitizedFileName(title.isEmpty ? speaker : title)
         let url = dir.appendingPathComponent("\(base).pdf")
-        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         return url
     }
 
@@ -420,7 +427,7 @@ enum MessageExportRenderer {
         let dir = try exportDirectory()
         let base = sanitizedFileName(title.isEmpty ? speaker : title)
         let url = dir.appendingPathComponent("\(base).png")
-        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         return url
     }
 
@@ -509,7 +516,7 @@ enum MessageExportRenderer {
             string: String(localized: "夜奔 (Fugue) · 第 \(pageNumber) 页"),
             attributes: [
                 .font: UIFont.systemFont(ofSize: 9),
-                .foregroundColor: UIColor.tertiaryLabel
+                .foregroundColor: pdfColor(.tertiaryLabel)
             ]
         )
         let size = footer.size()

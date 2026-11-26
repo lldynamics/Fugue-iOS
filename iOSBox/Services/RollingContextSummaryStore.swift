@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Observation
 
@@ -7,6 +8,74 @@ struct RollingContextSummary: Codable, Equatable, Sendable {
     var coveredMessageCount: Int
     var lastCoveredMessageID: UUID
     var updatedAt: Date
+    var contextDividerMessageID: UUID?
+    var coveredMessageIDs: [UUID]?
+    var coveredPrefixDigest: String?
+
+    var summarizedUpToMessageID: UUID {
+        get { lastCoveredMessageID }
+        set { lastCoveredMessageID = newValue }
+    }
+
+    init(
+        conversationID: UUID,
+        summaryText: String,
+        coveredMessageCount: Int,
+        lastCoveredMessageID: UUID,
+        updatedAt: Date = Date(),
+        contextDividerMessageID: UUID? = nil,
+        coveredMessageIDs: [UUID]? = nil,
+        coveredPrefixDigest: String? = nil
+    ) {
+        self.conversationID = conversationID
+        self.summaryText = summaryText
+        self.coveredMessageCount = coveredMessageCount
+        self.lastCoveredMessageID = lastCoveredMessageID
+        self.updatedAt = updatedAt
+        self.contextDividerMessageID = contextDividerMessageID
+        self.coveredMessageIDs = coveredMessageIDs
+        self.coveredPrefixDigest = coveredPrefixDigest
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case conversationID
+        case summaryText
+        case coveredMessageCount
+        case lastCoveredMessageID
+        case summarizedUpToMessageID
+        case updatedAt
+        case contextDividerMessageID
+        case coveredMessageIDs
+        case coveredPrefixDigest
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        conversationID = try c.decode(UUID.self, forKey: .conversationID)
+        summaryText = try c.decode(String.self, forKey: .summaryText)
+        coveredMessageCount = try c.decode(Int.self, forKey: .coveredMessageCount)
+        if let id = try c.decodeIfPresent(UUID.self, forKey: .lastCoveredMessageID) {
+            lastCoveredMessageID = id
+        } else {
+            lastCoveredMessageID = try c.decode(UUID.self, forKey: .summarizedUpToMessageID)
+        }
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        contextDividerMessageID = try c.decodeIfPresent(UUID.self, forKey: .contextDividerMessageID)
+        coveredMessageIDs = try c.decodeIfPresent([UUID].self, forKey: .coveredMessageIDs)
+        coveredPrefixDigest = try c.decodeIfPresent(String.self, forKey: .coveredPrefixDigest)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(conversationID, forKey: .conversationID)
+        try c.encode(summaryText, forKey: .summaryText)
+        try c.encode(coveredMessageCount, forKey: .coveredMessageCount)
+        try c.encode(lastCoveredMessageID, forKey: .lastCoveredMessageID)
+        try c.encode(updatedAt, forKey: .updatedAt)
+        try c.encodeIfPresent(contextDividerMessageID, forKey: .contextDividerMessageID)
+        try c.encodeIfPresent(coveredMessageIDs, forKey: .coveredMessageIDs)
+        try c.encodeIfPresent(coveredPrefixDigest, forKey: .coveredPrefixDigest)
+    }
 }
 
 enum ContextWindowCatalog {
@@ -97,9 +166,49 @@ final class RollingContextSummaryStore {
         persist()
     }
 
+    func clear(for conversationID: UUID) {
+        remove(for: conversationID)
+    }
+
     static func droppedMessages(from collapsed: [ChatMessage], limit: Int) -> [ChatMessage] {
         guard limit > 0, collapsed.count > limit else { return [] }
         return Array(collapsed.dropLast(limit))
+    }
+
+    static func prefixDigest(for messages: [ChatMessage]) -> String {
+        var hasher = SHA256()
+        for msg in messages {
+            hasher.update(data: Data(msg.id.uuidString.utf8))
+            hasher.update(data: Data([0]))
+            hasher.update(data: Data(msg.roleRaw.utf8))
+            hasher.update(data: Data([0]))
+            hasher.update(data: Data(msg.content.utf8))
+            hasher.update(data: Data([0xFF]))
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func isSummaryValid(
+        _ summary: RollingContextSummary,
+        dropped: [ChatMessage],
+        latestContextDividerID: UUID?
+    ) -> Bool {
+        if let summaryDividerID = summary.contextDividerMessageID, summaryDividerID != latestContextDividerID {
+            return false
+        }
+        guard !dropped.isEmpty,
+              let anchorIdx = dropped.firstIndex(where: { $0.id == summary.lastCoveredMessageID }),
+              summary.coveredMessageCount == anchorIdx + 1 else {
+            return false
+        }
+        let coveredSlice = Array(dropped[...anchorIdx])
+        if let coveredIDs = summary.coveredMessageIDs, coveredSlice.map(\.id) != coveredIDs {
+            return false
+        }
+        if let expectedDigest = summary.coveredPrefixDigest, prefixDigest(for: coveredSlice) != expectedDigest {
+            return false
+        }
+        return true
     }
 
     static func promptBlock(for summary: RollingContextSummary) -> String {

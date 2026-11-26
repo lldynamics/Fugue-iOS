@@ -3,19 +3,34 @@ import SwiftUI
 import UIKit
 
 enum ConversationExporter {
-    static func makeMarkdown(for conversation: Conversation) -> String {
+    struct Options {
+        var messageIDs: Set<UUID>?
+        var includesReasoning = false
+        var includesSystemPrompt = false
+        var includesReferences = false
+
+        // Keep the full transcript contract used by multi-conversation archives.
+        static let archive = Options(includesReasoning: true, includesSystemPrompt: true, includesReferences: true)
+    }
+
+    static func messages(in conversation: Conversation, selectedIDs: Set<UUID>?) -> [ChatMessage] {
+        let active = ConversationTree.activeMessages(in: conversation)
+        return selectedIDs.map { ids in active.filter { ids.contains($0.id) } } ?? active
+    }
+
+    static func makeMarkdown(for conversation: Conversation, options: Options = .archive, forPDF: Bool = false) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
 
         var lines: [String] = []
-        lines.append("# \(conversation.title)")
+        if !forPDF { lines.append("# \(conversation.title)") }
         lines.append("")
         lines.append("- \(String(localized: "更新时间：\(formatter.string(from: conversation.updatedAt))"))")
         if let target = conversation.primaryTarget, !conversation.isArenaMode {
             lines.append("- \(String(localized: "模型：\(target.providerName) · \(target.modelDisplayName)"))")
         }
-        if !conversation.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if options.includesSystemPrompt, !conversation.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             lines.append("")
             lines.append("## \(String(localized: "系统提示词"))")
             lines.append("")
@@ -24,8 +39,7 @@ enum ConversationExporter {
         lines.append("")
         lines.append("---")
 
-        let messages = ConversationTree.activeMessages(in: conversation)
-        for msg in messages {
+        for msg in messages(in: conversation, selectedIDs: options.messageIDs) {
             if msg.assistanceMetadata.isContextDivider {
                 lines.append("")
                 lines.append("--- *\(msg.content)* ---")
@@ -42,7 +56,7 @@ enum ConversationExporter {
             switch msg.role {
             case .user:
                 lines.append("### \(String(localized: "提问"))")
-                if let quote = msg.assistanceMetadata.quotedExcerpt, !quote.isEmpty {
+                if options.includesReferences, let quote = msg.assistanceMetadata.quotedExcerpt, !quote.isEmpty {
                     lines.append("")
                     lines.append("> \(quote.replacingOccurrences(of: "\n", with: "\n> "))")
                 }
@@ -76,19 +90,19 @@ enum ConversationExporter {
                     : ""
                 lines.append("### \(title)\(marker)")
 
-                if let replyExcerpt = meta.groupReplyToExcerpt, !replyExcerpt.isEmpty {
+                if options.includesReferences, let replyExcerpt = meta.groupReplyToExcerpt, !replyExcerpt.isEmpty {
                     let quoteLine = meta.groupReplyToSpeaker.map { String(localized: "回复 \($0)：\(replyExcerpt)") } ?? replyExcerpt
                     lines.append("")
                     lines.append("> \(quoteLine)")
                 }
 
-                if !msg.reasoningContent.isEmpty {
+                if options.includesReasoning, !msg.reasoningContent.isEmpty {
                     lines.append("")
-                    lines.append("<details><summary>\(String(localized: "思考过程"))</summary>")
+                    lines.append(forPDF ? "#### " + String(localized: "思考过程") : "<details><summary>\(String(localized: "思考过程"))</summary>")
                     lines.append("")
                     lines.append(msg.reasoningContent)
                     lines.append("")
-                    lines.append("</details>")
+                    if !forPDF { lines.append("</details>") }
                 }
 
                 if !msg.content.isEmpty {
@@ -102,6 +116,7 @@ enum ConversationExporter {
                     lines.append("*\(summary)*")
                 }
 
+                guard options.includesReferences else { continue }
                 if let search = msg.assistanceMetadata.search, !search.sources.isEmpty {
                     lines.append("")
                     lines.append("**\(String(localized: "参考来源（\(search.query)）"))**")
@@ -140,8 +155,8 @@ enum ConversationExporter {
         return dir
     }
 
-    static func writeMarkdownFile(for conversation: Conversation) throws -> URL {
-        let markdown = makeMarkdown(for: conversation)
+    static func writeMarkdownFile(for conversation: Conversation, options: Options = .archive) throws -> URL {
+        let markdown = makeMarkdown(for: conversation, options: options)
         let sanitized = sanitizedFileName(conversation.title)
         let url = try exportDirectory()
             .appendingPathComponent("\(sanitized).md")
@@ -149,16 +164,55 @@ enum ConversationExporter {
         return url
     }
 
-    static let shareCardCharacterCap = 900
-
     @MainActor
-    static func renderShareImage(for conversation: Conversation, colorScheme: ColorScheme = .light) -> UIImage? {
-        let active = ConversationTree.activeMessages(in: conversation)
+    static func writePDFFile(for conversation: Conversation, options: Options) async throws -> URL {
+        let transcript = makeMarkdown(for: conversation, options: options, forPDF: true)
+        let title = conversation.title, date = conversation.updatedAt
+        return try await Task.detached(priority: .userInitiated) {
+            try MessageExportRenderer.writePDFFile(title: title, speaker: String(localized: "对话"), date: date, markdown: transcript)
+        }.value
+    }
+
+    static let shareCardCharacterCap = 900
+    static let shareCardMessageCap = 12
+
+    struct ShareCardContent {
+        struct Entry {
+            let message: ChatMessage
+            let text: String
+            let truncated: Bool
+
+            init(_ message: ChatMessage) {
+                self.message = message
+                var body = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if body.isEmpty {
+                    let names = message.attachments.map(\.fileName).joined(separator: ", ")
+                    body = names.isEmpty ? String(localized: "[附件消息]") : String(localized: "附件：\(names)")
+                }
+                let prefix = body.prefix(shareCardCharacterCap)
+                truncated = prefix.endIndex != body.endIndex
+                text = truncated ? String(prefix) + "…" : body
+            }
+        }
+
+        let entries: [Entry]
+        let omittedEarlier: Int
+        var truncatedCount: Int { entries.filter(\.truncated).count }
+        var notice: String? {
+            var lines: [String] = []
+            if omittedEarlier > 0 { lines.append(String(localized: "已省略选区中较早的 \(omittedEarlier) 条消息。")) }
+            if truncatedCount > 0 { lines.append(String(localized: "图中有 \(truncatedCount) 条消息仅展示前 \(shareCardCharacterCap) 字。")) }
+            return lines.isEmpty ? nil : lines.joined(separator: "\n")
+        }
+    }
+
+    static func shareCardContent(for conversation: Conversation, selectedIDs: Set<UUID>?) -> ShareCardContent {
+        let active = messages(in: conversation, selectedIDs: selectedIDs)
         var collapsed: [ChatMessage] = []
         var visitedGroups = Set<UUID>()
 
         for msg in active {
-            if let gid = msg.comparisonGroupID {
+            if selectedIDs == nil, let gid = msg.comparisonGroupID {
                 guard visitedGroups.insert(gid).inserted else { continue }
                 let group = active.filter { $0.comparisonGroupID == gid && !$0.content.isEmpty }
                 if let chosen = group.first(where: \.isSelectedInGroup) ?? group.first {
@@ -171,13 +225,20 @@ enum ConversationExporter {
             }
         }
 
-        let messages = Array(collapsed.suffix(12))
-        guard !messages.isEmpty else { return nil }
+        let entries = collapsed.suffix(shareCardMessageCap).map(ShareCardContent.Entry.init)
+        return ShareCardContent(entries: entries, omittedEarlier: collapsed.count - entries.count)
+    }
+
+    @MainActor
+    static func renderShareImage(for conversation: Conversation, colorScheme: ColorScheme = .light, selectedIDs: Set<UUID>? = nil) -> UIImage? {
+        let content = shareCardContent(for: conversation, selectedIDs: selectedIDs)
+        guard !content.entries.isEmpty else { return nil }
 
         let card = ShareConversationCardView(
             title: conversation.title,
             emoji: conversation.assistantEmoji,
-            messages: messages,
+            content: content,
+            includesReplyExcerpt: selectedIDs == nil,
             speakerResolver: { msg in
                 ArenaSynthesis.visibleSpeakerName(for: msg)
             }
@@ -190,8 +251,8 @@ enum ConversationExporter {
     }
 
     @MainActor
-    static func writeShareImageFile(for conversation: Conversation, colorScheme: ColorScheme = .light) throws -> URL? {
-        guard let image = renderShareImage(for: conversation, colorScheme: colorScheme),
+    static func writeShareImageFile(for conversation: Conversation, colorScheme: ColorScheme = .light, selectedIDs: Set<UUID>? = nil) throws -> URL? {
+        guard let image = renderShareImage(for: conversation, colorScheme: colorScheme, selectedIDs: selectedIDs),
               let data = image.pngData() else {
             return nil
         }
@@ -215,7 +276,8 @@ enum ConversationExporter {
 private struct ShareConversationCardView: View {
     let title: String
     let emoji: String
-    let messages: [ChatMessage]
+    let content: ConversationExporter.ShareCardContent
+    let includesReplyExcerpt: Bool
     let speakerResolver: (ChatMessage) -> String
     @Environment(\.colorScheme) private var colorScheme
 
@@ -251,7 +313,12 @@ private struct ShareConversationCardView: View {
 
             Divider().overlay(border)
 
-            ForEach(messages) { msg in
+            if let notice = content.notice {
+                Text(verbatim: notice).font(.footnote).foregroundStyle(.secondary)
+            }
+
+            ForEach(content.entries, id: \.message.id) { entry in
+                let msg = entry.message
                 let meta = msg.assistanceMetadata
                 VStack(alignment: .leading, spacing: 6) {
                     if msg.role == .user {
@@ -263,7 +330,7 @@ private struct ShareConversationCardView: View {
                                 Text("提问")
                                     .font(.caption2.weight(.semibold))
                                     .foregroundStyle(vermilion)
-                                Text(cardBodyText(for: msg))
+                                Text(verbatim: entry.text)
                                     .font(.system(size: 14.5, weight: .semibold, design: .serif))
                                     .foregroundStyle(.primary)
                                     .lineSpacing(4)
@@ -282,7 +349,7 @@ private struct ShareConversationCardView: View {
                                     .foregroundStyle(.secondary)
                             }
 
-                            if let replyExcerpt = meta.groupReplyToExcerpt, !replyExcerpt.isEmpty {
+                            if includesReplyExcerpt, let replyExcerpt = meta.groupReplyToExcerpt, !replyExcerpt.isEmpty {
                                 let quoteLine = meta.groupReplyToSpeaker.map { String(localized: "回复 \($0)：\(replyExcerpt)") } ?? replyExcerpt
                                 Text(quoteLine)
                                     .font(.caption2)
@@ -292,7 +359,7 @@ private struct ShareConversationCardView: View {
                                     .background(cardFill, in: RoundedRectangle(cornerRadius: 7))
                             }
 
-                            Text(cardBodyText(for: msg))
+                            Text(verbatim: entry.text)
                                 .font(.system(size: 14, design: .serif))
                                 .lineSpacing(4.5)
                                 .foregroundStyle(.primary)
@@ -339,15 +406,4 @@ private struct ShareConversationCardView: View {
         }
     }
 
-    private func cardBodyText(for msg: ChatMessage) -> String {
-        let trimmed = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            let names = msg.attachments.map(\.fileName).joined(separator: ", ")
-            return names.isEmpty ? String(localized: "[附件消息]") : String(localized: "附件：\(names)")
-        }
-        if trimmed.count > ConversationExporter.shareCardCharacterCap {
-            return String(trimmed.prefix(ConversationExporter.shareCardCharacterCap)) + "…"
-        }
-        return trimmed
-    }
 }

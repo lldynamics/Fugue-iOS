@@ -7,6 +7,7 @@ final class ShelfReadingState {
     var conversationID: UUID?
     var chapter: Int
     var paragraph: Int
+    var updatedTimestamp: Double?
 
     init(bookID: UUID) {
         self.bookID = bookID
@@ -19,9 +20,20 @@ final class ShelfReadingState {
         let conversationID: UUID?
         let chapter: Int
         let paragraph: Int
+        var updatedTimestamp: Double? = nil
     }
 
-    var position: Position { Position(bookID: bookID, conversationID: conversationID, chapter: chapter, paragraph: paragraph) }
+    var position: Position {
+        Position(bookID: bookID, conversationID: conversationID, chapter: chapter, paragraph: paragraph,
+                 updatedTimestamp: updatedTimestamp)
+    }
+
+    func setPosition(chapter: Int, paragraph: Int) {
+        guard self.chapter != chapter || self.paragraph != paragraph else { return }
+        self.chapter = chapter
+        self.paragraph = paragraph
+        updatedTimestamp = Date().timeIntervalSince1970
+    }
 
     static func find(_ id: UUID, in context: ModelContext) throws -> ShelfReadingState? {
         try context.fetch(FetchDescriptor<ShelfReadingState>(predicate: #Predicate<ShelfReadingState> { $0.bookID == id })).first

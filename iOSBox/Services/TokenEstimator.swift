@@ -6,7 +6,13 @@ import os
 enum TokenEstimator {
     struct Estimate {
         let inputTokens: Int
-        let estimatedCostText: String?
+        let cost: InputCost?
+        var estimatedCostText: String? { cost.map { RequestLedger.costText($0.amount, currency: $0.currency) } }
+    }
+
+    struct InputCost {
+        let amount: Double
+        let currency: String
     }
 
     /// Keep only a total. Tracking properties read by the history builder covers branch
@@ -144,7 +150,7 @@ enum TokenEstimator {
         }
         if conversation.assistanceSettings.usePersonalMemory && !omitMemory,
            let ctx = conversation.modelContext,
-           let mem = try? PersonalMemory.prompt(in: ctx),
+           let mem = try? PersonalMemory.prompt(in: ctx, allowedIDs: conversation.assistanceSettings.scopedMemoryIDs),
            mem.count > 0 {
             tokens += estimateTokens(for: mem.text)
         }
@@ -163,20 +169,16 @@ enum TokenEstimator {
                                 hasBody: !body.isEmpty)
         tokens += estimateTokens(for: body, attachments: attachments)
 
-        var costText: String?
+        var inputCost: InputCost?
         if let effectiveTarget,
            let provider = providers.first(where: { $0.id == effectiveTarget.providerID }),
            let spec = provider.models.first(where: { $0.id == effectiveTarget.modelID }),
-           let rawPrice = RequestRecord.validPrice(spec.inputPricePerMillion),
-           let price = PricingMultiplierPolicy.effectivePrice(
-               rawPrice,
-               multiplier: AppPreferences.shared.pricingMultiplier(for: effectiveTarget.providerID)
-           ),
+           let price = RequestRecord.validPrice(spec.inputPricePerMillion),
            let currency = spec.priceCurrency,
            RequestRecord.currencies.contains(currency) {
             let cost = Double(tokens) * price / 1_000_000.0
-            costText = RequestLedger.costText(cost, currency: currency)
+            inputCost = InputCost(amount: cost, currency: currency)
         }
-        return Estimate(inputTokens: tokens, estimatedCostText: costText)
+        return Estimate(inputTokens: tokens, cost: inputCost)
     }
 }

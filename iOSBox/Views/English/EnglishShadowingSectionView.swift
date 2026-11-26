@@ -21,7 +21,7 @@ struct EnglishShadowingSectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.md) {
             HStack {
-                Label("阶梯跟读纠音台", systemImage: "waveform.badge.mic")
+                Label("跟读文本对照", systemImage: "waveform.badge.mic")
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(.primary)
                 Spacer()
@@ -96,7 +96,7 @@ struct EnglishShadowingSectionView: View {
 
                 if let score = drill.bestScore {
                     DSBadge(
-                        text: score >= 85 ? String(localized: "\(score) 分 · 地道") : String(localized: "\(score) 分 · 可再练"),
+                        text: String(localized: "识别文本匹配度 \(score)%"),
                         icon: score >= 85 ? "checkmark.seal.fill" : "arrow.clockwise",
                         style: score >= 85 ? .accent(.teal) : .accent(.amber)
                     )
@@ -155,9 +155,9 @@ struct EnglishShadowingSectionView: View {
                 let wrongPairs = tokens.compactMap { t -> String? in
                     guard t.state == .missed else { return nil }
                     if let heard = t.heardWord, !heard.isEmpty {
-                        return "\(t.expectedWord) → 听成 “\(heard)”"
+                        return String(localized: "\(t.expectedWord) → 识别为“\(heard)”")
                     }
-                    return "漏读 \(t.expectedWord)"
+                    return String(localized: "未匹配：\(t.expectedWord)")
                 }
                 if !wrongPairs.isEmpty {
                     Text(wrongPairs.prefix(4).joined(separator: "  ·  "))
@@ -235,7 +235,7 @@ struct EnglishShadowingSectionView: View {
                                 .controlSize(.small)
                                 .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
                         } else {
-                            Label("外教指正", systemImage: "sparkle")
+                            Label("练习建议", systemImage: "sparkle")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(theme.readableText)
                                 .padding(.horizontal, 10)

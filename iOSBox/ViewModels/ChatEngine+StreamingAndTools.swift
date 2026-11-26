@@ -93,27 +93,74 @@ extension ChatEngine {
             let limits = conversation.readingChapterLimits
             let usesKnowledge = !slots.contains { $0.message.assistanceMetadata.omittedKnowledge } && !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty
             let isSynthesisTurn = slots.allSatisfy { $0.kind == .synthesis }
+            let isContinuationTurn = slots.allSatisfy { $0.kind == .continuation || $0.appendToExisting }
             if !isSynthesisTurn && usesKnowledge {
-                let question = workingHistory.last(where: { $0.role == .user })?.content ?? ""
-                if let kbEv = try? await ProjectKnowledgeSearch.retrieve(
-                    volumeIDs: conversation.assistanceSettings.knowledgeVolumeIDs,
-                    in: context,
-                    query: question,
-                    maxPassages: 4,
-                    chapterLimits: limits
-                ) {
-                    for slot in slots where Self.isAlive(slot.message) {
-                        var meta = slot.message.assistanceMetadata
-                        meta.knowledgeEvidence = kbEv
-                        slot.message.assistanceMetadata = meta
+                if isContinuationTurn {
+                    if let existingKB = slots.compactMap({ $0.message.assistanceMetadata.knowledgeEvidence }).first {
+                        if !existingKB.passages.isEmpty {
+                            let targetIdx = workingHistory.dropLast().lastIndex(where: { $0.role == .user })
+                                ?? workingHistory.indices.last
+                            if let targetIdx {
+                                let targetMsg = workingHistory[targetIdx]
+                                workingHistory[targetIdx] = LLMPromptMessage(
+                                    role: targetMsg.role,
+                                    content: (targetMsg.content.isEmpty ? "" : targetMsg.content + "\n\n") + existingKB.promptText(),
+                                    attachments: targetMsg.attachments
+                                )
+                            }
+                        }
+                    } else if let contMsg = slots.first?.message {
+                        let active = ConversationTree.activeMessages(in: conversation)
+                        let cutoff = active.firstIndex(where: { $0.id == contMsg.id }).map { Array(active[..<$0]) } ?? active
+                        let originalQuestion = self.bookQuestion(in: cutoff)
+                        if !originalQuestion.isEmpty,
+                           let kbEv = try? await ProjectKnowledgeSearch.retrieve(
+                               volumeIDs: conversation.assistanceSettings.knowledgeVolumeIDs,
+                               in: context,
+                               query: originalQuestion,
+                               maxPassages: 4,
+                               chapterLimits: limits
+                           ),
+                           !kbEv.passages.isEmpty {
+                            for slot in slots where Self.isAlive(slot.message) && slot.message.assistanceMetadata.knowledgeEvidence == nil {
+                                var meta = slot.message.assistanceMetadata
+                                meta.knowledgeEvidence = kbEv
+                                slot.message.assistanceMetadata = meta
+                            }
+                            let targetIdx = workingHistory.dropLast().lastIndex(where: { $0.role == .user })
+                                ?? workingHistory.indices.last
+                            if let targetIdx {
+                                let targetMsg = workingHistory[targetIdx]
+                                workingHistory[targetIdx] = LLMPromptMessage(
+                                    role: targetMsg.role,
+                                    content: (targetMsg.content.isEmpty ? "" : targetMsg.content + "\n\n") + kbEv.promptText(),
+                                    attachments: targetMsg.attachments
+                                )
+                            }
+                        }
                     }
-                    if !kbEv.passages.isEmpty, let lastIdx = workingHistory.indices.last {
-                        let oldLast = workingHistory[lastIdx]
-                        workingHistory[lastIdx] = LLMPromptMessage(
-                            role: oldLast.role,
-                            content: (oldLast.content.isEmpty ? "" : oldLast.content + "\n\n") + kbEv.promptText(),
-                            attachments: oldLast.attachments
-                        )
+                } else {
+                    let question = workingHistory.last(where: { $0.role == .user })?.content ?? ""
+                    if let kbEv = try? await ProjectKnowledgeSearch.retrieve(
+                        volumeIDs: conversation.assistanceSettings.knowledgeVolumeIDs,
+                        in: context,
+                        query: question,
+                        maxPassages: 4,
+                        chapterLimits: limits
+                    ) {
+                        for slot in slots where Self.isAlive(slot.message) {
+                            var meta = slot.message.assistanceMetadata
+                            meta.knowledgeEvidence = kbEv
+                            slot.message.assistanceMetadata = meta
+                        }
+                        if !kbEv.passages.isEmpty, let lastIdx = workingHistory.indices.last {
+                            let oldLast = workingHistory[lastIdx]
+                            workingHistory[lastIdx] = LLMPromptMessage(
+                                role: oldLast.role,
+                                content: (oldLast.content.isEmpty ? "" : oldLast.content + "\n\n") + kbEv.promptText(),
+                                attachments: oldLast.attachments
+                            )
+                        }
                     }
                 }
             }
@@ -212,7 +259,7 @@ extension ChatEngine {
                 )
             }
             if Self.isAlive(conversation) {
-                self.scheduleRollingSummaryIfNeeded(for: conversation, providers: providers)
+                self.scheduleRollingSummaryIfNeeded(for: conversation, providers: providers, context: context)
             }
         }
 
@@ -304,8 +351,32 @@ extension ChatEngine {
             let rollingSummaryBlock: String? = {
                 guard AppPreferences.shared.autoRollingSummaryEnabled,
                       conversation.contextMessageLimit > 0,
+                      !conversation.isGroupMode,
+                      !conversation.isArenaMode,
+                      message.comparisonGroupID == nil,
                       slot.kind != .synthesis,
                       let summary = RollingContextSummaryStore.shared.summary(for: conversation.id) else {
+                    return nil
+                }
+                let active = ConversationTree.activeMessages(in: conversation)
+                let upToSlot: [ChatMessage]
+                if let slotIdx = active.firstIndex(where: { $0.id == message.id }) {
+                    upToSlot = Array(active[...slotIdx])
+                } else {
+                    upToSlot = active
+                }
+                let latestDividerID = upToSlot.last(where: { $0.assistanceMetadata.isContextDivider })?.id
+                let collapsed = self.eligiblePromptContext(upToSlot)
+                let dropped = RollingContextSummaryStore.droppedMessages(
+                    from: collapsed,
+                    limit: conversation.contextMessageLimit
+                )
+                guard RollingContextSummaryStore.isSummaryValid(
+                    summary,
+                    dropped: dropped,
+                    latestContextDividerID: latestDividerID
+                ) else {
+                    self.invalidateStaleRollingSummaryIfNeeded(in: conversation, branchMessages: active)
                     return nil
                 }
                 return RollingContextSummaryStore.promptBlock(for: summary)
@@ -491,7 +562,8 @@ extension ChatEngine {
                     if toolRound == 0 && hasMoreBackups && AssistancePolicy.mayFallback(
                         error,
                         receivedOutput: receivedOutput,
-                        abnormalFinish: hadAbnormalFinish
+                        abnormalFinish: hadAbnormalFinish,
+                        includeExtendedErrors: conversation.assistanceSettings.fallbackOnExtendedErrors
                     ) {
                         attemptNumber += 1
                         break roundLoop
@@ -728,8 +800,7 @@ extension ChatEngine {
             messageID: message.id,
             kind: kind,
             operationID: operationID,
-            attempt: attemptNumber,
-            pricingMultiplier: AppPreferences.shared.pricingMultiplier(for: target.providerID)
+            attempt: attemptNumber
         )
         context.insert(record)
         message.latestRequest = record
@@ -968,24 +1039,42 @@ extension ChatEngine {
         }
     }
 
-    func scheduleRollingSummaryIfNeeded(for conversation: Conversation, providers: [ProviderConfig]) {
+    func scheduleRollingSummaryIfNeeded(
+        for conversation: Conversation,
+        providers: [ProviderConfig],
+        context: ModelContext? = nil
+    ) {
         guard AppPreferences.shared.autoRollingSummaryEnabled,
               conversation.contextMessageLimit > 0,
               !conversation.isArenaMode,
               !conversation.isGroupMode else { return }
 
         let active = ConversationTree.activeMessages(in: conversation)
+        let latestDividerID = active.last(where: { $0.assistanceMetadata.isContextDivider })?.id
         let collapsed = eligiblePromptContext(active)
         let dropped = RollingContextSummaryStore.droppedMessages(from: collapsed, limit: conversation.contextMessageLimit)
+
+        let rawExisting = RollingContextSummaryStore.shared.summary(for: conversation.id)
+        let validExisting: RollingContextSummary?
+        if let rawExisting {
+            if RollingContextSummaryStore.isSummaryValid(rawExisting, dropped: dropped, latestContextDividerID: latestDividerID) {
+                validExisting = rawExisting
+            } else {
+                RollingContextSummaryStore.shared.clear(for: conversation.id)
+                validExisting = nil
+            }
+        } else {
+            validExisting = nil
+        }
+
         guard dropped.count >= 2, let lastDropped = dropped.last else { return }
 
-        let existing = RollingContextSummaryStore.shared.summary(for: conversation.id)
-        if existing?.lastCoveredMessageID == lastDropped.id && existing?.coveredMessageCount == dropped.count {
+        if validExisting?.lastCoveredMessageID == lastDropped.id && validExisting?.coveredMessageCount == dropped.count {
             return
         }
 
         let newDroppedSlice: [ChatMessage]
-        if let prevID = existing?.lastCoveredMessageID,
+        if let prevID = validExisting?.lastCoveredMessageID,
            let prevIdx = dropped.firstIndex(where: { $0.id == prevID }) {
             newDroppedSlice = Array(dropped[dropped.index(after: prevIdx)...])
         } else {
@@ -995,19 +1084,24 @@ extension ChatEngine {
 
         guard let target = conversation.primaryTarget,
               let provider = providers.first(where: { $0.id == target.providerID && $0.isEnabled && !$0.isDeleted }),
+              let spec = provider.enabledModels.first(where: { $0.id == target.modelID }),
               provider.hasAuthentication || NetworkLocation.isLocalOrPrivate(baseURL: provider.baseURL) else {
             return
         }
 
+        let resolvedTarget = provider.makeTarget(for: spec)
         let convID = conversation.id
         let contextLimit = conversation.contextMessageLimit
         let coveredCount = dropped.count
         let lastID = lastDropped.id
+        let coveredIDs = dropped.map(\.id)
+        let expectedDigest = RollingContextSummaryStore.prefixDigest(for: dropped)
+        let expectedExisting = RollingContextSummaryStore.shared.summary(for: convID)
         let promptInput = RollingContextSummaryStore.buildSummarizationPrompt(
-            previousSummary: existing?.summaryText,
+            previousSummary: validExisting?.summaryText,
             newlyTruncatedMessages: newDroppedSlice.map { ($0.role, $0.content) }
         )
-        let effectiveReasoning = ModelSpec.inferReasoningSupport(modelID: target.modelID)
+        let effectiveReasoning = ModelSpec.inferReasoningSupport(modelID: resolvedTarget.modelID)
         var request = LLMChatRequest(
             providerName: provider.name,
             protocolType: provider.protocolType,
@@ -1015,7 +1109,7 @@ extension ChatEngine {
             apiKey: provider.apiKey,
             apiKeys: provider.extraAPIKeys,
             customHeaders: provider.resolvedCustomHeaders,
-            modelID: target.modelID,
+            modelID: resolvedTarget.modelID,
             supportsReasoning: effectiveReasoning,
             systemPrompt: "Summarize the earlier conversation turns into concise bullet points preserving key facts, decisions, user preferences, names, and open tasks. Output only the summary in the same language as the conversation, under 350 words.",
             messages: [LLMPromptMessage(role: .user, content: promptInput)],
@@ -1026,46 +1120,131 @@ extension ChatEngine {
             thinkingBudgetTokens: 1024,
             idleTimeoutSeconds: provider.customIdleTimeout
         )
-        let validateTarget = provider.transmissionCheck(for: target.modelID)
-        request.validateBeforeSending = { [weak conversation] in
+        let validateTarget = provider.transmissionCheck(for: resolvedTarget.modelID)
+        request.validateBeforeSending = { [weak self, weak conversation] in
             try validateTarget()
-            guard let conversation, Self.isAlive(conversation),
+            guard let self, let conversation, Self.isAlive(conversation),
                   AppPreferences.shared.autoRollingSummaryEnabled,
                   conversation.contextMessageLimit == contextLimit,
                   conversation.primaryTarget?.id == target.id,
                   !conversation.isArenaMode, !conversation.isGroupMode else {
                 throw AppCompliance.RequestChanged()
             }
+            let currentActive = ConversationTree.activeMessages(in: conversation)
+            let currentDividerID = currentActive.last(where: { $0.assistanceMetadata.isContextDivider })?.id
+            let currentCollapsed = self.eligiblePromptContext(currentActive)
+            let currentDropped = RollingContextSummaryStore.droppedMessages(from: currentCollapsed, limit: contextLimit)
+            guard currentDividerID == latestDividerID,
+                  currentDropped.count >= coveredCount,
+                  Array(currentDropped.prefix(coveredCount)).map(\.id) == coveredIDs,
+                  RollingContextSummaryStore.prefixDigest(for: Array(currentDropped.prefix(coveredCount))) == expectedDigest else {
+                throw AppCompliance.RequestChanged()
+            }
         }
+        let ledgerContext = context ?? conversation.modelContext
         let streamFn = self.stream
+        let summaryToken = UUID()
         activeSummaryTasks[convID]?.cancel()
+        activeSummaryTokens[convID] = summaryToken
         let summaryTask = Task { @MainActor [weak self] in
-            defer { self?.activeSummaryTasks.removeValue(forKey: convID) }
+            defer {
+                if let self, self.activeSummaryTokens[convID] == summaryToken {
+                    self.activeSummaryTokens.removeValue(forKey: convID)
+                    self.activeSummaryTasks.removeValue(forKey: convID)
+                    self.updateBackgroundExecution()
+                }
+                if let ledgerContext, ledgerContext.hasChanges {
+                    try? ledgerContext.save()
+                }
+            }
+            var record: RequestRecord?
+            var started = ContinuousClock.now
             var collected = ""
+            var abnormalFinish = false
             do {
+                try Task.checkCancellation()
                 try request.validateBeforeSending?()
-                for try await event in streamFn(request) {
-                    try Task.checkCancellation()
-                    if case .contentDelta(let chunk) = event {
-                        collected += chunk
+                if let ledgerContext {
+                    let created = RequestRecord(
+                        target: resolvedTarget,
+                        spec: spec,
+                        conversationID: convID,
+                        messageID: lastID,
+                        kind: .synthesis
+                    )
+                    ledgerContext.insert(created)
+                    do {
+                        try ledgerContext.save()
+                        record = created
+                    } catch {
+                        ledgerContext.delete(created)
                     }
                 }
+                started = ContinuousClock.now
+                for try await event in streamFn(request) {
+                    try Task.checkCancellation()
+                    let elapsed = Self.milliseconds(started.duration(to: .now))
+                    record?.observe(event, elapsedMs: elapsed)
+                    switch event {
+                    case .retrying(let status):
+                        if let ledgerContext, let current = record {
+                            record = current.startRetry(
+                                after: status,
+                                elapsedMs: elapsed,
+                                target: resolvedTarget,
+                                spec: spec,
+                                in: ledgerContext
+                            )
+                            try? ledgerContext.save()
+                        }
+                        started = .now
+                        collected = ""
+                        abnormalFinish = false
+                    case .contentDelta(let chunk):
+                        collected += chunk
+                    case .finished:
+                        abnormalFinish = true
+                    case .toolCall:
+                        throw LLMError.unavailableTool
+                    default:
+                        break
+                    }
+                }
+                try Task.checkCancellation()
                 try request.validateBeforeSending?()
             } catch {
+                if let record {
+                    if case LLMError.httpError(let status, _) = error {
+                        record.httpStatus = status
+                    }
+                    record.finish(
+                        Self.isCancellation(error) ? .cancelled : .failed,
+                        elapsedMs: Self.milliseconds(started.duration(to: .now))
+                    )
+                }
                 return
             }
             let clean = collected.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !clean.isEmpty, RollingContextSummaryStore.shared.summary(for: convID) == existing else { return }
+            let status: RequestStatus = abnormalFinish ? .incomplete : (clean.isEmpty ? .failed : .succeeded)
+            record?.finish(status, elapsedMs: Self.milliseconds(started.duration(to: .now)))
+            guard status == .succeeded,
+                  RollingContextSummaryStore.shared.summary(for: convID) == expectedExisting else {
+                return
+            }
             RollingContextSummaryStore.shared.save(
                 RollingContextSummary(
                     conversationID: convID,
                     summaryText: clean,
                     coveredMessageCount: coveredCount,
                     lastCoveredMessageID: lastID,
-                    updatedAt: Date()
+                    updatedAt: Date(),
+                    contextDividerMessageID: latestDividerID,
+                    coveredMessageIDs: coveredIDs,
+                    coveredPrefixDigest: expectedDigest
                 )
             )
         }
         activeSummaryTasks[convID] = summaryTask
+        updateBackgroundExecution()
     }
 }

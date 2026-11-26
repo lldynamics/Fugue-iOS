@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import SwiftData
 import UIKit
 import os
@@ -49,12 +50,17 @@ enum PersistenceController {
 
     /// Returns `true` only when `error` indicates actual SQLite corruption or an unrecoverable
     /// schema/migration incompatibility, rather than device lock protection, disk full, or lock contention.
-    static func shouldRebuildCorruptedStore(after error: Error, isProtectedDataAvailable: Bool) -> Bool {
+    static func shouldRebuildCorruptedStore(
+        after error: Error,
+        storeURL: URL? = nil,
+        isProtectedDataAvailable: Bool
+    ) -> Bool {
         guard isProtectedDataAvailable else { return false }
 
         var queue: [NSError] = [error as NSError]
         var visited = Set<ObjectIdentifier>()
-        var sawCorruptionOrMigration = false
+        var sawExplicitCorruptionOrMigration = false
+        var needsOnDiskIntegrityVerification = false
 
         while let current = queue.first {
             queue.removeFirst()
@@ -74,15 +80,31 @@ enum PersistenceController {
             if isTransientOrEnvironmentalError(current) {
                 return false
             }
-            if isCorruptionOrMigrationError(current) {
-                sawCorruptionOrMigration = true
+            if isExplicitCorruptionOrMigrationError(current) {
+                sawExplicitCorruptionOrMigration = true
+            } else if current.domain.contains("SwiftData")
+                || (current.domain == NSCocoaErrorDomain && current.code == 134080) {
+                needsOnDiskIntegrityVerification = true
             }
         }
 
-        return sawCorruptionOrMigration
+        if sawExplicitCorruptionOrMigration {
+            return true
+        }
+        if needsOnDiskIntegrityVerification, let storeURL {
+            return isSQLiteStoreCorrupted(at: storeURL)
+        }
+        return false
     }
 
     private static func isTransientOrEnvironmentalError(_ nsError: NSError) -> Bool {
+        if let embeddedSQLite = (nsError.userInfo["NSSQLiteErrorDomain"] as? NSNumber)?.intValue {
+            let baseCode = embeddedSQLite & 0xFF
+            if [Int(SQLITE_BUSY), Int(SQLITE_LOCKED), Int(SQLITE_IOERR), Int(SQLITE_FULL), Int(SQLITE_CANTOPEN), Int(SQLITE_AUTH)].contains(baseCode) {
+                return true
+            }
+        }
+
         switch nsError.domain {
         case NSCocoaErrorDomain:
             let transientCodes: Set<Int> = [
@@ -90,12 +112,14 @@ enum PersistenceController {
                 NSFileReadNoPermissionError,         // 257
                 NSFileWriteNoPermissionError,        // 513
                 NSFileWriteOutOfSpaceError,          // 640
-                NSFileWriteVolumeReadOnlyError       // 642
+                NSFileWriteVolumeReadOnlyError,      // 642
+                134090                               // NSPersistentStoreTimeoutError
             ]
             if transientCodes.contains(nsError.code) { return true }
         case NSPOSIXErrorDomain:
             let transientPOSIX: Set<Int> = [
                 Int(EPERM),   // 1
+                Int(EIO),     // 5
                 Int(EACCES),  // 13
                 Int(EBUSY),   // 16
                 Int(ENOSPC),  // 28
@@ -104,28 +128,128 @@ enum PersistenceController {
             ]
             if transientPOSIX.contains(nsError.code) { return true }
         case "NSSQLiteErrorDomain":
-            // 5 = SQLITE_BUSY, 6 = SQLITE_LOCKED, 13 = SQLITE_FULL, 23 = SQLITE_AUTH
-            let transientSQLite: Set<Int> = [5, 6, 13, 23]
-            if transientSQLite.contains(nsError.code) { return true }
+            let baseCode = nsError.code & 0xFF
+            // 5 = SQLITE_BUSY, 6 = SQLITE_LOCKED, 10 = SQLITE_IOERR, 13 = SQLITE_FULL, 14 = SQLITE_CANTOPEN, 23 = SQLITE_AUTH
+            let transientSQLite: Set<Int> = [5, 6, 10, 13, 14, 23]
+            if transientSQLite.contains(baseCode) { return true }
         default:
             break
+        }
+
+        let combinedMessage = errorDiagnosticText(nsError)
+        let transientPhrases = [
+            "database is locked",
+            "database table is locked",
+            "database or disk is full",
+            "no space left on device",
+            "out of space"
+        ]
+        if transientPhrases.contains(where: { combinedMessage.contains($0) }) {
+            return true
         }
         return false
     }
 
-    private static func isCorruptionOrMigrationError(_ nsError: NSError) -> Bool {
-        if nsError.domain == "NSSQLiteErrorDomain" {
-            // 11 = SQLITE_CORRUPT, 26 = SQLITE_NOTADB
-            if nsError.code == 11 || nsError.code == 26 { return true }
-        }
-        if nsError.domain == NSCocoaErrorDomain {
-            // CoreData / SwiftData corrupt store or migration error range (134000...134200, 259 = damaged file)
-            if (134000...134200).contains(nsError.code) || nsError.code == NSFileReadCorruptFileError {
+    private static func isExplicitCorruptionOrMigrationError(_ nsError: NSError) -> Bool {
+        if let embeddedSQLite = (nsError.userInfo["NSSQLiteErrorDomain"] as? NSNumber)?.intValue {
+            let baseCode = embeddedSQLite & 0xFF
+            if baseCode == Int(SQLITE_CORRUPT) || baseCode == Int(SQLITE_NOTADB) {
                 return true
             }
         }
-        if nsError.domain.contains("SwiftData") {
+        if nsError.domain == "NSSQLiteErrorDomain" {
+            let baseCode = nsError.code & 0xFF
+            // 11 = SQLITE_CORRUPT, 26 = SQLITE_NOTADB
+            if baseCode == 11 || baseCode == 26 { return true }
+        }
+        if nsError.domain == NSCocoaErrorDomain {
+            // CoreData / SwiftData corrupt store or migration error range (excluding generic open 134080 and timeout 134090)
+            if nsError.code == NSFileReadCorruptFileError
+                || ((134000...134200).contains(nsError.code) && nsError.code != 134080 && nsError.code != 134090) {
+                return true
+            }
+        }
+        let combinedMessage = errorDiagnosticText(nsError)
+        let corruptionPhrases = [
+            "database disk image is malformed",
+            "file is not a database",
+            "malformed database schema",
+            "sqlite_corrupt",
+            "sqlite_notadb"
+        ]
+        if corruptionPhrases.contains(where: { combinedMessage.contains($0) }) {
             return true
+        }
+        return false
+    }
+
+    private static func errorDiagnosticText(_ nsError: NSError) -> String {
+        var parts: [String] = [nsError.localizedDescription]
+        if let reason = nsError.localizedFailureReason { parts.append(reason) }
+        if let debug = nsError.userInfo[NSDebugDescriptionErrorKey] as? String { parts.append(debug) }
+        return parts.joined(separator: " ").lowercased()
+    }
+
+    /// Verifies on-disk SQLite integrity in read-only mode so generic `SwiftData` container errors
+    /// caused by transient lock contention or low disk space never quarantine a healthy user store.
+    static func isSQLiteStoreCorrupted(at storeURL: URL) -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: storeURL.path) else { return false }
+
+        let sqliteMagic = Data("SQLite format 3\0".utf8)
+        do {
+            let handle = try FileHandle(forReadingFrom: storeURL)
+            defer { try? handle.close() }
+            guard let header = try handle.read(upToCount: sqliteMagic.count) else {
+                // Empty 0-byte placeholder file is not confirmed corruption.
+                return false
+            }
+            if header.isEmpty { return false }
+            if header.count < sqliteMagic.count || header != sqliteMagic {
+                return true
+            }
+        } catch {
+            // Permission or file lock error while probing header: treat as non-corrupt.
+            return false
+        }
+
+        var db: OpaquePointer?
+        let openFlags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX
+        let openRC = sqlite3_open_v2(storeURL.path, &db, openFlags, nil)
+        defer {
+            if let db { sqlite3_close_v2(db) }
+        }
+        let baseOpenRC = openRC & 0xFF
+        if baseOpenRC == SQLITE_CORRUPT || baseOpenRC == SQLITE_NOTADB {
+            return true
+        }
+        guard openRC == SQLITE_OK, let db else {
+            return false
+        }
+
+        sqlite3_busy_timeout(db, 100)
+
+        var stmt: OpaquePointer?
+        let prepRC = sqlite3_prepare_v2(db, "PRAGMA quick_check(1);", -1, &stmt, nil)
+        let basePrepRC = prepRC & 0xFF
+        if basePrepRC == SQLITE_CORRUPT || basePrepRC == SQLITE_NOTADB {
+            if let stmt { sqlite3_finalize(stmt) }
+            return true
+        }
+        guard prepRC == SQLITE_OK, let stmt else {
+            if let stmt { sqlite3_finalize(stmt) }
+            return false
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        let stepRC = sqlite3_step(stmt)
+        let baseStepRC = stepRC & 0xFF
+        if baseStepRC == SQLITE_CORRUPT || baseStepRC == SQLITE_NOTADB {
+            return true
+        }
+        if stepRC == SQLITE_ROW {
+            let verdict = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+            return verdict.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "ok"
         }
         return false
     }
@@ -159,7 +283,11 @@ enum PersistenceController {
             logger.error("Failed to open store: \(String(describing: error), privacy: .public)")
         }
 
-        guard shouldRebuildCorruptedStore(after: initialError, isProtectedDataAvailable: UIApplication.shared.isProtectedDataAvailable) else {
+        guard shouldRebuildCorruptedStore(
+            after: initialError,
+            storeURL: configuration.url,
+            isProtectedDataAvailable: UIApplication.shared.isProtectedDataAvailable
+        ) else {
             logger.warning("Transient/environmental store open failure; preserving on-disk store without rebuild.")
             return fallbackRecoveryResult(
                 schema: schema,

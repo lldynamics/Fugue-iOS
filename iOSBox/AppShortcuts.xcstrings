@@ -1,0 +1,163 @@
+{
+  "sourceLanguage": "zh-Hans",
+  "strings": {
+    "用 ${applicationName} 分析图片": {
+      "extractionState": "extracted_with_value",
+      "localizations": {
+        "en": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "Analyze an image with ${applicationName}",
+              "Analyze a photo in ${applicationName}"
+            ]
+          }
+        },
+        "zh-Hans": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "用 ${applicationName} 分析图片"
+            ]
+          }
+        }
+      }
+    },
+    "用 ${applicationName} 录音纪要": {
+      "extractionState": "extracted_with_value",
+      "localizations": {
+        "en": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "Record a voice note in ${applicationName}",
+              "Start recording in ${applicationName}"
+            ]
+          }
+        },
+        "zh-Hans": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "用 ${applicationName} 录音纪要",
+              "用 ${applicationName} 开始录音"
+            ]
+          }
+        }
+      }
+    },
+    "用 ${applicationName} 打开收藏夹": {
+      "extractionState": "extracted_with_value",
+      "localizations": {
+        "en": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "Open bookmarks in ${applicationName}",
+              "Show saved bookmarks in ${applicationName}"
+            ]
+          }
+        },
+        "zh-Hans": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "用 ${applicationName} 打开收藏夹"
+            ]
+          }
+        }
+      }
+    },
+    "用 ${applicationName} 扫描文档": {
+      "extractionState": "extracted_with_value",
+      "localizations": {
+        "en": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "Scan a document with ${applicationName}",
+              "Scan text with ${applicationName}"
+            ]
+          }
+        },
+        "zh-Hans": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "用 ${applicationName} 扫描文档",
+              "用 ${applicationName} 扫文档转文字"
+            ]
+          }
+        }
+      }
+    },
+    "用 ${applicationName} 提问": {
+      "extractionState": "extracted_with_value",
+      "localizations": {
+        "en": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "Ask ${applicationName}",
+              "Ask a question in ${applicationName}"
+            ]
+          }
+        },
+        "zh-Hans": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "用 ${applicationName} 提问"
+            ]
+          }
+        }
+      }
+    },
+    "用 ${applicationName} 新建对话": {
+      "extractionState": "extracted_with_value",
+      "localizations": {
+        "en": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "Start a new chat in ${applicationName}",
+              "New chat in ${applicationName}"
+            ]
+          }
+        },
+        "zh-Hans": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "用 ${applicationName} 新建对话"
+            ]
+          }
+        }
+      }
+    },
+    "用 ${applicationName} 运行技能": {
+      "extractionState": "extracted_with_value",
+      "localizations": {
+        "en": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "Run a skill with ${applicationName}",
+              "Run ${skill} with ${applicationName}"
+            ]
+          }
+        },
+        "zh-Hans": {
+          "stringSet": {
+            "state": "translated",
+            "values": [
+              "用 ${applicationName} 运行技能",
+              "用 ${applicationName} 运行 ${skill}"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

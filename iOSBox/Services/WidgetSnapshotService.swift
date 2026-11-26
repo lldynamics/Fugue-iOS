@@ -7,10 +7,28 @@ final class WidgetSnapshotService {
     static let shared = WidgetSnapshotService()
     static let showRecentTitlesKey = "com.iosbox.widgetShowRecentTitles.v1"
 
+    private struct BookmarkProbe: Decodable {
+        let isBookmarked: Bool?
+    }
+
+    nonisolated private static let bookmarkedTrueMarker = Data("\"isBookmarked\":true".utf8)
+    nonisolated private static let bookmarkedSpacedTrueMarker = Data("\"isBookmarked\" : true".utf8)
+
     private var lastSyncedSnapshot: WidgetSnapshot?
 
     var showsRecentTitles: Bool {
-        UserDefaults.standard.bool(forKey: Self.showRecentTitlesKey)
+        UserDefaults.standard.bool(forKey: Self.showRecentTitlesKey) && !AppPreferences.shared.appLockEnabled
+    }
+
+    nonisolated static func isBookmarkedMetadataPayload(_ raw: Data?) -> Bool {
+        guard let raw, !raw.isEmpty else { return false }
+        guard raw.range(of: bookmarkedTrueMarker) != nil || raw.range(of: bookmarkedSpacedTrueMarker) != nil else {
+            return false
+        }
+        if let probe = try? JSONDecoder().decode(BookmarkProbe.self, from: raw) {
+            return probe.isBookmarked == true
+        }
+        return false
     }
 
     static func makeSnapshot(
@@ -18,11 +36,14 @@ final class WidgetSnapshotService {
         providers: [ProviderConfig],
         bookmarkedCount: Int,
         showsRecentTitles: Bool,
+        appLockEnabled: Bool? = nil,
         now: Date = Date()
     ) -> WidgetSnapshot {
         let readyCount = ProviderConfig.readyTargets(in: providers).count
+        let isAppLocked = appLockEnabled ?? AppPreferences.shared.appLockEnabled
+        let effectiveShowRecent = showsRecentTitles && !isAppLocked
         let recent: [WidgetRecentConversation]
-        if showsRecentTitles {
+        if effectiveShowRecent {
             let sorted = conversations
                 .filter { !$0.isDeleted && !$0.messages.isEmpty }
                 .sorted { lhs, rhs in
@@ -46,7 +67,7 @@ final class WidgetSnapshotService {
             updatedAt: now,
             readyModelCount: readyCount,
             bookmarkedCount: max(0, bookmarkedCount),
-            showRecentTitles: showsRecentTitles,
+            showRecentTitles: effectiveShowRecent,
             recentConversations: recent
         )
     }
@@ -65,7 +86,8 @@ final class WidgetSnapshotService {
                 FetchDescriptor<ChatMessage>(predicate: #Predicate { $0.assistanceMetadataData != nil })
             )) ?? []
             bookmarkedCount = metadataMessages.reduce(into: 0) { count, message in
-                if message.assistanceMetadata.isBookmarked {
+                guard message.conversation?.isDeleted != true else { return }
+                if Self.isBookmarkedMetadataPayload(message.assistanceMetadataData) {
                     count += 1
                 }
             }
@@ -75,7 +97,8 @@ final class WidgetSnapshotService {
             conversations: conversations,
             providers: providers,
             bookmarkedCount: bookmarkedCount,
-            showsRecentTitles: showsRecentTitles
+            showsRecentTitles: showsRecentTitles,
+            appLockEnabled: AppPreferences.shared.appLockEnabled
         )
         if !forceReload, let last = lastSyncedSnapshot, last.samePayload(as: snapshot) {
             return

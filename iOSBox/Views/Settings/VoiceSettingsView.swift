@@ -5,17 +5,25 @@ struct VoiceSettingsView: View {
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     @State private var preferences = AppPreferences.shared
 
-    private var openAIProviders: [ProviderConfig] {
+    static func compatibleTranscriptionProviders(from providers: [ProviderConfig]) -> [ProviderConfig] {
         providers.filter {
             !$0.isDeleted && $0.isEnabled && ($0.protocolType == .openAICompatible || $0.protocolType == .openAIResponses) && $0.hasConfiguredChatAPI
         }
+    }
+
+    static func resolvedSpeechLocale(for preferences: AppPreferences) -> Locale {
+        LocalSpeechTranscriber.resolvedLocale(for: preferences.audioTranscriptionLanguage)
+    }
+
+    private var openAIProviders: [ProviderConfig] {
+        Self.compatibleTranscriptionProviders(from: providers)
     }
 
     var body: some View {
         Form {
             Section {
                 if openAIProviders.isEmpty {
-                    Text("请先在「服务商与设置」中添加并启用至少一个 OpenAI 兼容服务商（如 OpenAI、Groq、硅基流动或本地 Whisper/Kokoro）。")
+                    Text("当前未配置 OpenAI 兼容服务商，录音与音频转文字将默认使用免费的 iOS 本地语音识别；如需云端 Whisper 转写，可在「服务商与设置」中添加并启用兼容服务商。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
@@ -41,17 +49,17 @@ struct VoiceSettingsView: View {
                             }
                         }
                     }
+                }
 
-                    Picker("语言提示", selection: $preferences.audioTranscriptionLanguage) {
-                        ForEach(AudioTranscriptionService.presetLanguages, id: \.code) { item in
-                            Text(item.label).tag(item.code)
-                        }
+                Picker("语言提示", selection: $preferences.audioTranscriptionLanguage) {
+                    ForEach(AudioTranscriptionService.presetLanguages, id: \.code) { item in
+                        Text(item.label).tag(item.code)
                     }
                 }
             } header: {
                 Text("录音与音频转文字")
             } footer: {
-                Text("复用已配置服务商的 Base URL 与 Key；支持 OpenAI、Groq、硅基流动、OneAPI 及局域网 Whisper 服务。")
+                Text("「语言提示」同时适用于免费 iOS 本地语音识别与云端 Whisper 转写。配置兼容服务商后可复用其 Base URL 与 Key（支持 OpenAI、Groq、硅基流动、OneAPI 及局域网 Whisper 服务）。")
             }
 
             Section {

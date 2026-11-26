@@ -14,13 +14,15 @@ struct QuickKeySetupSheet: View {
     @State private var pasteInput = ""
     @State private var draft: ProviderSetupDraft
     @State private var showingImport = false
+    @State private var showingQRScanner = false
     @State private var parseNote: String?
     @State private var showAdvancedSettings = false
+    @State private var showAllDiscoveredModels = false
 
     @State private var isBusy = false
     @State private var statusBanner: (ok: Bool, message: String)?
-    @State private var connectedProvider: ProviderConfig?
-    @State private var connectedTarget: ResolvedModelTarget?
+    @State private var verified: VerifiedProviderConnection?
+    @State private var updateAccountID: UUID?
     @State private var verificationTask: Task<Void, Never>?
     @State private var setDefault = AppPreferences.shared.defaultTargetID?.isEmpty ?? true
     @State private var choosingProvider = false
@@ -40,12 +42,28 @@ struct QuickKeySetupSheet: View {
                 if continuesToGroup { Text("连接后将继续选择群成员。").foregroundStyle(.secondary) }
                 ProviderSetupPicker(draft: $draft)
                 ProviderSetupKeySection(draft: $draft)
+                if !matchingAccounts.isEmpty {
+                    Section {
+                        Picker("保存位置", selection: $updateAccountID) {
+                            Text("添加独立账号").tag(UUID?.none)
+                            ForEach(matchingAccounts) { account in
+                                Text("更新「\(account.name)」").tag(Optional(account.id))
+                            }
+                        }
+                        if updateAccountID == nil {
+                            TextField("账号名称", text: $draft.name)
+                        }
+                    }
+                }
                 verificationSection
 
                 Section {
                     DisclosureGroup("导入连接信息", isExpanded: $showingImport) {
                         Button { readFromSystemClipboard() } label: {
                             Label("读取剪贴板自动识别", systemImage: "doc.on.clipboard")
+                        }
+                        Button { showingQRScanner = true } label: {
+                            Label("扫码或从相册识别二维码配置", systemImage: "qrcode.viewfinder")
                         }
                         HStack {
                             TextField("或粘贴含 URL / Key 的整段文本…", text: $pasteInput, axis: .vertical)
@@ -70,6 +88,14 @@ struct QuickKeySetupSheet: View {
                         TextField("指定测试模型 ID（留空则自动拉取优选）", text: $draft.manualModelID)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                        if !isFirstConnection {
+                            Button {
+                                saveWithoutVerification()
+                            } label: {
+                                Label("暂不验证，直接保存服务商", systemImage: "tray.and.arrow.down")
+                            }
+                            .disabled(!canSaveWithoutVerification)
+                        }
                     }
                     if isFirstConnection {
                         Button { choosingProvider = true } label: {
@@ -82,6 +108,13 @@ struct QuickKeySetupSheet: View {
             .scrollDismissesKeyboard(.interactively)
             .disabled(isBusy)
             .onChange(of: draft) { invalidateVerifiedConnection() }
+            .onChange(of: updateAccountID) { invalidateVerifiedConnection() }
+            .onChange(of: matchingAccounts.map(\.id)) {
+                if let updateAccountID, !matchingAccounts.contains(where: { $0.id == updateAccountID }) {
+                    self.updateAccountID = nil
+                    invalidateVerifiedConnection()
+                }
+            }
             .onChange(of: draft.serviceID) {
                 parseNote = nil
                 if ["custom_openai", "ollama"].contains(draft.serviceID) { showAdvancedSettings = true }
@@ -100,7 +133,29 @@ struct QuickKeySetupSheet: View {
                     choosingProvider = false
                 }, onConnected: finishConnection)
             }
+            .sheet(isPresented: $showingQRScanner) {
+                QRCodeImportSheet { raw in
+                    guard let candidate = ClipboardProviderParser.parse(raw) else { return false }
+                    draft.apply(candidate)
+                    showingImport = false
+                    parseNote = nil
+                    statusBanner = (true, candidate.confidenceNote)
+                    return true
+                }
+            }
         }
+    }
+
+    private var canSaveWithoutVerification: Bool {
+        let cleanName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanURL = draft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty, !cleanURL.isEmpty,
+              !cleanURL.localizedCaseInsensitiveContains("api.example.com"),
+              !NetworkLocation.isPlainHTTPToPublicHost(baseURL: cleanURL),
+              ProviderTemplate.mismatchedIssuer(apiKey: draft.apiKey, baseURL: draft.baseURL) == nil else {
+            return false
+        }
+        return (try? EndpointResolver.chatEndpoint(baseURL: cleanURL, protocolType: draft.protocolType)) != nil
     }
 
     private var verificationSection: some View {
@@ -114,20 +169,28 @@ struct QuickKeySetupSheet: View {
                         .foregroundStyle(statusBanner.ok ? .green : .orange)
                 }
             }
-            if let connectedProvider, let connectedTarget {
+            if let currentVerified = verified {
                 Button {
-                    finishConnection(connectedProvider, target: connectedTarget)
+                    do {
+                        let (provider, target) = try currentVerified.save(in: modelContext)
+                        self.verified = nil
+                        finishConnection(provider, target: target)
+                    } catch {
+                        invalidateVerifiedConnection()
+                        statusBanner = (false, error.localizedDescription)
+                    }
                 } label: {
-                    Text(continuesToGroup ? String(localized: "继续选择群成员")
-                         : isFirstConnection ? String(localized: "使用此模型") : String(localized: "完成"))
+                    Text(isFirstConnection ? String(localized: "保存并继续") : String(localized: "保存连接"))
                         .frame(maxWidth: .infinity)
                 }
                 .accessibilityIdentifier("quickSetup.finish")
                 .buttonStyle(.borderedProminent)
+
+                companionModelPicker(for: currentVerified)
             } else {
                 Button {
                     verificationTask?.cancel()
-                    verificationTask = Task { await verifyAndSave() }
+                    verificationTask = Task { await verify() }
                 } label: {
                     HStack {
                         if isBusy { ProgressView() }
@@ -144,6 +207,144 @@ struct QuickKeySetupSheet: View {
         }
     }
 
+    @ViewBuilder
+    private func companionModelPicker(for currentVerified: VerifiedProviderConnection) -> some View {
+        let pool = (currentVerified.fetched.isEmpty ? draft.suggestedModels : currentVerified.fetched)
+            .filter { $0.id != currentVerified.chosenModel.id && $0.catalogStatus != .unlisted }
+        if !pool.isEmpty {
+            let totalEnabledCount = 1 + currentVerified.additionalEnabledModelIDs.intersection(Set(pool.map(\.id))).count
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("同时启用模型（共 \(totalEnabledCount) 个）")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if !currentVerified.additionalEnabledModelIDs.isEmpty {
+                        Button("仅主模型") {
+                            verified?.additionalEnabledModelIDs.removeAll()
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                    } else {
+                        Button("推荐组合") {
+                            let recommended = ClipboardProviderParser.pickRecommendedStarterModels(
+                                from: [currentVerified.chosenModel] + pool,
+                                primaryID: currentVerified.chosenModel.id,
+                                protocolType: draft.protocolType,
+                                limit: 4
+                            )
+                            verified?.additionalEnabledModelIDs = Set(recommended.map(\.id)).subtracting([currentVerified.chosenModel.id])
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                    }
+                }
+
+                let displayed = showAllDiscoveredModels ? Array(pool.prefix(30)) : Array(pool.prefix(6))
+                ForEach(displayed) { spec in
+                    let isChecked = currentVerified.additionalEnabledModelIDs.contains(spec.id)
+                    Button {
+                        if isChecked {
+                            verified?.additionalEnabledModelIDs.remove(spec.id)
+                        } else {
+                            verified?.additionalEnabledModelIDs.insert(spec.id)
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(isChecked ? Color.accentColor : .secondary)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(verbatim: spec.displayName)
+                                    .font(.footnote.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                if spec.displayName != spec.id {
+                                    Text(verbatim: spec.id)
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer()
+                            if spec.supportsReasoning {
+                                Image(systemName: "brain")
+                                    .font(.caption2)
+                                    .foregroundStyle(.purple)
+                            }
+                            if spec.supportsVision {
+                                Image(systemName: "eye")
+                                    .font(.caption2)
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if pool.count > 6 {
+                    Button(showAllDiscoveredModels ? String(localized: "收起更多模型") : String(localized: "展开更多候选模型（共 \(pool.count) 个）")) {
+                        showAllDiscoveredModels.toggle()
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func saveWithoutVerification() {
+        let cleanName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanURL = draft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanKey = LLMClient.sanitizedAPIKey(draft.apiKey)
+        let manual = draft.manualModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var models = draft.suggestedModels
+        if !manual.isEmpty {
+            var spec = ModelSpec(id: manual)
+            spec.catalogStatus = .manual
+            models.removeAll { $0.id == manual }
+            models.insert(spec, at: 0)
+        }
+        var availableName = cleanName.isEmpty ? "Provider" : cleanName
+        let usedNames = Set(existingProviders.map(\.name))
+        var suffix = 2
+        while usedNames.contains(availableName) {
+            availableName = "\(cleanName) (\(suffix))"
+            suffix += 1
+        }
+        let provider = ProviderConfig(
+            name: availableName,
+            protocolType: draft.protocolType,
+            baseURL: cleanURL,
+            iconSymbol: draft.iconSymbol,
+            accentHex: draft.accentHex,
+            isEnabled: true,
+            sortOrder: Int(Date().timeIntervalSince1970),
+            models: models
+        )
+        if !cleanKey.isEmpty {
+            guard KeychainService.shared.saveAPIKey(cleanKey, for: provider.credentialID) else {
+                statusBanner = (false, String(localized: "钥匙串保存失败，请重试。"))
+                return
+            }
+        }
+        modelContext.insert(provider)
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.delete(provider)
+            provider.deleteAllSecrets()
+            statusBanner = (false, error.localizedDescription)
+            return
+        }
+        let fallbackSpec = provider.enabledModels.first ?? ModelSpec(id: manual.isEmpty ? "default" : manual)
+        dismiss()
+        onConnected(provider, provider.makeTarget(for: fallbackSpec))
+    }
+
     private func finishConnection(_ provider: ProviderConfig, target: ResolvedModelTarget) {
         guard provider.modelContext != nil, provider.isReadyForChat,
               provider.enabledModels.contains(where: { $0.id == target.modelID }) else {
@@ -157,9 +358,9 @@ struct QuickKeySetupSheet: View {
     }
 
     private func invalidateVerifiedConnection() {
-        connectedProvider = nil
-        connectedTarget = nil
+        verified = nil
         statusBanner = nil
+        showAllDiscoveredModels = false
     }
 
     private func readFromSystemClipboard() {
@@ -173,8 +374,7 @@ struct QuickKeySetupSheet: View {
 
     private func applyParsedInput(_ raw: String) {
         statusBanner = nil
-        connectedProvider = nil
-        connectedTarget = nil
+        verified = nil
         guard let candidate = ClipboardProviderParser.parse(raw) else {
             parseNote = String(localized: "未识别到连接信息。请选择服务商并手动填写密钥或接口地址。")
             return
@@ -185,17 +385,20 @@ struct QuickKeySetupSheet: View {
         parseNote = nil
     }
 
-    private func existingProvider(for url: String) -> ProviderConfig? {
-        existingProviders.first {
-            normalizeURLForMatch($0.baseURL) == normalizeURLForMatch(url) && $0.protocolType == draft.protocolType
-        }
+    private var matchingAccounts: [ProviderConfig] {
+        existingProviders.filter { VerifiedProviderConnection.matches($0, draft: draft) }
     }
 
     @MainActor
-    private func verifyAndSave() async {
+    private func verify() async {
         guard !Task.isCancelled else { return }
+        let draft = self.draft
+        let updateAccountID = self.updateAccountID
         let cleanName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanURL = draft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let account = matchingAccounts.first { $0.id == updateAccountID }
+        guard account?.id == updateAccountID else { return }
+        let previous = account.map(SystemIntegration.connection)
         let cleanKey = LLMClient.sanitizedAPIKey(draft.apiKey)
         let cleanManual = draft.manualModelID.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -207,7 +410,7 @@ struct QuickKeySetupSheet: View {
             return
         }
 
-        if cleanKey.isEmpty && !NetworkLocation.isLocalOrPrivate(baseURL: cleanURL) {
+        if cleanKey.isEmpty && (!NetworkLocation.isLocalOrPrivate(baseURL: cleanURL) || previous?.apiKey.isEmpty == false) {
             statusBanner = (false, String(localized: "请填写 API Key（仅本地局域网服务可免 Key）。"))
             return
         }
@@ -218,8 +421,8 @@ struct QuickKeySetupSheet: View {
 
         do {
             // Verify the new primary on its own, but also check backups this account will retain.
-            if let existing = existingProvider(for: cleanURL), OpenAICompatibleAdapter.isOpenRouter(cleanURL) {
-                _ = try APIKeyPoolRouter.validatedKeys([cleanKey] + existing.extraAPIKeys, baseURL: cleanURL)
+            if let previous, OpenAICompatibleAdapter.isOpenRouter(cleanURL) {
+                _ = try APIKeyPoolRouter.validatedKeys([cleanKey] + (previous.extraAPIKeys ?? []), baseURL: cleanURL)
             }
             var fetched: [ModelSpec] = []
             var fetchError: Error?
@@ -230,7 +433,7 @@ struct QuickKeySetupSheet: View {
                     baseURL: cleanURL,
                     apiKey: cleanKey,
                     apiKeys: [],
-                    customHeaders: []
+                    customHeaders: previous?.headers ?? []
                 )
             } catch is CancellationError {
                 return
@@ -247,7 +450,7 @@ struct QuickKeySetupSheet: View {
                     return ModelSpec(
                         id: cleanManual,
                         displayName: cleanManual,
-                        supportsVision: true,
+                        supportsVision: ModelSpec.inferVisionSupport(modelID: cleanManual),
                         supportsReasoning: ModelSpec.inferReasoningSupport(modelID: cleanManual)
                     )
                 }
@@ -273,7 +476,7 @@ struct QuickKeySetupSheet: View {
                     baseURL: cleanURL,
                     apiKey: cleanKey,
                     apiKeys: [],
-                    customHeaders: [],
+                    customHeaders: previous?.headers ?? [],
                     modelID: chosenModel.id,
                     supportsReasoning: chosenModel.supportsReasoning
                 )
@@ -287,105 +490,24 @@ struct QuickKeySetupSheet: View {
             }
             try Task.checkCancellation()
 
-            let matchedExisting = existingProvider(for: cleanURL)
-
-            var mergedModels = ProviderModelCatalog.merging(
-                fetched.isEmpty ? fallbackCatalog : fetched,
-                with: matchedExisting?.models ?? [],
-                choosing: chosenModel.id,
-                fromAPI: !fetched.isEmpty
+            guard self.draft == draft, self.updateAccountID == updateAccountID else { return }
+            let candidatePool = fetched.isEmpty ? fallbackCatalog : fetched
+            let recommended = ClipboardProviderParser.pickRecommendedStarterModels(
+                from: candidatePool,
+                primaryID: chosenModel.id,
+                protocolType: draft.protocolType,
+                limit: 3
             )
-            if !cleanManual.isEmpty,
-               !fetched.contains(where: { $0.id == chosenModel.id }),
-               let idx = mergedModels.firstIndex(where: { $0.id == chosenModel.id }) {
-                mergedModels[idx].catalogStatus = .manual
-            }
-
-            let savedProvider: ProviderConfig
-            if let existing = matchedExisting {
-                let previousModels = existing.models
-                let previousEnabled = existing.isEnabled
-                let previousName = existing.name
-                let previousKey = existing.apiKey
-                existing.name = providerTitle
-                existing.models = mergedModels
-                existing.isEnabled = true
-
-                if !cleanKey.isEmpty {
-                    guard KeychainService.shared.saveAPIKey(cleanKey, for: existing.credentialID) else {
-                        existing.name = previousName
-                        existing.models = previousModels
-                        existing.isEnabled = previousEnabled
-                        statusBanner = (false, String(localized: "钥匙串保存失败，请重试。"))
-                        return
-                    }
-                }
-                do {
-                    try modelContext.save()
-                } catch {
-                    existing.name = previousName
-                    existing.models = previousModels
-                    existing.isEnabled = previousEnabled
-                    if !cleanKey.isEmpty {
-                        if previousKey.isEmpty {
-                            KeychainService.shared.deleteAPIKey(for: existing.credentialID)
-                        } else {
-                            KeychainService.shared.saveAPIKey(previousKey, for: existing.credentialID)
-                        }
-                    }
-                    throw error
-                }
-                savedProvider = existing
-            } else {
-                let provider = ProviderConfig(
-                    name: providerTitle,
-                    protocolType: draft.protocolType,
-                    baseURL: cleanURL,
-                    iconSymbol: draft.iconSymbol,
-                    accentHex: draft.accentHex,
-                    isEnabled: true,
-                    sortOrder: Int(Date().timeIntervalSince1970),
-                    models: mergedModels
-                )
-                if !cleanKey.isEmpty {
-                    guard KeychainService.shared.saveAPIKey(cleanKey, for: provider.credentialID) else {
-                        statusBanner = (false, String(localized: "钥匙串保存失败，请重试。"))
-                        return
-                    }
-                }
-                modelContext.insert(provider)
-                do {
-                    try modelContext.save()
-                } catch {
-                    modelContext.delete(provider)
-                    provider.deleteAllSecrets()
-                    throw error
-                }
-                savedProvider = provider
-            }
-
-            let verifiedSpec = savedProvider.enabledModels.first(where: { $0.id == chosenModel.id }) ?? chosenModel
-            let target = savedProvider.makeTarget(for: verifiedSpec)
-
-            connectedProvider = savedProvider
-            connectedTarget = target
-            let countNote = fetched.isEmpty ? "" : String(localized: "（拉取 \(fetched.count) 个模型）")
-            statusBanner = (
-                true,
-                String(localized: "已测通 \(target.providerName) · \(target.modelDisplayName)（首字 \(ping.ttftMs) ms）\(countNote)，已保存并设为可用！")
-            )
+            let extras = Set(recommended.map(\.id)).subtracting([chosenModel.id])
+            verified = VerifiedProviderConnection(draft: draft, chosenModel: chosenModel, fetched: fetched,
+                                                  updateAccountID: updateAccountID, previousConnection: previous,
+                                                  additionalEnabledModelIDs: extras)
+            statusBanner = (true, String(localized: "验证成功：\(chosenModel.displayName)（首字 \(ping.ttftMs) ms）。"))
         } catch is CancellationError {
             return
         } catch {
             guard !Task.isCancelled else { return }
             statusBanner = (false, ModelSetup.verificationAdvice(for: error))
         }
-    }
-
-    private func normalizeURLForMatch(_ raw: String) -> String {
-        var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if cleaned.hasSuffix("#") { cleaned.removeLast() }
-        while cleaned.hasSuffix("/") { cleaned.removeLast() }
-        return cleaned.lowercased()
     }
 }

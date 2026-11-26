@@ -9,6 +9,16 @@ struct ChatDraft: Codable, Equatable {
     var quotedText: String?
     var pickedMentions: [PickedGroupMention] = []
 
+    var isEmpty: Bool { text.isEmpty && attachments.isEmpty && quotedText == nil && pickedMentions.isEmpty }
+
+    func recoveryConversationID(for originalID: UUID) throws -> UUID {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        var input = Data("Fugue recovered draft/\(originalID.uuidString)/".utf8)
+        input.append(try encoder.encode(self))
+        return UUID(contentOf: input)
+    }
+
     init(text: String = "", attachments: [MessageAttachment] = [], quotedText: String? = nil,
          pickedMentions: [PickedGroupMention] = []) {
         self.text = text
@@ -178,6 +188,35 @@ final class ChatDraftStore {
         return try JSONDecoder().decode(ChatDraft.self, from: Data(contentsOf: url))
     }
 
+    func snapshots(for conversationIDs: [UUID]) throws -> [UUID: ChatDraft] {
+        var result: [UUID: ChatDraft] = [:]
+        var remaining = BackupService.maximumFileBytes / 4 * 3
+        for id in conversationIDs {
+            let draft = try draftForRecovery(id)
+            guard !draft.isEmpty else { continue }
+            remaining -= draft.text.utf8.count + (draft.quotedText?.utf8.count ?? 0)
+            for attachment in draft.attachments {
+                remaining -= (attachment.dataBase64?.utf8.count ?? 0) + (attachment.extractedText?.utf8.count ?? 0)
+            }
+            guard remaining >= 0 else { throw BackupError.fileTooLarge }
+            result[id] = draft
+        }
+        return result
+    }
+
+    func draftForRecovery(_ id: UUID) throws -> ChatDraft {
+        try states[id]?.value?.currentDraft ?? load(id)
+    }
+
+    /// A restore can be retried and never replaces a newer unsent local draft.
+    func restoreIfEmpty(_ draft: ChatDraft, for id: UUID) throws -> Bool {
+        let local = try draftForRecovery(id)
+        guard !draft.isEmpty, local.isEmpty else { return false }
+        try save(draft, for: id)
+        states[id]?.value?.reloadRestoredDraft()
+        return true
+    }
+
     func save(_ draft: ChatDraft, for id: UUID) throws {
         let preview = ChatDraftPreview(text: draft.text, attachmentCount: draft.attachments.count, quotedText: draft.quotedText)
         if previews[id] != preview { previews[id] = preview }
@@ -319,6 +358,17 @@ final class ChatDraftState {
             && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
     }
 
+    fileprivate var currentDraft: ChatDraft? {
+        guard isLoaded, !isDeleted else { return nil }
+        return ChatDraft(text: text, attachments: attachments, quotedText: quotedText, pickedMentions: pickedMentions)
+    }
+
+    fileprivate func reloadRestoredDraft() {
+        autosaveTask?.cancel()
+        isLoaded = false
+        load()
+    }
+
     func load() {
         guard !isLoaded, !isDeleted else { return }
         do {
@@ -380,6 +430,23 @@ final class ChatDraftState {
             guard !isDeleted else { return }
             persistenceError = error.localizedDescription
         }
+    }
+
+    func addReadingCitation(_ citation: ReadingCitation) throws {
+        guard isLoaded, !isDeleted else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        let quote = String(citation.quotedText.prefix(1200))
+        if let existing = quotedText, !existing.isEmpty, existing != quote {
+            if text != quote && !text.hasSuffix("\n\n" + quote) {
+                text += (text.isEmpty ? "" : "\n\n") + quote
+            }
+        } else {
+            quotedText = quote
+        }
+        save()
+        if let persistenceError { throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError,
+                                                userInfo: [NSLocalizedDescriptionKey: persistenceError]) }
     }
 
     func insertGroupMention(_ token: String, memberID: UUID? = nil) {

@@ -11,13 +11,16 @@ struct BookOriginalView: View {
     @Binding var request: ReadingRequest?
     @Binding var place: BookReadingPlace
     let openShelf: (() -> Void)?
-    let quote: (String) -> Void
+    let quote: (ReadingCitation) -> Void
 
     @Query private var books: [BookVolume]
     @ScaledMetric(relativeTo: .body) private var readingSize: CGFloat = 25
     @Environment(\.horizontalSizeClass) private var widthClass
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var showNotes = false
+    @State private var noteDraft: ReadingNoteDraft?
+    @State private var selectionDraft: ReadingNoteDraft?
     @State private var chapters: [BookChapter] = []
     @State private var page: BookReadingPage?
     @State private var error: String?
@@ -26,7 +29,7 @@ struct BookOriginalView: View {
     @State private var restoring = false
 
     init(volumeID: UUID, throughChapter: Int?, request: Binding<ReadingRequest?>,
-         place: Binding<BookReadingPlace>, companionID: UUID? = nil, openShelf: (() -> Void)?, quote: @escaping (String) -> Void) {
+         place: Binding<BookReadingPlace>, companionID: UUID? = nil, openShelf: (() -> Void)?, quote: @escaping (ReadingCitation) -> Void) {
         self.volumeID = volumeID
         self.throughChapter = throughChapter
         self.companionID = companionID
@@ -58,6 +61,13 @@ struct BookOriginalView: View {
                         }
                     }
                     Spacer()
+                    Button { showNotes = true } label: {
+                        Label("阅读笔记", systemImage: "note.text")
+                            .labelStyle(.iconOnly)
+                            .frame(minWidth: 48, minHeight: 48)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("reading.notes")
                     if !chapters.isEmpty {
                         Menu {
                             Picker("章节", selection: Binding(get: { page?.chapterIndex ?? 0 },
@@ -105,9 +115,13 @@ struct BookOriginalView: View {
                                     .font(widthClass == .regular ? .system(size: readingSize, design: .serif) : .system(.title3, design: .serif))
                                     .lineSpacing(8)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .textSelection(.enabled)
+                                    .contentShape(Rectangle())
                                     .contextMenu {
-                                        Button("引用这段") { quote(paragraph.text) }
+                                        if let citation = source(for: paragraph, chapter: page.chapterIndex) {
+                                            Button("引用这段") { quote(citation) }
+                                            Button("摘录与批注") { noteDraft = ReadingNoteDraft(citation: citation) }
+                                            Button("选择文本") { selectionDraft = ReadingNoteDraft(citation: citation) }
+                                        }
                                     }
                                     .id(paragraph.id)
                                     .accessibilityIdentifier(paragraph.highlight == nil ? "reading.paragraph.\(paragraph.id)" : "reading.highlight")
@@ -133,7 +147,7 @@ struct BookOriginalView: View {
                     }
                 }
                 if page.located, let citation = request?.citation {
-                    Button { quote(citation.excerpt) } label: {
+                    Button { quote(citation) } label: {
                         Label("就这段提问", systemImage: "text.quote").frame(minHeight: 44)
                     }
                     .padding(.horizontal, 24)
@@ -143,11 +157,28 @@ struct BookOriginalView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(DS.Surface.canvas)
+        .sheet(item: $noteDraft) { ReadingNoteEditor(draft: $0) }
+        .sheet(item: $selectionDraft) { ReadingPassageSelection(source: $0.citation) }
+        .sheet(isPresented: $showNotes) {
+            NavigationStack {
+                ReadingNotesView(volumeID: volumeID, throughChapter: throughChapter) { citation in
+                    request = ReadingRequest(chapter: citation.chapterIndex, citation: citation)
+                    showNotes = false
+                }
+            }
+        }
         .onChange(of: place.paragraph) { _, _ in recordPosition() }
         .onChange(of: place.chapter) { _, _ in recordPosition() }
         .onDisappear { flushPosition() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { flushPosition() } }
         .task(id: LoadKey(available: !books.isEmpty, requestID: request?.id)) { await load() }
+    }
+
+    private func source(for paragraph: BookReadingPage.Paragraph, chapter: Int) -> ReadingCitation? {
+        guard let book = books.first, chapters.indices.contains(chapter) else { return nil }
+        return ReadingCitation(KnowledgePassage(id: 1, volumeID: book.id, documentTitle: book.title,
+            sectionTitle: chapters[chapter].title, excerpt: paragraph.text,
+            chapterIndex: chapter, utf16Offset: paragraph.utf16Offset))
     }
 
     private func chapterFooter(at index: Int) -> some View {
@@ -187,8 +218,7 @@ struct BookOriginalView: View {
     private func recordPosition() {
         guard let savedState, let companionID, savedState.conversationID == companionID,
               place.volumeID == volumeID, let paragraph = place.paragraph else { return }
-        if savedState.chapter != place.chapter { savedState.chapter = place.chapter }
-        if savedState.paragraph != paragraph { savedState.paragraph = paragraph }
+        savedState.setPosition(chapter: place.chapter, paragraph: paragraph)
     }
 
     private func flushPosition() {

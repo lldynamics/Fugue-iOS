@@ -83,7 +83,8 @@ enum AnthropicAdapter {
                     newlyDisabled.insert(.thinkingConfig)
                     return true
                 }
-                if state.useNativeSearch && (lower.contains("web_search") || lower.contains("tools")) {
+                let mentionsNativeSearch = LLMClient.mentionsNativeSearchIdentifier(lower)
+                if state.useNativeSearch && (mentionsNativeSearch || (request.tools.isEmpty && (lower.contains("tools") || lower.contains("tool")))) {
                     state.useNativeSearch = false
                     newlyDisabled.insert(.nativeSearch)
                     return true
@@ -110,6 +111,7 @@ enum AnthropicAdapter {
         continuation: AsyncThrowingStream<LLMStreamEvent, Error>.Continuation
     ) async throws {
         var completed = false
+        var baseInputTokens: Int?
         var inputTokens: Int?
         var outputTokens: Int?
         var cachedTokens: Int?
@@ -135,9 +137,10 @@ enum AnthropicAdapter {
                     let baseIn = LLMUsage.valid(usage["input_tokens"] as? Int)
                     let cacheRead = LLMUsage.valid(usage["cache_read_input_tokens"] as? Int)
                     let cacheWrite = LLMUsage.valid(usage["cache_creation_input_tokens"] as? Int)
-                    inputTokens = LLMUsage.combined(baseIn, cacheRead, cacheWrite)
+                    if let baseIn { baseInputTokens = baseIn }
                     if let cacheRead, cacheRead > 0 { cachedTokens = cacheRead }
                     if let cacheWrite, cacheWrite > 0 { cacheWriteTokens = cacheWrite }
+                    inputTokens = LLMUsage.combined(baseIn, cacheRead, cacheWrite)
                 }
 
             case "content_block_start":
@@ -215,10 +218,25 @@ enum AnthropicAdapter {
                    let reason = LLMFinishReason.fromProviderValue(delta["stop_reason"] as? String) {
                     continuation.yield(.finished(reason))
                 }
-                if let usage = obj["usage"] as? [String: Any],
-                   let outTok = usage["output_tokens"] as? Int {
-                    outputTokens = LLMUsage.valid(outTok)
-                    continuation.yield(.usage(promptTokens: inputTokens, completionTokens: outTok))
+                if let usage = obj["usage"] as? [String: Any] {
+                    if let deltaIn = LLMUsage.valid(usage["input_tokens"] as? Int) {
+                        baseInputTokens = max(baseInputTokens ?? 0, deltaIn)
+                    }
+                    if let deltaCacheRead = LLMUsage.valid(usage["cache_read_input_tokens"] as? Int), deltaCacheRead > 0 {
+                        cachedTokens = max(cachedTokens ?? 0, deltaCacheRead)
+                    }
+                    if let deltaCacheWrite = LLMUsage.valid(usage["cache_creation_input_tokens"] as? Int), deltaCacheWrite > 0 {
+                        cacheWriteTokens = max(cacheWriteTokens ?? 0, deltaCacheWrite)
+                    }
+                    if let updatedCombined = LLMUsage.combined(baseInputTokens, cachedTokens, cacheWriteTokens) {
+                        inputTokens = max(inputTokens ?? 0, updatedCombined)
+                    }
+                    if let outTok = LLMUsage.valid(usage["output_tokens"] as? Int) {
+                        outputTokens = max(outputTokens ?? 0, outTok)
+                    }
+                    if inputTokens != nil || outputTokens != nil {
+                        continuation.yield(.usage(promptTokens: inputTokens, completionTokens: outputTokens))
+                    }
                 }
 
             case "error":
@@ -293,10 +311,47 @@ enum AnthropicAdapter {
                 }
             }
         }
-        let shouldEnableThinking = includeThinking && request.enableThinking && request.supportsReasoning && !hasUnsignedAssistantToolTurn
+        let wantsThinking = includeThinking && request.enableThinking && request.supportsReasoning && !hasUnsignedAssistantToolTurn
         let model = request.modelID.lowercased()
         let usesAdaptiveThinking = ["claude-sonnet-5", "claude-opus-5", "claude-haiku-5", "claude-fable-5",
                                     "claude-mythos-5", "claude-opus-4-7", "claude-opus-4-8"].contains { model.contains($0) }
+
+        let requestedMax = request.maxOutputTokens ?? 0
+        let unclampedMaxTokens: Int
+        var budget = max(1024, request.thinkingBudgetTokens)
+        if usesAdaptiveThinking {
+            unclampedMaxTokens = requestedMax > 0 ? requestedMax : defaultMaxTokens(for: request.modelID)
+        } else if wantsThinking {
+            // Respect an explicit, sufficient user limit; otherwise leave room for the visible
+            // answer while staying within the smallest output cap among thinking-capable
+            // Claude models. budget_tokens must stay below max_tokens.
+            if requestedMax > budget + 1024 {
+                unclampedMaxTokens = requestedMax
+            } else {
+                unclampedMaxTokens = min(budget + 8192, thinkingOutputCap)
+            }
+            budget = max(1024, min(budget, unclampedMaxTokens - 4096))
+        } else if requestedMax > 0 {
+            unclampedMaxTokens = requestedMax
+        } else {
+            unclampedMaxTokens = defaultMaxTokens(for: request.modelID)
+        }
+
+        let finalMaxTokens = maxTokensCap.map { min(unclampedMaxTokens, $0) } ?? unclampedMaxTokens
+        let shouldSendThinking: Bool
+        if wantsThinking {
+            if usesAdaptiveThinking {
+                shouldSendThinking = finalMaxTokens > 0
+            } else if finalMaxTokens > 1024 {
+                budget = max(1024, min(budget, finalMaxTokens - 1024))
+                shouldSendThinking = budget < finalMaxTokens
+            } else {
+                shouldSendThinking = false
+            }
+        } else {
+            shouldSendThinking = false
+        }
+
         var wireMessages: [[String: Any]] = []
 
         for msg in sanitizedMessages {
@@ -310,7 +365,7 @@ enum AnthropicAdapter {
                     "content": msg.content
                 ])
             } else if msg.role == .assistant && !msg.toolCalls.isEmpty {
-                if shouldEnableThinking {
+                if shouldSendThinking {
                     for tb in msg.thinkingBlocks {
                         switch tb.kind {
                         case .thinking:
@@ -444,32 +499,9 @@ enum AnthropicAdapter {
             }
         }
 
-        let requestedMax = request.maxOutputTokens ?? 0
-        let finalMaxTokens: Int
-        var budget = max(1024, request.thinkingBudgetTokens)
-        if usesAdaptiveThinking {
-            finalMaxTokens = requestedMax > 0 ? requestedMax : defaultMaxTokens(for: request.modelID)
-        } else if shouldEnableThinking {
-            // Respect an explicit, sufficient user limit; otherwise leave room for the visible
-            // answer while staying within the smallest output cap among thinking-capable
-            // Claude models. budget_tokens must stay below max_tokens.
-            if requestedMax > budget + 1024 {
-                finalMaxTokens = requestedMax
-            } else {
-                finalMaxTokens = min(budget + 8192, thinkingOutputCap)
-            }
-            budget = max(1024, min(budget, finalMaxTokens - 4096))
-        } else if requestedMax > 0 {
-            finalMaxTokens = requestedMax
-        } else {
-            finalMaxTokens = defaultMaxTokens(for: request.modelID)
-        }
-
-        let cappedMaxTokens = maxTokensCap.map { min(finalMaxTokens, $0) } ?? finalMaxTokens
-
         var body: [String: Any] = [
             "model": request.modelID,
-            "max_tokens": cappedMaxTokens,
+            "max_tokens": finalMaxTokens,
             "messages": wireMessages,
             "stream": true
         ]
@@ -505,15 +537,15 @@ enum AnthropicAdapter {
             body["tools"] = allTools
         }
 
-        if usesAdaptiveThinking {
-            if shouldEnableThinking {
+        if shouldSendThinking {
+            if usesAdaptiveThinking {
                 body["thinking"] = ["type": "adaptive", "display": "summarized"]
+            } else {
+                body["thinking"] = [
+                    "type": "enabled",
+                    "budget_tokens": budget
+                ]
             }
-        } else if shouldEnableThinking {
-            body["thinking"] = [
-                "type": "enabled",
-                "budget_tokens": budget
-            ]
         } else if let temp = request.temperature {
             body["temperature"] = min(1.0, max(0.0, temp))
         }

@@ -137,13 +137,31 @@ private final class WebDAVBackgroundSyncGuard: @unchecked Sendable {
 final class WebDAVAutoSyncCoordinator {
     static let shared = WebDAVAutoSyncCoordinator()
 
+    private enum StorageKeys {
+        static let localChangeGeneration = "iosbox.webdav.localChangeGeneration"
+        static let syncedChangeGeneration = "iosbox.webdav.syncedChangeGeneration"
+    }
+
+    @ObservationIgnored private let defaults: UserDefaults
     private(set) var isSyncing = false
-    private(set) var localChangeGeneration: UInt64 = 0
-    private(set) var syncedChangeGeneration: UInt64 = 0
+    private(set) var localChangeGeneration: UInt64 {
+        didSet { defaults.set(NSNumber(value: localChangeGeneration), forKey: StorageKeys.localChangeGeneration) }
+    }
+    private(set) var syncedChangeGeneration: UInt64 {
+        didSet { defaults.set(NSNumber(value: syncedChangeGeneration), forKey: StorageKeys.syncedChangeGeneration) }
+    }
     @ObservationIgnored private var isApplyingRemoteMerge = false
     private(set) var lastStatusMessage: String?
     private(set) var lastSyncError: String?
     private(set) var remoteMetadata: WebDAVRemoteMetadata?
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let savedLocal = (defaults.object(forKey: StorageKeys.localChangeGeneration) as? NSNumber)?.uint64Value ?? 0
+        let savedSynced = (defaults.object(forKey: StorageKeys.syncedChangeGeneration) as? NSNumber)?.uint64Value ?? 0
+        self.localChangeGeneration = savedLocal
+        self.syncedChangeGeneration = savedSynced
+    }
 
     var hasLocalChangesPending: Bool {
         localChangeGeneration != syncedChangeGeneration
@@ -340,7 +358,8 @@ final class WebDAVAutoSyncCoordinator {
                     remoteMeta: remoteMeta,
                     context: context,
                     preferences: preferences,
-                    session: session
+                    session: session,
+                    updateLastSyncAt: false
                 )
                 _ = try await pushWithSingleConflictRetry(
                     serverURL: serverURL,
@@ -369,17 +388,24 @@ final class WebDAVAutoSyncCoordinator {
         _ metadata: WebDAVRemoteMetadata,
         syncDate: Date = Date(),
         uploadedWorkspaceChangeID: String? = nil,
+        updateLastSyncAt: Bool = true,
         preferences suppliedPreferences: AppPreferences? = nil
     ) {
         let preferences = suppliedPreferences ?? .shared
         remoteMetadata = metadata
         if let etag = metadata.etag, !etag.isEmpty {
             preferences.webDAVLastRemoteETag = etag
+        } else if metadata.exists {
+            preferences.webDAVLastRemoteETag = ""
         }
         if let mod = metadata.lastModified {
             preferences.webDAVLastRemoteModifiedAt = mod
+        } else if metadata.exists && (metadata.etag?.isEmpty != false) {
+            preferences.webDAVLastRemoteModifiedAt = syncDate
         }
-        preferences.webDAVLastSyncAt = syncDate
+        if updateLastSyncAt {
+            preferences.webDAVLastSyncAt = syncDate
+        }
         if let uploadedWorkspaceChangeID, uploadedWorkspaceChangeID == preferences.webDAVWorkspaceChangeID {
             preferences.webDAVWorkspaceChangeID = ""
         }
@@ -445,7 +471,8 @@ final class WebDAVAutoSyncCoordinator {
                     remoteMeta: latestMeta,
                     context: context,
                     preferences: preferences,
-                    session: session
+                    session: session,
+                    updateLastSyncAt: false
                 )
             }
             let retryGeneration = localChangeGeneration
@@ -474,7 +501,8 @@ final class WebDAVAutoSyncCoordinator {
         remoteMeta: WebDAVRemoteMetadata,
         context: ModelContext,
         preferences: AppPreferences,
-        session: URLSession?
+        session: URLSession?,
+        updateLastSyncAt: Bool = true
     ) async throws -> ImportSummary {
         let data = try await WebDAVSyncService.downloadEncryptedData(
             serverURL: serverURL,
@@ -503,7 +531,11 @@ final class WebDAVAutoSyncCoordinator {
             throw error
         }
 
-        recordSyncedRemoteMetadata(remoteMeta, preferences: preferences)
+        recordSyncedRemoteMetadata(
+            remoteMeta,
+            updateLastSyncAt: updateLastSyncAt,
+            preferences: preferences
+        )
         WidgetSnapshotService.shared.sync(context: context, forceReload: true)
         return summary
     }
@@ -526,13 +558,18 @@ final class WebDAVAutoSyncCoordinator {
             tombstoneStore: .shared
         )
 
-        let encryptedData = try await Task.detached(priority: .userInitiated) {
-            try EncryptedBackupService.encryptPayload(payload, password: passphrase)
+        let uploadFileURL = try await Task.detached(priority: .userInitiated) {
+            let encryptedData = try EncryptedBackupService.encryptPayload(payload, password: passphrase)
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("webdav-sync-\(UUID().uuidString).enc.json")
+            try encryptedData.write(to: tempURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            return tempURL
         }.value
+        defer { try? FileManager.default.removeItem(at: uploadFileURL) }
         try Task.checkCancellation()
 
-        let putMeta = try await WebDAVSyncService.uploadEncryptedData(
-            encryptedData,
+        let putMeta = try await WebDAVSyncService.uploadEncryptedFile(
+            uploadFileURL,
             serverURL: serverURL,
             remotePath: remotePath,
             username: username,
@@ -543,14 +580,21 @@ final class WebDAVAutoSyncCoordinator {
         )
 
         var finalMeta = putMeta
-        if finalMeta.etag == nil && finalMeta.lastModified == nil {
-            finalMeta = (try? await WebDAVSyncService.fetchRemoteMetadata(
+        if finalMeta.etag == nil {
+            if let fetched = try? await WebDAVSyncService.fetchRemoteMetadata(
                 serverURL: serverURL,
                 remotePath: remotePath,
                 username: username,
                 password: password,
                 session: session
-            )) ?? putMeta
+            ), fetched.exists {
+                finalMeta = WebDAVRemoteMetadata(
+                    exists: true,
+                    etag: fetched.etag ?? putMeta.etag,
+                    lastModified: fetched.lastModified ?? putMeta.lastModified,
+                    contentLength: fetched.contentLength ?? putMeta.contentLength
+                )
+            }
         }
         recordSyncedRemoteMetadata(finalMeta, uploadedWorkspaceChangeID: workspaceChangeID, preferences: preferences)
     }

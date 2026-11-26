@@ -4,7 +4,12 @@ import ActivityKit
 
 public struct IOSBoxGenerationAttributes: ActivityAttributes {
     public enum Presentation: String, Codable, Sendable {
-        case status, preview, anonymous
+        case status, preview
+
+        public init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = raw == Self.preview.rawValue ? .preview : .status
+        }
     }
 
     public struct ContentState: Codable, Hashable, Sendable {
@@ -19,7 +24,6 @@ public struct IOSBoxGenerationAttributes: ActivityAttributes {
 
         public var visibleSpeaker: String {
             switch presentation {
-            case .anonymous: return String(localized: "匿名模型")
             case .preview: return speakerOrModel
             default: return String(localized: "夜奔")
             }
@@ -35,7 +39,7 @@ public struct IOSBoxGenerationAttributes: ActivityAttributes {
         }
 
         public mutating func hideDetails() {
-            if presentation != .anonymous { presentation = .status }
+            presentation = .status
             speakerOrModel = visibleSpeaker
             previewSnippet = ""
             previewTitle = nil

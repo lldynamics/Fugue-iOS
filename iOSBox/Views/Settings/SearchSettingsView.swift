@@ -1,10 +1,62 @@
 import SwiftUI
 
+struct SearchSettingsKeyManager {
+    let account: String
+
+    init(account: String = TavilySearchClient.keychainAccount) {
+        self.account = account
+    }
+
+    func loadSavedKey() -> String {
+        KeychainService.shared.loadSecret(account: account)
+    }
+
+    @discardableResult
+    func saveKey(_ rawDraftKey: String) -> Bool {
+        let trimmed = rawDraftKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            KeychainService.shared.deleteSecret(account: account)
+            return true
+        }
+        return KeychainService.shared.saveSecret(trimmed, account: account)
+    }
+
+    func hasUnsavedChanges(draftKey: String, savedKey: String) -> Bool {
+        draftKey.trimmingCharacters(in: .whitespacesAndNewlines) != savedKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func testDraftKey(
+        _ rawDraftKey: String,
+        savedKey: String,
+        query: String = "Swift programming language",
+        session: URLSession? = nil
+    ) async -> (isError: Bool, message: String) {
+        let trimmed = rawDraftKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasUnsaved = hasUnsavedChanges(draftKey: trimmed, savedKey: savedKey)
+        do {
+            let evidence = try await TavilySearchClient.search(query: query, apiKey: trimmed, session: session)
+            if hasUnsaved {
+                return (false, String(localized: "测试成功，返回 \(evidence.sources.count) 条有效来源。请点按「保存」以保存此密钥。"))
+            }
+            return (false, String(localized: "测试成功，返回 \(evidence.sources.count) 条有效来源。"))
+        } catch {
+            return (true, error.localizedDescription)
+        }
+    }
+}
+
 struct SearchSettingsView: View {
     @State private var apiKey = ""
+    @State private var savedAPIKey = ""
     @State private var notice: String?
     @State private var isTesting = false
     @State private var testResult: (isError: Bool, message: String)?
+
+    private let keyManager = SearchSettingsKeyManager()
+
+    private var hasUnsavedKeyEdits: Bool {
+        keyManager.hasUnsavedChanges(draftKey: apiKey, savedKey: savedAPIKey)
+    }
 
     var body: some View {
         Form {
@@ -12,14 +64,21 @@ struct SearchSettingsView: View {
                 SecureField("Tavily API Key", text: $apiKey)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .onChange(of: apiKey) { _, _ in
+                        notice = nil
+                    }
 
                 HStack {
                     Button("保存") {
-                        let ok = KeychainService.shared.saveSecret(
-                            apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                            account: TavilySearchClient.keychainAccount
-                        )
-                        notice = ok ? String(localized: "已保存") : String(localized: "无法保存到钥匙串，请重试。")
+                        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let ok = keyManager.saveKey(trimmed)
+                        if ok {
+                            apiKey = trimmed
+                            savedAPIKey = trimmed
+                            notice = trimmed.isEmpty ? String(localized: "已移除已保存的密钥") : String(localized: "已保存")
+                        } else {
+                            notice = String(localized: "无法保存到钥匙串，请重试。")
+                        }
                     }
                     Spacer()
                     Button {
@@ -38,6 +97,10 @@ struct SearchSettingsView: View {
                     Text(notice)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                } else if hasUnsavedKeyEdits {
+                    Text("密钥已修改，点击「保存」后正式生效。")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
                 }
                 if let testResult {
                     Label(testResult.message, systemImage: testResult.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
@@ -50,7 +113,7 @@ struct SearchSettingsView: View {
             } header: {
                 Text("第三方联网搜索（Tavily）")
             } footer: {
-                Text("密钥仅存入本机钥匙串，不写入普通备份或分享扩展。清空后保存可移除密钥。")
+                Text("密钥仅存入本机钥匙串，不写入普通备份或分享扩展。「测试搜索」仅验证当前输入框中的密钥，不会覆盖已保存的密钥；清空后点击「保存」可移除密钥。")
             }
 
             Section {
@@ -66,7 +129,9 @@ struct SearchSettingsView: View {
         }
         .navigationTitle("联网搜索")
         .onAppear {
-            apiKey = KeychainService.shared.loadSecret(account: TavilySearchClient.keychainAccount)
+            let loaded = keyManager.loadSavedKey()
+            apiKey = loaded
+            savedAPIKey = loaded
         }
     }
 
@@ -74,13 +139,6 @@ struct SearchSettingsView: View {
         isTesting = true
         testResult = nil
         defer { isTesting = false }
-        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        _ = KeychainService.shared.saveSecret(trimmed, account: TavilySearchClient.keychainAccount)
-        do {
-            let evidence = try await TavilySearchClient.search(query: "Swift programming language", apiKey: trimmed)
-            testResult = (false, String(localized: "测试成功，返回 \(evidence.sources.count) 条有效来源。"))
-        } catch {
-            testResult = (true, error.localizedDescription)
-        }
+        testResult = await keyManager.testDraftKey(apiKey, savedKey: savedAPIKey)
     }
 }

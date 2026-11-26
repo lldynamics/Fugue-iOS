@@ -62,8 +62,7 @@ enum LocalSpeechTranscriber {
         }
 
         let request = SFSpeechURLRecognitionRequest(url: tempURL)
-        request.shouldReportPartialResults = false
-        request.addsPunctuation = true
+        configureRecognitionRequest(request, supportsOnDeviceRecognition: recognizer.supportsOnDeviceRecognition)
 
         let taskBox = RecognitionTaskBox()
         return try await withTaskCancellationHandler {
@@ -97,6 +96,17 @@ enum LocalSpeechTranscriber {
             }
         } onCancel: {
             taskBox.cancel()
+        }
+    }
+
+    static func configureRecognitionRequest(
+        _ request: SFSpeechURLRecognitionRequest,
+        supportsOnDeviceRecognition: Bool
+    ) {
+        request.shouldReportPartialResults = false
+        request.addsPunctuation = true
+        if supportsOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
         }
     }
 

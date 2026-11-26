@@ -14,6 +14,7 @@ enum OpenAIResponsesAdapter {
     struct StreamParserState: Sendable {
         var activeFunctionCalls: [String: (callID: String, name: String, arguments: String)] = [:]
         var emittedToolCallIDs: Set<String> = []
+        var emittedVisibleText = false
         var completed = false
         var reportedFinish = false
     }
@@ -126,13 +127,17 @@ enum OpenAIResponsesAdapter {
                     newlyDisabled.insert(.samplingParams)
                     return true
                 }
-                if state.useNativeSearch && (lower.contains("web_search") || lower.contains("tool")) {
+                let mentionsNativeSearch = LLMClient.mentionsNativeSearchIdentifier(lower)
+                if state.useNativeSearch && (mentionsNativeSearch || (request.tools.isEmpty && (lower.contains("tools") || lower.contains("tool")))) {
                     state.useNativeSearch = false
                     newlyDisabled.insert(.nativeSearch)
                     return true
                 }
-                if LLMClient.isGenericParameterRejection400(lower) {
-                    if state.useNativeSearch {
+                let mentionsCustomToolsOnly = !request.tools.isEmpty
+                    && !mentionsNativeSearch
+                    && (lower.contains("tools") || lower.contains("tool"))
+                if !mentionsCustomToolsOnly && LLMClient.isGenericParameterRejection400(lower) {
+                    if state.useNativeSearch && request.tools.isEmpty {
                         state.useNativeSearch = false
                         newlyDisabled.insert(.nativeSearch)
                         return true
@@ -174,6 +179,13 @@ enum OpenAIResponsesAdapter {
         case 4096..<12288: return "medium"
         default: return "high"
         }
+    }
+
+    private static func attachmentPlaceholder(for attachments: [MessageAttachment]) -> String {
+        if attachments.contains(where: { $0.kind == .image }) {
+            return "[图片]"
+        }
+        return "[附件]"
     }
 
     static func buildRequestBody(
@@ -224,13 +236,17 @@ enum OpenAIResponsesAdapter {
                         }
                     }
                 }
-                if !contentParts.isEmpty {
-                    inputItems.append([
-                        "type": "message",
-                        "role": "user",
-                        "content": contentParts
+                if contentParts.isEmpty {
+                    contentParts.append([
+                        "type": "input_text",
+                        "text": attachmentPlaceholder(for: msg.attachments)
                     ])
                 }
+                inputItems.append([
+                    "type": "message",
+                    "role": "user",
+                    "content": contentParts
+                ])
 
             case .assistant:
                 if !msg.content.isEmpty {
@@ -239,6 +255,14 @@ enum OpenAIResponsesAdapter {
                         "role": "assistant",
                         "content": [
                             ["type": "output_text", "text": msg.content]
+                        ]
+                    ])
+                } else if msg.toolCalls.isEmpty {
+                    inputItems.append([
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            ["type": "output_text", "text": attachmentPlaceholder(for: msg.attachments)]
                         ]
                     ])
                 }
@@ -335,14 +359,7 @@ enum OpenAIResponsesAdapter {
 
         if contentType.contains("application/json") && !contentType.contains("event-stream") {
             continuation.yield(.nonStreamingResponse)
-            let maxJSONBytes = 16 * 1024 * 1024
-            var fullData = Data()
-            for try await b in bytes {
-                try Task.checkCancellation()
-                fullData.append(b)
-                guard fullData.count <= maxJSONBytes else { throw LLMError.interruptedStream }
-            }
-            onActivity()
+            let fullData = try await readNonStreamingData(bytes, onActivity: onActivity)
             try emitNonStreamingJSON(fullData, continuation: continuation)
             return
         }
@@ -378,9 +395,17 @@ enum OpenAIResponsesAdapter {
         var emitted: [LLMStreamEvent] = []
 
         switch eventType {
-        case "response.output_text.delta":
+        case "response.output_text.delta", "response.refusal.delta":
             if let delta = obj["delta"] as? String, !delta.isEmpty {
+                state.emittedVisibleText = true
                 emitted.append(.contentDelta(delta))
+            }
+
+        case "response.refusal.done":
+            if !state.emittedVisibleText,
+               let refusal = obj["refusal"] as? String, !refusal.isEmpty {
+                state.emittedVisibleText = true
+                emitted.append(.contentDelta(refusal))
             }
 
         case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
@@ -440,6 +465,22 @@ enum OpenAIResponsesAdapter {
         case "response.completed", "response.incomplete":
             state.completed = true
             if let resp = obj["response"] as? [String: Any] {
+                if !state.emittedVisibleText, let outputs = resp["output"] as? [[String: Any]] {
+                    for item in outputs {
+                        let kind = item["type"] as? String ?? ""
+                        if kind == "message", let content = item["content"] as? [[String: Any]] {
+                            for part in content where (part["type"] as? String) == "refusal" {
+                                if let refusal = part["refusal"] as? String, !refusal.isEmpty {
+                                    state.emittedVisibleText = true
+                                    emitted.append(.contentDelta(refusal))
+                                }
+                            }
+                        } else if kind == "refusal", let refusal = item["refusal"] as? String, !refusal.isEmpty {
+                            state.emittedVisibleText = true
+                            emitted.append(.contentDelta(refusal))
+                        }
+                    }
+                }
                 emitted.append(contentsOf: extractUsageAndFinishEvents(from: resp, state: &state))
             }
 
@@ -490,43 +531,82 @@ enum OpenAIResponsesAdapter {
         return events
     }
 
-    private static func emitNonStreamingJSON(
-        _ data: Data,
-        continuation: AsyncThrowingStream<LLMStreamEvent, Error>.Continuation
-    ) throws {
+    static func readNonStreamingData<Bytes: AsyncSequence>(
+        _ bytes: Bytes,
+        maximumBytes: Int = 16 * 1024 * 1024,
+        onActivity: @escaping @Sendable () -> Void
+    ) async throws -> Data where Bytes.Element == UInt8 {
+        var fullData = Data()
+        var bytesSinceTouch = 0
+        for try await b in bytes {
+            try Task.checkCancellation()
+            fullData.append(b)
+            guard fullData.count <= maximumBytes else { throw LLMError.interruptedStream }
+            if fullData.count <= 4096 || bytesSinceTouch >= 256 {
+                bytesSinceTouch = 0
+                onActivity()
+            } else {
+                bytesSinceTouch += 1
+            }
+        }
+        onActivity()
+        return fullData
+    }
+
+    static func parseNonStreamingResponse(_ data: Data) throws -> [LLMStreamEvent] {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw LLMError.emptyResponse
         }
         if let err = obj["error"] as? [String: Any], let msg = err["message"] as? String {
             throw LLMError.apiError(msg)
         }
+        var events: [LLMStreamEvent] = []
         if let outputs = obj["output"] as? [[String: Any]] {
             for item in outputs {
                 let kind = item["type"] as? String ?? ""
                 if kind == "message", let content = item["content"] as? [[String: Any]] {
                     for part in content {
-                        if let text = part["text"] as? String, !text.isEmpty {
-                            continuation.yield(.contentDelta(text))
+                        let partType = part["type"] as? String ?? ""
+                        if partType == "refusal", let refusal = part["refusal"] as? String, !refusal.isEmpty {
+                            events.append(.contentDelta(refusal))
+                        } else if let text = part["text"] as? String, !text.isEmpty {
+                            events.append(.contentDelta(text))
+                        } else if let refusal = part["refusal"] as? String, !refusal.isEmpty {
+                            events.append(.contentDelta(refusal))
                         }
                     }
+                } else if kind == "refusal",
+                          let refusal = (item["refusal"] as? String) ?? (item["text"] as? String),
+                          !refusal.isEmpty {
+                    events.append(.contentDelta(refusal))
                 } else if kind == "reasoning", let summaries = item["summary"] as? [[String: Any]] {
                     for s in summaries {
                         if let text = s["text"] as? String, !text.isEmpty {
-                            continuation.yield(.reasoningDelta(text))
+                            events.append(.reasoningDelta(text))
                         }
                     }
                 } else if kind == "function_call",
                           let name = item["name"] as? String, !name.isEmpty {
                     let callID = (item["call_id"] as? String) ?? (item["id"] as? String) ?? UUID().uuidString
                     let args = (item["arguments"] as? String) ?? "{}"
-                    continuation.yield(.toolCall(LLMToolCall(id: callID, name: name, argumentsJSON: args)))
+                    events.append(.toolCall(LLMToolCall(id: callID, name: name, argumentsJSON: args)))
                 }
             }
         } else if let text = obj["output_text"] as? String, !text.isEmpty {
-            continuation.yield(.contentDelta(text))
+            events.append(.contentDelta(text))
+        } else if let refusal = obj["refusal"] as? String, !refusal.isEmpty {
+            events.append(.contentDelta(refusal))
         }
         var state = StreamParserState()
-        for ev in extractUsageAndFinishEvents(from: obj, state: &state) {
+        events.append(contentsOf: extractUsageAndFinishEvents(from: obj, state: &state))
+        return events
+    }
+
+    private static func emitNonStreamingJSON(
+        _ data: Data,
+        continuation: AsyncThrowingStream<LLMStreamEvent, Error>.Continuation
+    ) throws {
+        for ev in try parseNonStreamingResponse(data) {
             continuation.yield(ev)
         }
     }

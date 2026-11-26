@@ -91,7 +91,7 @@ enum EnglishTutorLLMService {
         }
         Rules:
         - Produce 3 high-utility chunks and 4 progressive shadowing sentences (from shorter to natural conversational length).
-        - Actively weave 1-2 of the learner's prior weak pronunciation words or grammar blindspots into today's drills if natural.
+        - Actively weave 1-2 of the learner's previous shadowing practice words or grammar blindspots into today's drills if natural.
         - Avoid repeating recent scenario topics listed by the user.
         """
 
@@ -151,15 +151,14 @@ enum EnglishTutorLLMService {
         context: ModelContext
     ) async throws -> String {
         let sysPrompt = """
-        你是温暖、专业的中英双语语音纠音私教。请根据标准句与语音识别听到的结果，用简体中文给出极简、可操作的发音指正（控制在 3 条短要点以内，总字数不超过 140 字）。
-        重点指出：嘴型舌位（如 th/v/w/r/长短元音）、词间连读/失爆、或句子重音节奏。语气鼓励自然，不要输出多余寒暄。
+        根据标准句与转写文本，用简体中文指出有差异的词，并给出可选的复读、拆词或重音练习。转写可能存在识别误差。没有音频，无法判断学习者实际的口型、音素、音准和节奏。最多 3 条短建议，共 140 字以内。
         """
         let userPrompt = """
         目标口音：\(accent.title)
         标准原句：\(drill.sentence)
         识别结果：\(spokenTranscript.isEmpty ? "（未识别出清晰单词）" : spokenTranscript)
-        漏读或读偏词：\(missedWords.isEmpty ? "无" : missedWords.joined(separator: ", "))
-        含糊词：\(fuzzyWords.isEmpty ? "无" : fuzzyWords.joined(separator: ", "))
+        未匹配词：\(missedWords.isEmpty ? "无" : missedWords.joined(separator: ", "))
+        部分匹配词：\(fuzzyWords.isEmpty ? "无" : fuzzyWords.joined(separator: ", "))
         """
         let reply = try await runCompletion(
             systemPrompt: sysPrompt,
@@ -242,7 +241,7 @@ enum EnglishTutorLLMService {
         context: ModelContext
     ) async throws -> (tutorSummary: String, updatedTutorNotes: String) {
         let sysPrompt = """
-        你是学习者的私人英语教练。请根据今天微课的跟读成绩与实战对话表现，输出 JSON（不含代码块标记）：
+        你是学习者的私人英语教练。请根据今天微课的文本匹配度与实战对话表现，输出 JSON（不含代码块标记）：
         {
           "tutorSummary": "用温暖具体的简体中文写一段今日学习日志点评（60-120字），肯定亮点并指出1个明天可留意的小细节",
           "updatedTutorNotes": "结合旧学情备注与今日表现，更新供AI外教下次备课参考的精炼学情画像（简体中文，不超过160字）"
@@ -257,7 +256,7 @@ enum EnglishTutorLLMService {
 
         let userPrompt = """
         今日主题：\(lesson.title)
-        跟读完成：\(lesson.completedDrillCount)/\(lesson.drills.count)，平均得分：\(lesson.averageDrillScore.map(String.init) ?? "未测")
+        跟读完成：\(lesson.completedDrillCount)/\(lesson.drills.count)，平均文本匹配度（百分比）：\(lesson.averageDrillScore.map(String.init) ?? "未测")
         已激活目标短语：\(lesson.activatedPhrases.joined(separator: ", "))
         原有学情备注：\(memory.tutorNotes)
         对话记录：
@@ -337,8 +336,7 @@ enum EnglishTutorLLMService {
             spec: spec,
             conversationID: UUID(),
             messageID: UUID(),
-            kind: .studyGeneration,
-            pricingMultiplier: AppPreferences.shared.pricingMultiplier(for: target.providerID)
+            kind: .studyGeneration
         )
         context.insert(record)
 

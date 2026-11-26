@@ -121,6 +121,9 @@ struct PhoneLibraryView: View {
                 }
             }
             Section("资料") {
+                if preferences.showsArena {
+                    NavigationLink { ArenaDecisionLibrary() } label: { Label("模型对比记录", systemImage: "checkmark.bubble") }
+                }
                 shortcut(.books, title: "书架", subtitle: String(localized: "\(books.count) 本"), symbol: "books.vertical")
             }
             Section("助手与学习") {
@@ -134,6 +137,7 @@ struct PhoneLibraryView: View {
                 if preferences.showsEnglishCoach {
                     shortcut(.study, title: "学习", symbol: "rectangle.on.rectangle")
                 }
+                OptionalModuleControls()
             }
         }
         .listStyle(.insetGrouped)
@@ -168,5 +172,42 @@ struct PhoneLibraryView: View {
         .buttonStyle(.plain)
         .listRowBackground(DS.Surface.card)
         .accessibilityIdentifier("workspace.workshop.\(section.id)")
+    }
+}
+
+struct OptionalModuleControls: View {
+    @State private var preferences = AppPreferences.shared
+    @State private var showingModules = false
+
+    var body: some View {
+        Button { showingModules = true } label: {
+            Label("管理可选功能", systemImage: "slider.horizontal.3")
+                .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .accessibilityIdentifier("library.optionalModules")
+        .sheet(isPresented: $showingModules) {
+            NavigationStack {
+                Form {
+                    Toggle("AI 英语私教", isOn: $preferences.moduleEnglishCoachEnabled)
+                        .accessibilityIdentifier("optionalModules.english")
+                    Toggle("圆桌群聊", isOn: $preferences.moduleGroupChatEnabled)
+                        .disabled(preferences.simpleDailyMode)
+                        .accessibilityIdentifier("optionalModules.roundtables")
+                    if !preferences.showsEnglishCoach && !EnglishCoachStore.shared.journalEntries.isEmpty {
+                        NavigationLink("学习日志") { EnglishCoachHubView(journalOnly: true) }
+                    }
+                }
+                .navigationTitle("管理可选功能")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("完成") { showingModules = false }
+                            .accessibilityIdentifier("optionalModules.done")
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 }

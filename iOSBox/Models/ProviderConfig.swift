@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 
@@ -280,6 +281,11 @@ final class ProviderConnectionSettingsStore: @unchecked Sendable {
 
     struct Settings: Codable, Equatable {
         var idleTimeoutSeconds: Int = 0
+        var keyLabels: [String: String]? = nil
+
+        var isEmpty: Bool {
+            idleTimeoutSeconds <= 0 && (keyLabels?.isEmpty ?? true)
+        }
     }
 
     private let lock = NSLock()
@@ -296,6 +302,13 @@ final class ProviderConnectionSettingsStore: @unchecked Sendable {
         }
     }
 
+    static func keyDigest(for rawKey: String) -> String {
+        let clean = LLMClient.sanitizedAPIKey(rawKey)
+        guard !clean.isEmpty else { return "" }
+        let digest = SHA256.hash(data: Data(clean.utf8))
+        return digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+
     func idleTimeoutSeconds(for providerID: UUID) -> Int {
         lock.lock()
         defer { lock.unlock() }
@@ -305,11 +318,47 @@ final class ProviderConnectionSettingsStore: @unchecked Sendable {
 
     func setIdleTimeoutSeconds(_ seconds: Int, for providerID: UUID) {
         let normalized = seconds > 0 ? min(max(seconds, 5), 3600) : 0
+        let idKey = providerID.uuidString
         lock.lock()
-        if normalized == 0 {
-            entries.removeValue(forKey: providerID.uuidString)
+        var current = entries[idKey] ?? Settings()
+        current.idleTimeoutSeconds = normalized
+        if current.isEmpty {
+            entries.removeValue(forKey: idKey)
         } else {
-            entries[providerID.uuidString] = Settings(idleTimeoutSeconds: normalized)
+            entries[idKey] = current
+        }
+        let snapshot = entries
+        lock.unlock()
+        persist(snapshot)
+    }
+
+    func keyLabel(for rawKey: String, providerID: UUID) -> String? {
+        let digest = Self.keyDigest(for: rawKey)
+        guard !digest.isEmpty else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        let stored = entries[providerID.uuidString]?.keyLabels?[digest]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (stored?.isEmpty == false) ? stored : nil
+    }
+
+    func setKeyLabel(_ label: String?, for rawKey: String, providerID: UUID) {
+        let digest = Self.keyDigest(for: rawKey)
+        guard !digest.isEmpty else { return }
+        let cleanLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let idKey = providerID.uuidString
+        lock.lock()
+        var current = entries[idKey] ?? Settings()
+        var labels = current.keyLabels ?? [:]
+        if cleanLabel.isEmpty {
+            labels.removeValue(forKey: digest)
+        } else {
+            labels[digest] = String(cleanLabel.prefix(40))
+        }
+        current.keyLabels = labels.isEmpty ? nil : labels
+        if current.isEmpty {
+            entries.removeValue(forKey: idKey)
+        } else {
+            entries[idKey] = current
         }
         let snapshot = entries
         lock.unlock()

@@ -139,6 +139,9 @@ final class BackgroundPDFOCRQueue {
         let merged = Self.mergeChaptersInPageOrder(existing: existing, additions: additions)
         let manuscript = BookManuscript(title: book.title, chapters: merged)
         guard let encoded = try? manuscript.encoded() else { return }
+        let bookTitle = book.title
+        let importedAt = book.importedAt
+        let isPersistent = !container.configurations.allSatisfy(\.isStoredInMemoryOnly)
         book.manuscript = encoded
         book.chapterTitles = merged.map(\.title)
         book.manuscriptByteCount = encoded.count
@@ -146,23 +149,46 @@ final class BackgroundPDFOCRQueue {
         Task {
             await ProjectKnowledgeSearch.shared.invalidate(volumeID: bookID)
             await BookReferenceSearch.shared.invalidate(bookID: bookID)
+            if isPersistent {
+                try? await FullTextSearchIndex.shared.indexBookVolume(
+                    volumeID: bookID,
+                    title: bookTitle,
+                    importedAt: importedAt,
+                    chapters: merged
+                )
+            }
         }
     }
 
     /// Merges newly recognized PDF page chapters into existing chapters while maintaining ascending page order
-    /// and avoiding duplicate page titles.
+    /// and deduplicating by 1-based page index across UI locales (`"第 5 页"` vs `"Page 5"`).
     nonisolated static func mergeChaptersInPageOrder(
         existing: [BookChapter],
         additions: [BookChapter]
     ) -> [BookChapter] {
-        var byTitle: [String: BookChapter] = [:]
+        let prefersEnglish = existing.first.map { $0.title.hasPrefix("Page ") }
+        var seenPages = Set<Int>()
+        var seenTitles = Set<String>()
         var ordered: [BookChapter] = []
+
         for ch in existing {
-            byTitle[ch.title] = ch
+            if let page = extractPageNumber(from: ch.title) {
+                guard seenPages.insert(page).inserted else { continue }
+            } else {
+                guard seenTitles.insert(ch.title).inserted else { continue }
+            }
             ordered.append(ch)
         }
-        for add in additions where byTitle[add.title] == nil {
-            byTitle[add.title] = add
+        for var add in additions {
+            if let page = extractPageNumber(from: add.title) {
+                guard seenPages.insert(page).inserted else { continue }
+                if let prefersEnglish,
+                   add.title == "Page \(page)" || add.title == "第 \(page) 页" {
+                    add.title = prefersEnglish ? "Page \(page)" : "第 \(page) 页"
+                }
+            } else {
+                guard seenTitles.insert(add.title).inserted else { continue }
+            }
             ordered.append(add)
         }
         return ordered.sorted { lhs, rhs in

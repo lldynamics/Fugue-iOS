@@ -15,6 +15,7 @@ struct ArenaComparisonGroupView: View {
     let onSynthesize: () -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var decision: ArenaDecision?
     @State private var activeTabID: UUID?
     @State private var sideBySideLayout: Bool = false
     @State private var didApplyInitialLayout = false
@@ -171,6 +172,11 @@ struct ArenaComparisonGroupView: View {
             }
         }
         .dsCard(cornerRadius: DS.Radius.lg, fill: DS.Surface.subtle.opacity(0.7), padding: DS.Spacing.md)
+        .sheet(item: $decision) { entry in
+            if let message = messages.first(where: { $0.id == entry.selectedID }) {
+                ArenaDecisionEditor(entry: entry, message: message)
+            }
+        }
         .onAppear {
             if !didApplyInitialLayout {
                 didApplyInitialLayout = true
@@ -252,6 +258,12 @@ struct ArenaComparisonGroupView: View {
                 .controlSize(.small)
                 .disabled(isGenerating || (msg.isSynthesis && (!ArenaSynthesis.isComplete(msg) || !ArenaSynthesis.isCurrent(msg, in: messages))))
 
+                if msg.isSelectedInGroup, ArenaSynthesis.isComplete(msg) {
+                    Button("记录采纳理由") { decision = ArenaDecision.capture(selected: msg, peers: messages) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isGenerating)
+                }
                 Spacer(minLength: 0)
             }
         }

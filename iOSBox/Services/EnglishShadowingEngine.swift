@@ -246,7 +246,6 @@ final class EnglishSpeechCoachService: NSObject, AVSpeechSynthesizerDelegate {
 
     private(set) var isSpeaking = false
     private(set) var isRecording = false
-    private(set) var audioLevel: Float = 0
     var speechError: String?
 
     @ObservationIgnored private let synthesizer = AVSpeechSynthesizer()
@@ -365,7 +364,6 @@ final class EnglishSpeechCoachService: NSObject, AVSpeechSynthesizerDelegate {
         recognitionRequest = nil
         recognitionTask = nil
         isRecording = false
-        audioLevel = 0
     }
 
     private func beginEnglishCaptureSession(
@@ -398,20 +396,8 @@ final class EnglishSpeechCoachService: NSObject, AVSpeechSynthesizerDelegate {
                 return
             }
 
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
                 request.append(buffer)
-                guard let channelData = buffer.floatChannelData, buffer.frameLength > 0 else { return }
-                let count = Int(buffer.frameLength)
-                var sum: Float = 0
-                let samples = channelData[0]
-                for idx in 0..<count {
-                    sum += samples[idx] * samples[idx]
-                }
-                let level = min(max(sqrtf(sum / Float(max(1, count))) * 5.2, 0), 1)
-                Task { @MainActor [weak self] in
-                    guard let self, self.captureToken == token else { return }
-                    self.audioLevel = level
-                }
             }
 
             self.audioEngine = engine

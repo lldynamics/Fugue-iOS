@@ -73,7 +73,7 @@ final class ProviderModelCatalog {
         return task
     }
 
-    /// Saved order is the account's preference order. Discovery only changes availability.
+    /// Saved order is the account's preference order. Discovery refreshes availability and provider-managed rates.
     static func merging(_ fetched: [ModelSpec], with saved: [ModelSpec], choosing selected: String? = nil,
                         fromAPI: Bool = true) -> [ModelSpec] {
         let catalog = ProviderConfig.deduplicated(fetched)
@@ -86,6 +86,18 @@ final class ProviderModelCatalog {
                     item.retiredStarterDefault = nil
                     if item.displayName == item.id { item.displayName = discovered.displayName }
                 }
+            }
+            // Legacy prices have no source. Treat existing amounts as user overrides.
+            let hasLegacyPrice = [item.inputPricePerMillion, item.outputPricePerMillion, item.cacheReadPricePerMillion,
+                                  item.cacheWritePricePerMillion].contains { $0 != nil }
+            if fromAPI, let discovered = live[item.id], let source = discovered.priceSource,
+               item.priceSource != .manual, item.priceSource != nil || !hasLegacyPrice {
+                item.priceSource = source
+                item.priceCurrency = discovered.priceCurrency
+                item.inputPricePerMillion = discovered.inputPricePerMillion
+                item.outputPricePerMillion = discovered.outputPricePerMillion
+                item.cacheReadPricePerMillion = discovered.cacheReadPricePerMillion
+                item.cacheWritePricePerMillion = discovered.cacheWritePricePerMillion
             }
             return item
         }
@@ -103,6 +115,22 @@ final class ProviderModelCatalog {
             result.insert(spec, at: 0)
         }
         return result
+    }
+
+    /// Enable exactly the selected catalog entry, retaining the user's prices, overrides and ordering.
+    static func enable(modelID: String, on provider: ProviderConfig, in context: ModelContext) throws -> ResolvedModelTarget {
+        let original = provider.models
+        var models = original
+        guard provider.modelContext != nil, provider.hasConfiguredChatAPI,
+              let index = models.firstIndex(where: { $0.id == modelID && $0.catalogStatus != .unlisted }) else {
+            throw LLMError.unavailableModel
+        }
+        if !models[index].isEnabled {
+            models[index].isEnabled = true
+            provider.models = models
+            do { try context.save() } catch { provider.models = original; throw error }
+        }
+        return provider.makeTarget(for: models[index])
     }
 
     @discardableResult

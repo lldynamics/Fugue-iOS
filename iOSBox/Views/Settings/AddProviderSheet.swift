@@ -14,6 +14,7 @@ struct AddProviderSheet: View {
     @State private var catalog = ProviderModelCatalog()
     @State private var chosenID: String?
     @State private var clipboardHint: String?
+    @State private var showingQRScanner = false
 
     private var request: ModelCatalogRequest {
         ModelCatalogRequest(protocolType: draft.protocolType, baseURL: draft.baseURL, apiKey: LLMClient.sanitizedAPIKey(draft.apiKey))
@@ -48,6 +49,9 @@ struct AddProviderSheet: View {
                     }
                     Button { fillFromClipboard() } label: {
                         Label("从剪贴板识别 Key 与地址", systemImage: "doc.on.clipboard")
+                    }
+                    Button { showingQRScanner = true } label: {
+                        Label("扫码或从相册识别二维码配置", systemImage: "qrcode.viewfinder")
                     }
                     if let clipboardHint { Text(clipboardHint).font(.footnote).foregroundStyle(.secondary) }
                 }
@@ -94,6 +98,14 @@ struct AddProviderSheet: View {
                 if ["custom_openai", "ollama"].contains(draft.serviceID) { showingAdvanced = true }
             }
             .onDisappear { catalog.reset() }
+            .sheet(isPresented: $showingQRScanner) {
+                QRCodeImportSheet { raw in
+                    guard let candidate = ClipboardProviderParser.parse(raw) else { return false }
+                    draft.apply(candidate)
+                    clipboardHint = candidate.confidenceNote
+                    return true
+                }
+            }
         }
     }
 

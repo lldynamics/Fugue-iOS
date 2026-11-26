@@ -177,17 +177,16 @@ private struct InlineMarkdownText: View {
     var body: some View {
         let segments = InlineMathParser.split(raw)
         if segments.count == 1, case .text(let only) = segments[0] {
-            if let size, let selection {
-                let attributed = attributedText(only)
-                if attributed.runs.count == 1, attributed.runs.first?.link != nil {
-                    Text(attributed)
-                } else {
-                    SelectableReplyText(attributed, size: size, serif: serif, lineSpacing: spacing,
-                                        weight: weight, color: color, followUp: selection)
-                }
-            } else {
-                markdownText(only)
-            }
+            let attributed = attributedText(only)
+            if attributed.runs.count == 1, let url = attributed.runs.first?.link, references.source(for: url) != nil {
+                Link(destination: url) { Text(verbatim: String(attributed.characters)) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                    .textSelection(.disabled)
+            } else if let size, let selection, !(attributed.runs.count == 1 && attributed.runs.first?.link != nil) {
+                SelectableReplyText(attributed, size: size, serif: serif, lineSpacing: spacing,
+                                    weight: weight, color: color, followUp: selection)
+            } else { Text(attributed) }
         } else {
             composedText(segments)
         }

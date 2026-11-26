@@ -80,7 +80,7 @@ enum BatchArchiveExporter {
         )
         let url = try exportDirectory()
             .appendingPathComponent("\(sanitizedFileName(resolvedTitle)).md")
-        try Data(markdown.utf8).write(to: url, options: [.atomic, .completeFileProtection])
+        try Data(markdown.utf8).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         return url
     }
 
@@ -108,14 +108,46 @@ enum BatchArchiveExporter {
         )
         let url = try exportDirectory()
             .appendingPathComponent("\(sanitizedFileName(resolvedTitle)).pdf")
-        try pdfData.write(to: url, options: [.atomic, .completeFileProtection])
+        try pdfData.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         return url
+    }
+
+    static func writeBookmarksPDFFileAsync(
+        entries: [BookmarkedMessageEntry],
+        title: String? = nil,
+        filterDescription: String? = nil,
+        groupByTag: Bool = true,
+        exportedAt: Date = Date()
+    ) async throws -> URL {
+        let resolvedTitle = nonEmptyTitle(title, fallback: String(localized: "夜奔 · 收藏知识库归档"))
+        let markdown = makeBookmarksMarkdown(
+            entries: entries,
+            title: resolvedTitle,
+            filterDescription: filterDescription,
+            groupByTag: groupByTag,
+            exportedAt: exportedAt
+        )
+        let body = strippingLeadingTitleLine(markdown)
+        let speaker = String(localized: "共 \(entries.count) 条精选片段")
+        let fileName = "\(sanitizedFileName(resolvedTitle)).pdf"
+        return try await Task.detached(priority: .userInitiated) {
+            let pdfData = MessageExportRenderer.makePDFData(
+                title: resolvedTitle,
+                speaker: speaker,
+                date: exportedAt,
+                markdown: body
+            )
+            let url = try exportDirectory().appendingPathComponent(fileName)
+            try pdfData.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            return url
+        }.value
     }
 
     static func makeConversationsMarkdown(
         conversations: [Conversation],
         title: String? = nil,
-        exportedAt: Date = Date()
+        exportedAt: Date = Date(),
+        forPDF: Bool = false
     ) -> String {
         let sorted = sortedConversations(conversations)
         let resolvedTitle = nonEmptyTitle(title, fallback: String(localized: "夜奔 · 多会话归档汇总"))
@@ -156,8 +188,10 @@ enum BatchArchiveExporter {
             lines.append("")
             lines.append("---")
             lines.append("")
+            let rawMarkdown = ConversationExporter.makeMarkdown(for: conv, forPDF: forPDF)
+            let markdownWithTitle = forPDF ? "# \(conv.title)\n" + rawMarkdown : rawMarkdown
             let nested = shiftHeadingsOutsideCodeBlocks(
-                ConversationExporter.makeMarkdown(for: conv),
+                markdownWithTitle,
                 numberingPrefix: "\(index + 1)."
             )
             lines.append(nested.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -179,7 +213,7 @@ enum BatchArchiveExporter {
         )
         let url = try exportDirectory()
             .appendingPathComponent("\(sanitizedFileName(resolvedTitle)).md")
-        try Data(markdown.utf8).write(to: url, options: [.atomic, .completeFileProtection])
+        try Data(markdown.utf8).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         return url
     }
 
@@ -193,7 +227,8 @@ enum BatchArchiveExporter {
         let markdown = makeConversationsMarkdown(
             conversations: sorted,
             title: resolvedTitle,
-            exportedAt: exportedAt
+            exportedAt: exportedAt,
+            forPDF: true
         )
         let body = strippingLeadingTitleLine(markdown)
         let pdfData = MessageExportRenderer.makePDFData(
@@ -204,8 +239,38 @@ enum BatchArchiveExporter {
         )
         let url = try exportDirectory()
             .appendingPathComponent("\(sanitizedFileName(resolvedTitle)).pdf")
-        try pdfData.write(to: url, options: [.atomic, .completeFileProtection])
+        try pdfData.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         return url
+    }
+
+    @MainActor
+    static func writeConversationsPDFFileAsync(
+        conversations: [Conversation],
+        title: String? = nil,
+        exportedAt: Date = Date()
+    ) async throws -> URL {
+        let sorted = sortedConversations(conversations)
+        let resolvedTitle = nonEmptyTitle(title, fallback: String(localized: "夜奔 · 多会话归档汇总"))
+        let markdown = makeConversationsMarkdown(
+            conversations: sorted,
+            title: resolvedTitle,
+            exportedAt: exportedAt,
+            forPDF: true
+        )
+        let body = strippingLeadingTitleLine(markdown)
+        let speaker = String(localized: "共 \(sorted.count) 段对话")
+        let fileName = "\(sanitizedFileName(resolvedTitle)).pdf"
+        return try await Task.detached(priority: .userInitiated) {
+            let pdfData = MessageExportRenderer.makePDFData(
+                title: resolvedTitle,
+                speaker: speaker,
+                date: exportedAt,
+                markdown: body
+            )
+            let url = try exportDirectory().appendingPathComponent(fileName)
+            try pdfData.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            return url
+        }.value
     }
 
     // MARK: - Helpers

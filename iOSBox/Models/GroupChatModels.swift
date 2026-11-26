@@ -36,7 +36,7 @@ enum GroupSpeakingMode: String, Codable, CaseIterable, Sendable, Identifiable {
         case .roundRobin:
             return String(localized: "按群成员座位顺序依次表态，适合多视角方案评审与头脑风暴。")
         case .mentionOnly:
-            return String(localized: "成员平时保持潜水，只有被你 @ 点名或点击「全员表决」时才发言。")
+            return String(localized: "成员平时保持潜水，只有被你 @ 点名或点击「发起表决」时才发言。")
         }
     }
 }

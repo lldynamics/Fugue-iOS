@@ -26,6 +26,7 @@ final class LiveActivityCoordinator {
     static let shared = LiveActivityCoordinator()
     private static let previewKey = "iosbox.liveActivity.showPreviews"
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let preferences: AppPreferences?
     private(set) var showsPreviews: Bool
 
     private(set) var activeStates: [UUID: IOSBoxGenerationAttributes.ContentState] = [:]
@@ -33,15 +34,29 @@ final class LiveActivityCoordinator {
     @ObservationIgnored private var lastUpdateTime: [UUID: ContinuousClock.Instant] = [:]
     @ObservationIgnored private var pendingUpdates: [String: Task<Void, Never>] = [:]
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, preferences: AppPreferences? = nil) {
         self.defaults = defaults
+        self.preferences = preferences
         showsPreviews = defaults.bool(forKey: Self.previewKey)
+    }
+
+    private var isAppLockActive: Bool {
+        (preferences ?? .shared).appLockEnabled
     }
 
     func setShowsPreviews(_ enabled: Bool) {
         showsPreviews = enabled
         defaults.set(enabled, forKey: Self.previewKey)
         guard !enabled else { return }
+        redactActivePreviewStates()
+    }
+
+    func handleAppLockChange(lockEnabled: Bool) {
+        guard lockEnabled else { return }
+        redactActivePreviewStates()
+    }
+
+    private func redactActivePreviewStates() {
         for (id, var state) in activeStates where state.presentation == .preview {
             state.hideDetails()
             activeStates[id] = state
@@ -74,7 +89,8 @@ final class LiveActivityCoordinator {
             totalTurns: totalTurns,
             previewSnippet: ""
         )
-        initialState.presentation = showsPreviews ? .preview : .status
+        let allowPreviews = showsPreviews && !isAppLockActive
+        initialState.presentation = allowPreviews ? .preview : .status
         if initialState.presentation == .preview {
             initialState.previewTitle = String(chatTitle.prefix(60))
         } else {
@@ -114,11 +130,15 @@ final class LiveActivityCoordinator {
         if !force, let last = lastUpdateTime[conversationID], last.duration(to: .now) < .milliseconds(1200) {
             return
         }
-        if current.presentation == .preview, let speakerOrModel { current.speakerOrModel = speakerOrModel }
+        if isAppLockActive, current.presentation == .preview {
+            current.hideDetails()
+        }
+        let canExposeDetails = current.presentation == .preview && !isAppLockActive
+        if canExposeDetails, let speakerOrModel { current.speakerOrModel = speakerOrModel }
         if let phaseText { current.phaseText = phaseText }
         if let completedTurns { current.completedTurns = completedTurns }
         if let totalTurns { current.totalTurns = max(1, totalTurns) }
-        if current.presentation == .preview, let previewSnippet {
+        if canExposeDetails, let previewSnippet {
             current.previewSnippet = String(
                 previewSnippet.suffix(180)
                     .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)

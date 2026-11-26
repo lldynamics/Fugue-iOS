@@ -36,8 +36,33 @@ enum DocumentOCRFormatter {
     }
 }
 
+enum DocumentOCRError: LocalizedError, Equatable, CaseIterable {
+    case invalidImage
+    case noTextRecognized
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidImage:
+            return String(localized: "图片无效，无法执行文字识别。")
+        case .noTextRecognized:
+            return String(localized: "未在图片中识别到可用文字。")
+        }
+    }
+}
+
 enum DocumentOCRService {
     private static let maxDimension: CGFloat = 2400
+
+    static func recognizeRequiredText(in image: UIImage) throws -> String {
+        guard normalizedCGImage(from: image) != nil else {
+            throw DocumentOCRError.invalidImage
+        }
+        let text = recognizeText(in: image)
+        guard !text.isEmpty else {
+            throw DocumentOCRError.noTextRecognized
+        }
+        return text
+    }
 
     static func recognizeText(in image: UIImage) -> String {
         autoreleasepool {
@@ -99,10 +124,10 @@ enum DocumentOCRService {
                       let uiImage = UIImage(data: data) else {
                     continue
                 }
-                processedIDs.append(item.id)
                 let text = recognizeText(in: uiImage)
                 if !text.isEmpty {
                     pageTexts.append(text)
+                    processedIDs.append(item.id)
                 }
             }
 
@@ -110,11 +135,13 @@ enum DocumentOCRService {
             guard !combined.isEmpty else {
                 return (nil, [])
             }
-            let doc = makeOCRDocumentAttachment(
+            var doc = makeOCRDocumentAttachment(
                 text: combined,
                 sourceFileName: imageItems.first?.fileName,
-                pageCount: processedIDs.count
+                pageCount: imageItems.count
             )
+            doc.textCoverage = AttachmentTextCoverage(totalPages: imageItems.count, pagesWithText: processedIDs.count,
+                ocrPages: imageItems.count, isTruncated: combined.count > DocumentOCRFormatter.maxOCRCharacters)
             return (doc, processedIDs)
         }.value
     }

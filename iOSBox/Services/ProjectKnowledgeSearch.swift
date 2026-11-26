@@ -601,6 +601,40 @@ actor ProjectKnowledgeSearch {
     }
 }
 
+/// A named selection stores IDs only. Applying it copies the currently enabled IDs into the caller's scope.
+struct NamedMemoryCollection: Identifiable, Codable, Equatable {
+    let id: UUID
+    var name: String
+    var memoryIDs: [UUID]
+
+    static let maximumNameLength = 120
+    var isValid: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.count <= Self.maximumNameLength &&
+        Set(memoryIDs).count == memoryIDs.count
+    }
+
+    func selection(among enabledIDs: Set<UUID>) -> Set<UUID> {
+        enabledIDs.intersection(memoryIDs)
+    }
+
+    // The original file also carries preset UUIDs and memory.<preset UUID>. Older
+    // readers ignore these keys and preserve them when editing an unrelated binding.
+    fileprivate static let prefix = "memory.collection."
+    fileprivate var bindingKey: String { Self.prefix + id.uuidString + "." + name }
+
+    static func read(_ bindings: [String: [UUID]]) -> [Self] {
+        bindings.compactMap { key, members -> Self? in
+            guard key.hasPrefix(prefix) else { return nil }
+            let parts = key.dropFirst(prefix.count).split(separator: ".", maxSplits: 1)
+            guard parts.count == 2, let id = UUID(uuidString: String(parts[0])) else { return nil }
+            return Self(id: id, name: String(parts[1]), memoryIDs: members)
+        }.sorted {
+            let order = $0.name.localizedStandardCompare($1.name)
+            return order == .orderedSame ? $0.id.uuidString < $1.id.uuidString : order == .orderedAscending
+        }
+    }
+}
+
 /// Persists optional reference knowledge-volume bindings per `AssistantPreset.id` without altering
 /// frozen SwiftData SQLite schemas.
 final class PresetKnowledgeStore: @unchecked Sendable {
@@ -675,6 +709,75 @@ final class PresetKnowledgeStore: @unchecked Sendable {
         }) { $0[presetID.uuidString] = Self.bounded(ids) }
     }
 
+    static func memoryKey(_ presetID: UUID) -> String { "memory." + presetID.uuidString }
+
+    func setBindings(volumes: [UUID], memories: Set<UUID>?, for id: UUID, commit: () throws -> Void) throws {
+        try change(committing: {
+            try commit()
+            var pending = pendingRestores()
+            pending.removeValue(forKey: id.uuidString)
+            pending.removeValue(forKey: Self.memoryKey(id))
+            savePendingRestores(pending)
+        }) {
+            $0[id.uuidString] = Self.bounded(volumes)
+            $0[Self.memoryKey(id)] = memories.map { $0.sorted { $0.uuidString < $1.uuidString } }
+        }
+    }
+
+    func memoryCollections() throws -> [NamedMemoryCollection] {
+        NamedMemoryCollection.read(try readableBindings())
+    }
+
+    @discardableResult
+    func saveMemoryCollection(name: String, memoryIDs: Set<UUID>) throws -> NamedMemoryCollection {
+        let collection = NamedMemoryCollection(id: UUID(), name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                                               memoryIDs: memoryIDs.sorted { $0.uuidString < $1.uuidString })
+        guard collection.isValid else { throw BackupError.unrecognizedFormat }
+        try change { $0[collection.bindingKey] = collection.memoryIDs }
+        return collection
+    }
+
+    func renameMemoryCollection(_ id: UUID, to name: String) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= NamedMemoryCollection.maximumNameLength else { throw BackupError.unrecognizedFormat }
+        try change { bindings in
+            guard var collection = NamedMemoryCollection.read(bindings).first(where: { $0.id == id }) else { return }
+            bindings.removeValue(forKey: collection.bindingKey)
+            collection.name = trimmed
+            bindings[collection.bindingKey] = collection.memoryIDs
+        }
+    }
+
+    func deleteMemoryCollection(_ id: UUID) throws {
+        try change { bindings in
+            if let collection = NamedMemoryCollection.read(bindings).first(where: { $0.id == id }) {
+                bindings.removeValue(forKey: collection.bindingKey)
+            }
+        }
+    }
+
+    func removeFromMemoryCollections(_ ids: Set<UUID>) throws {
+        guard !ids.isEmpty else { return }
+        try change { bindings in
+            for key in Array(bindings.keys) where key.hasPrefix(NamedMemoryCollection.prefix) {
+                bindings[key]?.removeAll { ids.contains($0) }
+            }
+        }
+    }
+
+    func restoreMemoryCollections(_ incoming: [NamedMemoryCollection], survivingIDs: Set<UUID>) throws -> Int {
+        guard !incoming.isEmpty else { return 0 }
+        var added = 0
+        try change { bindings in
+            var known = Set(NamedMemoryCollection.read(bindings).map(\.id))
+            for group in incoming where known.insert(group.id).inserted {
+                bindings[group.bindingKey] = group.memoryIDs.filter { survivingIDs.contains($0) }
+                added += 1
+            }
+        }
+        return added
+    }
+
     private var pendingRestoresKey: String? {
         fileURL.map { "com.iosbox.pendingKnowledgeRestore.\(UUID(contentOf: Data($0.path.utf8)))" }
     }
@@ -691,14 +794,15 @@ final class PresetKnowledgeStore: @unchecked Sendable {
         else { UserDefaults.standard.set(try? JSONEncoder().encode(pending), forKey: key) }
     }
 
-    func restoreNewBindings(_ inserted: [UUID: [UUID]], retrying presetIDs: [UUID]) throws {
+    func restoreNewBindings(_ inserted: [UUID: [UUID]], memories: [UUID: [UUID]] = [:], retrying presetIDs: [UUID]) throws {
         try lock.withLock {
             var pending = pendingRestores()
             for (id, volumes) in inserted {
                 pending[id.uuidString] = volumes.isEmpty ? nil : Self.bounded(volumes)
             }
+            for (id, memoryIDs) in memories { pending[Self.memoryKey(id)] = Array(memoryIDs.prefix(PersonalMemory.maximumCount)) }
             savePendingRestores(pending)
-            let selected = presetIDs.map(\.uuidString).filter { pending[$0] != nil }
+            let selected = presetIDs.flatMap { [$0.uuidString, Self.memoryKey($0)] }.filter { pending[$0] != nil }
             guard !selected.isEmpty else { return }
             var bindings = try load()
             for id in selected where bindings[id] == nil { bindings[id] = pending[id] }
@@ -712,12 +816,11 @@ final class PresetKnowledgeStore: @unchecked Sendable {
         try change(committing: {
             try commit()
             let pending = pendingRestores()
-            let remaining = pending.mapValues { $0.filter { $0 != volumeID } }
+            var remaining = pending
+            for key in pending.keys where !key.hasPrefix("memory.") { remaining[key]?.removeAll { $0 == volumeID } }
             if remaining != pending { savePendingRestores(remaining) }
         }) { bindings in
-            bindings = bindings.mapValues { volumes in
-                volumes.filter { $0 != volumeID }
-            }
+            for key in Array(bindings.keys) where !key.hasPrefix("memory.") { bindings[key]?.removeAll { $0 == volumeID } }
         }
     }
 

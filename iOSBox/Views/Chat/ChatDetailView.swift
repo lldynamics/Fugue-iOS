@@ -11,7 +11,6 @@ struct ChatDetailView: View {
 
     @Environment(WorkspaceNavigation.self) private var workspaceNavigation: WorkspaceNavigation?
     @Environment(\.modelContext) private var modelContext
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.usesPhoneWorkspace) private var usesPhoneWorkspace
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -26,7 +25,9 @@ struct ChatDetailView: View {
     @State private var citationPlace = BookReadingPlace()
     @State private var readingPlace = BookReadingPlace()
     @State private var hasInlineBook = false
-    @State private var activeSheet: ChatActiveSheet?
+    @State private var sheetHandoff = SheetHandoffState<ChatActiveSheet>()
+    @State private var pendingSheetDismissAction: (() -> Void)?
+    @State private var pendingReaderCoverDismissAction: (() -> Void)?
     @State private var infoAlert: ChatAlertItem?
     @State private var modelDirectory = ChatModelDirectory()
     @State private var checkingFeeds = false
@@ -35,6 +36,7 @@ struct ChatDetailView: View {
     @State private var sendBlockedReason: SendOutcome?
     @State private var sendingInterruption = false
     @State private var pendingScrollMessageID: UUID?
+    @State private var questionNavigationAnchor: UUID?
     @State private var arenaSearchFocus: MessageSearchFocus?
     @State private var isGeneratingTitle = false
     @State private var confirmClear = false
@@ -91,9 +93,11 @@ struct ChatDetailView: View {
             targets = conversation.activeGroupMembers.map(\.target)
         } else if conversation.isArenaMode {
             targets = conversation.arenaTargets
+        } else if let primary = requestOptions.temporaryTarget ?? conversation.primaryTarget {
+            targets = [primary] + AssistancePolicy.fallbacks(after: primary, settings: conversation.assistanceSettings,
+                providers: providers, requiresVision: draft.attachments.contains { $0.kind == .image })
         } else {
-            let backups = conversation.assistanceSettings.fallbackEnabled ? conversation.assistanceSettings.fallbackTargets : []
-            targets = ([requestOptions.temporaryTarget ?? conversation.primaryTarget].compactMap { $0 }) + backups
+            return true
         }
         return !targets.contains(where: isReady)
     }
@@ -205,16 +209,7 @@ struct ChatDetailView: View {
     private var timelineAndComposer: some View {
         let currentActiveMessages = activeMessages
         let items = TimelineEntry.build(from: currentActiveMessages)
-        let promptMilestones: [ChatTopicScrubberView.PromptMilestone] = currentActiveMessages
-            .filter { $0.role == .user && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .enumerated()
-            .map { index, msg in
-                ChatTopicScrubberView.PromptMilestone(
-                    id: msg.id,
-                    index: index,
-                    preview: String(msg.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(34))
-                )
-            }
+        let promptMilestones = ChatTopicScrubberView.PromptMilestone.questions(in: currentActiveMessages)
 
         return ScrollViewReader { proxy in
             let timeline = ZStack(alignment: .bottomTrailing) {
@@ -275,7 +270,7 @@ struct ChatDetailView: View {
                                             onOpenConversation?(forked)
                                         },
                                         onSynthesize: {
-                                            activeSheet = .synthesis(gid)
+                                            presentSheet(.synthesis(gid))
                                         }
                                     )
                                     .id(entry.id)
@@ -287,6 +282,7 @@ struct ChatDetailView: View {
                             .frame(height: 4)
                             .id("BOTTOM_ANCHOR")
                     }
+                    .scrollTargetLayout()
                     .frame(maxWidth: horizontalSizeClass == .regular && !conversation.isArenaMode ? 820 : .infinity)
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, DS.Spacing.lg)
@@ -294,6 +290,16 @@ struct ChatDetailView: View {
                     .padding(.bottom, 10)
                 }
                 .scrollDismissesKeyboard(.interactively)
+                .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.1) { ids in
+                    guard isUserScrolling else { return }
+                    let visible = Set(ids)
+                    if let first = items.first(where: { visible.contains($0.id) }) {
+                        switch first {
+                        case .single(let message): questionNavigationAnchor = message.id
+                        case .arenaGroup(_, let messages): questionNavigationAnchor = messages.first?.id
+                        }
+                    }
+                }
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     geometry.visibleRect.maxY >= geometry.contentSize.height - 120
                 } action: { _, nearBottom in
@@ -317,6 +323,7 @@ struct ChatDetailView: View {
                           let message = currentActiveMessages.first(where: { $0.id == id }) else { return }
                     let focus = MessageSearchFocus(messageID: id, groupID: message.comparisonGroupID)
                     arenaSearchFocus = focus
+                    questionNavigationAnchor = id
                     isPinnedToBottom = false
                     await Task.yield()
                     guard !Task.isCancelled else { return }
@@ -325,10 +332,11 @@ struct ChatDetailView: View {
                 }
 
                 if promptMilestones.count >= 3 {
-                    ChatTopicScrubberView(milestones: promptMilestones) { targetMessageID in
+                    ChatTopicScrubberView(milestones: promptMilestones, openDirectory: { presentSheet(.questionDirectory) }) { targetMessageID in
+                        questionNavigationAnchor = targetMessageID
                         isPinnedToBottom = false
                         withAnimation(.snappy(duration: 0.22)) {
-                            proxy.scrollTo(targetMessageID, anchor: .top)
+                            proxy.scrollTo(targetMessageID.uuidString, anchor: .top)
                         }
                     }
                     .frame(maxHeight: .infinity, alignment: .center)
@@ -411,7 +419,7 @@ struct ChatDetailView: View {
         BoundKnowledgeMenu(ids: conversation.assistanceSettings.knowledgeVolumeIDs,
                            omitted: $requestOptions.omitKnowledge, compact: compact,
                            canManage: !engine.isGenerating(in: conversation.id),
-                           onManage: conversation.activeBookFriend == nil ? { activeSheet = .knowledge } : nil)
+                           onManage: conversation.activeBookFriend == nil ? { presentSheet(.knowledge) } : nil)
     }
 
     private func composer(writingFirst: Bool) -> some View {
@@ -424,11 +432,11 @@ struct ChatDetailView: View {
             isGenerating: engine.isGenerating(in: conversation.id),
             requestOptions: $requestOptions,
             onOpenModelPicker: beginModelSetup,
-            onOpenArenaPicker: { activeSheet = .arena },
-            onOpenGroupSetup: { activeSheet = .groupSetup },
-            onOpenOptions: { activeSheet = .options },
-            onManageKnowledge: { activeSheet = .knowledge },
-            onOpenAudioTranscription: { activeSheet = .audioTranscription },
+            onOpenArenaPicker: { presentSheet(.arena) },
+            onOpenGroupSetup: { presentSheet(.groupSetup) },
+            onOpenOptions: { presentSheet(.options) },
+            onManageKnowledge: { presentSheet(.knowledge) },
+            onOpenAudioTranscription: { presentSheet(.audioTranscription) },
             externalDocumentScanTrigger: externalDocumentScanTrigger,
             writingFirst: writingFirst,
             needsModel: needsAPIKeyBanner,
@@ -453,7 +461,7 @@ struct ChatDetailView: View {
                             Text("今晚想推演什么问题？")
                                 .font(.system(.headline, design: preferences.literarySerifBody ? .serif : .default).weight(.bold))
                                 .foregroundStyle(.primary)
-                            Text("左滑打开置顶空间与历史 · 右上角检视路由与知识库")
+                            Text("右滑打开历史对话 · 右上角检视路由与知识库")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -496,9 +504,9 @@ struct ChatDetailView: View {
     private var phoneStartModeMenu: some View {
         ChatStartModeMenu(
             isGenerating: engine.isGenerating(in: conversation.id),
-            onOpenArena: { activeSheet = .arena },
-            onOpenGroup: { activeSheet = .groupSetup },
-            onOpenOptions: { activeSheet = .options }
+            onOpenArena: { presentSheet(.arena) },
+            onOpenGroup: { presentSheet(.groupSetup) },
+            onOpenOptions: { presentSheet(.options) }
         )
     }
 
@@ -569,7 +577,7 @@ struct ChatDetailView: View {
                                 Button {
                                     citationVolumeID = nil
                                     readingRequest = nil
-                                    activeSheet = .originalBook
+                                    presentSheet(.originalBook)
                                 } label: {
                                     Label(dynamicTypeSize.isAccessibilitySize ? String(localized: "原文") : String(localized: "查看原文"),
                                           systemImage: "book")
@@ -593,7 +601,15 @@ struct ChatDetailView: View {
                     SystemEntryRouter.shared.openOriginalForChatID = nil
                     citationVolumeID = nil
                     readingRequest = nil
-                    if !wide { showsShelfReader = true }
+                    guard !wide else { return }
+                    ModalPresentationGate.performWhenClear(
+                        extraCheck: {
+                            workspaceNavigation?.activeModal != nil || sheetHandoff.isPresentingOrDismissing
+                        }
+                    ) {
+                        guard !hasInlineBook, !conversation.isDeleted, conversation.readingVolumeID != nil else { return }
+                        showsShelfReader = true
+                    }
                 }
                 .onChange(of: wide, initial: true) { _, value in
                     hasInlineBook = value
@@ -612,7 +628,7 @@ struct ChatDetailView: View {
         if let friend = conversation.activeBookFriend, citation.volumeID != friend.bookID { return }
         citationVolumeID = citation.volumeID
         readingRequest = ReadingRequest(citation: citation)
-        if !hasInlineBook { activeSheet = .originalBook }
+        if !hasInlineBook { presentSheet(.originalBook) }
     }
 
     private func originalBook(defaultID: UUID) -> some View {
@@ -622,11 +638,20 @@ struct ChatDetailView: View {
                                 place: citationVolumeID == nil ? $readingPlace : $citationPlace,
                                 companionID: citationVolumeID == nil && conversation.isCompanion(for: id) ? conversation.id : nil,
                                 openShelf: workspaceNavigation.map { navigation in
-                                    { activeSheet = nil; showsShelfReader = false; navigation.openBookshelf() }
-                                }) { text in
-            draft.quotedText = String(text.prefix(600))
-            draft.save()
-            if activeSheet == .originalBook { activeSheet = nil }
+                                    {
+                                        if showsShelfReader {
+                                            pendingReaderCoverDismissAction = { navigation.openBookshelf() }
+                                            showsShelfReader = false
+                                        } else if sheetHandoff.active != nil || sheetHandoff.isPresentingOrDismissing {
+                                            dismissActiveSheet { navigation.openBookshelf() }
+                                        } else {
+                                            navigation.openBookshelf()
+                                        }
+                                    }
+                                }) { citation in
+            do { try draft.addReadingCitation(citation) }
+            catch { presentHistoryError(error.localizedDescription); return }
+            if sheetHandoff.active == .originalBook { dismissActiveSheet() }
             showsShelfReader = false
             inputFocused = true
         }
@@ -662,7 +687,7 @@ struct ChatDetailView: View {
             }
             ToolbarItem(placement: .principal) {
                 if let friend = conversation.activeBookFriend {
-                    BookChatHeading(friend: friend, title: conversation.title) { activeSheet = .bookProgress }
+                    BookChatHeading(friend: friend, title: conversation.title) { presentSheet(.bookProgress) }
                         .disabled(engine.isGenerating(in: conversation.id))
                 } else if !conversation.isArenaMode && !conversation.isGroupMode {
                     if usesPhoneWorkspace || writingFirst {
@@ -672,7 +697,7 @@ struct ChatDetailView: View {
                     }
                 } else {
                     Button {
-                        activeSheet = conversation.isGroupMode ? .groupSetup : .arena
+                        presentSheet(conversation.isGroupMode ? .groupSetup : .arena)
                     } label: {
                         VStack(spacing: 2) {
                             Text(verbatim: conversation.title).font(.headline).lineLimit(1)
@@ -696,7 +721,7 @@ struct ChatDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     preferences.triggerSelectionHaptic()
-                    activeSheet = .inspector
+                    presentSheet(.inspector)
                 } label: {
                     Image(systemName: "sidebar.right")
                 }
@@ -706,7 +731,7 @@ struct ChatDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
-                        activeSheet = .settings
+                        presentSheet(.settings)
                     } label: {
                         Label("系统提示词与参数", systemImage: "slider.horizontal.3")
                     }
@@ -714,21 +739,26 @@ struct ChatDetailView: View {
 
                     if conversation.activeBookFriend != nil {
                         Divider()
-                        if !preferences.simpleDailyMode {
-                            Button { activeSheet = .bookInvitation } label: { Label("邀请进群", systemImage: "person.2.badge.plus") }
+                        if preferences.showsGroupChat {
+                            Button { presentSheet(.bookInvitation) } label: { Label("邀请进群", systemImage: "person.2.badge.plus") }
                         }
-                        Button { activeSheet = .bookProgress } label: { Label("调整阅读进度", systemImage: "bookmark") }
+                        Button { presentSheet(.bookProgress) } label: { Label("调整阅读进度", systemImage: "bookmark") }
                             .disabled(engine.isGenerating(in: conversation.id))
                     }
 
                     Divider()
 
                     Button {
-                        activeSheet = .search
+                        presentSheet(.search)
                     } label: {
                         Label("会话内查找与收藏", systemImage: "magnifyingglass")
                     }
                     .keyboardShortcut("f", modifiers: .command)
+                    if activeMessages.contains(where: { $0.role == .user }) {
+                        Button { presentSheet(.questionDirectory) } label: { Label("问题目录", systemImage: "list.number") }
+                            .accessibilityIdentifier("chat.questionDirectory")
+                    }
+
 
                     Button {
                         renameDraft = conversation.title
@@ -756,17 +786,17 @@ struct ChatDetailView: View {
 
                     if preferences.showsArena || conversation.isArenaMode {
                         Button {
-                            activeSheet = .arena
+                            presentSheet(.arena)
                         } label: {
                             Label("配置多模型并发对比", systemImage: "square.split.2x1")
                         }
                         .disabled(engine.isGenerating(in: conversation.id))
                     }
 
-                    Button {
-                        activeSheet = .groupSetup
-                    } label: {
-                        Label("配置圆桌群聊角色", systemImage: "person.3")
+                    if conversation.isGroupMode || preferences.showsGroupChat {
+                        Button { presentSheet(.groupSetup) } label: {
+                            Label("配置圆桌群聊角色", systemImage: "person.3")
+                        }
                     }
 
                     if PersonaFeedService.hasSubscriptions(conversation) {
@@ -784,16 +814,9 @@ struct ChatDetailView: View {
                     Divider()
 
                     Button {
-                        exportMarkdown()
+                        presentSheet(.conversationExport)
                     } label: {
-                        Label("导出 Markdown", systemImage: "doc.text")
-                    }
-                    .disabled(activeMessages.isEmpty)
-
-                    Button {
-                        exportShareImage()
-                    } label: {
-                        Label("生成分享长图", systemImage: "photo.on.rectangle")
+                        Label("分享与导出", systemImage: "square.and.arrow.up")
                     }
                     .disabled(activeMessages.isEmpty)
 
@@ -825,6 +848,13 @@ struct ChatDetailView: View {
             loadDraft()
             dismissUndoIfRestored()
         }
+        .onChange(of: conversation.id) { oldID, newID in
+            guard oldID != newID else { return }
+            SpeechService.shared.stopDictationIfActive()
+            saveDraft()
+            draft = ChatDraftStore.shared.state(for: newID)
+            loadDraft()
+        }
         .onChange(of: draftProviderFingerprint) { prepareDraftModels(chooseInitial: false) }
         .onReceive(NotificationCenter.default.publisher(for: .init("IOSBoxCredentialsChanged"))) { _ in prepareDraftModels(chooseInitial: false) }
         .onDisappear {
@@ -846,7 +876,7 @@ struct ChatDetailView: View {
         .aiConsentSheet(consent)
         .onChange(of: scenePhase) { _, phase in if phase != .active { saveDraft() } }
         .onChange(of: inputFocused) { _, focused in if focused && !usesPhoneWorkspace { activateLandingDraft() } }
-        .onChange(of: activeSheet) { _, sheet in if sheet != nil { activateLandingDraft() } }
+        .onChange(of: sheetHandoff.active) { _, sheet in if sheet != nil { activateLandingDraft() } }
         .onChange(of: draft.processingAttachments) { _, count in if count > 0 { activateLandingDraft() } }
         .onChange(of: draft.attachments) { _, items in if !items.isEmpty { activateLandingDraft() } }
         .onChange(of: draft.text) { _, _ in
@@ -877,7 +907,7 @@ struct ChatDetailView: View {
             citationPlace = BookReadingPlace()
             readingPlace = BookReadingPlace()
         }
-        .sheet(item: $activeSheet) { sheet in
+        .sheet(item: $sheetHandoff.active, onDismiss: handleActiveSheetDismiss) { sheet in
             sheetContent(for: sheet)
         }
         .sheet(item: $sendReview, onDismiss: {
@@ -885,25 +915,41 @@ struct ChatDetailView: View {
             reviewedSend = nil
             action?()
         }) { review in
-            ChatSendReviewSheet(review: review) {
-                reviewedSend = review.send
+            ChatSendReviewSheet(review: review) { selected in
+                reviewedSend = { review.send(selected) }
                 sendReview = nil
             }
         }
         .onChange(of: entryRouter.pendingChatToolRequest, initial: true) { _, request in
             guard let request, request.conversationID == conversation.id else { return }
             entryRouter.pendingChatToolRequest = nil
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(220))
+            pendingReaderCoverDismissAction = nil
+            showsShelfReader = false
+            reviewedSend = nil
+            sendReview = nil
+            if request.tool == .scanDocument {
+                dismissActiveSheet()
+            } else if sheetHandoff.active != nil && sheetHandoff.active != .audioTranscription {
+                dismissActiveSheet()
+            }
+            ModalPresentationGate.performWhenClear(
+                extraCheck: {
+                    workspaceNavigation?.activeModal != nil
+                        || showsShelfReader
+                        || sendReview != nil
+                        || (request.tool == .scanDocument && sheetHandoff.isPresentingOrDismissing)
+                }
+            ) {
+                guard !conversation.isDeleted else { return }
                 switch request.tool {
                 case .voiceNote:
-                    activeSheet = .audioTranscription
+                    presentSheet(.audioTranscription)
                 case .scanDocument:
                     externalDocumentScanTrigger += 1
                 }
             }
         }
-        .fullScreenCover(isPresented: $showsShelfReader) {
+        .fullScreenCover(isPresented: $showsShelfReader, onDismiss: handleReaderCoverDismiss) {
             if let id = conversation.readingVolumeID {
                 readerNavigation(for: id) { showsShelfReader = false }
             }
@@ -940,6 +986,48 @@ struct ChatDetailView: View {
         }
     }
 
+    private func presentSheet(_ sheet: ChatActiveSheet) {
+        pendingSheetDismissAction = nil
+        sheetHandoff.present(sheet)
+    }
+
+    private func dismissActiveSheet(then action: (() -> Void)? = nil) {
+        if sheetHandoff.active != nil || sheetHandoff.isPresentingOrDismissing {
+            pendingSheetDismissAction = action
+            sheetHandoff.beginDismissal()
+        } else {
+            action?()
+        }
+    }
+
+    private func handleActiveSheetDismiss() {
+        if sheetHandoff.handleDismiss() == nil {
+            let action = pendingSheetDismissAction
+            pendingSheetDismissAction = nil
+            action?()
+        }
+    }
+
+    private func handleReaderCoverDismiss() {
+        let action = pendingReaderCoverDismissAction
+        pendingReaderCoverDismissAction = nil
+        action?()
+    }
+
+    static func mergingComposerDraft(existing: String, incoming: String) -> String {
+        let cleanIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanIncoming.isEmpty else { return existing }
+        guard !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return cleanIncoming
+        }
+        let withoutTrailingWhitespace = existing.replacingOccurrences(
+            of: "\\s+$",
+            with: "",
+            options: .regularExpression
+        )
+        return "\(withoutTrailingWhitespace)\n\n\(cleanIncoming)"
+    }
+
     @ViewBuilder
     private func sheetContent(for sheet: ChatActiveSheet) -> some View {
         switch sheet {
@@ -948,7 +1036,7 @@ struct ChatDetailView: View {
                 conversation: conversation,
                 options: $requestOptions,
                 targets: availableTargets,
-                onOpenSettings: { activeSheet = .settings }
+                onOpenSettings: { presentSheet(.settings) }
             )
             .presentationDetents([.large])
 
@@ -958,31 +1046,19 @@ struct ChatDetailView: View {
                 providers: providers,
                 omitKnowledgeOnce: $requestOptions.omitKnowledge,
                 onOpenModelPicker: {
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(180))
-                        beginModelSetup()
-                    }
+                    beginModelSetup()
                 },
                 onOpenKnowledgePicker: {
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(180))
-                        activeSheet = .knowledge
-                    }
+                    presentSheet(.knowledge)
                 },
                 onOpenFullSettings: {
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(180))
-                        activeSheet = .settings
-                    }
+                    presentSheet(.settings)
                 },
                 onOpenCitation: { citation in
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(180))
-                        openCitation(citation)
-                    }
+                    openCitation(citation)
                 }
             )
-            .presentationDetents([.medium, .large])
+            .presentationDetents(horizontalSizeClass == .regular ? [.large] : [.medium, .large])
 
         case .model, .arena:
             ModelPickerSheet(
@@ -1017,7 +1093,7 @@ struct ChatDetailView: View {
 
         case .originalBook:
             if let id = citationVolumeID ?? conversation.readingVolumeID {
-                readerNavigation(for: id) { activeSheet = nil }
+                readerNavigation(for: id) { dismissActiveSheet() }
                 .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
             }
 
@@ -1031,9 +1107,13 @@ struct ChatDetailView: View {
                 BookInvitationSheet(friend: friend, onOpen: openBookConversation)
             }
 
+        case .questionDirectory:
+            QuestionDirectorySheet(conversation: conversation) { messageID in pendingScrollMessageID = messageID }
+
         case .search:
             ConversationSearchSheet(
-                messages: activeMessages
+                conversation: conversation, messages: activeMessages,
+                anchor: isPinnedToBottom ? nil : questionNavigationAnchor
             ) { messageID in
                 pendingScrollMessageID = messageID
             }
@@ -1051,8 +1131,7 @@ struct ChatDetailView: View {
                 guard !clean.isEmpty else { return }
                 activateLandingDraft()
                 if mode == .insertRaw {
-                    let cur = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    draft.text = cur.isEmpty ? clean : "\(draft.text)\n\n\(clean)"
+                    draft.text = Self.mergingComposerDraft(existing: draft.text, incoming: clean)
                     saveDraft()
                     return
                 }
@@ -1062,10 +1141,9 @@ struct ChatDetailView: View {
                     mode: mode
                 )
                 guard !prompt.isEmpty else { return }
-                draft.text = prompt
+                draft.text = Self.mergingComposerDraft(existing: draft.text, incoming: prompt)
                 saveDraft()
-                Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(250))
+                dismissActiveSheet {
                     handleSend()
                 }
             }
@@ -1078,34 +1156,13 @@ struct ChatDetailView: View {
             )
             .presentationDetents([.medium, .large])
 
-        case .shareFile(let url):
-            ActivityShareSheet(url: url)
+        case .conversationExport:
+            ConversationExportSheet(conversation: conversation)
         }
     }
 
     private func presentHistoryError(_ message: String) {
         infoAlert = ChatAlertItem(title: String(localized: "无法更新对话记录"), message: message)
-    }
-
-    private func exportMarkdown() {
-        do {
-            let url = try ConversationExporter.writeMarkdownFile(for: conversation)
-            activeSheet = .shareFile(url)
-        } catch {
-            infoAlert = ChatAlertItem(title: String(localized: "导出失败"), message: error.localizedDescription)
-        }
-    }
-
-    private func exportShareImage() {
-        do {
-            if let url = try ConversationExporter.writeShareImageFile(for: conversation, colorScheme: colorScheme) {
-                activeSheet = .shareFile(url)
-            } else {
-                infoAlert = ChatAlertItem(title: String(localized: "导出失败"), message: String(localized: "当前对话暂无可生成分享图的消息内容。"))
-            }
-        } catch {
-            infoAlert = ChatAlertItem(title: String(localized: "导出失败"), message: error.localizedDescription)
-        }
     }
 
     private func loadDraft() { draft.load() }
@@ -1119,15 +1176,15 @@ struct ChatDetailView: View {
     }
 
     private var canPickConnectedModel: Bool {
-        !conversation.isGroupMode && !availableTargets.isEmpty
+        !conversation.isGroupMode && providers.contains(where: \.hasConfiguredChatAPI)
     }
 
     private func beginModelSetup() {
         activateLandingDraft()
         inputFocused = false
         saveDraft()
-        if canPickConnectedModel { activeSheet = conversation.isArenaMode ? .arena : .model }
-        else { activeSheet = .modelSetup }
+        if canPickConnectedModel { presentSheet(conversation.isArenaMode ? .arena : .model) }
+        else { presentSheet(.modelSetup) }
     }
 
     private func handleSend(showReview: Bool = true) {
@@ -1178,31 +1235,32 @@ struct ChatDetailView: View {
             return disclosureTargets(for: latest) == targets && latest.mentionOnly == plan.mentionOnly
                 && (!plan.mentionOnly || latest.groupMentions == plan.groupMentions)
         }
-        let proceed = {
+        let proceed: (Set<UUID>?) -> Void = { selected in
             guard isCurrent() else {
                 infoAlert = ChatAlertItem(title: String(localized: "暂时无法发送"),
                                           message: AppCompliance.RequestChanged().localizedDescription)
                 return
             }
-            authorize(targets, search: usesSearch, tools: usesTools, isCurrent: isCurrent) { sendDraft(options) }
+            var approved = options
+            approved.selectedMemoryIDs = selected ?? []
+            authorize(targets, search: usesSearch, tools: usesTools, isCurrent: isCurrent) { sendDraft(approved) }
         }
         if showReview, let review = makeSendReview(plan: plan, options: options, memoryCount: memorySnapshot.count,
                                                   searchConfigured: searchConfigured, proceed: proceed) {
             inputFocused = false
             sendReview = review
         } else {
-            proceed()
+            proceed(nil)
         }
     }
 
     private func makeSendReview(plan: ChatEngine.SendTargets, options: GenerationOptions, memoryCount: Int,
                                 searchConfigured: Bool,
-                                proceed: @escaping () -> Void) -> ChatSendReview? {
+                                proceed: @escaping (Set<UUID>?) -> Void) -> ChatSendReview? {
         var knowledgeIDs = Set(options.omitKnowledge ? [] : conversation.assistanceSettings.knowledgeVolumeIDs)
         if let friend = conversation.activeBookFriend { knowledgeIDs.insert(friend.bookID) }
         let knowledgeCount = knowledgeIDs.count
-        let plannedTargets = plan.candidates.compactMap { $0.first(where: isReady) }
-        let estimateRequests = conversation.isArenaMode
+        let estimateRequests = conversation.isArenaMode || conversation.isGroupMode
         let nativeSearch = !conversation.isGroupMode && conversation.assistanceSettings.enableNativeGrounding
         guard estimateRequests || memoryCount > 0 || knowledgeCount > 0 ||
                 !draft.attachments.isEmpty || options.searchQuery != nil || nativeSearch else { return nil }
@@ -1221,26 +1279,76 @@ struct ChatDetailView: View {
 
         var requestCount: String?
         var inputEstimates: [ChatSendReview.InputEstimate] = []
+        var budgetNotice: String?
         if estimateRequests {
-            let modelCount = plannedTargets.count
-            let searchCount = externalSearch ? 1 : 0
-            let counts = [String(localized: "约 \(modelCount) 次模型请求"),
-                          searchCount > 0 ? String(localized: "最多 \(searchCount) 次外部搜索") : nil].compactMap { $0 }
+            let opening = plannedOpening(for: plan)
+            let counts = [opening.count, externalSearch ? String(localized: "最多 1 次外部搜索") : nil].compactMap { $0 }
             requestCount = counts.joined(separator: " · ")
-            inputEstimates = plannedTargets.enumerated().map { index, target in
-                let estimate = TokenEstimator.estimateUpcomingInput(
+            let estimates = opening.targets.map { item in
+                TokenEstimator.estimateUpcomingInput(
                     conversation: conversation, providers: providers, draftText: draft.text, attachments: draft.attachments,
-                    quotedText: draft.quotedText, target: target, omitMemory: options.omitMemory, omitKnowledge: options.omitKnowledge
+                    quotedText: draft.quotedText, target: item.target, omitMemory: options.omitMemory, omitKnowledge: options.omitKnowledge
                 )
-                return .init(id: "\(index)", name: target.modelDisplayName, cost: estimate.estimatedCostText)
             }
+            inputEstimates = opening.targets.enumerated().map { index, item in
+                .init(id: String(index), name: item.name, cost: estimates[index].estimatedCostText)
+            }
+            budgetNotice = upcomingBudgetNotice(for: estimates)
         }
         var seen = Set<String>()
         let answerRecipients = recipients(for: plan.candidates.flatMap { $0 }.filter(isReady)).filter { seen.insert($0).inserted }
+        let memories = (try? PersonalMemory.entries(in: modelContext, allowedIDs: conversation.assistanceSettings.scopedMemoryIDs)) ?? []
         return ChatSendReview(answerRecipients: answerRecipients, titleRecipient: title, attachmentCount: draft.attachments.count,
                               memoryCount: memoryCount, knowledgeCount: knowledgeCount,
                               searchRecipient: searchRecipients.isEmpty ? nil : searchRecipients.joined(separator: " · "),
-                              searchQuery: options.searchQuery, requestCount: requestCount, inputEstimates: inputEstimates, send: proceed)
+                              searchQuery: options.searchQuery, requestCount: requestCount, inputEstimates: inputEstimates,
+                              budgetNotice: budgetNotice, adjustModels: {
+                                  reviewedSend = { presentSheet(conversation.isGroupMode ? .groupSetup : .arena) }
+                                  sendReview = nil
+                              }, memories: memoryCount > 0 ? memories.map { .init(id: $0.id, content: $0.content) } : [], send: proceed)
+    }
+
+    private func plannedOpening(for plan: ChatEngine.SendTargets) -> (targets: [(name: String, target: ResolvedModelTarget)], count: String) {
+        let targets = plan.candidates.compactMap { $0.first(where: isReady) }
+        guard conversation.isGroupMode else {
+            return (targets.map { ($0.modelDisplayName, $0) }, String(localized: "约 \(targets.count) 次模型请求"))
+        }
+        let roster = conversation.activeGroupMembers.compactMap { member -> GroupMember? in
+            guard let live = targets.first(where: { $0.id == member.target.id }) else { return nil }
+            var copy = member
+            copy.target = live
+            return copy
+        }
+        let settings = conversation.assistanceSettings
+        let planned = GroupDiscussionCoordinator.selectInitialPlan(userText: draft.text, activeMembers: roster,
+            speakingMode: settings.groupSpeakingMode, maxRelayTurns: settings.groupMaxRelayTurns,
+            priorMessages: activeMessages, resolvedMentions: plan.groupMentions)
+        let explicit = planned.contains(where: \.explicitMention)
+        let turns = GroupDiscussionCoordinator.maximumTurnsForUserMessage(speakingMode: settings.groupSpeakingMode,
+            plannedCount: planned.count, explicitMentions: explicit, activeCount: roster.count, configuredLimit: settings.groupMaxRelayTurns)
+        let opening = settings.groupSpeakingMode == .smartRelay && !explicit ? Array(planned.prefix(1)) : planned
+        return (opening.map { ($0.member.displayLabel, $0.member.target) }, String(localized: "本次最多 \(turns) 轮发言"))
+    }
+
+    private func upcomingBudgetNotice(for estimates: [TokenEstimator.Estimate]) -> String? {
+        guard preferences.monthlyBudgetLimit > 0,
+              let month = Calendar.current.dateInterval(of: .month, for: Date()) else { return nil }
+        let start = month.start, end = month.end
+        let currency = preferences.monthlyBudgetCurrency
+        let descriptor = FetchDescriptor<RequestRecord>(predicate: #Predicate { $0.startedAt >= start && $0.startedAt < end })
+        guard let records = try? modelContext.fetch(descriptor) else { return String(localized: "本月预算数据暂不可用。") }
+        let totals = RequestLedger.costs(records.filter { $0.kind != .webSearch })
+        let spent = totals[currency] ?? 0
+        let knownInput = estimates.compactMap(\.cost).filter { $0.currency == currency }.reduce(0) { $0 + $1.amount }
+        let projected = MonthlyBudgetEvaluator.evaluate(spentByCurrency: [currency: spent + knownInput],
+            limit: preferences.monthlyBudgetLimit, currency: currency, alertRatio: preferences.monthlyBudgetAlertRatio)
+        let current = RequestLedger.costText(spent, currency: currency)
+        let limit = RequestLedger.costText(projected.limit, currency: currency)
+        let estimate = RequestLedger.costText(knownInput, currency: currency)
+        var notice = String(localized: "本月已知费用 \(current) / \(limit)，本次已知同币种输入约 \(estimate)。")
+        if projected.level == .exceeded { notice += " " + String(localized: "已达或预计达到预算上限。") }
+        else if projected.level == .warning { notice += " " + String(localized: "已达或预计达到预算预警线。") }
+        return notice
     }
 
     private func disclosureTargets(for plan: ChatEngine.SendTargets) -> [ResolvedModelTarget] {
@@ -1280,11 +1388,12 @@ struct ChatDetailView: View {
             return
         }
         let isGroupMsg = message.assistanceMetadata.groupMemberID != nil || conversation.isGroupMode
-        let backups = (message.comparisonGroupID == nil && !isGroupMsg)
-            ? AssistancePolicy.fallbacks(after: target, settings: conversation.assistanceSettings, providers: providers, requiresVision: false) : []
+        let backups = engine.replyFallbacks(for: message, after: target, in: conversation, providers: providers)
         let usesTools = message.comparisonGroupID == nil && !isGroupMsg && !message.isSynthesis && conversation.assistanceSettings.enableAgentTools
         let usesSearchOnRetry = message.assistanceMetadata.requestedSearchQuery != nil
-        authorize([target] + backups, search: usesSearchOnRetry, tools: usesTools) {
+        authorize([target] + backups, search: usesSearchOnRetry, tools: usesTools, isCurrent: {
+            engine.replyFallbacks(for: message, after: target, in: conversation, providers: providers) == backups
+        }) {
             engine.regenerate(assistantMessage: message, overrideTarget: override, in: conversation, providers: providers, context: modelContext)
         }
     }
@@ -1294,59 +1403,63 @@ struct ChatDetailView: View {
             sendBlockedReason = .noAvailableModel
             return
         }
-        authorize([target]) {
+        let backups = engine.replyFallbacks(for: message, after: target, in: conversation, providers: providers)
+        authorize([target] + backups, isCurrent: {
+            engine.replyFallbacks(for: message, after: target, in: conversation, providers: providers) == backups
+        }) {
             isPinnedToBottom = true
             engine.continueGeneration(assistantMessage: message, in: conversation, providers: providers, context: modelContext)
         }
     }
 
-    private func makeCloudTTSRequestTemplate() -> CloudTTSRequest? {
-        guard preferences.useCloudTTS,
-              AppCompliance.hasAcceptedAIDisclosure(),
-              let provider = AudioTranscriptionService.resolveAudioProvider(
-                  in: providers,
-                  preferredID: preferences.cloudTTSProviderID
-              ) else {
-            return nil
-        }
-        return CloudTTSRequest(
-            baseURL: provider.baseURL,
-            apiKey: provider.apiKey,
-            apiKeys: provider.extraAPIKeys,
-            customHeaders: provider.resolvedCustomHeaders,
-            model: preferences.cloudTTSModel,
-            voice: preferences.cloudTTSVoice,
-            input: ""
-        )
-    }
-
     private func toggleSpeechWithOptionalCloud(for msg: ChatMessage) {
-        let meta = msg.assistanceMetadata
-        if let tpl = makeCloudTTSRequestTemplate() {
-            SpeechService.shared.toggleSpeaking(
-                messageID: msg.id,
-                text: msg.content,
-                personaID: meta.groupMemberID,
-                cloudSynthesizer: { [tpl] cleanedText in
-                    try await CloudSpeechSynthesizer.synthesize(
-                        CloudTTSRequest(
-                            baseURL: tpl.baseURL,
-                            apiKey: tpl.apiKey,
-                            apiKeys: tpl.apiKeys,
-                            customHeaders: tpl.customHeaders,
-                            model: tpl.model,
-                            voice: tpl.voice,
-                            input: cleanedText
+        if SpeechService.shared.speakingMessageID == msg.id {
+            SpeechService.shared.stopSpeaking()
+            return
+        }
+        guard !SpeechService.cleanForSpeech(msg.content).isEmpty else { return }
+        let messageID = msg.id
+        let messageContent = msg.content
+        let personaID = msg.assistanceMetadata.groupMemberID
+        ChatCloudTTSCoordinator.authorizeAndBuildTemplate(
+            state: {
+                ChatCloudTTSCoordinator.Configuration(
+                    useCloudTTS: preferences.useCloudTTS,
+                    providers: providers,
+                    preferredProviderID: preferences.cloudTTSProviderID,
+                    model: preferences.cloudTTSModel,
+                    voice: preferences.cloudTTSVoice
+                )
+            },
+            gate: consent
+        ) { [weak msg] template in
+            guard msg?.isDeleted != true else { return }
+            if let tpl = template {
+                SpeechService.shared.toggleSpeaking(
+                    messageID: messageID,
+                    text: messageContent,
+                    personaID: personaID,
+                    cloudSynthesizer: { [tpl] cleanedText in
+                        try await CloudSpeechSynthesizer.synthesize(
+                            CloudTTSRequest(
+                                baseURL: tpl.baseURL,
+                                apiKey: tpl.apiKey,
+                                apiKeys: tpl.apiKeys,
+                                customHeaders: tpl.customHeaders,
+                                model: tpl.model,
+                                voice: tpl.voice,
+                                input: cleanedText
+                            )
                         )
-                    )
-                }
-            )
-        } else {
-            SpeechService.shared.toggleSpeaking(
-                messageID: msg.id,
-                text: msg.content,
-                personaID: meta.groupMemberID
-            )
+                    }
+                )
+            } else {
+                SpeechService.shared.toggleSpeaking(
+                    messageID: messageID,
+                    text: messageContent,
+                    personaID: personaID
+                )
+            }
         }
     }
 
@@ -1518,7 +1631,7 @@ struct ChatDetailView: View {
             Spacer()
             Button("调整") {
                 if conversation.isGroupMode {
-                    activeSheet = .groupSetup
+                    presentSheet(.groupSetup)
                 } else {
                     beginModelSetup()
                 }
@@ -1676,7 +1789,7 @@ struct ChatDetailView: View {
                 VStack(spacing: DS.Spacing.sm) {
                     FlowGroupRosterPreview(members: conversation.groupMembers)
                     Button {
-                        activeSheet = .groupSetup
+                        presentSheet(.groupSetup)
                     } label: {
                         Label("调整群成员与发言规则", systemImage: "person.3.fill")
                             .font(.caption.weight(.semibold))
@@ -1852,5 +1965,184 @@ private enum TimelineEntry: Identifiable {
             }
         }
         return result
+    }
+}
+
+struct SheetHandoffState<Route: Equatable> {
+    var active: Route? {
+        didSet {
+            if active != nil {
+                isPresentingOrDismissing = true
+            }
+        }
+    }
+    private(set) var deferred: Route?
+    private(set) var isPresentingOrDismissing = false
+
+    mutating func present(_ route: Route) {
+        if active == nil && !isPresentingOrDismissing {
+            deferred = nil
+            active = route
+            isPresentingOrDismissing = true
+            return
+        }
+        if active == route && deferred == nil {
+            return
+        }
+        deferred = route
+        active = nil
+        isPresentingOrDismissing = true
+    }
+
+    mutating func beginDismissal() {
+        deferred = nil
+        if active != nil {
+            active = nil
+            isPresentingOrDismissing = true
+        }
+    }
+
+    @discardableResult
+    mutating func handleDismiss() -> Route? {
+        if let next = deferred {
+            deferred = nil
+            active = next
+            isPresentingOrDismissing = true
+            return next
+        }
+        isPresentingOrDismissing = false
+        return nil
+    }
+}
+
+@MainActor
+enum ModalPresentationGate {
+    static func hasActiveOrDismissingModalInWindow() -> Bool {
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene,
+                  windowScene.activationState == .foregroundActive || windowScene.activationState == .foregroundInactive else {
+                continue
+            }
+            for window in windowScene.windows where !window.isHidden {
+                if window.rootViewController?.presentedViewController != nil {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    static func performWhenClear(
+        extraCheck: @escaping @MainActor () -> Bool = { false },
+        action: @escaping @MainActor () -> Void
+    ) {
+        if !extraCheck() && !hasActiveOrDismissingModalInWindow() {
+            action()
+            return
+        }
+        Task { @MainActor in
+            for _ in 0..<60 {
+                guard !Task.isCancelled else { return }
+                if !extraCheck() && !hasActiveOrDismissingModalInWindow() {
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+            guard !Task.isCancelled else { return }
+            await Task.yield()
+            action()
+        }
+    }
+}
+
+@MainActor
+enum ChatCloudTTSCoordinator {
+    struct Configuration {
+        var useCloudTTS: Bool
+        var providers: [ProviderConfig]
+        var preferredProviderID: UUID?
+        var model: String
+        var voice: String
+    }
+
+    static func resolveCompatibleProvider(
+        in providers: [ProviderConfig],
+        preferredID: UUID?
+    ) -> ProviderConfig? {
+        guard let provider = AudioTranscriptionService.resolveAudioProvider(
+            in: providers,
+            preferredID: preferredID,
+            capability: .speech
+        ),
+        AudioTranscriptionService.supportsOpenAIAudioSpeech(baseURL: provider.baseURL) else {
+            return nil
+        }
+        return provider
+    }
+
+    static func effectiveModel(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "tts-1" : trimmed
+    }
+
+    static func effectiveVoice(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "alloy" : trimmed
+    }
+
+    static func recipient(for provider: ProviderConfig, model: String) -> String {
+        AppCompliance.recipient(
+            provider: provider.name,
+            model: effectiveModel(model),
+            baseURL: provider.baseURL
+        )
+    }
+
+    static func authorizeAndBuildTemplate(
+        state: @escaping () -> Configuration,
+        gate: AIConsentGate,
+        completion: @escaping (CloudTTSRequest?) -> Void
+    ) {
+        let initial = state()
+        guard initial.useCloudTTS,
+              let provider = resolveCompatibleProvider(in: initial.providers, preferredID: initial.preferredProviderID) else {
+            completion(nil)
+            return
+        }
+        let expectedProviderID = provider.id
+        let expectedModel = effectiveModel(initial.model)
+        let expectedRecipient = recipient(for: provider, model: expectedModel)
+
+        gate.perform(
+            recipients: [expectedRecipient],
+            isCurrent: {
+                let current = state()
+                guard current.useCloudTTS,
+                      effectiveModel(current.model) == expectedModel,
+                      let latest = resolveCompatibleProvider(in: current.providers, preferredID: current.preferredProviderID) else {
+                    return false
+                }
+                return latest.id == expectedProviderID && recipient(for: latest, model: expectedModel) == expectedRecipient
+            },
+            send: {
+                let current = state()
+                guard current.useCloudTTS,
+                      let latest = resolveCompatibleProvider(in: current.providers, preferredID: current.preferredProviderID) else {
+                    completion(nil)
+                    return
+                }
+                completion(
+                    CloudTTSRequest(
+                        baseURL: latest.baseURL,
+                        apiKey: latest.apiKey,
+                        apiKeys: latest.extraAPIKeys,
+                        customHeaders: latest.resolvedCustomHeaders,
+                        model: effectiveModel(current.model),
+                        voice: effectiveVoice(current.voice),
+                        input: ""
+                    )
+                )
+            }
+        )
     }
 }

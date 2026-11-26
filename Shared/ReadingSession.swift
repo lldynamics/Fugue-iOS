@@ -38,6 +38,16 @@ struct ReadingInput {
                             isTruncated: trimmed.count > URLReader.maximumCharacters)
     }
 
+    var hasImageAttachment: Bool {
+        attachments.contains { $0.kind == .image }
+    }
+
+    private var defaultAnalysisPrompt: String {
+        hasImageAttachment
+            ? String(localized: "请描述并分析这张图片。")
+            : String(localized: "请总结并分析这段内容。")
+    }
+
     func prompt(action: ReadingAction, language: String, question: String = "") throws -> String {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -45,11 +55,13 @@ struct ReadingInput {
         if trimmedText.isEmpty && !attachments.isEmpty {
             switch action {
             case .summarize:
-                return String(localized: "请描述并分析这张图片。")
+                return defaultAnalysisPrompt
             case .translate:
-                return String(localized: "请提取图片中的文字并翻译为\(String(language.prefix(80)))。")
+                return hasImageAttachment
+                    ? String(localized: "请提取图片中的文字并翻译为\(String(language.prefix(80)))。")
+                    : String(localized: "请将以下内容翻译为\(String(language.prefix(80)))：")
             case .ask:
-                return trimmedQuestion.isEmpty ? String(localized: "请描述并分析这张图片。") : String(trimmedQuestion.prefix(2000))
+                return trimmedQuestion.isEmpty ? defaultAnalysisPrompt : String(trimmedQuestion.prefix(2000))
             }
         }
         let payload = ["title": String(title.prefix(300)), "source_url": url?.absoluteString ?? "",
@@ -78,16 +90,18 @@ struct ReadingInput {
 
     func displayPrompt(action: ReadingAction, language: String, question: String = "") -> String {
         let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let instruction: String
         switch action {
         case .summarize:
-            instruction = String(localized: "请总结以下内容：")
+            instruction = trimmedText.isEmpty ? defaultAnalysisPrompt : String(localized: "请总结以下内容：")
         case .translate:
-            instruction = String(localized: "请将以下内容翻译为\(String(language.prefix(80)))：")
+            instruction = (trimmedText.isEmpty && hasImageAttachment)
+                ? String(localized: "请提取图片中的文字并翻译为\(String(language.prefix(80)))。")
+                : String(localized: "请将以下内容翻译为\(String(language.prefix(80)))：")
         case .ask:
-            instruction = trimmedQuestion.isEmpty ? String(localized: "请描述并分析这张图片。") : String(trimmedQuestion.prefix(1500))
+            instruction = trimmedQuestion.isEmpty ? defaultAnalysisPrompt : String(trimmedQuestion.prefix(1500))
         }
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return instruction }
         let source = [title, url?.absoluteString ?? ""].filter { !$0.isEmpty }.joined(separator: "\n")
         let notice = isTruncated || text.count > URLReader.maximumCharacters

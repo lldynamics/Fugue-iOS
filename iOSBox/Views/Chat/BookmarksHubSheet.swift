@@ -139,11 +139,13 @@ struct BookmarksHubSheet: View {
 
                 if filtered.isEmpty {
                     ContentUnavailableView(
-                        entries.isEmpty ? "暂无收藏消息" : "没有匹配的收藏内容",
+                        entries.isEmpty ? String(localized: "暂无收藏消息") : String(localized: "没有匹配的收藏内容"),
                         systemImage: "bookmark",
-                        description: Text(entries.isEmpty
-                            ? "长按任意消息或在消息快捷栏点击书签即可跨会话汇总到这里。"
-                            : "尝试更换搜索关键词或清除分组标签筛选。")
+                        description: Text(
+                            entries.isEmpty
+                                ? String(localized: "长按任意消息或在消息快捷栏点击书签即可跨会话汇总到这里。")
+                                : String(localized: "尝试更换搜索关键词或清除分组标签筛选。")
+                        )
                     )
                 } else {
                     ForEach(filtered) { entry in
@@ -272,7 +274,7 @@ struct BookmarksHubSheet: View {
                     preferences.triggerLightHaptic()
                 } label: {
                     Label(
-                        copiedMessageID == entry.id ? "已复制" : "复制纯文本",
+                        copiedMessageID == entry.id ? String(localized: "已复制") : String(localized: "复制纯文本"),
                         systemImage: copiedMessageID == entry.id ? "checkmark" : "doc.on.doc"
                     )
                 }
@@ -297,10 +299,9 @@ struct BookmarksHubSheet: View {
 
                 if let msg = message {
                     Button(role: .destructive) {
-                        var meta = msg.assistanceMetadata
-                        meta.isBookmarked = false
-                        msg.assistanceMetadata = meta
-                        try? modelContext.save()
+                        if msg.assistanceMetadata.isBookmarked {
+                            ChatEngine.shared.toggleBookmark(for: msg, context: modelContext)
+                        }
                         onBookmarksChanged()
                     } label: {
                         Image(systemName: "bookmark.slash")

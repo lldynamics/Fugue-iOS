@@ -128,7 +128,7 @@ enum SchemaV7: VersionedSchema {
             Conversation.self,
             ChatMessage.self,
             RequestRecord.self,
-            PersonalMemory.self,
+            SchemaV6.PersonalMemory.self,
             BookVolume.self
         ]
     }
@@ -137,6 +137,20 @@ enum SchemaV7: VersionedSchema {
 /// V8 adds independent saved people and personal bookshelf positions. V7 entities are unchanged.
 /// See V7 freeze note above before altering any shared live model in a future V10 schema.
 enum SchemaV8: VersionedSchema {
+    @Model
+    final class ShelfReadingState {
+        @Attribute(.unique) var bookID: UUID
+        var conversationID: UUID?
+        var chapter: Int
+        var paragraph: Int
+
+        init(bookID: UUID) {
+            self.bookID = bookID
+            chapter = 0
+            paragraph = 0
+        }
+    }
+
     static let versionIdentifier = Schema.Version(8, 0, 0)
     static var models: [any PersistentModel.Type] { SchemaV7.models + [PersonaProfile.self, ShelfReadingState.self] }
 }
@@ -146,19 +160,27 @@ enum SchemaV9: VersionedSchema {
     static let versionIdentifier = Schema.Version(9, 0, 0)
     static var models: [any PersistentModel.Type] {
         [ProviderConfig.self, AssistantPreset.self, Conversation.self, ChatMessage.self,
-         RequestRecord.self, PersonalMemory.self, BookVolume.self, PersonaProfile.self, ShelfReadingState.self]
+         RequestRecord.self, SchemaV6.PersonalMemory.self, BookVolume.self, PersonaProfile.self, SchemaV8.ShelfReadingState.self]
     }
 }
 
-typealias CurrentSchema = SchemaV9
+enum SchemaV10: VersionedSchema {
+    static let versionIdentifier = Schema.Version(10, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        [ProviderConfig.self, AssistantPreset.self, Conversation.self, ChatMessage.self,
+         RequestRecord.self, PersonalMemory.self, BookVolume.self, PersonaProfile.self, ShelfReadingState.self, ReadingAnnotation.self]
+    }
+}
+
+typealias CurrentSchema = SchemaV10
 
 enum IOSBoxMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self, SchemaV10.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9, migrateV9toV10]
     }
 
     /// Additive optional column + external-storage flag: no data transformation needed.
@@ -182,5 +204,6 @@ enum IOSBoxMigrationPlan: SchemaMigrationPlan {
     static let migrateV5toV6 = MigrationStage.lightweight(fromVersion: SchemaV5.self, toVersion: SchemaV6.self)
     static let migrateV6toV7 = MigrationStage.lightweight(fromVersion: SchemaV6.self, toVersion: SchemaV7.self)
     static let migrateV7toV8 = MigrationStage.lightweight(fromVersion: SchemaV7.self, toVersion: SchemaV8.self)
+    static let migrateV9toV10 = MigrationStage.lightweight(fromVersion: SchemaV9.self, toVersion: SchemaV10.self)
     static let migrateV8toV9 = MigrationStage.lightweight(fromVersion: SchemaV8.self, toVersion: SchemaV9.self)
 }

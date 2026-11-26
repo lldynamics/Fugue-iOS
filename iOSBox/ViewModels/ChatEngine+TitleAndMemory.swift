@@ -95,8 +95,7 @@ extension ChatEngine {
             spec: spec,
             conversationID: conversation.id,
             messageID: firstUser.id,
-            kind: .titleGeneration,
-            pricingMultiplier: AppPreferences.shared.pricingMultiplier(for: target.providerID)
+            kind: .titleGeneration
         )
         context.insert(record)
         do { try context.save() } catch { context.delete(record); return nil }

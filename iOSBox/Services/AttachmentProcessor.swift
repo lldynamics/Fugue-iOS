@@ -178,15 +178,15 @@ enum AttachmentProcessor {
 
         // PDF files: extract text via PDFKit + preserve base64 for Claude/Gemini native PDF reading
         if ext == "pdf" {
-            let pdfText = extractPDFText(from: data)
+            let extracted = extractPDFText(from: data)
             let base64 = data.count <= maxInlinePDFBytes ? data.base64EncodedString() : nil
             return MessageAttachment(
                 kind: .document,
                 fileName: fileName,
                 mimeType: "application/pdf",
                 dataBase64: base64,
-                extractedText: truncateIfNeeded(pdfText),
-                byteSize: data.count
+                extractedText: truncateIfNeeded(extracted.text),
+                byteSize: data.count, textCoverage: extracted.coverage
             )
         }
 
@@ -249,8 +249,8 @@ enum AttachmentProcessor {
         )
     }
 
-    private static func extractPDFText(from data: Data) -> String {
-        guard let document = PDFDocument(data: data) else { return "" }
+    static func extractPDFText(from data: Data) -> (text: String, coverage: AttachmentTextCoverage?) {
+        guard let document = PDFDocument(data: data) else { return ("", nil) }
         let maxPages = maximumPDFPages
         let maxOCRPages = 60
         var pages: [String] = []
@@ -262,6 +262,7 @@ enum AttachmentProcessor {
             autoreleasepool {
                 if let page = document.page(at: index) {
                     var text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if text.isEmpty && ocrPagesUsed >= maxOCRPages { truncated = true }
                     if text.isEmpty && ocrPagesUsed < maxOCRPages {
                         ocrPagesUsed += 1
                         text = PDFOCRService.recognizeText(on: page)
@@ -276,8 +277,11 @@ enum AttachmentProcessor {
             }
         }
         if remaining == 0 { truncated = true }
+        let count = pages.count
         if truncated { pages.append(String(localized: "…[PDF 内容较长，仅提取前 \(maxPages) 页、最多 \(maxTextCharacters) 个字符]…")) }
-        return pages.joined(separator: "\n\n")
+        let text = pages.joined(separator: "\n\n")
+        return (text, AttachmentTextCoverage(totalPages: document.pageCount, pagesWithText: count, ocrPages: ocrPagesUsed,
+                                             isTruncated: truncated || text.count > maxTextCharacters))
     }
 
     private static func truncateIfNeeded(_ text: String) -> String {

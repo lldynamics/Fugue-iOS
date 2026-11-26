@@ -1340,24 +1340,31 @@ struct MessageRowView: View {
     }
 }
 
-private struct SelectableTextRepresentable: UIViewRepresentable {
+struct SelectableTextRepresentable: UIViewRepresentable {
     let text: String
     @Binding var selection: String?
+    var selectedRange: Binding<NSRange?>? = nil
+    var identifier = "reply.selectText"
 
     final class Coordinator: NSObject, UITextViewDelegate {
         let selection: Binding<String?>
-        init(_ selection: Binding<String?>) { self.selection = selection }
+        var selectedRange: Binding<NSRange?>?
+        init(_ selection: Binding<String?>, _ selectedRange: Binding<NSRange?>?) {
+            self.selection = selection
+            self.selectedRange = selectedRange
+        }
         func textViewDidChangeSelection(_ textView: UITextView) {
             selection.wrappedValue = textView.selectedTextRange.flatMap { $0.isEmpty ? nil : textView.text(in: $0) }
+            selectedRange?.wrappedValue = textView.selectedRange.length > 0 ? textView.selectedRange : nil
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator($selection) }
+    func makeCoordinator() -> Coordinator { Coordinator($selection, selectedRange) }
 
     func makeUIView(context: Context) -> UITextView {
         let tv = UITextView()
         tv.delegate = context.coordinator
-        tv.accessibilityIdentifier = "reply.selectText"
+        tv.accessibilityIdentifier = identifier
         tv.adjustsFontForContentSizeCategory = true
         tv.isEditable = false
         tv.isSelectable = true

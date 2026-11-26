@@ -23,6 +23,25 @@ struct ConversationBackupState: Codable, Equatable {
     var lastImportedSettings: ImportedSettingsVersion?
     var legacyImportID: UUID?
     var organizationEdits: ConversationOrganizationEdits?
+    var messageChanges: [UUID: MessagePresenceChange]?
+}
+
+struct MessagePresenceChange: Codable, Equatable {
+    var time: TimeInterval
+    var deleted: Bool
+
+    static func record(_ ids: [UUID], deleted: Bool, in changes: inout [UUID: Self]) {
+        let now = Date().timeIntervalSince1970
+        for id in ids {
+            let previous = changes[id]?.time ?? 0
+            changes[id] = Self(time: max(now, previous.nextUp), deleted: deleted)
+        }
+    }
+
+    func supersedes(_ other: Self?) -> Bool {
+        guard let other else { return true }
+        return time > other.time || (time == other.time && deleted && !other.deleted)
+    }
 }
 
 // Keep the original settings keys at the top level for old databases and older app versions.
@@ -331,6 +350,12 @@ final class Conversation {
         contextMessageLimit = preset.contextMessageLimit
         enableThinking = preset.enableThinking
         thinkingBudgetTokens = preset.thinkingBudgetTokens
+        // Applying a preset scopes memory; the conversation still controls whether memory is sent.
+        if let bindings = try? PresetKnowledgeStore.shared.readableBindings() {
+            assistanceSettings.scopedMemoryIDs = bindings[PresetKnowledgeStore.memoryKey(preset.id)].map(Set.init)
+        } else {
+            assistanceSettings.scopedMemoryIDs = []
+        }
         let boundVolumes = preset.knowledgeVolumeIDs
         if !boundVolumes.isEmpty {
             var s = assistanceSettings
