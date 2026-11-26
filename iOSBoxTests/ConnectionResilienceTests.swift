@@ -646,3 +646,100 @@ extension ConnectionResilienceTests {
         }
     }
 }
+
+extension ConnectionResilienceTests {
+    private func registerPricingResponse(_ host: String, body: String, status: Int = 200) {
+        ResilienceMockURLProtocol.register(host: host) { request, _, proto, client in
+            if host == "developers.openai.com" {
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                XCTAssertNil(request.value(forHTTPHeaderField: "X-Pricing-Test"))
+                XCTAssertEqual(request.url?.path, "/api/docs/pricing.md")
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+            client.urlProtocol(proto, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client.urlProtocol(proto, didLoad: Data(body.utf8))
+            client.urlProtocolDidFinishLoading(proto)
+        }
+    }
+
+    func testOfficialPricingJoinsStandardTextPricesAndPreservesOverrides() async throws {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        registerPricingResponse("api.openai.com", body: #"{"data":[{"id":"fixture-pro"},{"id":"unknown"}]}"#)
+        registerPricingResponse("developers.openai.com", body: """
+        ### Standard pricing data
+        | Model | Short context input | Short context output | Short context cached input | Long context input |
+        | --- | --- | --- | --- | --- |
+        | fixture-pro (<272K context length) | $2.00 | $7.00 | $0.12 | $9.00 |
+        ### Batch pricing data
+        | Model | Input | Output |
+        | fixture-pro | $1.00 | $3.50 |
+        """)
+        func fetch() async throws -> [ModelSpec] {
+            try await LLMClient.fetchModels(providerName: "OpenAI", protocolType: .openAIResponses,
+                                            baseURL: "https://api.openai.com/v1", apiKey: "fixture",
+                                            customHeaders: [CustomHeader(key: "X-Pricing-Test", value: "private")], session: session)
+        }
+        let live = try await fetch()
+        let model = try XCTUnwrap(live.first)
+        XCTAssertEqual(model.priceSource, .openAIShortContext)
+        XCTAssertEqual(model.inputPricePerMillion, 2)
+        XCTAssertEqual(model.outputPricePerMillion, 7)
+        XCTAssertEqual(model.cacheReadPricePerMillion, 0.12)
+        XCTAssertNil(live.last?.inputPricePerMillion)
+        var saved = ModelSpec(id: model.id)
+        saved.isStarred = true
+        XCTAssertEqual(ProviderModelCatalog.merging(live, with: [saved])[0].inputPricePerMillion, 2)
+        saved.inputPricePerMillion = 10
+        XCTAssertEqual(ProviderModelCatalog.merging(live, with: [saved])[0].inputPricePerMillion, 10)
+        saved.priceSource = .manual
+        XCTAssertEqual(ProviderModelCatalog.merging(live, with: [saved])[0].inputPricePerMillion, 10)
+        saved.priceSource = .openAIShortContext
+        let refreshed = ProviderModelCatalog.merging(live, with: [saved])[0]
+        XCTAssertTrue(refreshed.isStarred)
+        XCTAssertEqual(refreshed.inputPricePerMillion, 2)
+        registerPricingResponse("developers.openai.com", body: "", status: 503)
+        let offlinePrices = try await fetch()
+        XCTAssertEqual(offlinePrices.map(\.id), live.map(\.id))
+        XCTAssertEqual(ProviderModelCatalog.merging(offlinePrices, with: [refreshed])[0], refreshed)
+    }
+
+    func testManualLookupReadsPublicRatesWithoutAnAccountKey() async throws {
+        registerPricingResponse("developers.openai.com", body: """
+        ### Standard pricing data
+        | Model | Input | Output | Cached input |
+        | paid | $2 | $8 | $0.5 |
+        """)
+        registerPricingResponse("openrouter.ai", body: #"{"data":[{"id":"free","pricing":{"prompt":"0","completion":"0"}}]}"#)
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        let official = try await ProviderPricing.publishedModel(id: "paid", baseURL: "https://api.openai.com/v1", session: session)
+        let free = try await ProviderPricing.publishedModel(id: "free", baseURL: "https://openrouter.ai/api/v1", session: session)
+        let relay = try await ProviderPricing.publishedModel(id: "paid", baseURL: "https://relay.invalid/v1", session: session)
+        XCTAssertEqual(official?.outputPricePerMillion, 8)
+        XCTAssertEqual(free?.inputPricePerMillion, 0)
+        XCTAssertNil(relay)
+        XCTAssertEqual(ResilienceMockURLProtocol.recordedAuthHeaders(for: "openrouter.ai"), [""])
+    }
+
+    func testOpenRouterPricingDistinguishesFreeVariableAndMissingRates() async throws {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        registerPricingResponse("openrouter.ai", body: """
+        {"data":[
+          {"id":"paid","pricing":{"prompt":"0.000002","completion":"0.00001","input_cache_read":"0.0000005"}},
+          {"id":"free","pricing":{"prompt":"0","completion":"0"}},
+          {"id":"openrouter/auto","pricing":{"prompt":"-1","completion":"-1"}},
+          {"id":"missing","pricing":{"prompt":true,"completion":"0"}}]}
+        """)
+        let models = try await OpenAICompatibleAdapter.fetchModels(baseURL: "https://openrouter.ai/api/v1", apiKey: "",
+                                                                   customHeaders: [], session: session)
+        XCTAssertEqual(models[0].inputPricePerMillion, 2)
+        XCTAssertEqual(models[0].outputPricePerMillion, 10)
+        XCTAssertEqual(models[0].cacheReadPricePerMillion, 0.5)
+        XCTAssertEqual(models[1].inputPricePerMillion, 0)
+        XCTAssertEqual(models[2].priceSource, .variableRoute)
+        XCTAssertNil(models[2].inputPricePerMillion)
+        XCTAssertNil(models[3].priceSource)
+    }
+}

@@ -72,6 +72,19 @@ final class LocalizationTests: XCTestCase {
         }
         XCTAssertEqual(leftovers.keys.sorted(), [], "English values containing Chinese")
     }
+
+    func testEnglishAppShortcutsPhrasesAreTranslatedAndChineseFree() throws {
+        let path = try XCTUnwrap(try englishBundle.path(forResource: "AppShortcuts", ofType: "strings"))
+        let table = try XCTUnwrap(NSDictionary(contentsOfFile: path) as? [String: String])
+        XCTAssertGreaterThanOrEqual(table.count, 14)
+
+        let chinese = try NSRegularExpression(pattern: "[\\u4e00-\\u9fff]")
+        for (key, phrase) in table {
+            XCTAssertTrue(phrase.contains("${applicationName}"), "Shortcut phrase missing applicationName token: \(key)")
+            let match = chinese.firstMatch(in: phrase, range: NSRange(phrase.startIndex..., in: phrase))
+            XCTAssertNil(match, "English AppShortcuts phrase still contains Chinese: \(phrase)")
+        }
+    }
 }
 
 @MainActor

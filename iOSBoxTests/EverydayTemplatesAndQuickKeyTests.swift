@@ -80,6 +80,40 @@ final class EverydayTemplatesAndQuickKeyTests: XCTestCase {
         XCTAssertEqual(relay?.apiKey, "tok-abcdef1234567890")
     }
 
+    func testReviewSnippetImportPopulatesURLProtocolKeyAndModelID() throws {
+        let reviewBlock = """
+        Base URL: https://review-gateway.iosbox.org/v1
+        Protocol: openai_responses
+        Model ID: gpt-4.1-mini-review
+        API Key: tok-review-9876543210abcdef
+        """
+        let parsed = try XCTUnwrap(ClipboardProviderParser.parse(reviewBlock))
+        XCTAssertEqual(parsed.baseURL, "https://review-gateway.iosbox.org/v1")
+        XCTAssertEqual(parsed.explicitProtocol, .openAIResponses)
+        XCTAssertEqual(parsed.extractedModelID, "gpt-4.1-mini-review")
+        XCTAssertEqual(parsed.apiKey, "tok-review-9876543210abcdef")
+
+        var draft = ProviderSetupDraft()
+        draft.apply(parsed)
+        XCTAssertEqual(draft.baseURL, "https://review-gateway.iosbox.org/v1")
+        XCTAssertEqual(draft.protocolType, .openAIResponses)
+        XCTAssertEqual(draft.manualModelID, "gpt-4.1-mini-review")
+        XCTAssertEqual(draft.apiKey, "tok-review-9876543210abcdef")
+
+        let zhReviewBlock = """
+        - 接口地址：https://review-cn.iosbox.org/v1
+        - 协议：anthropic
+        - 模型：claude-sonnet-4-review
+        - Token: tok-cn-review-1234567890abcd
+        """
+        var zhDraft = ProviderSetupDraft()
+        zhDraft.apply(try XCTUnwrap(ClipboardProviderParser.parse(zhReviewBlock)))
+        XCTAssertEqual(zhDraft.baseURL, "https://review-cn.iosbox.org/v1")
+        XCTAssertEqual(zhDraft.protocolType, .anthropic)
+        XCTAssertEqual(zhDraft.manualModelID, "claude-sonnet-4-review")
+        XCTAssertEqual(zhDraft.apiKey, "tok-cn-review-1234567890abcd")
+    }
+
     func testClipboardParserAllowsLocalHTTPAndRejectsPublicHTTPOrNoise() {
         let local = ClipboardProviderParser.parse("http://127.0.0.1:11434/v1")
         XCTAssertNotNil(local)

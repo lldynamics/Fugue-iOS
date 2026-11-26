@@ -45,14 +45,7 @@ final class Phase3BookmarksBudgetWebDAVTests: XCTestCase {
         XCTAssertEqual(byQuery.map(\.id), [newer.id, older.id])
     }
 
-    func testPricingMultiplierPolicySanitizesAndScalesRequestRecordCosts() throws {
-        XCTAssertEqual(PricingMultiplierPolicy.sanitize(nil), 1.0, accuracy: 0.0001)
-        XCTAssertEqual(PricingMultiplierPolicy.sanitize(0), 1.0, accuracy: 0.0001)
-        XCTAssertEqual(PricingMultiplierPolicy.sanitize(-3), 1.0, accuracy: 0.0001)
-        XCTAssertEqual(PricingMultiplierPolicy.sanitize(.nan), 1.0, accuracy: 0.0001)
-        XCTAssertEqual(PricingMultiplierPolicy.sanitize(0.001), 0.01, accuracy: 0.0001)
-        XCTAssertEqual(PricingMultiplierPolicy.sanitize(250), 100.0, accuracy: 0.0001)
-
+    func testNewRequestUsesModelRatesAndRestoredRequestKeepsSavedRates() throws {
         var claudeSpec = ModelSpec(id: "claude-sonnet-4-20250514", displayName: "Claude Sonnet 4")
         let preset = try XCTUnwrap(ModelPricingCatalog.match(modelID: claudeSpec.id))
         ModelPricingCatalog.apply(preset, to: &claudeSpec)
@@ -68,39 +61,32 @@ final class Phase3BookmarksBudgetWebDAVTests: XCTestCase {
             supportsReasoning: true
         )
 
-        let halfRateRecord = RequestRecord(
+        let record = RequestRecord(
             target: target,
             spec: claudeSpec,
             conversationID: UUID(),
             messageID: UUID(),
-            kind: .answer,
-            pricingMultiplier: 0.5
+            kind: .answer
         )
-        halfRateRecord.promptTokens = 100_000
-        halfRateRecord.cachedTokens = 80_000
-        halfRateRecord.cacheWriteTokens = 10_000
-        halfRateRecord.completionTokens = 2_000
-        halfRateRecord.finish(.succeeded, elapsedMs: 900)
+        record.promptTokens = 100_000
+        record.cachedTokens = 80_000
+        record.cacheWriteTokens = 10_000
+        record.completionTokens = 2_000
+        record.finish(.succeeded, elapsedMs: 900)
 
-        XCTAssertEqual(try XCTUnwrap(halfRateRecord.estimatedCost), 0.06075, accuracy: 0.000_001)
-        XCTAssertEqual(try XCTUnwrap(halfRateRecord.estimatedCacheSavings), 0.108, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(record.estimatedCost), 0.1215, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(record.estimatedCacheSavings), 0.2085, accuracy: 0.000_001)
 
-        let fxRecord = RequestRecord(
-            target: target,
-            spec: claudeSpec,
-            conversationID: UUID(),
-            messageID: UUID(),
-            kind: .answer,
-            pricingMultiplier: 7.2
-        )
-        fxRecord.promptTokens = 100_000
-        fxRecord.cachedTokens = 80_000
-        fxRecord.cacheWriteTokens = 10_000
-        fxRecord.completionTokens = 2_000
-        fxRecord.finish(.succeeded, elapsedMs: 900)
-
-        XCTAssertEqual(try XCTUnwrap(fxRecord.estimatedCost), 0.1215 * 7.2, accuracy: 0.000_001)
-        XCTAssertEqual(try XCTUnwrap(fxRecord.estimatedCacheSavings), 0.216 * 7.2, accuracy: 0.000_001)
+        var legacy = record.snapshot
+        legacy.id = UUID()
+        legacy.inputPricePerMillion = 1.5
+        legacy.outputPricePerMillion = 7.5
+        legacy.cacheReadPricePerMillion = 0.15
+        legacy.cacheWritePricePerMillion = 1.875
+        let data = try JSONEncoder().encode(legacy)
+        let restored = RequestRecord(snapshot: try JSONDecoder().decode(RequestRecord.Snapshot.self, from: data))
+        XCTAssertEqual(try XCTUnwrap(restored.estimatedCost), 0.06075, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(restored.estimatedCacheSavings), 0.10425, accuracy: 0.000_001)
     }
 
     func testMonthlyBudgetEvaluatorDetectsUnconfiguredNormalWarningAndExceeded() {

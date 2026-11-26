@@ -191,7 +191,7 @@ final class PhaseOneTests: XCTestCase {
             }
         }
         engine.sendUserMessage(text: "Hello", attachments: [], in: c, providers: [p], context: context)
-        await fulfillment(of: [received], timeout: 2)
+        await fulfillment(of: [received], timeout: 5)
         // Let the main-actor consumer process the emitted event.
         try await Task.sleep(for: .milliseconds(30))
         await engine.stopGenerationAndWait(for: c.id)

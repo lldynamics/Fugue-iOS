@@ -194,7 +194,7 @@ final class ProtocolAdapterTests: XCTestCase {
             XCTAssertNotNil(gemini?["thinkingLevel"])
             XCTAssertNil(gemini?["thinkingBudget"])
             let claude = AnthropicAdapter.buildRequestBody(makeRequest(protocolType: .anthropic, modelID: "claude-sonnet-5-5", supportsReasoning: true, enableThinking: enabled))
-            XCTAssertNil(claude["temperature"])
+            XCTAssertEqual(claude["temperature"] as? Double, enabled ? nil : 0.7)
             let thinking = claude["thinking"] as? [String: Any]
             XCTAssertEqual(thinking?["type"] as? String, enabled ? "adaptive" : nil)
             XCTAssertNil(thinking?["budget_tokens"])
@@ -304,5 +304,26 @@ final class ProtocolAdapterTests: XCTestCase {
         XCTAssertEqual(leadingParts.first?["text"] as? String, String(localized: "继续"))
         XCTAssertEqual((contents[1]["parts"] as? [[String: Any]])?.count, 2)
         XCTAssertEqual((contents[2]["parts"] as? [[String: Any]])?.count, 2)
+    }
+}
+
+extension ProtocolAdapterTests {
+    @MainActor
+    func testReviewedPDFUsesTheSelectedFormatAcrossAllFourAdapters() throws {
+        let pdf = MessageAttachment(kind: .document, fileName: "original.pdf", mimeType: "application/pdf",
+                                    dataBase64: "UEZERklMRQ==", extractedText: "UNCORRECTED_SOURCE", byteSize: 7)
+        let review = DraftAttachmentReview(sources: [pdf], recognize: false)
+        for format in AttachmentSendFormat.allCases {
+            let reviewed = try review.applying(format, text: "CORRECTED_WORDS", coverage: nil, to: [pdf])
+            let request = makeRequest(modelID: "test", messages: [.init(role: .user, content: "Read", attachments: reviewed)])
+            let bodies = [OpenAICompatibleAdapter.buildRequestBody(request), OpenAIResponsesAdapter.buildRequestBody(request),
+                          AnthropicAdapter.buildRequestBody(request), GeminiAdapter.buildRequestBody(request)]
+            for body in bodies {
+                let wire = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
+                XCTAssertEqual(wire.contains("UEZERklMRQ=="), format != .text)
+                XCTAssertEqual(wire.contains("CORRECTED_WORDS"), format != .original)
+                XCTAssertFalse(wire.contains("UNCORRECTED_SOURCE"))
+            }
+        }
     }
 }

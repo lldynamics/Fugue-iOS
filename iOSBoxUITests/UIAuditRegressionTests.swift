@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 @MainActor
@@ -88,12 +89,7 @@ final class UIAuditRegressionTests: XCTestCase {
         let enabled = app.switches["provider.enabled"]
         XCTAssertTrue(enabled.waitForExistence(timeout: 10), app.debugDescription)
         XCTAssertTrue(enabled.label.contains("启用该服务商"), enabled.label)
-        let multiplier = app.buttons["1x"]
-        for _ in 0..<4 where !multiplier.isHittable { app.swipeUp() }
-        XCTAssertTrue(multiplier.isHittable, app.debugDescription)
-        XCTAssertGreaterThanOrEqual(multiplier.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(multiplier.frame.height, 44)
-        capture("Price multiplier controls", app: app)
+        XCTAssertFalse(app.buttons["1x"].exists)
         var relatedIssues: [String] = []
         func auditVisibleControls() throws {
             let contentTop = app.navigationBars.firstMatch.frame.maxY
@@ -102,8 +98,7 @@ final class UIAuditRegressionTests: XCTestCase {
                 guard let element = issue.element, element.isHittable else { return true }
                 guard element.frame.minY >= contentTop, element.frame.maxY <= contentBottom else { return true }
                 let name = element.label
-                let auditedNames = ["0.2x", "0.5x", "1x", "1.5x", "2x", "7.2x", "批量操作", "中转站计价倍率"]
-                if name == "启用 sample-a" || name.hasPrefix("sample-a 的") || name == "识图" || name == "思考链" || name.contains("USD 0.1/1") || auditedNames.contains(name) {
+                if name == "启用 sample-a" || name.hasPrefix("sample-a 的") || name == "识图" || name == "思考链" || name.contains("USD 0.1/1") || name == "批量操作" {
                     relatedIssues.append("\(issue.auditType): \(issue.compactDescription) · \(name) · \(element.frame)")
                 }
                 return true
@@ -164,13 +159,20 @@ final class UIAuditRegressionTests: XCTestCase {
     }
 
     func testLargeTypeRoundtablesHaveRoomForTitlesAndActions() {
-        let app = launch(["-ui-test-personas", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"])
+        let app = launch(["-ui-test-personas", "-iosbox.pref.moduleGroupChatEnabled", "NO", "-iosbox.pref.simpleDailyMode", "NO",
+                          "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"])
         app.openWorkspaceLibrary()
+        app.setOptionalModule("optionalModules.roundtables", enabled: true)
         app.selectWorkshopSection("圆桌")
         let title = app.staticTexts["创业点子审委会"]
         XCTAssertTrue(title.waitForExistence(timeout: 8), app.debugDescription)
-        XCTAssertGreaterThan(title.frame.width, app.frame.width * 0.4)
-        XCTAssertTrue(app.buttons["开始 创业点子审委会 圆桌对话"].exists)
+        let start = app.buttons["开始 创业点子审委会 圆桌对话"]
+        XCTAssertTrue(start.exists)
+        let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: UITraitCollection(preferredContentSizeCategory: .accessibilityLarge))
+        let fullTitleWidth = (title.label as NSString).size(withAttributes: [.font: font]).width
+        XCTAssertGreaterThanOrEqual(title.frame.width + 2, fullTitleWidth)
+        XCTAssertGreaterThanOrEqual(start.frame.minY, title.frame.maxY)
+        XCTAssertGreaterThanOrEqual(start.frame.height, 44)
         capture("Roundtables with large text", app: app)
     }
 

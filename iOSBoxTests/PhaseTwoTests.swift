@@ -1,6 +1,7 @@
 import XCTest
 import SwiftData
 import UniformTypeIdentifiers
+import UIKit
 @testable import iOSBox
 
 private final class ReaderURLProtocol: URLProtocol {
@@ -137,6 +138,46 @@ final class PhaseTwoTests: XCTestCase {
         XCTAssertEqual(result.text, "Visible article")
         XCTAssertEqual(result.title, "Title")
         XCTAssertTrue(result.isTruncated)
+    }
+
+    func testSharedPDFProviderRetainsOriginalBytesThroughLocalDraftHandoff() async throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("Report.pdf")
+        let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 180, height: 180))
+        let original = renderer.pdfData { context in
+            context.beginPage()
+            ("A local PDF" as NSString).draw(at: CGPoint(x: 12, y: 12), withAttributes: nil)
+        }
+        try original.write(to: url)
+        let pdf = NSItemProvider()
+        pdf.suggestedName = "Report.pdf"
+        pdf.registerFileRepresentation(forTypeIdentifier: UTType.pdf.identifier, fileOptions: [], visibility: .all) { reply in
+            reply(url, false, nil)
+            return nil
+        }
+        let safari = NSItemProvider(item: [NSExtensionJavaScriptPreprocessingResultsKey:
+            ["text": "Accompanying selection", "url": "https://example.com/report", "title": "Article"]] as NSDictionary,
+                                    typeIdentifier: UTType.propertyList.identifier)
+        let item = NSExtensionItem()
+        item.attachments = [safari, pdf]
+        let input = try await ShareInputLoader.load([item])
+        try FileManager.default.removeItem(at: url)
+        XCTAssertEqual(input.text, "Accompanying selection")
+        let file = try XCTUnwrap(input.attachments.first)
+        XCTAssertEqual(file.fileName, "Report.pdf")
+        XCTAssertEqual(file.mimeType, "application/pdf")
+        XCTAssertEqual(file.byteSize, original.count)
+        XCTAssertTrue(file.hasRequestedPDFFile)
+        XCTAssertEqual(Data(base64Encoded: try XCTUnwrap(file.dataBase64)), original)
+        let inbox = SystemEntryStore(directory: directory.appendingPathComponent("entries"))
+        XCTAssertTrue(try inbox.models().isEmpty)
+        let handoff = try SharedDraftEntry(input: input, link: "", question: "")
+        try inbox.saveDraft(handoff)
+        let entry = try inbox.readDraft(XCTUnwrap(inbox.draftFiles().first))
+        let drafts = ChatDraftStore(directory: directory.appendingPathComponent("drafts"))
+        try ExternalReceiptImporter.importDraft(entry, context: context, drafts: drafts, tombstones: SyncTombstoneStore(fileURL: nil))
+        XCTAssertEqual(try drafts.load(handoff.id).attachments, [file])
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<ChatMessage>()), 0)
     }
 
     func testSharedManifestContainsOnlyModelMetadata() throws {

@@ -42,7 +42,8 @@ final class ModelPickerFlowTests: XCTestCase {
     func testQuickSetupRequiresReverificationAfterEditingTheKey() throws {
         continueAfterFailure = false
         let ready = expectation(description: "Loopback fixture ready")
-        let probe = expectation(description: "Verification request received")
+        let initialProbe = expectation(description: "Initial connection verified")
+        let editedKeyProbe = expectation(description: "New API key verified before saving")
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         let listener = try NWListener(using: params)
@@ -58,9 +59,14 @@ final class ModelPickerFlowTests: XCTestCase {
                     body = #"{"data":[{"id":"fixture-chat"}]}"#
                 } else {
                     XCTAssertTrue(request.hasPrefix("POST /v1/chat/completions "))
+                    if request.lowercased().contains("authorization: bearer changed-key\r\n") {
+                        editedKeyProbe.fulfill()
+                    } else {
+                        XCTAssertFalse(request.lowercased().contains("authorization:"))
+                        initialProbe.fulfill()
+                    }
                     type = "text/event-stream"
                     body = "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n\ndata: [DONE]\n\n"
-                    probe.fulfill()
                 }
                 let response = "HTTP/1.1 200 OK\r\nContent-Type: \(type)\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n" + body
                 connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
@@ -85,7 +91,7 @@ final class ModelPickerFlowTests: XCTestCase {
         for _ in 0..<5 where !verify.isHittable { app.swipeDown() }
         XCTAssertTrue(verify.isHittable, app.debugDescription)
         verify.tap()
-        wait(for: [probe], timeout: 10)
+        wait(for: [initialProbe], timeout: 10)
         let done = app.buttons["quickSetup.finish"]
         XCTAssertTrue(done.waitForExistence(timeout: 10), app.debugDescription)
 
@@ -93,9 +99,18 @@ final class ModelPickerFlowTests: XCTestCase {
         for _ in 0..<5 where !key.isHittable { app.swipeDown() }
         XCTAssertTrue(key.isHittable, app.debugDescription)
         key.tap()
-        key.typeText("changed-key")
+        key.typeText("changed-key\n")
         XCTAssertTrue(verify.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertFalse(done.exists)
+        for _ in 0..<4 where !verify.isHittable { app.swipeUp() }
+        XCTAssertTrue(verify.isHittable, app.debugDescription)
+        verify.tap()
+        wait(for: [editedKeyProbe], timeout: 10)
+        XCTAssertTrue(done.waitForExistence(timeout: 10), app.debugDescription)
+        done.tap()
+        let selected = app.buttons.matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@",
+                                                        "chatComposer.model", "fixture-chat")).firstMatch
+        XCTAssertTrue(selected.waitForExistence(timeout: 10), app.debugDescription)
     }
 
     func testEmptyPickerCanCancelOrVerifyAndReturnToTheSameDraft() throws {
@@ -196,9 +211,8 @@ final class ModelPickerFlowTests: XCTestCase {
 
         let key = app.secureTextFields["quickSetup.apiKey"]
         key.tap()
-        key.typeText("sk-proj-fixture")
+        key.typeText("sk-proj-fixture\n")
         XCTAssertFalse(app.buttons["quickSetup.verify"].isEnabled)
-        if UIDevice.current.userInterfaceIdiom == .pad { key.typeText("\n") }
         let correction = app.buttons["providerSetup.correctIssuer"]
         XCTAssertTrue(correction.isHittable, app.debugDescription)
         correction.tap()
@@ -232,11 +246,9 @@ final class ModelPickerFlowTests: XCTestCase {
         for _ in 0..<5 where !key.isHittable { app.swipeUp() }
         let original = key.value as? String
         key.tap()
-        key.typeText("sk-proj-fixture")
-        if UIDevice.current.userInterfaceIdiom == .pad { key.typeText("\n") }
+        key.typeText("sk-proj-fixture\n")
         let fix = app.buttons["providerSetup.correctIssuer"]
-        for _ in 0..<4 where !fix.isHittable { app.swipeUp() }
-        XCTAssertTrue(fix.isHittable, app.debugDescription)
+        XCTAssertTrue(fix.waitForExistence(timeout: 5), app.debugDescription)
         fix.tap()
         XCTAssertTrue(app.staticTexts["api.openai.com · Responses API"].waitForExistence(timeout: 5), app.debugDescription)
         app.navigationBars["连接模型"].buttons["关闭"].tap()

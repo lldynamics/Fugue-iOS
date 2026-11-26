@@ -221,7 +221,7 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertEqual(prepared.data, canonicalJSON)
         XCTAssertEqual(prepared.id, BookManuscript.identifier(for: canonicalJSON))
 
-        // 2. Plain JSON archive preserves v7 schema, uppercase UUIDs, ISO-8601 timestamps, tombstones, and strips secrets.
+        // 2. Plain JSON archive preserves v8 schema, uppercase UUIDs, ISO-8601 timestamps, tombstones, and strips secrets.
         let tombstones = SyncTombstoneStore(fileURL: nil)
         let deletedID = UUID()
         tombstones.recordDeletion(kind: .conversation, id: deletedID, at: Date().addingTimeInterval(-60))
@@ -233,7 +233,7 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertFalse(plainText.contains("interop-secret-key"))
         let plainObj = try XCTUnwrap(try JSONSerialization.jsonObject(with: plainData) as? [String: Any])
         XCTAssertEqual(plainObj["formatVersion"] as? Int, BackupArchive.currentFormatVersion)
-        XCTAssertEqual(BackupArchive.currentFormatVersion, 7)
+        XCTAssertEqual(BackupArchive.currentFormatVersion, 8)
         XCTAssertTrue((plainObj["exportedAt"] as? String)?.hasSuffix("Z") == true)
 
         // 3. Forward-compatible decoding tolerates unknown keys added by future cross-platform clients.

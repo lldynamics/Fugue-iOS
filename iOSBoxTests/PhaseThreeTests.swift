@@ -109,6 +109,33 @@ final class PhaseThreeTests: XCTestCase {
         XCTAssertFalse(capture.requests.last!.messages.map(\.content).joined().contains("MY_SWIFT_PREFERENCE"))
     }
 
+    func testPerTurnSelectionIsRetainedWhenComparingAndRegenerating() async throws {
+        let a = provider("first"), b = provider("second"), chat = conversation(a)
+        let allowed = PersonalMemory(content: "SELECTED_PREF"), hidden = PersonalMemory(content: "PRIVATE_PREF")
+        context.insert(allowed)
+        context.insert(hidden)
+        chat.assistanceSettings.usePersonalMemory = true
+        chat.title = "Memory selection"
+        let capture = PhaseThreeCapture()
+        let engine = ChatEngine { request in capture.append(request); return Self.success() }
+        let options = GenerationOptions(selectedMemoryIDs: [allowed.id])
+        XCTAssertEqual(engine.sendUserMessage(text: "Question", attachments: [], in: chat,
+                                              providers: [a, b], context: context, options: options), .sent)
+        try await wait(engine, chat)
+        let first = try XCTUnwrap(chat.sortedMessages.last)
+        engine.compareWithAnotherModel(assistantMessage: first, secondTarget: target(b), in: chat, providers: [a, b], context: context)
+        try await wait(engine, chat)
+        let compared = try XCTUnwrap(chat.sortedMessages.last { $0.modelID == "second" })
+        XCTAssertEqual(compared.assistanceMetadata.selectedMemoryIDs, [allowed.id])
+        engine.regenerate(assistantMessage: compared, in: chat, providers: [a, b], context: context)
+        try await wait(engine, chat)
+        XCTAssertEqual(capture.requests.count, 3)
+        for request in capture.requests {
+            XCTAssertTrue(request.systemPrompt.contains(allowed.content))
+            XCTAssertFalse(request.systemPrompt.contains(hidden.content))
+        }
+    }
+
     func testEditingDisablingAndDeletingMemoryChangesNextPrompt() throws {
         let memory = PersonalMemory(content: "Old")
         context.insert(memory)

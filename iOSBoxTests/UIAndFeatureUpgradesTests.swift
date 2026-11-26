@@ -132,15 +132,15 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
         let cost = try XCTUnwrap(record.estimatedCost)
         XCTAssertEqual(cost, 0.1215, accuracy: 0.000_001)
 
-        // Savings: 80k * ($3.0 - $0.30) / 1M = $0.216
+        // Net savings vs uncached ($0.33 - $0.1215): 80k * ($3.0 - $0.30) / 1M - 10k * ($3.75 - $3.0) / 1M = $0.2085
         let savings = try XCTUnwrap(record.estimatedCacheSavings)
-        XCTAssertEqual(savings, 0.216, accuracy: 0.000_001)
+        XCTAssertEqual(savings, 0.2085, accuracy: 0.000_001)
 
         // Snapshot round-trip preserves cache pricing
         let snap = record.snapshot
         let restored = RequestRecord(snapshot: snap)
         XCTAssertEqual(try XCTUnwrap(restored.estimatedCost), 0.1215, accuracy: 0.000_001)
-        XCTAssertEqual(try XCTUnwrap(restored.estimatedCacheSavings), 0.216, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(restored.estimatedCacheSavings), 0.2085, accuracy: 0.000_001)
     }
 
     func testEncryptedBackupRoundTripAndWrongPasswordRejection() throws {

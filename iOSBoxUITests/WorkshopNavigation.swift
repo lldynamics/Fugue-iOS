@@ -64,9 +64,7 @@ extension XCUIApplication {
             return
         }
         let segment = buttons[title].firstMatch
-        let categories = descendants(matching: .any)
-            .matching(NSPredicate(format: "label BEGINSWITH %@", "分类"))
-            .firstMatch
+        let categories = buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "分类")).firstMatch
 
         for _ in 0..<4 where !segment.isHittable && !categories.isHittable {
             swipeDown()
@@ -80,10 +78,24 @@ extension XCUIApplication {
         guard categories.isHittable else { return }
         categories.tap()
 
-        let option = descendants(matching: .any)
-            .matching(NSPredicate(format: "label == %@", title))
-            .firstMatch
+        let menuItem = menuItems[title]
+        let option = menuItem.exists ? menuItem : buttons.matching(NSPredicate(format: "label == %@", title)).firstMatch
         XCTAssertTrue(option.waitForExistence(timeout: 5), debugDescription, file: file, line: line)
         if option.exists { option.tap() }
+    }
+
+    func setOptionalModule(_ identifier: String, enabled: Bool, file: StaticString = #filePath, line: UInt = #line) {
+        let controls = buttons["library.optionalModules"]
+        for _ in 0..<5 where !controls.isHittable { swipeUp() }
+        XCTAssertTrue(controls.isHittable, debugDescription, file: file, line: line)
+        controls.tap()
+        let row = switches[identifier]
+        XCTAssertTrue(row.waitForExistence(timeout: 5), debugDescription, file: file, line: line)
+        let nested = row.switches.firstMatch
+        let control = nested.exists ? nested : row
+        XCTAssertEqual(control.value as? String, enabled ? "0" : "1", file: file, line: line)
+        control.tap()
+        XCTAssertEqual(control.value as? String, enabled ? "1" : "0", file: file, line: line)
+        buttons["optionalModules.done"].tap()
     }
 }
