@@ -35,10 +35,6 @@
 	<string>用于通过麦克风进行语音听写输入对话内容。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>用于将你的语音实时转换为对话文本输入。</string>
-	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
-	<string>用于在你点击确认后将对话中提炼的日程写入系统日历。</string>
-	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>用于在你点击确认后将对话中提炼的待办事项加入系统提醒事项。</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>用于通过面容 ID 解锁「夜奔」以保护你的私人对话与个人记忆。</string>
 	<key>NSSupportsLiveActivities</key>

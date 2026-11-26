@@ -50,16 +50,6 @@ final class LiveActivityCoordinator {
         dismissUntrackedActivities()
     }
 
-    func anonymizeComparison(in conversationID: UUID) {
-        if var state = activeStates[conversationID] {
-            state.presentation = .anonymous
-            state.hideDetails()
-            activeStates[conversationID] = state
-            if let activity = activities[conversationID] { publishCurrentState(for: conversationID, to: activity) }
-        }
-        dismissUntrackedActivities(in: conversationID)
-    }
-
     // Dismiss previews left visible by an earlier process or a just-finished turn.
     private func dismissUntrackedActivities(in conversationID: UUID? = nil) {
         let runningIDs = Set(activities.values.map(\.id))
@@ -75,8 +65,7 @@ final class LiveActivityCoordinator {
         modeBadge: String,
         speakerOrModel: String,
         phaseText: String,
-        totalTurns: Int = 1,
-        isBlind: Bool = false
+        totalTurns: Int = 1
     ) {
         var initialState = IOSBoxGenerationAttributes.ContentState(
             speakerOrModel: speakerOrModel,
@@ -85,7 +74,7 @@ final class LiveActivityCoordinator {
             totalTurns: totalTurns,
             previewSnippet: ""
         )
-        initialState.presentation = isBlind ? .anonymous : (showsPreviews ? .preview : .status)
+        initialState.presentation = showsPreviews ? .preview : .status
         if initialState.presentation == .preview {
             initialState.previewTitle = String(chatTitle.prefix(60))
         } else {

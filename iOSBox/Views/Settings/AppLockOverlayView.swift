@@ -84,7 +84,7 @@ struct AppLockOverlayView: View {
                     if let error = controller.lastError, !error.isEmpty {
                         Text(error)
                             .font(.caption)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(DS.StatusText.error)
                             .multilineTextAlignment(.center)
                             .padding(.top, 2)
                     }

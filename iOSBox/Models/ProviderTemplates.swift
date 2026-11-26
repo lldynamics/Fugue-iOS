@@ -40,6 +40,34 @@ struct ProviderTemplate: Identifiable {
         return currentBaseURL
     }
 
+    static let openRouter = ProviderTemplate(
+        id: "openrouter",
+        name: "OpenRouter",
+        protocolType: .openAICompatible,
+        baseURL: "https://openrouter.ai/api/v1",
+        iconSymbol: "arrow.triangle.branch",
+        accentHex: "#6366F1",
+        note: String(localized: "一个 Key 聚合全球数百个主流与开源模型，支持一键拉取全部模型"),
+        suggestedModels: [
+            ModelSpec(id: "openrouter/auto", displayName: "OpenRouter Auto", supportsVision: true, supportsReasoning: false)
+        ]
+    )
+
+    static let openAIResponses = ProviderTemplate(
+        id: "openai_responses",
+        name: "OpenAI Responses API",
+        protocolType: .openAIResponses,
+        baseURL: "https://api.openai.com/v1",
+        iconSymbol: "bolt.horizontal.circle",
+        accentHex: "#0D9488",
+        note: String(localized: "OpenAI 新一代 /v1/responses 协议，原生支持推理摘要与内置联网检索"),
+        suggestedModels: [
+            ModelSpec(id: "gpt-5", displayName: "GPT-5", supportsVision: true, supportsReasoning: true),
+            ModelSpec(id: "o3", displayName: "OpenAI o3", supportsVision: true, supportsReasoning: true),
+            ModelSpec(id: "gpt-4.1", displayName: "GPT-4.1", supportsVision: true, supportsReasoning: false)
+        ]
+    )
+
     static let catalog: [ProviderTemplate] = [
         ProviderTemplate(
             id: "custom_openai",
@@ -64,18 +92,7 @@ struct ProviderTemplate: Identifiable {
                 ModelSpec(id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", supportsVision: false, supportsReasoning: true)
             ]
         ),
-        ProviderTemplate(
-            id: "openrouter",
-            name: "OpenRouter",
-            protocolType: .openAICompatible,
-            baseURL: "https://openrouter.ai/api/v1",
-            iconSymbol: "arrow.triangle.branch",
-            accentHex: "#6366F1",
-            note: String(localized: "一个 Key 聚合全球数百个主流与开源模型，支持一键拉取全部模型"),
-            suggestedModels: [
-                ModelSpec(id: "openrouter/auto", displayName: "OpenRouter Auto", supportsVision: true, supportsReasoning: false)
-            ]
-        ),
+        openRouter,
         ProviderTemplate(
             id: "siliconflow",
             name: String(localized: "SiliconFlow 硅基流动"),
@@ -103,20 +120,7 @@ struct ProviderTemplate: Identifiable {
                 ModelSpec(id: "gpt-6-luna", displayName: "GPT-6 Luna")
             ]
         ),
-        ProviderTemplate(
-            id: "openai_responses",
-            name: "OpenAI Responses API",
-            protocolType: .openAIResponses,
-            baseURL: "https://api.openai.com/v1",
-            iconSymbol: "bolt.horizontal.circle",
-            accentHex: "#0D9488",
-            note: String(localized: "OpenAI 新一代 /v1/responses 协议，原生支持推理摘要与内置联网检索"),
-            suggestedModels: [
-                ModelSpec(id: "gpt-5", displayName: "GPT-5", supportsVision: true, supportsReasoning: true),
-                ModelSpec(id: "o3", displayName: "OpenAI o3", supportsVision: true, supportsReasoning: true),
-                ModelSpec(id: "gpt-4.1", displayName: "GPT-4.1", supportsVision: true, supportsReasoning: false)
-            ]
-        ),
+        openAIResponses,
         ProviderTemplate(
             id: "anthropic",
             name: "Anthropic Claude",

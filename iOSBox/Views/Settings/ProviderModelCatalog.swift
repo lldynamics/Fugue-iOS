@@ -18,6 +18,7 @@ struct ModelCatalogRequest: Equatable {
         guard let url = try? EndpointResolver.modelsEndpoint(baseURL: baseURL, protocolType: protocolType),
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != "api.example.com" else { return false }
         return !NetworkLocation.isPlainHTTPToPublicHost(baseURL: baseURL)
+            && ProviderTemplate.mismatchedIssuer(apiKey: apiKey, baseURL: baseURL) == nil
     }
 
     var fetchOnOpen: Bool {
@@ -176,7 +177,7 @@ struct ModelCatalogRefreshButton: View {
         }
         .disabled(!request.canFetch || catalog.isLoading)
         if let error = catalog.error {
-            Text(error).font(.footnote).foregroundStyle(.red)
+            Text(error).font(.footnote).foregroundStyle(DS.StatusText.error)
         }
     }
 }

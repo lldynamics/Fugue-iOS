@@ -43,7 +43,7 @@ struct PersonaDirectorySection: View {
                         Menu {
                             Button("编辑人物档案") { do { editing = try profile.member() } catch { self.error = error.localizedDescription } }
                             Button("删除人物档案", role: .destructive) { removing = profile }
-                        } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
+                        } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                         .accessibilityLabel(Text("\(profile.name) 的人物操作"))
                     }
                     let layout = dynamicTypeSize.isAccessibilitySize
@@ -138,7 +138,7 @@ private struct PersonaProfileEditor: View {
                     }
                 }
                 NavigationLink("人物资料与订阅来源") { PersonaEditorView(member: $draft, isProfile: true) }
-                if let error { Text(verbatim: error).foregroundStyle(.red) }
+                if let error { Text(verbatim: error).foregroundStyle(DS.StatusText.error) }
             }
             .navigationTitle("人物档案")
             .toolbar {
@@ -176,7 +176,7 @@ struct PersonaInvitationView: View {
                         } catch { self.error = error.localizedDescription }
                     }.disabled(chat.groupMembers.count >= 6 || chat.groupMembers.contains { $0.profileID == member.profileID })
                 }
-                if let error { Text(verbatim: error).foregroundStyle(.red) }
+                if let error { Text(verbatim: error).foregroundStyle(DS.StatusText.error) }
             }
             .navigationTitle("邀请进群")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }

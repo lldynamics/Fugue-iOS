@@ -7,7 +7,6 @@ enum ConversationExporter {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
-        let blindMode = conversation.assistanceSettings.blindArenaMode
 
         var lines: [String] = []
         lines.append("# \(conversation.title)")
@@ -65,7 +64,7 @@ enum ConversationExporter {
 
             case .assistant:
                 let meta = msg.assistanceMetadata
-                let speaker = ArenaSynthesis.visibleSpeakerName(for: msg, in: messages, blindArenaMode: blindMode)
+                let speaker = ArenaSynthesis.visibleSpeakerName(for: msg)
                 let title: String
                 if msg.isSynthesis || speaker != msg.modelDisplayName || msg.providerName.isEmpty {
                     title = speaker
@@ -108,6 +107,18 @@ enum ConversationExporter {
                     lines.append("**\(String(localized: "参考来源（\(search.query)）"))**")
                     for src in search.sources {
                         lines.append("- [\(src.title)](\(src.url.absoluteString))")
+                    }
+                }
+
+                let references = ReadingReferences(knowledge: meta.knowledgeEvidence, book: meta.bookReply,
+                                                   friend: conversation.activeBookFriend, limits: conversation.readingChapterLimits)
+                if !references.sources.isEmpty {
+                    lines.append("")
+                    lines.append("**\(String(localized: "知识库引用"))**")
+                    for source in references.sources {
+                        lines.append("")
+                        lines.append("[\(source.number)] \(source.documentTitle) · \(source.chapter)")
+                        lines.append("> \(source.excerpt.replacingOccurrences(of: "\n", with: "\n> "))")
                     }
                 }
 
@@ -162,14 +173,13 @@ enum ConversationExporter {
 
         let messages = Array(collapsed.suffix(12))
         guard !messages.isEmpty else { return nil }
-        let blindMode = conversation.assistanceSettings.blindArenaMode
 
         let card = ShareConversationCardView(
             title: conversation.title,
             emoji: conversation.assistantEmoji,
             messages: messages,
             speakerResolver: { msg in
-                ArenaSynthesis.visibleSpeakerName(for: msg, in: active, blindArenaMode: blindMode)
+                ArenaSynthesis.visibleSpeakerName(for: msg)
             }
         )
         .environment(\.colorScheme, colorScheme)

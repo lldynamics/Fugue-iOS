@@ -3,6 +3,42 @@ import XCTest
 
 final class EverydayTemplatesAndQuickKeyTests: XCTestCase {
 
+    func testSetupChoosesOneOpenAIServiceAndKeepsTheExplicitProtocolOnImport() throws {
+        var draft = ProviderSetupDraft()
+        XCTAssertEqual(ProviderTemplate.setupChoices.filter { $0.baseURL == draft.baseURL }.map(\.id), ["openai_responses"])
+        XCTAssertEqual(draft.protocolType, .openAIResponses)
+        let key = "sk-proj-offlinefixture12345678"
+        let imported = try XCTUnwrap(ClipboardProviderParser.parse(key))
+        draft.apply(imported)
+        XCTAssertEqual(draft.protocolType, .openAIResponses)
+        draft.protocolType = .openAICompatible
+        draft.apply(imported)
+        XCTAssertEqual(draft.protocolType, .openAICompatible)
+        XCTAssertEqual(draft.apiKey, key)
+
+        draft.select(.openRouter)
+        XCTAssertEqual(draft.apiKey, "")
+        draft.apply(try XCTUnwrap(ClipboardProviderParser.parse("sk-ambiguous1234567890")))
+        XCTAssertEqual(draft.baseURL, ProviderTemplate.openRouter.baseURL)
+        draft.manualModelID = "openrouter/auto"
+        draft.apply(try XCTUnwrap(ClipboardProviderParser.parse("https://api.openai.com/v1")))
+        XCTAssertEqual(draft.apiKey, "")
+        XCTAssertEqual(draft.manualModelID, "")
+        XCTAssertEqual(draft.protocolType, .openAIResponses)
+    }
+
+    func testSetupIdentifiesTheTwoIssuersOnlyAtTheirOfficialEndpoints() {
+        let official = ProviderTemplate.openAIResponses.baseURL
+        let router = ProviderTemplate.openRouter.baseURL
+        let key = "sk-proj-offlinefixture"
+        XCTAssertEqual(ProviderTemplate.mismatchedIssuer(apiKey: "Bearer " + key, baseURL: router)?.id, "openai_responses")
+        XCTAssertEqual(ProviderTemplate.mismatchedIssuer(apiKey: "sk-or-v1-fixture", baseURL: official)?.id, "openrouter")
+        XCTAssertNil(ProviderTemplate.mismatchedIssuer(apiKey: key, baseURL: official))
+        XCTAssertNil(ProviderTemplate.mismatchedIssuer(apiKey: key, baseURL: "https://relay.example/v1"))
+        XCTAssertNil(ProviderTemplate.mismatchedIssuer(apiKey: "sk-generic", baseURL: router))
+        XCTAssertFalse(ModelCatalogRequest(protocolType: .openAICompatible, baseURL: router, apiKey: key).canFetch)
+    }
+
     func testClipboardParserRecognizesMajorProvidersAndCustomRelays() {
         let anthropic = ClipboardProviderParser.parse("Here is my key: sk-ant-api03-abcdefghijklmnop12345")
         XCTAssertNotNil(anthropic)

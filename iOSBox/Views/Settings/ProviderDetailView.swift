@@ -5,6 +5,7 @@ import UIKit
 struct ProviderDetailView: View {
     @Bindable var provider: ProviderConfig
     var onVerifiedModel: ((ResolvedModelTarget) -> Void)? = nil
+    let correctKey: (ProviderSetupDraft) -> Void
     @State private var setupModelID: String?
     @State private var setupTask: Task<Void, Never>?
     @Environment(\.modelContext) private var modelContext
@@ -51,6 +52,10 @@ struct ProviderDetailView: View {
             if !t.isEmpty { seen.insert(t) }
         }
         return seen.count
+    }
+
+    private var mismatchedIssuer: ProviderTemplate? {
+        ProviderTemplate.mismatchedIssuer(apiKey: apiKeyInput, baseURL: provider.baseURL)
     }
 
     private var catalogRequest: ModelCatalogRequest {
@@ -131,7 +136,7 @@ struct ProviderDetailView: View {
 
     @ViewBuilder
     private var fullSettingsSections: some View {
-        if let saveError { Text(saveError).foregroundStyle(.red) }
+        if let saveError { Text(saveError).foregroundStyle(DS.StatusText.error) }
         Section("基础连接配置") {
             Toggle("启用该服务商", isOn: $provider.isEnabled)
                 .accessibilityIdentifier("provider.enabled")
@@ -207,7 +212,7 @@ struct ProviderDetailView: View {
                             if header.isSecret {
                                 Image(systemName: "lock.fill")
                                     .font(.caption2)
-                                    .foregroundStyle(.green)
+                                    .foregroundStyle(DS.StatusText.success)
                             }
                         }
                         Text(header.isSecret ? String(localized: "••••••••（已存入钥匙串）") : header.value)
@@ -221,7 +226,7 @@ struct ProviderDetailView: View {
                         try? modelContext.save()
                     } label: {
                         Image(systemName: "minus.circle.fill")
-                            .foregroundStyle(.red)
+                            .foregroundStyle(DS.StatusText.error)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("删除请求头 \(header.key)")
@@ -324,7 +329,7 @@ struct ProviderDetailView: View {
                         }
                     }
                 }
-                .disabled(isPinging || catalog.isLoading)
+                .disabled(isPinging || catalog.isLoading || mismatchedIssuer != nil)
             }
 
             Button {
@@ -467,7 +472,7 @@ struct ProviderDetailView: View {
                             let target = try await ModelSetup.verify(provider: provider, modelID: id, context: modelContext)
                             onVerifiedModel(target)
                         } catch {
-                            if !Task.isCancelled { saveError = error.localizedDescription }
+                            if !Task.isCancelled { saveError = ModelSetup.verificationAdvice(for: error, checkingModel: true) }
                         }
                     }
                 } label: {
@@ -478,9 +483,9 @@ struct ProviderDetailView: View {
                     }
                 }
                 .accessibilityIdentifier("provider.setup.verify")
-                .disabled(!isReadyWithDraftKey || setupSelection.isEmpty || keyWriteFailed || catalog.isLoading)
+                .disabled(!isReadyWithDraftKey || setupSelection.isEmpty || keyWriteFailed || catalog.isLoading || mismatchedIssuer != nil)
                 if let saveError {
-                    Text(saveError).foregroundStyle(.red)
+                    Text(saveError).foregroundStyle(DS.StatusText.error)
                 }
             } header: {
                 Text("选择模型并验证")
@@ -490,7 +495,7 @@ struct ProviderDetailView: View {
         }
         Section {
             NavigationLink {
-                ProviderDetailView(provider: provider)
+                ProviderDetailView(provider: provider, correctKey: correctKey)
             } label: {
                 Label("高级设置", systemImage: "slider.horizontal.3")
             }
@@ -516,12 +521,18 @@ struct ProviderDetailView: View {
                 .autocorrectionDisabled()
                 .font(.subheadline.monospaced())
                 .submitLabel(.done)
-                .onSubmit { flushPendingAPIKey() }
+                .onSubmit { isAPIKeyFocused = false }
                 .onChange(of: isAPIKeyFocused) { _, focused in
                     if !focused { flushPendingAPIKey() }
                 }
                 .onChange(of: apiKeyInput) { _, newValue in
                     let coordinator = ensureKeyCoordinator()
+                    if mismatchedIssuer != nil {
+                        coordinator.resetInitial(coordinator.lastSavedValue)
+                        keySaved = false
+                        keyWriteFailed = false
+                        return
+                    }
                     let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
                     if trimmed != coordinator.lastSavedValue {
                         keySaved = false
@@ -558,11 +569,20 @@ struct ProviderDetailView: View {
                 .buttonStyle(.plain)
             }
 
+            if let issuer = mismatchedIssuer {
+                ProviderKeyCorrection(issuer: issuer) {
+                    let draft = ProviderSetupDraft(template: issuer, apiKey: apiKeyInput)
+                    apiKeyInput = ensureKeyCoordinator().lastSavedValue
+                    isAPIKeyFocused = false
+                    correctKey(draft)
+                }
+            }
+
             if onVerifiedModel == nil {
                 ForEach(Array(extraAPIKeys.enumerated()), id: \.offset) { idx, extraKey in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("轮询 Key #\(idx + 2)")
+                            Text("备用 Key #\(idx + 1)")
                                 .font(.caption.weight(.semibold))
                             Text(KeychainService.maskedKeyPreview(extraKey))
                                 .font(.caption2.monospaced())
@@ -573,7 +593,7 @@ struct ProviderDetailView: View {
                             removeExtraAPIKey(at: idx)
                         } label: {
                             Image(systemName: "minus.circle.fill")
-                                .foregroundStyle(.red)
+                                .foregroundStyle(DS.StatusText.error)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("移除轮询 Key")
@@ -608,7 +628,7 @@ struct ProviderDetailView: View {
                 if keySaved && activePoolKeyCount > 0 {
                     Text("已保存")
                         .font(.caption2)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(DS.StatusText.success)
                 }
             }
         } footer: {
@@ -723,7 +743,7 @@ struct ProviderDetailView: View {
     private var addModelSheet: some View {
         NavigationStack {
             Form {
-                if let saveError { Text(saveError).foregroundStyle(.red) }
+                if let saveError { Text(saveError).foregroundStyle(DS.StatusText.error) }
                 Section("模型标识") {
                     TextField("模型 ID（必填，如 deepseek-reasoner）", text: $newModelID)
                         .textInputAutocapitalization(.never)
@@ -785,7 +805,7 @@ struct ProviderDetailView: View {
     private var addHeaderSheet: some View {
         NavigationStack {
             Form {
-                if let saveError { Text(saveError).foregroundStyle(.red) }
+                if let saveError { Text(saveError).foregroundStyle(DS.StatusText.error) }
                 Section("HTTP 请求头") {
                     TextField("Header 名称（如 HTTP-Referer）", text: $newHeaderKey)
                         .textInputAutocapitalization(.never)
@@ -847,7 +867,7 @@ struct ProviderDetailView: View {
     private var addExtraKeySheet: some View {
         NavigationStack {
             Form {
-                if let saveError { Text(saveError).foregroundStyle(.red) }
+                if let saveError { Text(saveError).foregroundStyle(DS.StatusText.error) }
                 Section {
                     HStack(spacing: 8) {
                         SecureField("输入或粘贴备用 API Key", text: $newExtraKeyInput)
@@ -1011,6 +1031,10 @@ struct ProviderDetailView: View {
 
     private func flushPendingAPIKey(overrideValue: String? = nil) {
         let coordinator = ensureKeyCoordinator()
+        if ProviderTemplate.mismatchedIssuer(apiKey: overrideValue ?? apiKeyInput, baseURL: provider.baseURL) != nil {
+            coordinator.resetInitial(coordinator.lastSavedValue)
+            return
+        }
         _ = coordinator.flushNow(overrideValue: overrideValue)
     }
 

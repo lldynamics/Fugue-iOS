@@ -16,8 +16,8 @@ final class PersonalMemory {
         self.createdAt = createdAt
     }
 
-    static let maximumCount = 20
-    static let maximumCharacters = 500
+    static let maximumCount = 60
+    static let maximumCharacters = 1_000
 
     struct Snapshot: Codable {
         var id: UUID
@@ -30,23 +30,8 @@ final class PersonalMemory {
 
     @MainActor
     static func prompt(in context: ModelContext) throws -> (text: String, count: Int) {
-        try prompt(in: context, activeProjectTags: nil, scopeStore: .shared)
-    }
-
-    @MainActor
-    static func prompt(
-        in context: ModelContext,
-        activeProjectTags: [String]?,
-        scopeStore: MemoryScopeStore? = nil
-    ) throws -> (text: String, count: Int) {
-        let scopeStore = scopeStore ?? .shared
         let memories = try context.fetch(FetchDescriptor<PersonalMemory>(sortBy: [SortDescriptor(\.createdAt)]))
-            .filter { memory in
-                memory.isEnabled && MemoryScopeStore.matches(
-                    memoryTags: scopeStore.tags(for: memory.id),
-                    activeProjectTags: activeProjectTags
-                )
-            }
+            .filter(\.isEnabled)
             .prefix(maximumCount)
             .map { String($0.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maximumCharacters)) }
             .filter { !$0.isEmpty }

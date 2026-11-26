@@ -54,19 +54,18 @@ struct ConversationListView: View {
     @State private var searchScope: GlobalSearchScope = .all
     @State private var searchIncludeReasoning = true
     @State private var selectedBookSearchHit: BookSearchHit?
-    @State private var selectedFlashcardForReview: StudyFlashcard?
     @State private var selectedFilterTag: String? = nil
     @State private var showOnlyBookmarked = false
     @State private var tagEditingConversation: Conversation?
     @State private var tagDraft: String = ""
     @State private var pendingDeletion: Conversation?
     @State private var deletionError: String?
-    @State private var showReader = false
     @State private var showGroupSetup = false
     @State private var showBookmarksHub = false
     @State private var showQuickKeySetup = false
     @State private var readyModelCount = 0
     @State private var bookmarkedConversationIDs: Set<UUID> = []
+    @State private var postSaveRefreshTask: Task<Void, Never>?
     @State private var isBatchSelecting = false
     @State private var batchSelectedIDs: Set<UUID> = []
     @State private var showBatchDeleteConfirm = false
@@ -74,11 +73,25 @@ struct ConversationListView: View {
     @State private var batchTagDraft = ""
     @State private var batchExportItem: BatchExportSharePayload?
     @State private var landingDraft: Conversation?
+    @State private var phoneTab: PhoneWorkspaceTab = .conversation
+    private enum PhoneDestination: Hashable { case archive, chat }
+    @State private var phonePath: [PhoneDestination] = []
+    @State private var phoneComposeEntry: PhoneComposeEntry?
+    @State private var historySearchPresented = false
+    @State private var isPhoneKeyboardVisible = false
     @State private var localDrawerPresented = false
     @State private var drawerDragOffset: CGFloat = 0
     @State private var preferences = AppPreferences.shared
 
     private var theme: DS.AccentTheme { preferences.accentTheme }
+
+    private var usesPhoneWorkspace: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone
+    }
+
+    private var showsPhoneTabBar: Bool {
+        !isPhoneKeyboardVisible && (phoneTab == .library || phonePath.last != .chat)
+    }
 
     private var isDrawerOpen: Bool {
         get { workspaceNavigation?.isDrawerPresented ?? localDrawerPresented }
@@ -125,21 +138,41 @@ struct ConversationListView: View {
         return String(localized: "本月 \(summary)")
     }
 
-    private func refreshBookmarkedIndex() {
+    @discardableResult
+    private func refreshBookmarkedIndex() -> Int {
         let desc = FetchDescriptor<ChatMessage>(predicate: #Predicate { $0.assistanceMetadataData != nil })
-        guard let msgs = try? modelContext.fetch(desc) else { return }
+        guard let msgs = try? modelContext.fetch(desc) else { return 0 }
         var ids = Set<UUID>()
+        var totalBookmarked = 0
         for msg in msgs where msg.assistanceMetadata.isBookmarked {
+            totalBookmarked += 1
             if let convID = msg.conversation?.id {
                 ids.insert(convID)
             }
         }
         bookmarkedConversationIDs = ids
+        return totalBookmarked
     }
 
-    var body: some View {
+    private func schedulePostSaveRefresh(immediate: Bool = false) {
+        postSaveRefreshTask?.cancel()
+        postSaveRefreshTask = Task { @MainActor in
+            if !immediate {
+                try? await Task.sleep(for: .milliseconds(350))
+                guard !Task.isCancelled else { return }
+            }
+            guard ChatEngine.shared.activeConversationIDs.isEmpty else { return }
+            let count = refreshBookmarkedIndex()
+            WidgetSnapshotService.shared.sync(context: modelContext, bookmarkedCount: count)
+            if !searchQuery.text.isEmpty { searchRevision += 1 }
+        }
+    }
+
+    private var baseWorkspaceView: some View {
         Group {
-            if horizontalSizeClass == .regular {
+            if usesPhoneWorkspace {
+                phoneWorkspace
+            } else if horizontalSizeClass == .regular {
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     drawerSidebarStack
                         .navigationSplitViewColumnWidth(min: 255, ideal: 320, max: 365)
@@ -199,16 +232,11 @@ struct ConversationListView: View {
         .onAppear {
             updateReadiness()
             refreshBookmarkedIndex()
-            if landingDraft == nil {
+            if !usesPhoneWorkspace && landingDraft == nil {
                 landingDraft = conversations.first {
                     Conversation.isDefaultTitle($0.title) && $0.messages.isEmpty && !$0.isArenaMode &&
                     !$0.isGroupMode && $0.activeBookFriend == nil && $0.assistanceSettings.knowledgeVolumeIDs.isEmpty
                 } ?? newDraft(arenaMode: false)
-            }
-            if splitSelection == nil,
-               let recentActive = conversations.first(where: { !$0.messages.isEmpty }) {
-                // Keep fresh landingDraft on cold launch unless testing workspaces expects history ready in drawer
-                _ = recentActive
             }
             handleQuickActionIfNeeded()
         }
@@ -218,12 +246,29 @@ struct ConversationListView: View {
             }
         }
         .onChange(of: preferences.defaultTargetID) { refreshUntouchedLanding() }
+        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave, object: modelContext)) { _ in
+            if usesPhoneWorkspace && landingDraft?.modelContext != nil { landingDraft = nil }
+            WebDAVAutoSyncCoordinator.shared.markLocalDataChanged()
+            if ChatEngine.shared.activeConversationIDs.isEmpty {
+                schedulePostSaveRefresh()
+            }
+        }
+        .onChange(of: ChatEngine.shared.activeConversationIDs.isEmpty) { _, isIdle in
+            if isIdle {
+                schedulePostSaveRefresh(immediate: true)
+            }
+        }
+        .onDisappear {
+            postSaveRefreshTask?.cancel()
+            postSaveRefreshTask = nil
+        }
         .onChange(of: preferences.defaultAssistantID) { refreshUntouchedLanding() }
         .onChange(of: SystemIntegration.fingerprint(providers)) { updateReadiness(); refreshUntouchedLanding() }
         .onReceive(NotificationCenter.default.publisher(for: .init("IOSBoxCredentialsChanged"))) { _ in updateReadiness() }
-        .sheet(isPresented: $showReader) {
-            ReaderSheet { id in SystemEntryRouter.shared.conversationID = id }
-        }
+    }
+
+    var body: some View {
+        baseWorkspaceView
         .sheet(isPresented: $showGroupSetup) {
             GroupCreationFlow(providers: providers, presets: presets) { created in
                 openConversation(created)
@@ -234,14 +279,10 @@ struct ConversationListView: View {
         }
         .sheet(isPresented: $showBookmarksHub) {
             BookmarksHubSheet(
-                onJumpToRoute: { route in
-                    splitSelection = route.conversation
-                    splitSearchRoute = route
-                    closeDrawerAnimated()
-                },
+                onJumpToRoute: openSearchRoute,
                 onBookmarksChanged: {
-                    refreshBookmarkedIndex()
-                    WidgetSnapshotService.shared.sync(context: modelContext)
+                    let count = refreshBookmarkedIndex()
+                    WidgetSnapshotService.shared.sync(context: modelContext, bookmarkedCount: count)
                 }
             )
         }
@@ -251,19 +292,9 @@ struct ConversationListView: View {
         .sheet(item: $selectedBookSearchHit) { hit in
             BookSearchHitReaderSheet(hit: hit)
         }
-        .sheet(item: $selectedFlashcardForReview) { card in
-            FlashcardReviewSheet(
-                initialCards: [card],
-                sessionTitle: card.deckName,
-                onJumpToConversation: { convID, msgID in
-                    SystemEntryRouter.shared.messageID = msgID
-                    SystemEntryRouter.shared.conversationID = convID
-                }
-            )
-        }
         .safeAreaInset(edge: .bottom) {
             if let error = SystemIntegration.shared.error {
-                Text(error).font(.caption).foregroundStyle(.orange).padding(8)
+                Text(error).font(.caption).foregroundStyle(DS.StatusText.warning).padding(8)
             }
         }
         .alert("删除这段对话？", isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
@@ -299,10 +330,134 @@ struct ConversationListView: View {
         }
         .onChange(of: pendingMessageRoute) { _, route in
             if let route {
-                splitSelection = route.conversation
-                splitSearchRoute = route
-                closeDrawerAnimated()
+                openSearchRoute(route)
                 pendingMessageRoute = nil
+            }
+        }
+    }
+
+    private var phoneWorkspace: some View {
+        VStack(spacing: 0) {
+            TabView(selection: $phoneTab) {
+                Tab("对话", systemImage: "bubble.left", value: .conversation) {
+                    phoneInboxStack.toolbar(.hidden, for: .tabBar)
+                }
+                Tab("资料库", systemImage: "book", value: .library) {
+                    phoneLibraryStack.toolbar(.hidden, for: .tabBar)
+                }
+            }
+
+            if showsPhoneTabBar {
+                PhoneWorkspaceTabBar(selection: phoneTab, accent: theme) { tab in
+                    if tab == .conversation && tab == phoneTab { phonePath.removeAll() }
+                    else { selectPhoneTab(tab) }
+                }
+            }
+        }
+        .environment(\.usesPhoneWorkspace, true)
+        .tint(theme.tintColor)
+        .background(DS.Surface.canvas.ignoresSafeArea())
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            isPhoneKeyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            isPhoneKeyboardVisible = false
+        }
+    }
+
+    private var phoneLibraryStack: some View {
+        NavigationStack {
+            PhoneLibraryView(
+                books: books,
+                onOpenSection: { section in
+                    if let workspaceNavigation { workspaceNavigation.openWorkshop(section) }
+                    else { selectSection?(1) }
+                },
+                onResumeReading: openConversation,
+                onOpenSettings: {
+                    if let workspaceNavigation { workspaceNavigation.openSettings() }
+                    else { selectSection?(2) }
+                },
+                onOpenUsage: {
+                    if let workspaceNavigation { workspaceNavigation.openUsage() }
+                    else { selectSection?(3) }
+                }
+            )
+            .toolbar(.hidden, for: .tabBar)
+        }
+    }
+
+    private var phoneInboxStack: some View {
+        NavigationStack(path: $phonePath) {
+            PhoneInboxView(
+                conversations: conversations, theme: theme,
+                preview: { conversationPreview($0, font: .subheadline) },
+                openConversation: openConversation,
+                resumeDraft: { openPhoneChat($0, entry: .writing) },
+                compose: startPhoneChat,
+                openArchive: { phonePath.append(.archive) },
+                search: {
+                    phonePath.append(.archive)
+                    historySearchPresented = true
+                }
+            )
+            .navigationDestination(for: PhoneDestination.self) { destination in
+                switch destination {
+                case .archive:
+                    conversationSidebarContent(compact: true)
+                        .navigationTitle("历史")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("新对话") { startPhoneChat(.writing) }
+                                    .keyboardShortcut("n", modifiers: .command)
+                                    .accessibilityIdentifier("workspace.history.newChat")
+                            }
+                        }
+                case .chat:
+                    stageDetailContent
+                }
+            }
+        }
+        .onChange(of: phonePath) { _, path in
+            if !path.contains(.chat) {
+                splitSelection = nil
+                splitSearchRoute = nil
+                phoneComposeEntry = nil
+                landingDraft = nil
+            }
+            if !path.contains(.archive) {
+                historySearchPresented = false
+                searchText = ""
+                isBatchSelecting = false
+                batchSelectedIDs.removeAll()
+            }
+        }
+    }
+
+    private func startPhoneChat(_ entry: PhoneComposeEntry) {
+        let draft = newDraft(arenaMode: false)
+        landingDraft = draft
+        openPhoneChat(draft, entry: entry)
+    }
+
+    private func openPhoneChat(_ chat: Conversation, entry: PhoneComposeEntry) {
+        openConversation(chat)
+        phoneComposeEntry = entry
+    }
+
+    private func selectPhoneTab(_ selection: PhoneWorkspaceTab) {
+        guard selection != phoneTab else { return }
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        phoneTab = selection
+    }
+
+    private var toggleDrawer: (() -> Void)? {
+        guard !usesPhoneWorkspace && horizontalSizeClass != .regular else { return nil }
+        return {
+            preferences.triggerSelectionHaptic()
+            withAnimation(.spring(response: 0.30, dampingFraction: 0.86)) {
+                isDrawerOpen.toggle()
             }
         }
     }
@@ -375,32 +530,23 @@ struct ConversationListView: View {
     // MARK: - Stage & Drawer Stacks
 
     private var stageDetailStack: some View {
-        NavigationStack {
-            Group {
-                if let route = splitSearchRoute {
-                    ConversationSearchDestination(route: route) { next in
-                        splitSearchRoute = nil
-                        splitSelection = next
-                    }
-                    .id("\(route.conversation.id.uuidString)-\(route.messageID.uuidString)")
-                } else if let conv = splitSelection, !conv.isDeleted, conv.modelContext != nil {
-                    ChatDetailView(
-                        conversation: conv,
-                        onOpenConversation: { next in
-                            openConversation(next)
-                        },
-                        onToggleDrawer: horizontalSizeClass == .regular ? nil : {
-                            preferences.triggerSelectionHaptic()
-                            withAnimation(.spring(response: 0.30, dampingFraction: 0.86)) {
-                                isDrawerOpen.toggle()
-                            }
-                        }
-                    )
-                    .id(conv.id)
-                } else {
-                    landingEditor
-                }
-            }
+        NavigationStack { stageDetailContent }
+    }
+
+    @ViewBuilder
+    private var stageDetailContent: some View {
+        if let route = splitSearchRoute {
+            ConversationSearchDestination(route: route, onOpenConversation: openConversation)
+                .id("\(route.conversation.id.uuidString)-\(route.messageID.uuidString)")
+        } else if let conv = splitSelection, !conv.isDeleted, conv.modelContext != nil || (usesPhoneWorkspace && conv === landingDraft) {
+            ChatDetailView(conversation: conv, isLandingDraft: conv.modelContext == nil,
+                           onOpenConversation: openConversation, onToggleDrawer: toggleDrawer,
+                           phoneEntry: phoneComposeEntry)
+                .id(conv.id)
+        } else if !usesPhoneWorkspace {
+            landingEditor
+        } else {
+            ContentUnavailableView("未找到对话", systemImage: "bubble.left")
         }
     }
 
@@ -448,14 +594,19 @@ struct ConversationListView: View {
     }
 
     @ViewBuilder
-    private func conversationSidebarContent() -> some View {
+    private func conversationSidebarContent(compact: Bool = false) -> some View {
         let tags = availableTags
         let filtered = filteredConversations
-        let pinned = filtered.filter(\.isPinned)
-        let regular = filtered.filter { !$0.isPinned }
+        let store = ChatDraftStore.shared
+        let drafts = compact ? filtered.filter { store.previews[$0.id]?.summary != nil }.sorted {
+            store.draftDates[$0.id, default: $0.updatedAt] > store.draftDates[$1.id, default: $1.updatedAt]
+        } : []
+        let draftIDs = Set(drafts.map(\.id))
+        let pinned = filtered.filter { $0.isPinned && !draftIDs.contains($0.id) }
+        let regular = filtered.filter { !$0.isPinned && !draftIDs.contains($0.id) }
 
-        List {
-            if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let list = List {
+            if !compact && searchQuery.text.isEmpty {
                 Section {
                     WorkspaceSpaceCardsView(bookCount: books.count) { section in
                         if let workspaceNavigation {
@@ -528,10 +679,15 @@ struct ConversationListView: View {
                 .listRowBackground(Color.clear)
             }
 
-            if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if searchQuery.text.isEmpty {
+                if !drafts.isEmpty {
+                    Section("草稿") {
+                        ForEach(drafts) { conv in conversationRow(conv, compact: true) }
+                    }
+                }
                 if !pinned.isEmpty {
                     Section {
-                        ForEach(pinned) { conv in conversationRow(conv) }
+                        ForEach(pinned) { conv in conversationRow(conv, compact: compact) }
                     } header: {
                         Text("置顶对话")
                             .font(.caption.weight(.semibold))
@@ -540,7 +696,7 @@ struct ConversationListView: View {
                 }
                 ForEach(ConversationTimeBucket.group(regular, date: \.updatedAt), id: \.bucket) { group in
                     Section {
-                        ForEach(group.items) { conv in conversationRow(conv) }
+                        ForEach(group.items) { conv in conversationRow(conv, compact: compact) }
                     } header: {
                         Text(group.bucket.title)
                             .font(.caption.weight(.semibold))
@@ -556,35 +712,27 @@ struct ConversationListView: View {
                     onSelectConversation: { conv in
                         openConversation(conv)
                     },
-                    onSelectRoute: { route in
-                        splitSelection = route.conversation
-                        splitSearchRoute = route
-                        closeDrawerAnimated()
-                    },
+                    onSelectRoute: openSearchRoute,
                     onSelectBookHit: { hit in
                         selectedBookSearchHit = hit
-                    },
-                    onSelectFlashcardHit: { hit in
-                        if let card = FlashcardStore.shared.cards.first(where: { $0.id == hit.id }) {
-                            selectedFlashcardForReview = card
-                        }
                     }
                 )
             }
         }
-        .listStyle(.sidebar)
+        Group {
+            if compact { list.listStyle(.plain) }
+            else { list.listStyle(.sidebar) }
+        }
         .scrollContentBackground(.hidden)
-        .background(DS.Surface.drawer)
+        .background(compact ? DS.Surface.canvas : DS.Surface.drawer)
         .task(id: SearchRefresh(query: searchQuery, revision: searchRevision)) {
             await historySearch.update(searchQuery, in: modelContext.container)
         }
-        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave, object: modelContext)) { _ in
-            refreshBookmarkedIndex()
-            WidgetSnapshotService.shared.sync(context: modelContext)
-            WebDAVAutoSyncCoordinator.shared.markLocalDataChanged()
-            if !searchQuery.text.isEmpty { searchRevision += 1 }
+        .task(id: scenePhase) {
+            if compact && scenePhase == .active { await store.loadInboxPreviews() }
         }
-        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索对话、书架与闪卡")
+        .searchable(text: $searchText, isPresented: $historySearchPresented,
+                    placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索对话与书架")
         .safeAreaInset(edge: .bottom) {
             if isBatchSelecting {
                 batchActionBar
@@ -615,16 +763,6 @@ struct ConversationListView: View {
                 Text("夜奔")
                     .font(.system(.headline, design: .serif).weight(.bold))
             }
-        }
-
-        ToolbarItem(placement: .topBarLeading) {
-            Button {
-                closeDrawerAnimated()
-                showReader = true
-            } label: {
-                Image(systemName: "doc.text.magnifyingglass")
-            }
-            .accessibilityLabel("网页精读")
         }
 
         ToolbarItem(placement: .topBarTrailing) {
@@ -661,7 +799,23 @@ struct ConversationListView: View {
     private func openConversation(_ conv: Conversation) {
         splitSearchRoute = nil
         splitSelection = conv
-        closeDrawerAnimated()
+        presentSelectedChat()
+    }
+
+    private func openSearchRoute(_ route: ConversationMessageRoute) {
+        splitSelection = route.conversation
+        splitSearchRoute = route
+        presentSelectedChat()
+    }
+
+    private func presentSelectedChat() {
+        if usesPhoneWorkspace {
+            phoneComposeEntry = nil
+            selectPhoneTab(.conversation)
+            if phonePath.last != .chat { phonePath.append(.chat) }
+        } else {
+            closeDrawerAnimated()
+        }
     }
 
     private func filterChip(title: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -684,7 +838,7 @@ struct ConversationListView: View {
         .buttonStyle(.plain)
     }
 
-    private func conversationPreview(_ conv: Conversation) -> some View {
+    private func conversationPreview(_ conv: Conversation, font: Font = .caption) -> some View {
         HStack(spacing: 6) {
             if let summary = ChatDraftStore.shared.previews[conv.id]?.summary {
                 Text("草稿").fontWeight(.semibold).foregroundStyle(theme.readableText).fixedSize()
@@ -720,28 +874,35 @@ struct ConversationListView: View {
                     .foregroundStyle(DS.Surface.inkSecondary)
             }
         }
-        .font(.caption)
+        .font(font)
         .lineLimit(1)
     }
 
     @ViewBuilder
-    private func conversationRow(_ conv: Conversation) -> some View {
+    private func conversationRow(_ conv: Conversation, compact: Bool = false) -> some View {
         let isSelected = (splitSelection ?? landingDraft)?.id == conv.id && splitSearchRoute == nil
         let rowBody = HStack(spacing: DS.Spacing.sm) {
-            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                .fill(isSelected ? theme.solidFill : Color.clear)
-                .frame(width: 3, height: 28)
-                .accessibilityHidden(true)
-
-            ZStack {
-                RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
-                    .fill(isSelected ? theme.softFill : DS.Surface.subtle)
-                    .frame(width: 36, height: 36)
-                AssistantEmojiIcon(emoji: conv.assistantEmoji, font: .subheadline)
-                    .frame(width: 36, height: 36)
+            if compact {
+                let symbol = conv.isArenaMode ? "arrow.left.arrow.right" : (conv.isGroupMode ? "person.2" : "doc.text")
+                Image(systemName: symbol)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(theme.readableText)
+                    .frame(width: 30)
+                    .accessibilityHidden(true)
+            } else {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(isSelected ? theme.solidFill : Color.clear)
+                    .frame(width: 3, height: 28)
+                    .accessibilityHidden(true)
+                ZStack {
+                    RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                        .fill(isSelected ? theme.softFill : DS.Surface.subtle)
+                        .frame(width: 36, height: 36)
+                    AssistantEmojiIcon(emoji: conv.assistantEmoji, font: .subheadline)
+                        .frame(width: 36, height: 36)
+                }
+                    .accessibilityHidden(true)
             }
-            .accessibilityHidden(true)
-
             VStack(alignment: .leading, spacing: 2) {
                 if dynamicTypeSize.isAccessibilitySize {
                     Text(conv.title)
@@ -758,7 +919,7 @@ struct ConversationListView: View {
                 } else {
                     HStack(spacing: DS.Spacing.xs) {
                         Text(conv.title)
-                            .font(.subheadline.weight(isSelected ? .semibold : .medium))
+                            .font((compact ? Font.body : .subheadline).weight(isSelected ? .semibold : .medium))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                         conversationBadges(conv)
@@ -777,7 +938,15 @@ struct ConversationListView: View {
 
                 conversationPreview(conv)
             }
+            .frame(maxWidth: compact ? .infinity : nil, alignment: .leading)
+            if compact && !isBatchSelecting {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
         }
+        .padding(.vertical, compact ? DS.Spacing.xs : 0)
         .frame(minHeight: DS.TouchTarget.minimum)
         .contentShape(Rectangle())
 
@@ -810,8 +979,8 @@ struct ConversationListView: View {
                 .buttonStyle(.plain)
                 .listRowBackground(
                     RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
-                        .fill(isSelected ? theme.softFill : DS.Surface.card)
-                        .padding(.vertical, 2)
+                        .fill(isSelected ? theme.softFill : (compact ? DS.Surface.canvas : DS.Surface.card))
+                        .padding(.vertical, compact ? 0 : 2)
                 )
             }
         }
@@ -886,12 +1055,7 @@ struct ConversationListView: View {
                 conversation: chat,
                 isLandingDraft: true,
                 onOpenConversation: openConversation,
-                onToggleDrawer: horizontalSizeClass == .regular ? nil : {
-                    preferences.triggerSelectionHaptic()
-                    withAnimation(.spring(response: 0.30, dampingFraction: 0.86)) {
-                        isDrawerOpen.toggle()
-                    }
-                }
+                onToggleDrawer: toggleDrawer
             )
             .id(chat.id)
         }
@@ -1015,7 +1179,7 @@ struct ConversationListView: View {
     }
 
     private func refreshUntouchedLanding() {
-        if let draft = landingDraft, draft.modelContext == nil, draft.messages.isEmpty {
+        if !usesPhoneWorkspace, let draft = landingDraft, draft.modelContext == nil, draft.messages.isEmpty {
             landingDraft = newDraft(arenaMode: false)
         }
     }
@@ -1042,7 +1206,8 @@ struct ConversationListView: View {
         SystemEntryRouter.shared.pendingQuickAction = nil
         switch action {
         case .newChat:
-            _ = openOrCreateFreshQuickChat()
+            if usesPhoneWorkspace { startPhoneChat(.writing) }
+            else { _ = openOrCreateFreshQuickChat() }
         case .voiceNote:
             if let conv = openOrCreateFreshQuickChat() {
                 SystemEntryRouter.shared.pendingChatToolRequest = ChatToolLaunchRequest(conversationID: conv.id, tool: .voiceNote)
@@ -1052,7 +1217,6 @@ struct ConversationListView: View {
                 SystemEntryRouter.shared.pendingChatToolRequest = ChatToolLaunchRequest(conversationID: conv.id, tool: .scanDocument)
             }
         case .bookmarks:
-            showReader = false
             showGroupSetup = false
             closeDrawerAnimated()
             showBookmarksHub = true
@@ -1061,7 +1225,7 @@ struct ConversationListView: View {
 
     private func openOrCreateFreshQuickChat() -> Conversation? {
         let conv: Conversation
-        if let existing = conversations.first(where: {
+        if !usesPhoneWorkspace, let existing = conversations.first(where: {
             Conversation.isDefaultTitle($0.title) && $0.messages.isEmpty && !$0.isArenaMode &&
             !$0.isGroupMode && $0.activeBookFriend == nil && $0.assistanceSettings.knowledgeVolumeIDs.isEmpty
         }) {

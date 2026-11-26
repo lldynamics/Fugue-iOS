@@ -252,17 +252,6 @@ final class AppLockController {
         }
     }
 
-    func resetForTesting() {
-        suppressResetTask?.cancel()
-        isLocked = false
-        isAuthenticating = false
-        isPrivacyShieldVisible = false
-        lastError = nil
-        backgroundedAt = nil
-        didCancelCurrentLock = false
-        suppressNextInactiveShield = false
-    }
-
     private static func evaluateDeviceOwner(reason: String) async throws -> Bool {
         let context = LAContext()
         context.localizedFallbackTitle = String(localized: "使用设备密码")

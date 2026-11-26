@@ -151,8 +151,7 @@ final class SpotlightIndexService {
         if let tag = conversation.folderTag?.trimmingCharacters(in: .whitespacesAndNewlines), !tag.isEmpty {
             keywords.append(tag)
         }
-        if !conversation.assistanceSettings.blindArenaMode,
-           let model = conversation.primaryTarget?.modelDisplayName, !model.isEmpty {
+        if let model = conversation.primaryTarget?.modelDisplayName, !model.isEmpty {
             keywords.append(model)
         }
 
@@ -179,24 +178,11 @@ final class SpotlightIndexService {
         ))
 
         // 2. Index bookmarked highlight answers inside the conversation for direct deep-linking
-        let blindMode = conversation.assistanceSettings.blindArenaMode
-        let groupedArena = blindMode
-            ? Dictionary(grouping: conversation.messages.filter { $0.comparisonGroupID != nil }, by: \.comparisonGroupID)
-            : [:]
         var activeBookmarkKeys = Set<String>()
         for msg in conversation.messages where msg.assistanceMetadataData != nil && !msg.content.isEmpty && msg.assistanceMetadata.isBookmarked {
             let msgIdentifier = Self.makeIdentifier(conversationID: conversation.id, messageID: msg.id)
             activeBookmarkKeys.insert(msgIdentifier)
-            let speakerLabel: String
-            if blindMode, msg.comparisonGroupID != nil {
-                speakerLabel = ArenaSynthesis.visibleSpeakerName(
-                    for: msg,
-                    in: groupedArena[msg.comparisonGroupID] ?? [],
-                    blindArenaMode: true
-                )
-            } else {
-                speakerLabel = msg.modelDisplayName
-            }
+            let speakerLabel = msg.modelDisplayName
             let titlePrefix = speakerLabel.isEmpty ? conversation.title : "\(conversation.title) · \(speakerLabel)"
             let snippet = String(msg.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(320))
             let msgEntry = IndexedEntry(

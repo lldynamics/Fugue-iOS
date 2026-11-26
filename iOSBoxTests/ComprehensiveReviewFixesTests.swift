@@ -537,17 +537,6 @@ final class ComprehensiveReviewFixesTests: XCTestCase {
         XCTAssertEqual(gatedURLs.map(\.absoluteString), ["https://reading.example.com/notes", reference.url.absoluteString])
         XCTAssertEqual(assistantReply.assistanceMetadata.toolCalls.map(\.succeeded), [true, false, false])
 
-        // 6b. StudyGeneratorService.parseQuizJSON preserves exact right answer when empty options are filtered
-        let trickyQuizJSON = """
-        {"title":"边界测验","questions":[
-          {"question":"哪项是正确的？","options":["  ","错误项 A","正确项 B","错误项 C"],"correctIndex":2,"explanation":"空项不应导致下标偏移"}
-        ]}
-        """
-        let quiz = try StudyGeneratorService.parseQuizJSON(trickyQuizJSON)
-        let q = try XCTUnwrap(quiz.questions.first)
-        XCTAssertEqual(q.options, ["错误项 A", "正确项 B", "错误项 C"])
-        XCTAssertEqual(q.options[q.correctIndex], "正确项 B")
-
         // 6c. ModelPricingCatalog token boundaries prevent `mistral-nemo3` / `o3-pro` from matching `o3`
         XCTAssertEqual(ModelPricingCatalog.match(modelID: "o3")?.id, "o3")
         XCTAssertEqual(ModelPricingCatalog.match(modelID: "openai/o3-2025-04-16")?.id, "o3")

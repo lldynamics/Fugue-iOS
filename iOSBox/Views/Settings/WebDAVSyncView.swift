@@ -16,7 +16,6 @@ struct WebDAVSyncView: View {
     @State private var statusMessage: String?
     @State private var statusIsError = false
     @State private var showClearConfirm = false
-    @State private var showPruneOrphansConfirm = false
 
     private var canAuthenticate: Bool {
         !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
@@ -81,9 +80,6 @@ struct WebDAVSyncView: View {
             }
 
             Section {
-                Toggle("分片增量同步（推荐）", isOn: $preferences.webDAVShardedSyncEnabled)
-                    .disabled(activeBusy)
-
                 Toggle("开启自动静默同步", isOn: Binding(
                     get: { preferences.webDAVAutoSyncEnabled },
                     set: { enabled in
@@ -110,9 +106,9 @@ struct WebDAVSyncView: View {
                     }
                 }
             } header: {
-                Text("同步模式与自动同步")
+                Text("自动同步")
             } footer: {
-                Text("分片同步会将书架与大图按内容哈希加密独立上传，日常仅同步轻量清单与删除记录（墓碑），避免重复上传大文件或已删对话复活；关闭后退回单文件备份格式。开启自动同步后，进入或离开「夜奔」超过间隔时会自动双向合并。")
+                Text("使用与手工加密备份一致的单文件加密格式，并携带删除墓碑记录以防已删对话复活，预留跨平台数据互通。开启自动同步后，进入或离开「夜奔」超过间隔时会自动双向合并。")
             }
 
             Section {
@@ -159,15 +155,6 @@ struct WebDAVSyncView: View {
                     Label("从云端拉取并合并", systemImage: "icloud.and.arrow.down")
                 }
                 .disabled(!canSyncEncrypted || activeBusy || !PersistenceController.canCommitUserData(in: modelContext))
-
-                if preferences.webDAVShardedSyncEnabled {
-                    Button {
-                        showPruneOrphansConfirm = true
-                    } label: {
-                        Label("清理云端未引用孤儿分片", systemImage: "trash.slash")
-                    }
-                    .disabled(!canSyncEncrypted || activeBusy)
-                }
             } header: {
                 Text("同步操作")
             }
@@ -193,7 +180,7 @@ struct WebDAVSyncView: View {
                     } else if let autoError = coordinator.lastSyncError, !autoError.isEmpty {
                         Text(autoError)
                             .font(.footnote)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(DS.StatusText.error)
                     } else if !preferences.webDAVLastAutoSyncSummary.isEmpty {
                         Text(preferences.webDAVLastAutoSyncSummary)
                             .font(.footnote)
@@ -238,14 +225,6 @@ struct WebDAVSyncView: View {
         } message: {
             Text("将删除本地保存的 WebDAV 地址、账号及钥匙串中的密码和同步加密密钥，不会影响云端已有文件。")
         }
-        .alert("清理云端孤儿分片？", isPresented: $showPruneOrphansConfirm) {
-            Button("取消", role: .cancel) {}
-            Button("开始清理", role: .destructive) {
-                Task { await runPruneOrphanBlobs() }
-            }
-        } message: {
-            Text("将先核对云端最新分片清单，仅删除已不再被任何书籍或对话引用的历史加密分片。")
-        }
     }
 
     @ViewBuilder
@@ -265,17 +244,6 @@ struct WebDAVSyncView: View {
                 Text(remoteNewer ? String(localized: "云端有更新") : String(localized: "与云端一致"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(remoteNewer ? .orange : .green)
-            }
-            LabeledContent("同步格式") {
-                Text(coordinator.remoteUsesShards ? String(localized: "加密分片清单") : String(localized: "单文件完整备份"))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-            if !preferences.webDAVKnownRemoteBlobs.isEmpty {
-                LabeledContent("云端静态分片") {
-                    Text("\(preferences.webDAVKnownRemoteBlobs.count)")
-                        .monospacedDigit()
-                }
             }
             let tombstoneCount = SyncTombstoneStore.shared.count()
             if tombstoneCount > 0 {
@@ -376,57 +344,34 @@ struct WebDAVSyncView: View {
         statusMessage = nil
         defer { isBusy = false }
         do {
+            let workspaceChangeID = preferences.webDAVWorkspaceChangeID
             let payload = try EncryptedBackupService.makeExportPayload(
                 context: modelContext,
                 tombstoneStore: .shared
             )
-            if preferences.webDAVShardedSyncEnabled {
-                let result = try await WebDAVShardedSyncService.pushSharded(
-                    payload: payload,
-                    passphrase: syncPassphrase,
-                    serverURL: preferences.webDAVServerURL,
-                    remotePath: preferences.webDAVRemotePath,
-                    username: preferences.webDAVUsername,
-                    password: password,
-                    knownSaltBase64: preferences.webDAVKnownShardSalt.isEmpty ? nil : preferences.webDAVKnownShardSalt,
-                    knownKeyFingerprint: preferences.webDAVKnownShardKeyFingerprint.isEmpty ? nil : preferences.webDAVKnownShardKeyFingerprint,
-                    knownRemoteBlobs: Set(preferences.webDAVKnownRemoteBlobs)
-                )
-                coordinator.recordShardState(
-                    saltBase64: result.saltBase64,
-                    keyFingerprint: result.keyFingerprint,
-                    presentBlobs: result.presentBlobs,
-                    stats: result.stats,
-                    preferences: preferences
-                )
-                coordinator.recordSyncedRemoteMetadata(result.metadata, preferences: preferences)
-                statusIsError = false
-                statusMessage = result.stats.pushSummaryText
-            } else {
-                let pass = syncPassphrase
-                let encryptedData = try await Task.detached(priority: .userInitiated) {
-                    try EncryptedBackupService.encryptPayload(payload, password: pass)
-                }.value
-                let putMeta = try await WebDAVSyncService.uploadEncryptedData(
-                    encryptedData,
+            let pass = syncPassphrase
+            let encryptedData = try await Task.detached(priority: .userInitiated) {
+                try EncryptedBackupService.encryptPayload(payload, password: pass)
+            }.value
+            let putMeta = try await WebDAVSyncService.uploadEncryptedData(
+                encryptedData,
+                serverURL: preferences.webDAVServerURL,
+                remotePath: preferences.webDAVRemotePath,
+                username: preferences.webDAVUsername,
+                password: password
+            )
+            var finalMeta = putMeta
+            if finalMeta.etag == nil && finalMeta.lastModified == nil {
+                finalMeta = (try? await WebDAVSyncService.fetchRemoteMetadata(
                     serverURL: preferences.webDAVServerURL,
                     remotePath: preferences.webDAVRemotePath,
                     username: preferences.webDAVUsername,
                     password: password
-                )
-                var finalMeta = putMeta
-                if finalMeta.etag == nil && finalMeta.lastModified == nil {
-                    finalMeta = (try? await WebDAVSyncService.fetchRemoteMetadata(
-                        serverURL: preferences.webDAVServerURL,
-                        remotePath: preferences.webDAVRemotePath,
-                        username: preferences.webDAVUsername,
-                        password: password
-                    )) ?? putMeta
-                }
-                coordinator.recordSyncedRemoteMetadata(finalMeta, preferences: preferences)
-                statusIsError = false
-                statusMessage = String(localized: "已加密上传完整备份到 \(preferences.webDAVRemotePath)。")
+                )) ?? putMeta
             }
+            coordinator.recordSyncedRemoteMetadata(finalMeta, uploadedWorkspaceChangeID: workspaceChangeID, preferences: preferences)
+            statusIsError = false
+            statusMessage = String(localized: "已加密上传完整备份到 \(preferences.webDAVRemotePath)。")
         } catch {
             statusIsError = true
             statusMessage = error.localizedDescription
@@ -439,88 +384,32 @@ struct WebDAVSyncView: View {
         statusMessage = nil
         defer { isBusy = false }
         do {
-            var summary: ImportSummary
-            var pullNote = ""
-            if preferences.webDAVShardedSyncEnabled,
-               let shardMeta = try? await WebDAVShardedSyncService.fetchManifestMetadata(
-                   serverURL: preferences.webDAVServerURL,
-                   remotePath: preferences.webDAVRemotePath,
-                   username: preferences.webDAVUsername,
-                   password: password
-               ),
-               shardMeta.exists {
-                let pulled = try await WebDAVShardedSyncService.pullSharded(
-                    passphrase: syncPassphrase,
-                    serverURL: preferences.webDAVServerURL,
-                    remotePath: preferences.webDAVRemotePath,
-                    username: preferences.webDAVUsername,
-                    password: password,
-                    existingBooks: WebDAVAutoSyncCoordinator.localBookSnapshots(in: modelContext),
-                    existingAttachmentBlobs: WebDAVAutoSyncCoordinator.localAttachmentBlobs(in: modelContext)
-                )
-                summary = try EncryptedBackupService.applyDecryptedPayload(
-                    pulled.payload,
-                    to: modelContext,
-                    tombstonePolicy: .enforce(.shared)
-                )
-                coordinator.recordShardState(
-                    saltBase64: pulled.saltBase64,
-                    keyFingerprint: pulled.keyFingerprint,
-                    presentBlobs: pulled.presentBlobs,
-                    stats: pulled.stats,
-                    preferences: preferences
-                )
-                coordinator.recordSyncedRemoteMetadata(pulled.metadata.exists ? pulled.metadata : shardMeta, preferences: preferences)
-                pullNote = "\n\(pulled.stats.pullSummaryText)"
-            } else {
-                let meta = try? await WebDAVSyncService.fetchRemoteMetadata(
-                    serverURL: preferences.webDAVServerURL,
-                    remotePath: preferences.webDAVRemotePath,
-                    username: preferences.webDAVUsername,
-                    password: password
-                )
-                let data = try await WebDAVSyncService.downloadEncryptedData(
-                    serverURL: preferences.webDAVServerURL,
-                    remotePath: preferences.webDAVRemotePath,
-                    username: preferences.webDAVUsername,
-                    password: password
-                )
-                summary = try await EncryptedBackupService.decryptAndApplyAsync(
-                    data: data,
-                    password: syncPassphrase,
-                    to: modelContext,
-                    tombstonePolicy: .enforce(.shared)
-                )
-                if let meta, meta.exists {
-                    coordinator.recordSyncedRemoteMetadata(meta, preferences: preferences)
-                } else {
-                    preferences.webDAVLastSyncAt = Date()
-                }
-            }
-            WidgetSnapshotService.shared.sync(context: modelContext, forceReload: true)
-            statusIsError = summary.hasWarnings
-            statusMessage = "\(summary.title)：\(summary.description)\(pullNote)"
-        } catch {
-            statusIsError = true
-            statusMessage = error.localizedDescription
-        }
-    }
-
-    private func runPruneOrphanBlobs() async {
-        saveConfig()
-        isBusy = true
-        statusMessage = nil
-        defer { isBusy = false }
-        do {
-            let report = try await WebDAVShardedSyncService.pruneOrphanBlobs(
-                passphrase: syncPassphrase,
+            let meta = try? await WebDAVSyncService.fetchRemoteMetadata(
                 serverURL: preferences.webDAVServerURL,
                 remotePath: preferences.webDAVRemotePath,
                 username: preferences.webDAVUsername,
                 password: password
             )
-            statusIsError = report.failedCount > 0
-            statusMessage = report.summaryText
+            let data = try await WebDAVSyncService.downloadEncryptedData(
+                serverURL: preferences.webDAVServerURL,
+                remotePath: preferences.webDAVRemotePath,
+                username: preferences.webDAVUsername,
+                password: password
+            )
+            let summary = try await EncryptedBackupService.decryptAndApplyAsync(
+                data: data,
+                password: syncPassphrase,
+                to: modelContext,
+                tombstonePolicy: .enforce(.shared)
+            )
+            if let meta, meta.exists {
+                coordinator.recordSyncedRemoteMetadata(meta, preferences: preferences)
+            } else {
+                preferences.webDAVLastSyncAt = Date()
+            }
+            WidgetSnapshotService.shared.sync(context: modelContext, forceReload: true)
+            statusIsError = summary.hasWarnings
+            statusMessage = "\(summary.title)：\(summary.description)"
         } catch {
             statusIsError = true
             statusMessage = error.localizedDescription

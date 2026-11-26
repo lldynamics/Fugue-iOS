@@ -2,14 +2,7 @@ import Foundation
 import SwiftData
 
 extension ChatEngine {
-    // MARK: - Arena Comparison, Critique, Synthesis & Blind Voting
-
-    static func setBlindArenaMode(_ enabled: Bool, in conversation: Conversation) {
-        conversation.assistanceSettings.blindArenaMode = enabled
-        if enabled, conversation.isArenaMode || conversation.messages.contains(where: { $0.comparisonGroupID != nil && $0.isStreaming }) {
-            LiveActivityCoordinator.shared.anonymizeComparison(in: conversation.id)
-        }
-    }
+    // MARK: - Arena Comparison & Synthesis
 
     /// Promotes a single-chat assistant reply into a side-by-side comparison group with a second model.
     func compareWithAnotherModel(
@@ -80,129 +73,6 @@ extension ChatEngine {
     }
 
     @discardableResult
-    func crossCritique(
-        groupID: UUID,
-        in conversation: Conversation,
-        providers: [ProviderConfig],
-        context: ModelContext
-    ) -> SynthesisOutcome {
-        guard !isGenerating(in: conversation.id) else { return .busy }
-        let active = ConversationTree.activeMessages(in: conversation)
-        let eligible = ArenaSynthesis.eligibleSources(in: active, groupID: groupID)
-        guard eligible.count >= 2 else { return .insufficientAnswers }
-        let targets = eligible.compactMap { source in
-            source.providerID == nil ? nil : replyTarget(source, in: conversation, providers: providers)
-        }
-        guard targets.count == eligible.count else { return .unavailableModel }
-
-        guard let firstGroupIdx = active.firstIndex(where: { $0.comparisonGroupID == groupID }),
-              let lastGroupIdx = active.lastIndex(where: { $0.comparisonGroupID == groupID }) else {
-            return .missingQuestion
-        }
-        let priorMessages = Array(active[..<firstGroupIdx])
-        guard priorMessages.last?.role == .user else {
-            return .missingQuestion
-        }
-
-        let baseHistory = buildPromptHistory(messages: priorMessages, limit: conversation.contextMessageLimit)
-        let isHistoricalTurn = lastGroupIdx < active.count - 1
-        if isHistoricalTurn {
-            ConversationTree.ensureExplicitParentLinks(in: conversation)
-        }
-        let useTree = ConversationTree.usesTree(conversation)
-        let groupMembers = active.filter { $0.comparisonGroupID == groupID }
-        let groupWinner = groupMembers.first(where: \.isSelectedInGroup) ?? groupMembers.first
-        let anchorID: UUID?
-        if useTree {
-            anchorID = groupWinner?.id ?? ConversationTree.currentAnchorID(in: conversation) ?? ConversationTree.virtualRootID
-        } else {
-            anchorID = nil
-        }
-
-        let nextSort = conversation.nextMessageSortIndex()
-        let critiquePromptMsg = ChatMessage(
-            role: .user,
-            content: String(localized: "请各模型审阅同组其他候选答案，吸收优点并修正遗漏或错误，给出完善后的最终回答。"),
-            sortIndex: nextSort
-        )
-        critiquePromptMsg.parentMessageID = anchorID
-        critiquePromptMsg.conversation = conversation
-        conversation.messages.append(critiquePromptMsg)
-        context.insert(critiquePromptMsg)
-
-        let newGroupID = UUID()
-        let isUnrevealedBlind = conversation.assistanceSettings.blindArenaMode
-            && !eligible.contains(where: { $0.assistanceMetadata.blindArenaRevealed })
-        var slots: [StreamSlot] = []
-        var perSlotHistories: [UUID: [LLMPromptMessage]] = [:]
-
-        for (idx, resolved) in targets.enumerated() {
-            let reply = ChatMessage(
-                role: .assistant,
-                target: resolved,
-                comparisonGroupID: newGroupID,
-                isSelectedInGroup: idx == 0,
-                isStreaming: true,
-                sortIndex: nextSort + 1 + idx
-            )
-            if useTree {
-                reply.parentMessageID = critiquePromptMsg.id
-            }
-            reply.conversation = conversation
-            conversation.messages.append(reply)
-            context.insert(reply)
-
-            perSlotHistories[reply.id] = baseHistory + [
-                LLMPromptMessage(
-                    role: .user,
-                    content: ArenaSynthesis.critiquePrompt(for: resolved, allSources: eligible, blind: isUnrevealedBlind),
-                    attachments: []
-                )
-            ]
-            slots.append(StreamSlot(
-                message: reply,
-                candidates: [resolved],
-                kind: .answer,
-                systemPromptOverride: ArenaSynthesis.critiqueSystemPrompt
-            ))
-        }
-
-        if useTree, let first = slots.first?.message {
-            conversation.activeLeafMessageID = first.id
-        }
-        try? context.save()
-
-        let convID = conversation.id
-        let token = UUID()
-        activeConversationIDs.insert(convID)
-        let task = Task { @MainActor in
-            await withTaskGroup(of: Void.self) { group in
-                for slot in slots {
-                    let slotHistory = perSlotHistories[slot.message.id] ?? baseHistory
-                    group.addTask { @MainActor in
-                        _ = await self.runSlotWithFallback(
-                            slot: slot,
-                            historySnapshot: slotHistory,
-                            conversation: conversation,
-                            providers: providers,
-                            context: context
-                        )
-                    }
-                }
-            }
-            if Self.isAlive(conversation) {
-                conversation.updatedAt = Date()
-                try? context.save()
-                SpotlightIndexService.shared.indexConversation(conversation)
-            }
-            self.finishGeneration(conversationID: convID, token: token, statuses: slots.map { Self.outcomeStatus(of: $0.message) })
-        }
-        activeGenerations[convID] = ActiveGeneration(token: token, task: task, context: context)
-        updateBackgroundExecution()
-        return .started
-    }
-
-    @discardableResult
     func synthesize(
         groupID: UUID,
         target: ResolvedModelTarget,
@@ -228,20 +98,13 @@ extension ChatEngine {
             return .missingQuestion
         }
 
-        let isUnrevealedBlind = conversation.assistanceSettings.blindArenaMode
-            && !allOriginals.contains(where: { $0.assistanceMetadata.blindArenaRevealed })
         var historySnapshot = buildPromptHistory(
             messages: priorMessages,
             limit: conversation.contextMessageLimit
         )
         historySnapshot.append(LLMPromptMessage(
             role: .user,
-            content: ArenaSynthesis.candidatePrompt(
-                eligible,
-                totalCount: allOriginals.count,
-                blind: isUnrevealedBlind,
-                allGroupCandidates: allOriginals
-            ),
+            content: ArenaSynthesis.candidatePrompt(eligible, totalCount: allOriginals.count),
             attachments: []
         ))
 
@@ -303,30 +166,6 @@ extension ChatEngine {
             context: context
         )
         return .started
-    }
-
-    func castBlindVote(for winner: ChatMessage, in conversation: Conversation, context: ModelContext) throws {
-        guard conversation.assistanceSettings.blindArenaMode, !isGenerating(in: conversation.id),
-              let groupID = winner.comparisonGroupID else { return }
-        let group = ArenaSynthesis.sources(in: conversation.messages, groupID: groupID)
-        guard !group.contains(where: { $0.assistanceMetadata.blindArenaRevealed }) else { return }
-        let eligible = group.filter(ArenaSynthesis.isComplete)
-        guard eligible.count >= 2, eligible.contains(where: { $0.id == winner.id }) else { return }
-        let ballot = ArenaBallot(winnerID: winner.id, candidates: eligible.map {
-            .init(messageID: $0.id, providerID: $0.providerID, providerName: $0.providerName,
-                  modelID: $0.modelID, modelName: $0.modelDisplayName)
-        })
-        let previous = group.map { ($0, $0.assistanceMetadataData) }
-        for message in group {
-            var metadata = message.assistanceMetadata
-            metadata.blindArenaRevealed = true
-            if message.id == winner.id { metadata.blindArenaBallot = ballot }
-            message.assistanceMetadata = metadata
-        }
-        do { try context.save() } catch {
-            for (message, data) in previous { message.assistanceMetadataData = data }
-            throw error
-        }
     }
 
     func selectContextReply(_ reply: ChatMessage, in conversation: Conversation, context: ModelContext) throws {

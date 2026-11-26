@@ -159,16 +159,16 @@ final class PublicationReviewRegressionTests: XCTestCase {
         XCTAssertNil(speech.speakingMessageID)
     }
 
-    func testLiveActivityPrivacyDefaultsBlindModeAndRevocation() throws {
+    func testLiveActivityPrivacyDefaultsAndRevocation() throws {
         let suite = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let live = LiveActivityCoordinator(defaults: defaults)
         let id = UUID()
         defer { live.end(conversationID: id, outcome: GenerationOutcome(statuses: [], stopped: true)) }
-        func generate(blind: Bool = false) throws -> IOSBoxGenerationAttributes.ContentState {
+        func generate() throws -> IOSBoxGenerationAttributes.ContentState {
             live.start(conversationID: id, chatTitle: "Secret title", modeBadge: "Chat",
-                       speakerOrModel: "Secret model", phaseText: "Generating", isBlind: blind)
+                       speakerOrModel: "Secret model", phaseText: "Generating")
             live.update(conversationID: id, previewSnippet: "Secret reply", force: true)
             return try XCTUnwrap(live.activeStates[id])
         }
@@ -189,10 +189,6 @@ final class PublicationReviewRegressionTests: XCTestCase {
         live.setShowsPreviews(false)
         live.update(conversationID: id, speakerOrModel: "Secret again", previewSnippet: "Secret again", force: true)
         try assertPrivate(XCTUnwrap(live.activeStates[id]))
-        live.setShowsPreviews(true)
-        let blind = try generate(blind: true)
-        XCTAssertEqual(blind.presentation, .anonymous)
-        try assertPrivate(blind)
         let oldJSON = #"{"speakerOrModel":"Secret model","phaseText":"Generating","completedTurns":0,"totalTurns":1,"previewSnippet":"Secret reply"}"#
         let legacy = try JSONDecoder().decode(IOSBoxGenerationAttributes.ContentState.self, from: Data(oldJSON.utf8))
         XCTAssertNotEqual(legacy.visibleSpeaker, "Secret model")

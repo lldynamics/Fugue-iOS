@@ -46,6 +46,10 @@ enum TavilySearchClient {
     static let maximumQueryCharacters = 400
     static let providerID = UUID(uuidString: "FA6C061D-E51A-49AA-81EC-0E6CFABF73EE")!
 
+    static var isConfigured: Bool {
+        !KeychainService.shared.loadSecret(account: keychainAccount).isEmpty
+    }
+
     private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil

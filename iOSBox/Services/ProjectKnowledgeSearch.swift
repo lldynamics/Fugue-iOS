@@ -1,8 +1,8 @@
 import CryptoKit
 import Foundation
-import NaturalLanguage
 import os
 import SwiftData
+import UIKit
 
 // MARK: - Knowledge Evidence Models
 
@@ -80,44 +80,13 @@ struct KnowledgeDocumentSnapshot: Sendable {
     }
 }
 
-// MARK: - Reciprocal Rank Fusion (RRF) & Diversity Ranker
-
-enum RAGHybridRanker {
-    static let defaultRRFK: Double = 60.0
-
-    /// Fuses a ranked lexical candidate list and a ranked semantic candidate list via Reciprocal Rank Fusion.
-    /// Higher score = better match.
-    static func fuseRRF(
-        lexicalRankedIDs: [String],
-        semanticRankedIDs: [String],
-        k: Double = defaultRRFK,
-        lexicalWeight: Double = 1.0,
-        semanticWeight: Double = 1.0,
-        exactPhraseBonusIDs: Set<String> = []
-    ) -> [String: Double] {
-        var scores: [String: Double] = [:]
-        for (rank, id) in lexicalRankedIDs.enumerated() {
-            scores[id, default: 0] += lexicalWeight / (k + Double(rank + 1))
-        }
-        for (rank, id) in semanticRankedIDs.enumerated() {
-            scores[id, default: 0] += semanticWeight / (k + Double(rank + 1))
-        }
-        let phraseBonus = 0.35 / (k + 1.0)
-        for id in exactPhraseBonusIDs {
-            scores[id, default: 0] += phraseBonus
-        }
-        return scores
-    }
-}
-
-// MARK: - Persistent Hybrid RAG Engine
+// MARK: - Persistent Local RAG Engine
 
 actor ProjectKnowledgeSearch {
     static let shared = ProjectKnowledgeSearch(storage: .shared)
 
-    private static let maxCachedVolumes = 24
-    private static let maxLocalNLEmbeddingChunksPerVolume = 1_200
-    private static let localEmbeddingModelTag = "local:nl-embedding-v1"
+    private static let maxCachedVolumes = 8
+    static let defaultMaxCachedTextBytes = 24 * 1024 * 1024
     private static let targetChunkChars = 480
     private static let overlapChars = 96
 
@@ -132,21 +101,57 @@ actor ProjectKnowledgeSearch {
     }
 
     private let storage: FullTextSearchIndex
+    private let maxCachedTextBytes: Int
     private var chunkCache: [UUID: [Chunk]] = [:]
     private var cacheOrder: [UUID] = []
+    private var cachedByteCountByVolume: [UUID: Int] = [:]
+    private var totalCachedBytes = 0
     private nonisolated let cachedIDs = OSAllocatedUnfairLock(initialState: Set<UUID>())
+    private nonisolated(unsafe) var memoryWarningObserver: NSObjectProtocol?
 
-    init(storage: FullTextSearchIndex = FullTextSearchIndex(databaseURL: nil)) {
+    init(
+        storage: FullTextSearchIndex = FullTextSearchIndex(databaseURL: nil),
+        maxCachedTextBytes: Int = ProjectKnowledgeSearch.defaultMaxCachedTextBytes
+    ) {
         self.storage = storage
+        self.maxCachedTextBytes = max(1, maxCachedTextBytes)
+        self.memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { await self.evictAllCachedChunks() }
+        }
     }
+
+    deinit {
+        if let memoryWarningObserver {
+            NotificationCenter.default.removeObserver(memoryWarningObserver)
+        }
+    }
+
+    var cachedVolumeCount: Int { chunkCache.count }
+    var cachedTextBytes: Int { totalCachedBytes }
 
     nonisolated func isCached(_ volumeID: UUID) -> Bool {
         cachedIDs.withLock { $0.contains(volumeID) }
     }
 
+    func evictAllCachedChunks() {
+        chunkCache.removeAll(keepingCapacity: false)
+        cacheOrder.removeAll(keepingCapacity: false)
+        cachedByteCountByVolume.removeAll(keepingCapacity: false)
+        totalCachedBytes = 0
+        cachedIDs.withLock { $0.removeAll() }
+    }
+
     func invalidate(volumeID: UUID) async {
         chunkCache.removeValue(forKey: volumeID)
         cacheOrder.removeAll { $0 == volumeID }
+        if let removedBytes = cachedByteCountByVolume.removeValue(forKey: volumeID) {
+            totalCachedBytes = max(0, totalCachedBytes - removedBytes)
+        }
         cachedIDs.withLock { _ = $0.remove(volumeID) }
         try? await storage.removeRAGVolume(volumeID)
     }
@@ -173,17 +178,13 @@ actor ProjectKnowledgeSearch {
         from documents: [KnowledgeDocumentSnapshot],
         query: String,
         maxPassages: Int = 5,
-        chapterLimits: [UUID: Int] = [:],
-        embeddingConfig: EmbeddingConfig? = nil,
-        embeddingSession: URLSession? = nil
+        chapterLimits: [UUID: Int] = [:]
     ) async throws -> KnowledgeEvidence {
         try await retrieveCheckingCache(
             from: documents,
             query: query,
             maxPassages: maxPassages,
-            chapterLimits: chapterLimits,
-            embeddingConfig: embeddingConfig,
-            embeddingSession: embeddingSession
+            chapterLimits: chapterLimits
         ).evidence
     }
 
@@ -193,9 +194,7 @@ actor ProjectKnowledgeSearch {
         from documents: [KnowledgeDocumentSnapshot],
         query: String,
         maxPassages: Int = 5,
-        chapterLimits: [UUID: Int] = [:],
-        embeddingConfig: EmbeddingConfig? = nil,
-        embeddingSession: URLSession? = nil
+        chapterLimits: [UUID: Int] = [:]
     ) async throws -> (evidence: KnowledgeEvidence, missingVolumeIDs: [UUID]) {
         try Task.checkCancellation()
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -312,88 +311,26 @@ actor ProjectKnowledgeSearch {
             }
         }
 
-        // 4. Channel B: Dense Semantic Retrieval (Cloud/Local Embedding API -> graceful fallback to persisted NLEmbedding).
-        var semanticRankedIDs: [String] = []
-        var usedCloudEmbeddings = false
-
-        if let embeddingConfig {
-            if let cloudRanked = try? await semanticRankViaEmbeddingAPI(
-                volumeIDs: activeVolumeIDs,
-                chapterLimits: chapterLimits,
-                query: cleanQuery,
-                config: embeddingConfig,
-                session: embeddingSession
-            ) {
-                semanticRankedIDs = cloudRanked
-                usedCloudEmbeddings = !cloudRanked.isEmpty
-            }
+        // 4. Score lexical BM25 ranking + exact phrase bonus and select diverse passages.
+        var scoresByID: [String: Double] = [:]
+        let rrfK = 60.0
+        for (rank, id) in lexicalIDs.enumerated() {
+            scoresByID[id, default: 0] += 1.0 / (rrfK + Double(rank + 1))
+        }
+        let phraseBonus = 0.35 / (rrfK + 1.0)
+        for id in phraseBonusIDs {
+            scoresByID[id, default: 0] += phraseBonus
         }
 
-        if !usedCloudEmbeddings {
-            semanticRankedIDs = (try? await semanticRankViaLocalNLEmbedding(
-                volumeIDs: activeVolumeIDs,
-                chapterLimits: chapterLimits,
-                query: cleanQuery
-            )) ?? []
-        }
-
-        // 5. Reciprocal Rank Fusion (RRF) across Lexical BM25 and Dense Semantic rankings.
-        let semanticWeight: Double = usedCloudEmbeddings ? 1.15 : 0.75
-        let fusedScores = RAGHybridRanker.fuseRRF(
-            lexicalRankedIDs: lexicalIDs,
-            semanticRankedIDs: semanticRankedIDs,
-            k: RAGHybridRanker.defaultRRFK,
-            lexicalWeight: 1.0,
-            semanticWeight: semanticWeight,
-            exactPhraseBonusIDs: phraseBonusIDs
-        )
-
-        // Scale diversity bonus proportionally to RRF magnitude (~0.016 at rank 1) so diverse docs/sections win ties
-        // without overriding strong top relevance hits.
         let chosen = selectDiversePassages(
             chunks: allChunks,
-            scoresByID: fusedScores,
+            scoresByID: scoresByID,
             maxPassages: maxPassages,
             docBonus: 0.0045,
             sectionBonus: 0.0025
         )
 
         return (KnowledgeEvidence(query: cleanQuery, passages: chosen), missingIDs)
-    }
-
-    /// Pre-computes and persists embeddings for a volume (used by Settings UI batch indexer).
-    @discardableResult
-    func indexVolumeWithEmbeddings(
-        document: KnowledgeDocumentSnapshot,
-        config: EmbeddingConfig?,
-        session: URLSession? = nil
-    ) async throws -> Int {
-        guard let manuscript = document.manuscript else { return 0 }
-        let chunks = try await ensurePersistedChunks(for: document, manuscript: manuscript)
-        storeInCache(chunks, for: document.id)
-
-        if let config {
-            let stored = try await storage.fetchRAGChunks(volumeIDs: [document.id], embeddingModel: config.cacheKey)
-            let pending = stored.filter { $0.embedding == nil }
-            guard !pending.isEmpty else { return stored.count }
-            let vectors = try await EmbeddingClient.embed(
-                texts: pending.map(\.rawText),
-                config: config,
-                session: session
-            )
-            var updates: [String: [Float]] = [:]
-            for (chunk, vec) in zip(pending, vectors) {
-                updates[chunk.chunkID] = vec
-            }
-            try await storage.updateRAGEmbeddings(
-                volumeID: document.id,
-                embeddingModel: config.cacheKey,
-                embeddingsByChunkID: updates
-            )
-            return stored.count
-        } else {
-            return try await populateLocalNLEmbeddingsIfNeeded(volumeID: document.id)
-        }
     }
 
     /// Race-free retrieval helper: skips faulting cached manuscripts on `@MainActor`, and if a
@@ -405,7 +342,6 @@ actor ProjectKnowledgeSearch {
         query: String,
         maxPassages: Int = 5,
         chapterLimits: [UUID: Int] = [:],
-        embeddingConfig: EmbeddingConfig? = nil,
         search: ProjectKnowledgeSearch = .shared
     ) async throws -> KnowledgeEvidence {
         let initialSnapshots = snapshots(for: volumeIDs, in: context, skipCachedIn: search)
@@ -416,8 +352,7 @@ actor ProjectKnowledgeSearch {
             from: initialSnapshots,
             query: query,
             maxPassages: maxPassages,
-            chapterLimits: chapterLimits,
-            embeddingConfig: embeddingConfig
+            chapterLimits: chapterLimits
         )
         guard !firstPass.missingVolumeIDs.isEmpty else {
             return firstPass.evidence
@@ -433,12 +368,11 @@ actor ProjectKnowledgeSearch {
             from: mergedSnapshots,
             query: query,
             maxPassages: maxPassages,
-            chapterLimits: chapterLimits,
-            embeddingConfig: embeddingConfig
+            chapterLimits: chapterLimits
         )
     }
 
-    // MARK: - Persistent Chunking & Embedding Internals
+    // MARK: - Persistent Chunking Internals
 
     private func ensurePersistedChunks(for doc: KnowledgeDocumentSnapshot, manuscript: Data) async throws -> [Chunk] {
         let contentHash = Self.contentHash(title: doc.title, manuscript: manuscript)
@@ -469,9 +403,7 @@ actor ProjectKnowledgeSearch {
                 sectionIndex: $0.sectionIndex,
                 sectionTitle: $0.sectionTitle,
                 utf16Offset: $0.utf16Offset,
-                rawText: $0.text,
-                embeddingModel: "",
-                embedding: nil
+                rawText: $0.text
             )
         }
         try? await storage.storeRAGVolume(
@@ -481,137 +413,6 @@ actor ProjectKnowledgeSearch {
             chunks: toStore
         )
         return built
-    }
-
-    private func semanticRankViaEmbeddingAPI(
-        volumeIDs: [UUID],
-        chapterLimits: [UUID: Int],
-        query: String,
-        config: EmbeddingConfig,
-        session: URLSession?
-    ) async throws -> [String] {
-        let stored = try await storage.fetchRAGChunks(
-            volumeIDs: volumeIDs,
-            chapterLimits: chapterLimits,
-            embeddingModel: config.cacheKey
-        )
-        guard !stored.isEmpty else { return [] }
-
-        // Embed any missing chunks per volume (bounded to 128 chunks on interactive query path so chat stays snappy;
-        // full library embedding is available via Settings batch indexing).
-        let unembedded = stored.filter { $0.embedding == nil }
-        var inFlightVectors: [String: [Float]] = [:]
-        if !unembedded.isEmpty && unembedded.count <= 128 {
-            let vectors = try await EmbeddingClient.embed(
-                texts: unembedded.map(\.rawText),
-                config: config,
-                session: session
-            )
-            var byVolume: [UUID: [String: [Float]]] = [:]
-            for (chunk, vec) in zip(unembedded, vectors) {
-                inFlightVectors[chunk.chunkID] = vec
-                byVolume[chunk.volumeID, default: [:]][chunk.chunkID] = vec
-            }
-            for (vid, updates) in byVolume {
-                try? await storage.updateRAGEmbeddings(
-                    volumeID: vid,
-                    embeddingModel: config.cacheKey,
-                    embeddingsByChunkID: updates
-                )
-            }
-        }
-
-        let queryVectors = try await EmbeddingClient.embed(
-            texts: [String(query.suffix(600))],
-            config: config,
-            session: session
-        )
-        guard let queryVec = queryVectors.first else { return [] }
-
-        var scored: [(id: String, sim: Double)] = []
-        for chunk in stored {
-            guard let vec = chunk.embedding ?? inFlightVectors[chunk.chunkID] else { continue }
-            let sim = EmbeddingClient.dotSimilarity(queryVec, vec)
-            if sim > 0.22 {
-                scored.append((chunk.chunkID, sim))
-            }
-        }
-        scored.sort { $0.sim > $1.sim }
-        return scored.prefix(60).map(\.id)
-    }
-
-    private func semanticRankViaLocalNLEmbedding(
-        volumeIDs: [UUID],
-        chapterLimits: [UUID: Int],
-        query: String
-    ) async throws -> [String] {
-        guard let emb = Self.sentenceEmbedding(for: query),
-              let rawQueryVec = emb.vector(for: String(query.suffix(320))),
-              let queryVec = try? EmbeddingClient.normalizeVector(rawQueryVec.map(Float.init)) else {
-            return []
-        }
-
-        for vid in volumeIDs {
-            try Task.checkCancellation()
-            _ = try? await populateLocalNLEmbeddingsIfNeeded(volumeID: vid, preferredEmbedding: emb)
-        }
-
-        let stored = try await storage.fetchRAGChunks(
-            volumeIDs: volumeIDs,
-            chapterLimits: chapterLimits,
-            embeddingModel: Self.localEmbeddingModelTag
-        )
-        var scored: [(id: String, sim: Double)] = []
-        for chunk in stored {
-            guard let vec = chunk.embedding, vec.count == queryVec.count else { continue }
-            let sim = EmbeddingClient.dotSimilarity(queryVec, vec)
-            if sim > 0.30 {
-                scored.append((chunk.chunkID, sim))
-            }
-        }
-        scored.sort { $0.sim > $1.sim }
-        return scored.prefix(60).map(\.id)
-    }
-
-    @discardableResult
-    private func populateLocalNLEmbeddingsIfNeeded(
-        volumeID: UUID,
-        preferredEmbedding: NLEmbedding? = nil
-    ) async throws -> Int {
-        let stored = try await storage.fetchRAGChunks(
-            volumeIDs: [volumeID],
-            embeddingModel: Self.localEmbeddingModelTag
-        )
-        guard !stored.isEmpty else { return 0 }
-        let alreadyEmbedded = stored.filter { $0.embedding != nil }.count
-        let budget = min(stored.count, Self.maxLocalNLEmbeddingChunksPerVolume)
-        guard alreadyEmbedded < budget else { return alreadyEmbedded }
-
-        let sampleText = stored.first?.rawText ?? ""
-        guard let emb = preferredEmbedding ?? Self.sentenceEmbedding(for: sampleText) else { return alreadyEmbedded }
-
-        let missing = stored.filter { $0.embedding == nil }
-        let strideStep = max(1, missing.count / max(1, budget - alreadyEmbedded))
-        var updates: [String: [Float]] = [:]
-        var count = 0
-        for pos in stride(from: 0, to: missing.count, by: strideStep) {
-            if count >= budget - alreadyEmbedded { break }
-            if count.isMultiple(of: 32) { try Task.checkCancellation() }
-            let chunk = missing[pos]
-            if let rawVec = emb.vector(for: String(chunk.rawText.prefix(320))),
-               let norm = try? EmbeddingClient.normalizeVector(rawVec.map(Float.init)) {
-                updates[chunk.chunkID] = norm
-            }
-            count += 1
-        }
-        if !updates.isEmpty {
-            try await storage.updateRAGEmbeddings(
-                volumeID: volumeID,
-                embeddingModel: Self.localEmbeddingModelTag,
-                embeddingsByChunkID: updates
-            )
-        }
-        return alreadyEmbedded + updates.count
     }
 
     private func scoreByExactIdentifiers(
@@ -697,12 +498,22 @@ actor ProjectKnowledgeSearch {
     }
 
     private func storeInCache(_ chunks: [Chunk], for volumeID: UUID) {
+        let byteCost = chunks.reduce(0) { $0 + $1.text.utf8.count + $1.sectionTitle.utf8.count }
+        if let previousBytes = cachedByteCountByVolume[volumeID] {
+            totalCachedBytes = max(0, totalCachedBytes - previousBytes)
+        }
         chunkCache[volumeID] = chunks
+        cachedByteCountByVolume[volumeID] = byteCost
+        totalCachedBytes += byteCost
         touchCacheKey(volumeID)
         cachedIDs.withLock { _ = $0.insert(volumeID) }
-        while cacheOrder.count > Self.maxCachedVolumes {
+        while cacheOrder.count > Self.maxCachedVolumes
+                || (cacheOrder.count > 1 && totalCachedBytes > maxCachedTextBytes) {
             let evicted = cacheOrder.removeFirst()
             chunkCache.removeValue(forKey: evicted)
+            if let evictedBytes = cachedByteCountByVolume.removeValue(forKey: evicted) {
+                totalCachedBytes = max(0, totalCachedBytes - evictedBytes)
+            }
             cachedIDs.withLock { _ = $0.remove(evicted) }
         }
     }
@@ -787,15 +598,6 @@ actor ProjectKnowledgeSearch {
         guard !patterns.isEmpty else { return nil }
         let pattern = "(?<![a-z0-9])(?<![a-z0-9][-_.])(?:" + patterns.joined(separator: "|") + ")(?![a-z0-9]|[-_.][a-z0-9])"
         return try? NSRegularExpression(pattern: pattern, options: .caseInsensitive)
-    }
-
-    private static func sentenceEmbedding(for text: String) -> NLEmbedding? {
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(String(text.prefix(200)))
-        if let lang = recognizer.dominantLanguage, let emb = NLEmbedding.sentenceEmbedding(for: lang) {
-            return emb
-        }
-        return NLEmbedding.sentenceEmbedding(for: .simplifiedChinese) ?? NLEmbedding.sentenceEmbedding(for: .english)
     }
 }
 

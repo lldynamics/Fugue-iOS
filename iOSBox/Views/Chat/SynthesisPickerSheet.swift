@@ -30,7 +30,7 @@ struct SynthesisPickerSheet: View {
                     Text("汇总会列出共识、分歧和待核实项。模型意见一致不代表事实已经核实。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if let error { Text(error).foregroundStyle(.red) }
+                if let error { Text(error).foregroundStyle(DS.StatusText.error) }
                 ForEach(providers.filter(\.isReadyForChat)) { provider in
                     let models = provider.enabledModels.filter {
                         search.isEmpty || $0.displayName.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search)

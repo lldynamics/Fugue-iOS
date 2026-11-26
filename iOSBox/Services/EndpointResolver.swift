@@ -127,68 +127,6 @@ enum EndpointResolver {
         try openAIAudioEndpoint(baseURL: baseURL, suffix: "/audio/speech", siblingSuffix: "/audio/transcriptions")
     }
 
-    static func imagesGenerationsEndpoint(baseURL: String) throws -> URL {
-        try openAIAudioEndpoint(baseURL: baseURL, suffix: "/images/generations", siblingSuffix: "/images/edits")
-    }
-
-    static func imagesEditsEndpoint(baseURL: String) throws -> URL {
-        try openAIAudioEndpoint(baseURL: baseURL, suffix: "/images/edits", siblingSuffix: "/images/generations")
-    }
-
-    static func geminiGenerateContentEndpoint(baseURL: String, modelID: String) throws -> URL {
-        var (components, path, forceRaw) = try parseBaseComponents(baseURL)
-        let trimmedModel = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedModel.isEmpty,
-              !trimmedModel.contains(where: \.isWhitespace),
-              isSafeGeminiModelIdentifier(trimmedModel) else {
-            throw LLMError.invalidURL(baseURL)
-        }
-        if let modelsRange = path.range(of: "/models/") {
-            path = stripTrailingSlash(String(path[..<modelsRange.lowerBound]))
-        }
-        let encodedModel = normalizeGeminiModelPath(trimmedModel)
-        let root = forceRaw ? path : ensureGeminiVersionPrefix(path: path)
-        path = "\(root)/\(encodedModel):generateContent"
-        return try finalizeURL(components: components, path: path, forceRaw: forceRaw, rawInput: baseURL)
-    }
-
-    static func embeddingsEndpoint(
-        baseURL: String,
-        protocolType: APIProtocolType,
-        modelID: String = ""
-    ) throws -> URL {
-        var (components, path, forceRaw) = try parseBaseComponents(baseURL)
-
-        switch protocolType {
-        case .openAICompatible, .openAIResponses:
-            for suffix in ["/chat/completions", "/responses", "/models", "/audio/transcriptions", "/audio/speech"] where path.hasSuffix(suffix) {
-                path = stripTrailingSlash(String(path.dropLast(suffix.count)))
-            }
-            if !path.hasSuffix("/embeddings") {
-                path = forceRaw ? "\(path)/embeddings" : "\(ensureOpenAIVersionPrefix(path: path))/embeddings"
-            }
-
-        case .gemini:
-            let trimmedModel = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedModel.isEmpty,
-                  !trimmedModel.contains(where: \.isWhitespace),
-                  isSafeGeminiModelIdentifier(trimmedModel) else {
-                throw LLMError.invalidURL(baseURL)
-            }
-            if let modelsRange = path.range(of: "/models/") {
-                path = stripTrailingSlash(String(path[..<modelsRange.lowerBound]))
-            }
-            let encodedModel = normalizeGeminiModelPath(trimmedModel)
-            let root = forceRaw ? path : ensureGeminiVersionPrefix(path: path)
-            path = "\(root)/\(encodedModel):batchEmbedContents"
-
-        case .anthropic:
-            throw LLMError.invalidURL(baseURL)
-        }
-
-        return try finalizeURL(components: components, path: path, forceRaw: forceRaw, rawInput: baseURL)
-    }
-
     private static func openAIAudioEndpoint(baseURL: String, suffix: String, siblingSuffix: String) throws -> URL {
         let (components, rawPath, forceRaw) = try parseBaseComponents(baseURL)
         var path = rawPath

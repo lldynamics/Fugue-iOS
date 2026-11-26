@@ -363,14 +363,80 @@ final class ConnectionResilienceTests: XCTestCase {
 
     // MARK: - 3. Multi-Key Pool Round-Robin, Cooldown Failover, and Encrypted Backup
 
+    func testOpenRouterReportsEveryInvalidSlotBeforePingOrCatalogRequest() async throws {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        let host = "openrouter.ai"
+        let url = "https://OPENROUTER.ai/api/v1/#"
+        let valid = "sk-or-v1-" + String(repeating: "a", count: 64)
+        let invalid = "sk-ant-wrong-provider"
+        ResilienceMockURLProtocol.register(host: host) { _, _, proto, client in
+            XCTFail("Invalid keys must be rejected before networking")
+            client.urlProtocol(proto, didFailWithError: URLError(.badServerResponse))
+        }
+
+        do {
+            _ = try await LLMClient.pingModel(providerName: "Custom", protocolType: .openAICompatible,
+                                              baseURL: url, apiKey: valid, apiKeys: [valid, invalid],
+                                              customHeaders: [], modelID: "openrouter/auto", session: session)
+            XCTFail("Expected the second backup to be rejected")
+        } catch {
+            let message = ModelSetup.verificationAdvice(for: error, checkingModel: true)
+            XCTAssertTrue(message.contains(String(localized: "备用 Key #\(2)")))
+            XCTAssertFalse(message.contains(String(localized: "主 Key")))
+            XCTAssertFalse(message.contains(invalid))
+        }
+
+        do {
+            _ = try await LLMClient.fetchModels(providerName: "Custom", protocolType: .openAICompatible,
+                                                baseURL: url, apiKey: invalid, apiKeys: [valid, valid, valid, invalid],
+                                                customHeaders: [], session: session)
+            XCTFail("Expected both invalid slots, including the one beyond the retry limit")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains(String(localized: "主 Key")))
+            XCTAssertTrue(error.localizedDescription.contains(String(localized: "备用 Key #\(4)")))
+            XCTAssertFalse(error.localizedDescription.contains(invalid))
+            XCTAssertFalse(error.localizedDescription.contains(valid))
+        }
+        XCTAssertEqual(ResilienceMockURLProtocol.count(for: host), 0)
+
+        ResilienceMockURLProtocol.register(host: host) { request, _, proto, client in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                           headerFields: ["Content-Type": "text/event-stream"])!
+            client.urlProtocol(proto, didReceive: response, cacheStoragePolicy: .notAllowed)
+            let body = "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: [DONE]\n\n"
+            client.urlProtocol(proto, didLoad: Data(body.utf8))
+            client.urlProtocolDidFinishLoading(proto)
+        }
+        _ = try await LLMClient.pingModel(providerName: "Custom", protocolType: .openAICompatible,
+                                          baseURL: url, apiKey: "", apiKeys: [valid],
+                                          customHeaders: [], modelID: "openrouter/auto", session: session)
+        XCTAssertEqual(ResilienceMockURLProtocol.recordedAuthHeaders(for: host), ["Bearer " + valid])
+    }
+
+    func testOpenRouterValidationPreservesBackupOnlyPublicCatalogAndRelayConfigurations() throws {
+        let router = APIKeyPoolRouter()
+        let valid = "sk-or-v1-" + String(repeating: "b", count: 64)
+        let direct = "https://openrouter.ai./api/v1"
+        XCTAssertEqual(try router.orderedKeys(from: ["", " Bearer " + valid + "\n", valid],
+                                              protocolType: .openAICompatible, baseURL: direct), [valid])
+        XCTAssertEqual(try router.orderedKeys(from: [""], protocolType: .openAICompatible, baseURL: direct), [""])
+        XCTAssertThrowsError(try router.orderedKeys(from: ["sk-or-v1-short"], protocolType: .openAICompatible, baseURL: direct))
+        let relay = "https://openrouter.ai.example.com/openrouter.ai"
+        XCTAssertEqual(try router.orderedKeys(from: ["relay-key"], protocolType: .openAICompatible, baseURL: relay), ["relay-key"])
+        XCTAssertThrowsError(try router.orderedKeys(from: ["wrong.dotted.secret"], protocolType: .openAICompatible, baseURL: direct))
+        let token = "eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJodHRwczovL29wZW5yb3V0ZXIuYWkiLCJzY29wZSI6ImluZmVyZW5jZSJ9.c2ln"
+        XCTAssertEqual(try router.orderedKeys(from: [token], protocolType: .openAICompatible, baseURL: direct), [token])
+    }
+
     func testMultiKeyPoolRoundRobinFailoverAndEncryptedBackupPersistence() async throws {
         let router = APIKeyPoolRouter()
         let baseURL = "https://pool-test.invalid/v1"
 
         // Round-robin distributes starting key across turns
-        let r1 = router.orderedKeys(from: ["sk-a", "sk-b", "sk-c"], protocolType: .openAICompatible, baseURL: baseURL)
-        let r2 = router.orderedKeys(from: ["sk-a", "sk-b", "sk-c"], protocolType: .openAICompatible, baseURL: baseURL)
-        let r3 = router.orderedKeys(from: ["sk-a", "sk-b", "sk-c"], protocolType: .openAICompatible, baseURL: baseURL)
+        let r1 = try router.orderedKeys(from: ["sk-a", "sk-b", "sk-c"], protocolType: .openAICompatible, baseURL: baseURL)
+        let r2 = try router.orderedKeys(from: ["sk-a", "sk-b", "sk-c"], protocolType: .openAICompatible, baseURL: baseURL)
+        let r3 = try router.orderedKeys(from: ["sk-a", "sk-b", "sk-c"], protocolType: .openAICompatible, baseURL: baseURL)
         XCTAssertEqual(r1.first, "sk-a")
         XCTAssertEqual(r2.first, "sk-b")
         XCTAssertEqual(r3.first, "sk-c")

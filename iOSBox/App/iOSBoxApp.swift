@@ -35,12 +35,13 @@ struct iOSBoxApp: App {
         #endif
         _runtime = State(initialValue: AppRuntime.shared)
         AppLockController.shared.handleLaunch()
+        SystemEntryRouter.shared.setLocked(AppLockController.shared.isLocked)
         Task.detached(priority: .utility) {
             Self.cleanupExpiredTemporaryExports()
         }
     }
 
-    /// Removes temporary backup, Markdown, image, and Anki export files left in `tmp/` after prior share sheets.
+    /// Removes temporary backup, Markdown, diagram, and image export files left in `tmp/` after prior share sheets.
     nonisolated static func cleanupExpiredTemporaryExports(
         in directory: URL = FileManager.default.temporaryDirectory,
         maxAge: TimeInterval = 2 * 3600,
@@ -49,12 +50,11 @@ struct iOSBoxApp: App {
         let managedPrefixes = [
             "Fugue_Backup_",
             "Fugue-EncryptedBackup-",
-            "Fugue-AnkiCards-",
             "Fugue-Artifact-",
+            "Fugue-Diagram-",
             "Fugue_",
             "iOSBox_Backup_",
             "iOSBox-EncryptedBackup-",
-            "iOSBox-AnkiCards-",
             "iOSBox-Artifact-",
             "iOSBox_"
         ]
@@ -98,6 +98,7 @@ struct iOSBoxApp: App {
                     ConversationListView(pendingConversationToOpen: .constant(nil))
                 } else if testingWorkspaces {
                     MainTabView()
+                        .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("-ui-test-dark-appearance") ? .dark : nil)
                 } else { appContent }
             #else
                 appContent
@@ -107,8 +108,10 @@ struct iOSBoxApp: App {
             .onContinueUserActivity(CSSearchableItemActionType) { activity in
                 if let raw = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
                    let parsed = SpotlightIndexService.parseIdentifier(raw) {
-                    SystemEntryRouter.shared.messageID = parsed.messageID
-                    SystemEntryRouter.shared.conversationID = parsed.conversationID
+                    SystemEntryRouter.shared.routeSpotlight(
+                        conversationID: parsed.conversationID,
+                        messageID: parsed.messageID
+                    )
                 }
             }
             .onOpenURL { url in
@@ -126,6 +129,7 @@ struct iOSBoxApp: App {
             if testingPicker || testingWorkspaces { return }
             #endif
             lockController.handleScenePhaseChange(newPhase)
+            SystemEntryRouter.shared.setLocked(lockController.isLocked)
             if newPhase == .active {
                 runtime.retryStorageIfAvailable()
                 SystemEntryRouter.shared.drainPendingInbox()
@@ -146,10 +150,11 @@ struct iOSBoxApp: App {
                 }
             }
         }
-        .onChange(of: lockController.isLocked) { wasLocked, isLocked in
+        .onChange(of: lockController.isLocked, initial: true) { wasLocked, isLocked in
             #if DEBUG && targetEnvironment(simulator)
             if testingPicker || testingWorkspaces { return }
             #endif
+            SystemEntryRouter.shared.setLocked(isLocked)
             if wasLocked && !isLocked && scenePhase == .active {
                 let context = runtime.store.container.mainContext
                 Task {
@@ -167,8 +172,8 @@ struct iOSBoxApp: App {
             Group {
                 if PersistenceController.canCommitUserData(in: store.container.mainContext) {
                     MainTabView(startupNotice: store.startupNotice)
-                        .task(id: scenePhase) {
-                            guard scenePhase == .active else { return }
+                        .task(id: "\(scenePhase)-\(lockController.isLocked)") {
+                            guard scenePhase == .active, !lockController.isLocked else { return }
                             while !Task.isCancelled {
                                 _ = await PersonaFeedService.shared.refresh(in: store.container.mainContext)
                                 do { try await Task.sleep(for: .seconds(300)) } catch { return }

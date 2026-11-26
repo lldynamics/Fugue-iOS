@@ -1,157 +1,84 @@
 # 夜奔（Fugue）
 
-原生双端多模型聚合与自定义 API（BYOK）AI 对话客户端：提供原生 **iOS**（`iOSBox/`，Swift + SwiftUI + SwiftData + Keychain）与原生 **Android**（`android/`，Kotlin + Jetpack Compose + Room + Android Keystore / Tink），两客户端共享 v7 JSON 与 AES-256-GCM 加密备份格式。中文系统下显示为「夜奔」，英文及其他语言环境下显示为 **Fugue**（iOS 工程 Target、Bundle ID 与本地存储标识保留 `iOSBox` 以兼容既有数据与钥匙串）。
+原生 **iOS / iPadOS** 多模型聚合与自定义 API（BYOK）AI 对话与阅读工作台（Swift + SwiftUI + SwiftData + Keychain）。中文系统下显示为「夜奔」，英文及其他语言环境下显示为 **Fugue**（Xcode 工程 Target、Bundle ID 与本地存储标识保留 `iOSBox` 以兼容既有数据与钥匙串）。
+
+> 当前阶段聚焦打磨 iOS / iPadOS 原生体验；同时保留开放、版本化的本地数据导出与端到端加密备份/WebDAV 同步格式，为后续跨平台客户端预留完整的数据互通能力（详见 [数据导出与跨平台互通规范](docs/data-interoperability.md)）。
 
 ## 核心特性
 
-1. **三大原生协议全覆盖 + 自由添加 API**
-   - **OpenAI 兼容协议**：支持自定义 `Base URL` 与 `API Key`，通吃 OpenAI、DeepSeek、OpenRouter、SiliconFlow 硅基流动、OneAPI / NewAPI 中转站、Ollama 局域网本地模型等。
-   - **Anthropic Claude 原生协议**：使用 `/v1/messages`，原生支持 Extended Thinking 思考链与原版 PDF 文档输入。
+1. **四大协议原生支持 + 自由接入 BYOK API**
+   - **OpenAI 官方 Responses API & OpenAI 兼容协议**：支持 `/v1/responses` 与 `/v1/chat/completions`，通吃 OpenAI、DeepSeek、OpenRouter、SiliconFlow 硅基流动、OneAPI / NewAPI 中转站、Ollama / LM Studio 局域网本地模型等。
+   - **Anthropic Claude 原生协议**：使用 `/v1/messages`，原生支持 Extended Thinking 思考链、Prompt Caching 与原版 PDF 输入。
    - **Google Gemini 原生协议**：使用 `:streamGenerateContent?alt=sse`，原生支持多模态图像、PDF 文档及思考过程。
-   - **智能端点解析**：自动处理 `/v1` 补全与多版本路径（如 `/v4`、`/v1beta`）；在 `Base URL` 末尾添加 `#` 可强制使用原始路径不补全 `/v1`。
-   - **自定义 HTTP Header**：支持为网关追加鉴权或路由请求头。
+   - **智能端点解析与连接韧性**：自动处理 `/v1` 补全与多版本路径（结尾加 `#` 强制原始路径）；支持自定义敏感/普通 HTTP Header、多 API Key 轮换池、自定义流式空闲超时、指数退避重试与模型列表一键拉取。
 
-2. **单聊随时切换 + 多模型同屏并发对比（Arena 模式）**
-   - **单聊模式**：同一段对话中可随时切换不同服务商、不同协议的模型接力回答，自动完成跨协议上下文转换。
-   - **多模型并发对比**：一次提问同时并发请求 2–4 个模型，支持**标签切换**与**并排横滑卡片**两种对比视图，并可一键指定某条回复作为后续追问的上下文主回复。
-   - **裁判汇总**：至少两条答案完整完成后，点击「由裁判模型综合提炼」，选择任意已启用模型，生成综合分析、共识、分歧与待核实项。汇总会额外发送原问题、相关上下文与成功答案到所选服务商，保留原答案，并可设为后续上下文。原答案重答后，旧汇总会标记为过期并退出上下文。
+2. **单聊切换、多模型并发对比（Arena）与圆桌群聊**
+   - **单聊模式**：同一对话内随时切换不同服务商与协议接力回答，自动完成跨协议上下文转换。
+   - **多模型并发对比（Arena）**：一次提问同时并发请求 2–4 个模型，支持**标签切换**与**并排横滑**两种视图；可指定上下文追问主回复，或选择任意模型进行**裁判综合汇总（Judge Synthesis）**。
+   - **AI 圆桌群聊 & 独立人物档案**：支持配置多角色群聊、人物参考资料片段、公开博客 / RSS / Atom 订阅动态，以及「从书中创建好友」按阅读进度防剧透伴读。
 
-3. **一键拉取 `/models` + 手动模型管理**
-   - 在服务商详情页点击「一键从接口拉取模型列表」即可自动同步可用模型，支持搜索过滤、批量启停及手动增删模型 ID。
+3. **本地书架与 FTS5 全文知识库检索**
+   - 导入本地 `EPUB` / `PDF`（支持扫描件本地 `Vision` 离线 OCR）/ `TXT` / `Markdown`，按会话或助手预设绑定最多 12 本参考书目。
+   - 使用本地持久化 **SQLite FTS5 BM25** 索引执行毫秒级全历史消息检索与知识库引用检索，无需外部向量 API，回答附带可跳转原文的精确章节/页码摘录。
 
-4. **推理思考过程折叠展示**
-   - 原生解析 `reasoning_content`、Anthropic `thinking_delta`、Gemini `thought` 以及流式 `<think>...</think>` 标签，实时统计思考耗时并支持折叠/展开。
-   - Markdown 支持表格、嵌套列表与代码高亮；LaTeX 公式（`$…$`、`\(…\)`、`$$…$$`、`\[…\]`）由 [SwiftMath](https://github.com/mgriebling/SwiftMath) 原生排版。
+4. **推理思考、多模态附件、文档扫描与语音纪要**
+   - 原生解析思考链与流式 `<think>` 标签；Markdown 支持表格、嵌套列表、代码高亮与 [SwiftMath](https://github.com/mgriebling/SwiftMath) LaTeX 公式渲染；`html` / `svg` / `mermaid` 支持离线沙盒 `WKWebView` 实时预览与截图导出。
+   - 支持相机拍照、文档扫描（`VNDocumentCameraViewController` + 本地 `Vision` OCR 一键转 `.txt` 省识图 Token）、`DOCX` / `XLSX` / `PPTX` / `PDF` 离线文本提取。
+   - 录音面板支持实时波形、暂停续录、Whisper 云端转写与 iOS `SFSpeechRecognizer` 本地免费兜底，以及云端 / 系统语音朗读（TTS）。
 
-5. **多模态输入与助手预设库**
-   - 支持**相机拍照**、**相册多图选择**（自动压缩适配接口体积）、**PDF 与代码/文本文件附件**（内置 `PDFKit` 文本提取兜底 + 原生 PDF 块双模适配）。
-   - 内置常用 System Prompt 助手角色库，支持自定义创建角色及调节 `Temperature`、`Top P`、上下文携带条数与思考 Token 预算。
+5. **联网搜索、智能工具与系统深度集成**
+   - **联网能力**：支持服务商原生联网 Grounding（Gemini / Anthropic / OpenAI）与 **Tavily** 联网搜索（仅发送确认后的搜索词，附带可核对来源卡片）。
+   - **智能工具调用**：单聊可开启 `web_search`、`read_webpage`（直连公开 HTTPS 正文提取，带域名审批门控）、`search_documents` 与 `propose_memory`（经人工确认后写入长期记忆）。
+   - **系统集成**：提供 **Share Extension（`iOSBoxShare`）**、**快捷指令（AppIntents）**、**桌面/锁屏小组件与灵动岛（`iOSBoxWidgets`）**、**Spotlight 深链检索**（默认关闭，显式开启）以及 **Face ID / 密码隐私锁与后台防窥遮罩**。
 
-6. **纯本地直连与隐私安全**
-   - 无任何第三方后端中转，API Key 加密保存在 iOS 系统安全钥匙串（**Keychain**）中，对话与配置保存在本地 **SwiftData** 数据库。
-   - **双模备份**：
-     - **普通 JSON 备份（v7）**：省略 API Key、敏感请求头的值，以及带用户信息、查询参数、非空片段或自定义路径的连接地址；新设备上需补填省略的地址后启用相应服务商。
-     - **密码加密完整备份（AES-256-GCM + PBKDF2）**：在后台线程派生密钥并加密打包所有对话、书籍、助学闪卡、知识库绑定、服务商自定义地址与 Keychain 凭据（含主/备用 API Key、敏感请求头、Tavily Key 及 X Bearer Token），便于跨设备安全迁移。
-   - 自定义请求头可标记为「敏感信息」，其值同样只存入钥匙串，不写入数据库。
-   - 清空对话前会显示所有分支的消息总数。清空后可在该页点「撤销清空」。离开后，可在「设置 → 从备份文件导入」选择清空前导出的完整 JSON 备份，补回原对话缺失的消息、附件和分支，保留本机后续编辑。
-   - 公网接口必须使用 `https://`；`http://` 明文仅允许局域网 / 本机地址（如 Ollama、LM Studio）；启动时自动清理过期的临时导出文件。
+6. **上下文精细控制、助手预设与用量测速账本**
+   - 支持无损消息分支树、历史修订版本切换、从任意消息分叉新对话、清除上文分割线、单条移出上下文、滚动上下文摘要、引用追问与截断续写。
+   - 支持全局个人长期记忆（最多 60 条、每条 1,000 字，按会话显式开关）、能力路由（图片/代码模型）与故障降级备用链路。
+   - 「用量与测速」账本统计输入/输出/缓存 Token、中位输出速率（`tok/s`）、首段/正文延迟、服务商倍率与月度预算预警。
 
-7. **请求测速、成本账本与连接韧性**
-   - 「用量」标签页按所选日期（日/月/全部）、服务商和模型筛选，展示请求状态、Token 消耗趋势图、首段输出/思考/正文耗时、总耗时、API 返回的 Token 用量与预估费用。
-   - 测速榜按服务商、模型及请求类型分组，展示完整流式回复的中位数和样本数。速率是 API 返回的输出 Token 数除以首末输出间隔，可能包含思考 Token；单段、非流式、不完整或缺少用量的响应不计算速率，不用字符数冒充 Token。
-   - 支持内置主流模型参考价一键填充与自定义输入/输出/缓存读写单价及币种。每次请求保存当时的价格；改价不重算历史，不合并不同币种，并统计 Prompt Caching 节省估算。
-   - 支持**多 API Key 轮换池**（遇 `429/401/403` 自动轮换可用 Key）、**自定义流式空闲超时**与瞬态错误指数退避重试。
-   - 重答及兼容性重试分别记账；清空或删除对话后仍保留不含正文和凭据的请求记录。缺少用量或单价的请求标记为未知，不按免费计算。
-   - 数据库自动由 V1 至 V7 迁移至 V8。JSON 备份（v7）包含独立人物档案、书架阅读位置、汇总、账本、记忆、消息分支、缓存 Token、分组标签、会话路由配置、本地书架、预设知识库绑定与助学闪卡，并向后兼容旧版备份。
+7. **纯本地直连、开放数据导出与未来跨平台互通**
+   - 无任何第三方中间服务器；API Key 与敏感请求头存入 iOS **Keychain**，本地数据存储于 **SwiftData**（支持 V1 至 V9 自动迁移）。
+   - **多样化数据导出**：支持单条/单会话/批量导出 **Markdown**、分页 **PDF** 与 **PNG** 分享长图。
+   - **双模备份 + 单文件 WebDAV 加密云同步**：
+     - **普通 JSON 备份（v7）**：包含对话、分支树、附件、书架、记忆、预设、人物档案与用量账本，自动剥离 API Key 与敏感凭据。
+     - **密码加密完整备份（`IOSBOX_ENCRYPTED_BACKUP_V1`）**：本地采用 `PBKDF2-HMAC-SHA256`（600,000 次）+ `AES-256-GCM` 端到端加密，完整打包数据与钥匙串凭据。
+     - **单文件 WebDAV 加密同步**：与手工加密备份采用**完全一致的单文件加密格式**（默认 `Fugue/fugue-sync.enc.json`），结合删除墓碑（`SyncTombstone`）与 `ETag` / `Last-Modified` 检测实现双向合并，并为未来其他平台客户端预留开放互通契约，详见 [docs/data-interoperability.md](docs/data-interoperability.md)。
 
-8. **系统分享、网页精读、快捷指令与 Spotlight**
-   - **系统分享**：在「设置 → 系统分享」启用指定服务商后，从 Safari 或其他支持分享文字/图片/链接的应用选择「夜奔」（英文环境为 Fugue）。支持总结、翻译或自定义提问。Safari 会优先带入选中文字，否则提取页面正文。
-   - **网页精读**：对话列表右上角的文档放大镜入口支持粘贴文字或读取公开 HTTPS 网页。只读取 HTML/纯文本，不执行 JavaScript、不携带浏览器 Cookie；网页最多 2 MB，正文最多发送 60000 个字符，截断会明确提示。登录页、动态页面或抓取失败时可改为分享选中文字，PDF 继续走附件入口。
-   - **快捷指令**：系统「快捷指令 → 夜奔」提供「询问模型」「分析图片」「运行 AI 技能」，均可选择已启用的服务商模型并返回文字结果。图片动作会检查模型识图能力。可组合「截屏 → 分析图片 → 显示结果」，再由用户将该快捷指令分配给操作按钮或轻点背面；本 App 不会后台自行截屏。
-   - **Spotlight 深链检索**：本地索引最近对话与收藏消息，支持从系统 Spotlight 搜索直达对应会话与具体回答。
-   - 快捷指令短请求直接返回，超过 20 秒会请求转入 App 的对应会话继续；取消时保留已有内容。分享窗口中的请求最多等待 45 秒，超时保留部分结果并可在 App 中重答。系统仍可能提前结束扩展；超过 3 分钟未更新的运行记录会在下次打开 App 时恢复为中断。
-   - 分享与精读结果导入普通对话，并以「分享精读」类型独立记账；快捷指令以「快捷指令」类型记账。兼容性重试保留各次尝试，结果重复导入不会重复收费统计。未能保存或导入时会显示错误并保留待处理文件。
-   - 主数据库保持原位置。分享扩展只访问明确启用的配置；连接地址、API Key 和自定义请求头均保存在 App Group 共享钥匙串，文件收件箱不含这些凭据。原有私有钥匙串数据不迁移、不删除。启用状态只保留在当前设备，不随普通 JSON 备份自动授权。
+---
 
-9. **个人记忆、能力路由与故障降级**
-   - **个人长期记忆**：在「设置 → 个人长期记忆」手动新增、编辑、停用或删除职业、技术栈、语言偏好等内容，最多 20 条、每条 500 字。然后在「会话参数 → 使用个人记忆」开启；同一会话切换模型后继续使用这些记忆，发送前可勾选「本次不使用记忆」。开关默认关闭，不自动从聊天提取记忆。
-   - **能力路由**：在会话参数中指定图片模型和代码模型。单聊新消息含图片时优先选图片模型，含 Markdown 代码围栏或代码文件时选代码模型，其余使用当前模型。发送前显示实际目标；不可用的配置保留输入并提示。模型能力以服务商设置中的标记为准，可自行修正。
-   - **故障降级**：为会话明确选择最多 3 个备用模型，按添加顺序执行。仅当尚未收到正文或思考，且遇到 HTTP `429/502/503/504` 或网络超时才切换；去重、跳过已停用模型，并过滤不能处理图片的备用模型。收到部分输出、鉴权错误、内容拦截或取消时保留原状态，不自动改用另一模型。
-   - 每次切换显示实际回答模型，失败尝试、兼容性重试和备用请求使用同一操作标识分别记账。主备都可能产生费用，缺少用量的失败尝试仍标记费用未知。Arena 与裁判汇总保持所选模型身份，不应用自动路由或备用切换。
-   - 记忆随启用的会话请求发给所选及备用服务商，保存在本机并纳入完整 JSON 备份；删除不会撤回服务商已收到的内容，也不改写历史回答。系统分享、精读和快捷指令的新建会话保持原有默认行为，不自动启用这些设置。
+## 运行与测试
 
-10. **联网搜索（Tavily）**
-    - 在「设置 → 联网搜索」填写 Tavily API Key；密钥保存在主 App 的钥匙串，不写入 JSON 备份或分享扩展。
-    - 在发送栏开启「联网搜索」，编辑并确认 1–400 字的搜索词后发送。仅该搜索词交给 Tavily，不附带记忆、附件或聊天历史；最多 5 个公开 HTTPS 来源摘要交给回答模型。搜索一次后再执行各模型请求，Arena 共用一次搜索结果；发送后搜索开关复位。
-    - 回答附带可展开的来源链接、搜索词、时间和 API 返回的额度。来源摘要作为不可信参考资料传入提示词；模型引用仍应自行核对。搜索使用 `basic`，不让 API 自动升级搜索深度，不请求额外生成答案或抓取整页正文；响应上限 1 MB，每条摘要最多 2000 字，不跟随 API 重定向。
-    - 搜索失败或取消时不启动模型，不静默生成无来源回答。重答会使用该回答保存的搜索词重新搜索；若要更换搜索词或关闭搜索，重新发送问题。联网搜索记录单独列入账本，不参与模型测速，也不混入模型 Token 费用；Tavily 费用以其账单为准。
-    - 请求格式依据 [Tavily Search API 文档](https://docs.tavily.com/documentation/api-reference/endpoint/search)。当前已用本地 HTTP 模拟与协议测试验证，未使用真实 Tavily Key 进行付费请求。
+### 环境要求
 
-11. **无损分支树、上下文精细控制与效率增强**
-    - **消息分支与版本切换**：编辑历史提问并重发时保留原分支（`< m/n >` 自由切换），AI 重答保留历史修订版本，且可从任意消息「从此处分叉新对话」。
-    - **上下文控制与续写**：支持插入「清除上文分割线」、单条消息「移出/恢复上下文」、「引用追问」，以及当输出因长度限制截断时一键「继续生成」。
-    - **效率交互**：输入 `/` 呼出内置快捷指令或切换助手预设，输入 `@` 在单聊内临时指定单条回复模型；System Prompt 支持 `{{date}}`、`{{time}}`、`{{weekday}}`、`{{model}}`、`{{model_id}}`、`{{provider}}`、`{{language}}` 动态变量；支持首轮对话后「AI 智能生成标题」、语音听写输入（STT）与系统语音朗读（TTS）。
-    - **检索、分组与导出**：支持会话分组标签与「含收藏」筛选、会话内关键词搜索与书签收藏跳转、以及一键「导出 Markdown」或渲染分享长图。
+- Xcode 16+，iOS 18 / iPadOS 18 及以上系统
+- 打开工程文件 `iOSBox.xcodeproj`
 
-12. **Prompt Caching、多模态输出、PDF OCR 与离线 Artifact 预览**
-    - **原生提示词缓存**：为 Anthropic 自动附加 `cache_control` 并解析 OpenAI / Anthropic / Gemini 缓存命中与写入 Token 计入账本（若中转端不支持缓存字段则自动回退重试），发送栏同步展示预估输入 Token 与费用。
-    - **扫描件 PDF OCR**：附件提取与书架导入在检测到无文字层的 PDF 页面时，自动通过系统 `Vision` 框架执行本地 OCR 识别。
-    - **代码增强与 Artifact 预览**：长代码块默认折叠并支持行号开关与扩展语言高亮；`html` / `htm` / `svg` / `mermaid`（`flowchart`、`sequenceDiagram`、`stateDiagram`、`classDiagram`）支持在离线沙盒 `WKWebView`（拦截外网请求）中实时预览并导出截图；原生支持渲染与分享 Gemini 输出的 `inlineData` 图片。
+### 运行方式
 
-13. **智能工具调用（Tool Calling）、原生联网与双盲 Arena 评测**
-    - **三协议统一工具调用**：在单聊开启「智能工具」后，模型可自主调用 `web_search`（Tavily）、`read_webpage`（公开网页提取）、`search_documents`（项目知识库检索）、`propose_memory` 与 `propose_schedule_item`；其中记忆与日程/提醒建议均须用户手动确认后才会保存或写入系统日历/提醒事项（EventKit）。
-    - **服务商原生联网 Grounding**：支持按会话开启 Gemini `google_search`、Anthropic `web_search_20250305`、OpenAI `web_search_options` / OpenRouter `web` 插件（不支持时自动降级重试）。
-    - **双盲对比与互评修正**：Arena 模式支持隐藏模型身份直到投票后揭晓，并在「用量」页统计双盲胜率榜；同组各模型可点击「互评修正」交叉审阅彼此答案并输出改进版本，单聊回答也可一键「与另一模型并排对比」。
+1. 在 Xcode 中打开 `iOSBox.xcodeproj`
+2. 选择 iPhone / iPad 模拟器或真机（真机运行需在 `Signing & Capabilities` 中为 `iOSBox`、`iOSBoxShare`、`iOSBoxWidgets` 选择同一开发团队并配置同一 App Group `group.$(IOSBOX_BUNDLE_ID)`）
+3. 按 `Cmd + R` 运行
 
-14. **项目知识库（本地 RAG）与助学教练 / 间隔复习闪卡**
-    - **项目知识库**：支持为会话或助手预设绑定最多 12 本本地书架文档（EPUB / PDF / TXT / Markdown），发送时自动进行词法 + 语义兜底片段检索，并在回答上方展示可展开的引用来源。
-    - **苏格拉底助学、随堂测验与 SM-2 闪卡**：支持一键切换学习模式、针对任意回答生成互动选择题与记忆闪卡；闪卡内置 SM-2 间隔重复调度，并支持导出 HTML 安全转义的 Anki `.tsv` 卡片包。
-
-15. **办公文档、日常效率预设与极简模式**
-    - **Office 文档离线提取与 PDF / 长图导出**：双端支持 `DOCX` / `XLSX` / `PPTX` 原生解析，Android 补齐离线 PDF 文字提取与拍照附件接入；聊天回复支持一键复制纯文本（自动清理 Markdown 符号，适配微信 / 飞书 / 邮件）、单条消息导出分页 PDF 与 PNG 分享长图。
-    - **极简日常与快捷配 Key**：内置日常高频办公学习助手预设与 `/` 快捷指令；「设置」支持开启 **极简日常模式**（精简为「对话 / 工作台 / 设置」三 Tab）；「剪贴板一键配 Key」自动识别 OpenAI / Claude / Gemini / DeepSeek / OpenRouter / 中转站并一键拉取并测通模型。
-    - **时间分组与批量管理**：对话列表按「今天 / 近 7 天 / 更早」清晰分组，并支持多选批量设置分组标签或删除。
-
-16. **语音会议纪要、文档扫描与本地 OCR**
-    - **录音波形、暂停与免费本地语音兜底**：录音面板支持 36 柱实时音量波形、暂停/继续、试听回放预览，支持 Whisper 云端转写并内置免费本地识别兜底（iOS `SFSpeechRecognizer` / Android 系统语音听写，无 Whisper Key 也可先转写），转写纪要后可一键提取待办写入系统日历；开启语音朗读（TTS）可在云端自然语音不可用时静默回退到系统语音。
-    - **文档扫描与本地 OCR 省 Token**：iOS 集成系统相机文档扫描（`VNDocumentCameraViewController`）与 `Vision` 本地高精度文字识别，待发送图片可一键转成 `.txt` 纯文本文档，发给非识图或低价文本模型从而省去识图 Token 费用；Android 相机菜单新增「拍文档（清晰增强）」亮度对比增强及「扫图提文字」快捷指令。
-
-17. **跨会话收藏、预算管控与 WebDAV 加密云同步**
-    - **跨会话收藏夹**：汇总全部会话的书签消息，支持按关键词与分组标签筛选、直达原对话、复制纯文本、单条导出 PDF 与取消收藏。
-    - **中转站倍率与月度预算预警**：支持为每个服务商独立配置计价倍率（预设 `0.2x`～`7.2x` 或自定义倍率，适合优惠中转或汇率折算），用量账本顶部展示当月预算消耗进度条与阈值/超额预警。
-    - **WebDAV 加密云同步**：支持坚果云、Nextcloud、群晖 NAS 等 WebDAV 服务（仅上传经 PBKDF2 + AES-256-GCM 本地加密的完整备份包）；WebDAV 密码与加密口令仅存系统 Keychain / Android Keystore + Tink，公网强制 HTTPS 并拦截跨站重定向。
-
-### 分享扩展签名
-
-工程新增 `iOSBoxShare` target，并由主 App 自动嵌入。`IOSBOX_BUNDLE_ID` 默认为 `com.iosbox.app`；共享组 `IOSBOX_APP_GROUP` 默认为 `group.$(IOSBOX_BUNDLE_ID)`。真机运行时，为两个 target 选择同一个开发团队，并在开发者账户注册/启用同一个 App Group；修改 Bundle ID 时同步检查 App Group 的签名权限。分享扩展通过该组访问共享钥匙串，无需改变旧凭据的默认访问组。参见 [Apple App Groups 与扩展数据共享](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/ExtensionScenarios.html) 和 [共享钥匙串访问](https://developer.apple.com/documentation/security/sharing-access-to-keychain-items-among-a-collection-of-apps)。
-
-## 运行方式
-
-### iOS 运行与测试
-
-1. 使用 Xcode 打开工程文件：`iOSBox.xcodeproj`
-2. 选择 iPhone 模拟器或连接真机（真机运行需在 `Signing & Capabilities` 中选择你的个人 Apple ID Team）
-3. 按 `Cmd + R` 编译运行
-4. 在「对话」点「连接第一个模型」，选服务商或添加自定义 API，填好连接信息后点「验证连接并使用此模型」。也可以先写草稿，验证后回到原对话继续发送。
-5. 首次发送时核对接收服务商、模型和域名，再点「同意并继续发送」。点「暂不发送」会保留草稿和附件。可随时在「设置 → 关于与隐私声明」撤回授权。
-
-### Android 运行与测试
-
-Android 原生工程位于 `android/`（需要 JDK 21 与 Android SDK API 35）：
+### 命令行构建与单元测试
 
 ```bash
-cd android
-./gradlew testDebugUnitTest lintDebug assembleDebug assembleRelease
+xcodebuild build-for-testing \
+  -project iOSBox.xcodeproj \
+  -scheme iOSBox \
+  -destination 'platform=iOS Simulator,name=iPhone 16 Pro'
+
+xcodebuild test-without-building \
+  -project iOSBox.xcodeproj \
+  -scheme iOSBox \
+  -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+  -parallel-testing-enabled NO \
+  -only-testing:iOSBoxTests
 ```
 
-生成的 APK 位于 `android/app/build/outputs/apk/debug/` 与 `android/app/build/outputs/apk/release/`。
-
-## 设置新对话的默认模型和助手
-
-在「设置 → 新对话默认设置」选择模型和可选的助手。选择手动模式时，只有一个可用模型会直接带入，多个模型则在开始聊天时选择。选择「不使用助手」会打开空白对话。输入框旁会列出本次绑定的书名，点开可选「本次不使用知识库」。成功发送后，下一条消息恢复原来的知识库设置。
-
-## 创建人物档案和邀请进群
-
-在「工作台 → 好友 → 新建人物档案」设置人物、资料和绑定模型。点人物姓名打开同一段私聊，在人物操作中选择「邀请进群」。编辑档案会同步到已关联的私聊与群成员。每个群分别启用订阅，回复中的「人物资料」可查看当时实际发送给该模型的片段。已有群成员也可以在群设置中「保存为独立人物档案」。
-
-打开群聊菜单的「配置圆桌群聊角色」，展开成员，进入「人物资料与动态」。粘贴作品片段、选择 TXT / Markdown / JSON 文件，或从公开博客文章和订阅里选取文章。导入多人聊天记录时填写原记录中的发言人名字，例如 `小林：这周的桂花开了。`。预览并保存片段，返回群设置后点「保存」。每位成员最多保存 6 份，每份 4,000 字符。发言时只将选中的参考片段发送给其绑定的模型，生成的消息标注为「AI 模拟」。
-
-「自动分享到本群」接受博客主页、RSS / Atom 地址和公开 X 账号。X 使用自己的 X API Bearer Token，保存在本机钥匙串。首次成功检查只记录已有文章，以后的新内容会以带原文链接的订阅卡片出现在本群。打开 App 时会检查到期的订阅，后台检查由 iOS 安排。群菜单的「检查成员动态」可以立即刷新。还原备份到新设备后，需要重新打开想要的订阅。
-
-## 和书中的人物聊天
-
-在「对话 → 新建 → 书中好友」或「工作台 → 好友 → 从书中创建好友」导入 EPUB、TXT、Markdown 或带文字的 PDF。输入角色姓名和别名，或从附有原文的候选人物中选择。「阅读进度」决定可检索的章节，PDF 按页显示。点「查找人物」核对片段，再点「开始对话」。
-
-点聊天标题下的书名和进度可推进章节并接着聊。选择较早章节时可另开一段空白对话，原聊天会保留。好友操作和聊天菜单中的「邀请进群」可加入已有群或创建读书群。建群时也可以「从好友选择」。同一本书的角色共用群内的阅读进度，各好友的私聊记录独立保存；群角色只向绑定的模型发送本次所需片段。
-
-在「工作台 → 书架」点「继续阅读」会打开最近的伴读对话并恢复上次的章节、段落。点书旁的「…」选择「新开讨论」可保留原聊天并另开一段。同一人物的不同阅读进度归在同一张好友卡中。书架阅读位置与角色可知的章节分别保存。书架保存可读正文，完整备份也包含书籍。每次聊天在本机按当前话题检索最多三段原文，所用片段可以在回复上展开查看。单文件最大 64 MB，每卷正文最多约 12 MiB。请使用可直接读出正文的电子书，扫描版 PDF 可先做文字识别。
+---
 
 ## 多语言（中文 / English）
 
 - 代码中的文案以简体中文书写（String Catalog 源语言 `zh-Hans`），英文翻译位于 `iOSBox/Localizable.xcstrings`，权限说明位于 `iOSBox/InfoPlist.xcstrings`。
 - 系统语言为中文时显示中文，为英文时显示英文，其他语言回退到英文（开发区域为 `en`）。
-- 新增或修改文案后：
-  1. 编译一次工程，让编译器生成 `.stringsdata`；
-  2. 汇总主 App 与分享扩展的 key：`python3 -c "import json,glob; print(json.dumps(sorted({e['key'] for f in glob.glob('<DerivedData>/Build/Intermediates.noindex/iOSBox.build/Debug-iphonesimulator/*/Objects-normal/arm64/*.stringsdata') for t in json.load(open(f))['tables'].values() for e in t}), ensure_ascii=False))" > /tmp/iosbox-keys.json`
-  3. 在 `scripts/generate_string_catalogs.py` 的 `EN` 字典中补充英文翻译，然后运行 `python3 scripts/generate_string_catalogs.py iOSBox /tmp/iosbox-keys.json`。缺少翻译或占位符不一致时脚本会报错。
-- 非 SwiftUI 字面量的界面文案（错误信息、拼接字符串等）请使用 `String(localized:)`。
+- 新增或修改文案后，编译工程生成 `.stringsdata`，更新 `scripts/generate_string_catalogs.py` 中的 `EN` 映射后重新生成 String Catalog。

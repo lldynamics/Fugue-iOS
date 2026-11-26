@@ -128,8 +128,6 @@ struct EnglishMasteredChunk: Codable, Identifiable, Equatable, Sendable {
     var phonetic: String
     var meaningZh: String
     var sampleSentence: String
-    var masteredAt: Date = Date()
-    var exportedToFlashcard: Bool = false
 }
 
 struct EnglishLearnerMemory: Codable, Equatable, Sendable {

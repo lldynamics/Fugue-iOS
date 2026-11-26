@@ -539,60 +539,10 @@ final class ChatEnhancementsTests: XCTestCase {
         try await wait(engine, chat)
     }
 
-    func testBlindComparisonUsesAnonymousLiveActivityWhileBothModelsStream() async throws {
-        let left = makeProvider(name: "Left", modelID: "left-model")
-        let right = makeProvider(name: "Right", modelID: "right-model")
-        let targets = [left, right].map { $0.makeTarget(for: $0.models[0]) }
-        let live = LiveActivityCoordinator.shared
-        let originalPreference = live.showsPreviews
-        live.setShowsPreviews(true)
-        defer { live.setShowsPreviews(originalPreference) }
-        for initiallyBlind in [true, false] {
-            let chat = Conversation(title: "Private comparison", isArenaMode: true, arenaTargets: targets)
-            chat.assistanceSettings.blindArenaMode = initiallyBlind
-            context.insert(chat)
-            let started = expectation(description: "Both comparison models started")
-            started.expectedFulfillmentCount = 2
-            let first = AsyncThrowingStream<LLMStreamEvent, Error>.makeStream()
-            let second = AsyncThrowingStream<LLMStreamEvent, Error>.makeStream()
-            let engine = ChatEngine { request in
-                started.fulfill()
-                return request.modelID == "left-model" ? first.stream : second.stream
-            }
-            defer {
-                first.continuation.finish()
-                second.continuation.finish()
-                engine.stopGeneration(for: chat.id)
-            }
-            XCTAssertEqual(engine.sendUserMessage(text: "Compare", attachments: [], in: chat,
-                                                  providers: [left, right], context: context), .sent)
-            await fulfillment(of: [started], timeout: 5)
-            if !initiallyBlind {
-                let before = try XCTUnwrap(live.activeStates[chat.id])
-                XCTAssertEqual(before.presentation, .preview)
-                XCTAssertEqual(before.visibleTitle, "Private comparison")
-                ChatEngine.setBlindArenaMode(true, in: chat)
-            }
-            live.update(conversationID: chat.id, speakerOrModel: "left-model", previewSnippet: "Private answer", force: true)
-            let state = try XCTUnwrap(live.activeStates[chat.id])
-            XCTAssertEqual(state.presentation, .anonymous)
-            XCTAssertNil(state.visibleTitle)
-            XCTAssertNil(state.visibleSnippet)
-            XCTAssertFalse(state.speakerOrModel.lowercased().contains("-model"))
-            for output in [first.continuation, second.continuation] {
-                output.yield(.contentDelta("Comparison answer"))
-                output.yield(.done)
-                output.finish()
-            }
-            try await wait(engine, chat)
-        }
-    }
-
-    func testCompareWithAnotherModelCrossCritiqueAndBlindReveal() async throws {
+    func testCompareWithAnotherModelCreatesComparisonGroup() async throws {
         let p1 = makeProvider(name: "P1", modelID: "m1")
         let p2 = makeProvider(name: "P2", modelID: "m2")
         let conv = Conversation(primaryTarget: p1.makeTarget(for: p1.models[0]))
-        conv.assistanceSettings.blindArenaMode = true
         context.insert(conv)
 
         let engine = ChatEngine { req in
@@ -621,18 +571,11 @@ final class ChatEnhancementsTests: XCTestCase {
         let groupMsgs = conv.sortedMessages.filter { $0.comparisonGroupID == gid }
         XCTAssertEqual(groupMsgs.count, 2)
 
-        try engine.castBlindVote(for: groupMsgs[1], in: conv, context: context)
-        XCTAssertTrue(groupMsgs.allSatisfy { $0.assistanceMetadata.blindArenaRevealed })
-        let ballot = try XCTUnwrap(groupMsgs[1].assistanceMetadata.blindArenaBallot)
+        try engine.selectContextReply(groupMsgs[1], in: conv, context: context)
+        XCTAssertTrue(groupMsgs[1].isSelectedInGroup)
         engine.regenerate(assistantMessage: groupMsgs[1], in: conv, providers: [p1, p2], context: context)
         try await wait(engine, conv)
-        XCTAssertEqual(groupMsgs[1].assistanceMetadata.blindArenaBallot, ballot)
-        XCTAssertTrue(groupMsgs[1].assistanceMetadata.blindArenaRevealed)
-
-        let critiqueOutcome = engine.crossCritique(groupID: gid, in: conv, providers: [p1, p2], context: context)
-        XCTAssertEqual(critiqueOutcome, .started)
-        try await wait(engine, conv)
-        XCTAssertEqual(conv.messages.count, 6)
+        XCTAssertEqual(groupMsgs[1].content, "From m2")
     }
 
     // MARK: - Markdown Export & Offline Artifact Builder
@@ -812,14 +755,13 @@ final class ChatEnhancementsTests: XCTestCase {
         XCTAssertNil(reply.assistanceMetadata.activeRevisionIndex)
     }
 
-    func testBlindArenaDoesNotLeakModelIdentitiesInPromptsOrMarkdownExport() throws {
-        let p1 = makeProvider(name: "SecretVendorA", modelID: "secret-model-alpha")
-        let p2 = makeProvider(name: "SecretVendorB", modelID: "secret-model-beta")
-        let conv = Conversation(title: "BlindTest", isArenaMode: true, arenaTargets: [
+    func testArenaSynthesisPromptAndGeminiImageReplay() throws {
+        let p1 = makeProvider(name: "VendorA", modelID: "model-alpha")
+        let p2 = makeProvider(name: "VendorB", modelID: "model-beta")
+        let conv = Conversation(title: "ArenaTest", isArenaMode: true, arenaTargets: [
             p1.makeTarget(for: p1.models[0]),
             p2.makeTarget(for: p2.models[0])
         ])
-        conv.assistanceSettings.blindArenaMode = true
         context.insert(conv)
 
         let u = ChatMessage(role: .user, content: "Compare", sortIndex: 0)
@@ -828,14 +770,12 @@ final class ChatEnhancementsTests: XCTestCase {
         let m2 = ChatMessage(role: .assistant, content: "Ans2", target: p2.makeTarget(for: p2.models[0]), comparisonGroupID: gid, isSelectedInGroup: false, sortIndex: 2)
         for m in [u, m1, m2] { m.conversation = conv; conv.messages.append(m); context.insert(m) }
 
-        let synthPrompt = ArenaSynthesis.candidatePrompt([m1, m2], totalCount: 2, blind: true, allGroupCandidates: [m1, m2])
-        let critiquePrompt = ArenaSynthesis.critiquePrompt(for: p1.makeTarget(for: p1.models[0]), allSources: [m1, m2], blind: true)
+        let synthPrompt = ArenaSynthesis.candidatePrompt([m1, m2], totalCount: 2)
         let md = ConversationExporter.makeMarkdown(for: conv)
 
-        for secret in ["SECRET-MODEL-ALPHA", "SECRET-MODEL-BETA", "SecretVendorA", "SecretVendorB"] {
-            XCTAssertFalse(synthPrompt.contains(secret), "synthesis prompt leaked \(secret)")
-            XCTAssertFalse(critiquePrompt.contains(secret), "critique prompt leaked \(secret)")
-            XCTAssertFalse(md.contains(secret), "markdown export leaked \(secret)")
+        for label in ["VendorA", "VendorB", "Ans1", "Ans2"] {
+            XCTAssertTrue(synthPrompt.contains(label), "synthesis prompt missing \(label)")
+            XCTAssertTrue(md.contains(label), "markdown export missing \(label)")
         }
 
         // Gemini multi-turn replays assistant-generated image inlineData

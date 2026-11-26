@@ -36,6 +36,36 @@ enum ArtifactDocumentBuilder {
         language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "svg"
     }
 
+    /// Strips active script blocks, embedded HTML/object containers, XML processing/entity directives,
+    /// inline event handlers (`on*=`), and non-fragment `href`/`xlink:href` URLs from SVG markup so
+    /// previewed or exported `.svg` files cannot execute scripts or fetch remote resources.
+    static func sanitizedSVG(_ rawSVG: String) -> String {
+        var sanitized = rawSVG
+        let patterns: [String] = [
+            // XML declarations that can pull external DTDs or stylesheets
+            #"(?is)<!DOCTYPE\b[\s\S]*?(?:\[[\s\S]*?\]\s*)?>"#,
+            #"(?is)<!ENTITY\b[\s\S]*?>"#,
+            #"(?is)<\?xml-stylesheet\b[\s\S]*?\?>"#,
+            // Executable or embedded container tags (including optional XML namespace prefix)
+            #"(?is)<(?:[a-z0-9_-]+:)?(?:script|foreignObject|iframe|object|embed|applet)\b[^>]*>[\s\S]*?</(?:[a-z0-9_-]+:)?(?:script|foreignObject|iframe|object|embed|applet)\s*>"#,
+            #"(?is)</?(?:[a-z0-9_-]+:)?(?:script|foreignObject|iframe|object|embed|applet)\b[^>]*>"#,
+            // Inline DOM event handler attributes (onload, onclick, onerror, etc.)
+            #"(?is)\s+on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)"#,
+            // Non-fragment href / xlink:href (blocks javascript:, data:text/html, external URLs; keeps local #id refs)
+            #"(?is)\s+(?:[a-z0-9_-]+:)?href\s*=\s*(?:"\s*(?!#)[^"]*"|'\s*(?!#)[^']*'|(?![#\"'])[^\s>]+)"#
+        ]
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                sanitized = regex.stringByReplacingMatches(
+                    in: sanitized,
+                    range: NSRange(sanitized.startIndex..., in: sanitized),
+                    withTemplate: ""
+                )
+            }
+        }
+        return sanitized
+    }
+
     /// Prepends `<head>` policy right after an optional leading `<!doctype html>` while stripping
     /// leading HTML comments, ensuring neither `<!-- <head> -->` comments nor pre-`<head>` `<script>`
     /// tags can ever bypass or precede CSP and WebRTC lockdown.
@@ -82,21 +112,7 @@ enum ArtifactDocumentBuilder {
             """
 
         case "svg":
-            var sanitizedSVG = code
-            if let pairedScript = try? NSRegularExpression(pattern: #"(?is)<script\b[^>]*>.*?</script\s*>"#) {
-                sanitizedSVG = pairedScript.stringByReplacingMatches(
-                    in: sanitizedSVG,
-                    range: NSRange(sanitizedSVG.startIndex..., in: sanitizedSVG),
-                    withTemplate: ""
-                )
-            }
-            if let selfClosingOrOpenScript = try? NSRegularExpression(pattern: #"(?is)</?script\b[^>]*>"#) {
-                sanitizedSVG = selfClosingOrOpenScript.stringByReplacingMatches(
-                    in: sanitizedSVG,
-                    range: NSRange(sanitizedSVG.startIndex..., in: sanitizedSVG),
-                    withTemplate: ""
-                )
-            }
+            let sanitizedSVG = Self.sanitizedSVG(code)
             let svgBase64 = Data(sanitizedSVG.utf8).base64EncodedString()
             return """
             <!doctype html>
@@ -637,11 +653,12 @@ struct ArtifactPreviewSheet: View {
                             .textSelection(.enabled)
                     }
                 } else {
+                    let normalizedLang = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                     SandboxedArtifactWebView(
                         html: ArtifactDocumentBuilder.htmlDocument(language: language, code: code),
                         allowsJavaScript: ArtifactDocumentBuilder.allowsJavaScript(for: language),
                         onSnapshotURL: { url in snapshotFileURL = url },
-                        onSVGExportURL: { url in svgExportURL = url }
+                        onSVGExportURL: normalizedLang == "mermaid" ? { url in svgExportURL = url } : nil
                     )
                 }
             }
@@ -649,7 +666,7 @@ struct ArtifactPreviewSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 if language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "svg",
-                   let data = code.data(using: .utf8) {
+                   let data = ArtifactDocumentBuilder.sanitizedSVG(code).data(using: .utf8) {
                     let url = FileManager.default.temporaryDirectory
                         .appendingPathComponent("Fugue-Artifact-\(UUID().uuidString.prefix(8)).svg")
                     try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -826,9 +843,12 @@ struct SandboxedArtifactWebView: UIViewRepresentable {
                   return '<?xml version="1.0" encoding="UTF-8"?>\\n' + new XMLSerializer().serializeToString(svg);
                 })();
                 """
-                webView.evaluateJavaScript(serializerJS) { result, _ in
-                    guard let svgMarkup = result as? String,
-                          svgMarkup.contains("<svg"),
+                webView.evaluateJavaScript(serializerJS, in: nil, in: .defaultClient) { result in
+                    guard case .success(let value) = result,
+                          let rawSVG = value as? String,
+                          rawSVG.contains("<svg") else { return }
+                    let svgMarkup = ArtifactDocumentBuilder.sanitizedSVG(rawSVG)
+                    guard svgMarkup.contains("<svg"),
                           let data = svgMarkup.data(using: .utf8) else { return }
                     let url = FileManager.default.temporaryDirectory
                         .appendingPathComponent("Fugue-Diagram-\(UUID().uuidString.prefix(8)).svg")

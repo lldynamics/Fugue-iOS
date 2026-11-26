@@ -52,13 +52,12 @@ final class RecoveryAndConsentTests: XCTestCase {
         b.latestRequest = record
         try context.save()
         let ids = [root.id, a.id, b.id]
-        let cards = FlashcardStore(fileURL: nil)
         let kb = PresetKnowledgeStore(fileURL: nil)
-        let backup = try BackupService.decode(BackupService.encode(BackupService.makeArchive(context: context, flashcardStore: cards, knowledgeStore: kb)))
+        let backup = try BackupService.decode(BackupService.encode(BackupService.makeArchive(context: context, knowledgeStore: kb)))
         _ = try BackupService.clearMessages(in: chat, context: context)
         XCTAssertTrue(chat.messages.isEmpty)
         chat.title = "Renamed after clearing"
-        let first = try BackupService.apply(backup, to: context, flashcardStore: cards, knowledgeStore: kb)
+        let first = try BackupService.apply(backup, to: context, knowledgeStore: kb)
         XCTAssertEqual(first.restoredConversations, 1)
         XCTAssertEqual(first.messages, 3)
         XCTAssertTrue(first.description.contains(String(localized: "已恢复 \(1) 个原对话")))
@@ -70,7 +69,7 @@ final class RecoveryAndConsentTests: XCTestCase {
         XCTAssertEqual(active.first?.attachments, [image])
         XCTAssertEqual(active.last?.assistanceMetadata.isBookmarked, true)
         XCTAssertEqual(active.last?.latestRequest?.id, record.id)
-        XCTAssertEqual(try BackupService.apply(backup, to: context, flashcardStore: cards, knowledgeStore: kb).messages, 0)
+        XCTAssertEqual(try BackupService.apply(backup, to: context, knowledgeStore: kb).messages, 0)
         let reopened = ModelContext(container)
         XCTAssertEqual(try reopened.fetchCount(FetchDescriptor<ChatMessage>()), 3)
         XCTAssertEqual(try reopened.fetchCount(FetchDescriptor<RequestRecord>()), 1)
@@ -102,18 +101,17 @@ final class RecoveryAndConsentTests: XCTestCase {
         let missing = add("restore", to: first, role: .assistant)
         let unrelated = add("other chat", to: second)
         try context.save()
-        let cards = FlashcardStore(fileURL: nil)
         let kb = PresetKnowledgeStore(fileURL: nil)
-        var archive = try BackupService.makeArchive(context: context, flashcardStore: cards, knowledgeStore: kb)
+        var archive = try BackupService.makeArchive(context: context, knowledgeStore: kb)
         archive.conversations = archive.conversations.filter { $0.id == first.id }
         keep.content = "edited locally"
         context.delete(missing)
         try context.save()
         var collision = archive
         collision.conversations[0].messages[0].id = unrelated.id
-        XCTAssertThrowsError(try BackupService.apply(.full(collision), to: context, flashcardStore: cards, knowledgeStore: kb))
+        XCTAssertThrowsError(try BackupService.apply(.full(collision), to: context, knowledgeStore: kb))
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<ChatMessage>()), 2)
-        XCTAssertEqual(try BackupService.apply(.full(archive), to: context, flashcardStore: cards, knowledgeStore: kb).messages, 1)
+        XCTAssertEqual(try BackupService.apply(.full(archive), to: context, knowledgeStore: kb).messages, 1)
         XCTAssertEqual(first.sortedMessages.map(\.content), ["edited locally", "restore"])
     }
 

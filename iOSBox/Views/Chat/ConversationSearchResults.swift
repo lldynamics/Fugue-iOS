@@ -14,7 +14,6 @@ struct ConversationSearchResults: View {
     var onSelectConversation: ((Conversation) -> Void)? = nil
     var onSelectRoute: ((ConversationMessageRoute) -> Void)? = nil
     var onSelectBookHit: ((BookSearchHit) -> Void)? = nil
-    var onSelectFlashcardHit: ((FlashcardSearchHit) -> Void)? = nil
 
     var body: some View {
         if session.completed != query {
@@ -45,34 +44,6 @@ struct ConversationSearchResults: View {
                                         .lineLimit(1)
                                     Text("·")
                                     Text(verbatim: hit.sectionTitle)
-                                        .lineLimit(1)
-                                }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                Text(hit.excerpt.highlighted)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(3)
-                            }
-                            .padding(.vertical, 2)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-
-            if !session.flashcardHits.isEmpty {
-                Section("助学闪卡 (\(session.flashcardHits.count))") {
-                    ForEach(session.flashcardHits) { hit in
-                        Button {
-                            onSelectFlashcardHit?(hit)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "rectangle.stack.fill")
-                                        .foregroundStyle(.orange)
-                                    Text(verbatim: hit.deckName)
-                                        .fontWeight(.semibold)
                                         .lineLimit(1)
                                 }
                                 .font(.caption)
@@ -223,7 +194,8 @@ struct ConversationSearchDestination: View {
     var body: some View {
         let chat = route.conversation
         if enteredChat || ConversationTree.activeMessages(in: chat).contains(where: { $0.id == route.messageID }) {
-            ChatDetailView(conversation: chat, initialMessageID: route.messageID, onOpenConversation: onOpenConversation)
+            ChatDetailView(conversation: chat, initialMessageID: route.messageID,
+                           onOpenConversation: onOpenConversation)
                 .onAppear { enteredChat = true }
         } else if let target = chat.messages.first(where: { $0.id == route.messageID }) {
             let path = ConversationTree.activeMessages(in: chat, endingAt: target.id)
@@ -231,8 +203,7 @@ struct ConversationSearchDestination: View {
                 ScrollView {
                     LazyVStack(spacing: 18) {
                         ForEach(path) { message in
-                            MessageRowView(message: message, blindLabel: ArenaSynthesis.blindSpeakerLabel(
-                                for: message, in: path, blindArenaMode: chat.assistanceSettings.blindArenaMode))
+                            MessageRowView(message: message)
                                 .id(message.id)
                         }
                     }

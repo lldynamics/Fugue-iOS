@@ -82,7 +82,6 @@ enum GlobalSearchScope: String, CaseIterable, Identifiable, Sendable {
     case all
     case conversations
     case books
-    case flashcards
 
     var id: String { rawValue }
 
@@ -91,7 +90,6 @@ enum GlobalSearchScope: String, CaseIterable, Identifiable, Sendable {
         case .all: return String(localized: "全部")
         case .conversations: return String(localized: "对话")
         case .books: return String(localized: "书架")
-        case .flashcards: return String(localized: "闪卡")
         }
     }
 }
@@ -189,15 +187,12 @@ struct ConversationSearchResult: Identifiable, Sendable {
         guard matchesDetails || !matches.isEmpty else { return nil }
         let activeIDs = !matches.isEmpty && ConversationTree.usesTree(conversation)
             ? Set(ConversationTree.activeMessages(in: conversation).map(\.id)) : nil
-        let blind = conversation.assistanceSettings.blindArenaMode
-        let candidates = blind && !matches.isEmpty
-            ? Dictionary(grouping: conversation.messages.filter { $0.comparisonGroupID != nil }, by: \.comparisonGroupID) : [:]
         hits = matches.sorted {
             if $0.0.createdAt != $1.0.createdAt { return $0.0.createdAt > $1.0.createdAt }
             return $0.0.sortIndex > $1.0.sortIndex
         }.map { message, excerpt, field in
             let speaker = message.role == .user ? String(localized: "提问")
-                : ArenaSynthesis.visibleSpeakerName(for: message, in: candidates[message.comparisonGroupID] ?? [], blindArenaMode: blind)
+                : ArenaSynthesis.visibleSpeakerName(for: message)
             return Hit(
                 id: message.id,
                 createdAt: message.createdAt,
@@ -231,25 +226,16 @@ struct BookSearchHit: Identifiable, Hashable, Sendable {
     }
 }
 
-struct FlashcardSearchHit: Identifiable, Sendable {
-    let id: UUID
-    let deckName: String
-    let front: String
-    let back: String
-    let excerpt: SearchExcerpt
-}
-
 struct GlobalSearchResults: Sendable {
     var conversations: [ConversationSearchResult] = []
     var books: [BookSearchHit] = []
-    var flashcards: [FlashcardSearchHit] = []
 
     var isEmpty: Bool {
-        conversations.isEmpty && books.isEmpty && flashcards.isEmpty
+        conversations.isEmpty && books.isEmpty
     }
 
     var totalCount: Int {
-        conversations.count + books.count + flashcards.count
+        conversations.count + books.count
     }
 }
 
@@ -267,6 +253,7 @@ private struct IndexedModelSnapshot: Sendable {
     var conversations: [FTSIndexedDocument]
     var messages: [FTSIndexedDocument]
     var books: [FTSIndexedDocument]
+    var retainedBookVolumeIDs: Set<String>
     var conversationUpdatedAt: [UUID: Date]
     var bookmarkedConversationIDs: Set<UUID>
     var messageComparisonGroups: [UUID: UUID]
@@ -289,7 +276,10 @@ private func deterministicFingerprint(_ parts: String...) -> String {
 
 @ModelActor
 private actor ModelContainerFTSExtractor {
-    func extractSnapshot(includeBooks: Bool) throws -> IndexedModelSnapshot {
+    func extractSnapshot(
+        includeBooks: Bool,
+        indexedBookSummaries: [String: FullTextSearchIndex.IndexedBookVolumeSummary] = [:]
+    ) throws -> IndexedModelSnapshot {
         try Task.checkCancellation()
         let chats = try modelContext.fetch(
             FetchDescriptor<Conversation>(sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
@@ -344,10 +334,6 @@ private actor ModelContainerFTSExtractor {
 
             let usesTree = ConversationTree.usesTree(chat)
             let activeIDs = usesTree ? Set(ConversationTree.activeMessages(in: chat).map(\.id)) : nil
-            let blind = chat.assistanceSettings.blindArenaMode
-            let candidatesByGroup = blind
-                ? Dictionary(grouping: chat.messages.filter { $0.comparisonGroupID != nil }, by: \.comparisonGroupID)
-                : [:]
 
             for msg in chat.messages {
                 try Task.checkCancellation()
@@ -359,22 +345,18 @@ private actor ModelContainerFTSExtractor {
                     compGroups[msg.id] = group
                 }
 
-                let attachmentNames: String
-                if !msg.attachmentsData.isEmpty,
-                   let parsed = try? decoder.decode([FileNameProbe].self, from: msg.attachmentsData),
-                   !parsed.isEmpty {
-                    attachmentNames = parsed.map(\.fileName).joined(separator: " ")
-                } else {
-                    attachmentNames = ""
+                let attachmentNames: String = autoreleasepool {
+                    if !msg.attachmentsData.isEmpty,
+                       let parsed = try? decoder.decode([FileNameProbe].self, from: msg.attachmentsData),
+                       !parsed.isEmpty {
+                        return parsed.map(\.fileName).joined(separator: " ")
+                    }
+                    return ""
                 }
 
                 let speaker = msg.role == .user
                     ? String(localized: "提问")
-                    : ArenaSynthesis.visibleSpeakerName(
-                        for: msg,
-                        in: candidatesByGroup[msg.comparisonGroupID] ?? [],
-                        blindArenaMode: blind
-                    )
+                    : ArenaSynthesis.visibleSpeakerName(for: msg)
                 // Encode reasoning and attachment names separately with ASCII Unit Separator so we can
                 // accurately attribute hits to `.reasoning` vs `.attachment` without indexing chat title on messages.
                 let aux = "\(msg.reasoningContent)\u{001F}\(attachmentNames)"
@@ -411,36 +393,48 @@ private actor ModelContainerFTSExtractor {
         }
 
         var bookDocs: [FTSIndexedDocument] = []
+        var retainedBookVolumeIDs = Set<String>()
         if includeBooks {
             let volumes = try modelContext.fetch(FetchDescriptor<BookVolume>(sortBy: [SortDescriptor(\.importedAt, order: .reverse)]))
             for vol in volumes {
                 try Task.checkCancellation()
-                guard let chapters = try? JSONDecoder().decode([BookChapter].self, from: vol.manuscript) else { continue }
-                for (chapIdx, chapter) in chapters.enumerated() {
-                    let cleanText = chapter.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !cleanText.isEmpty else { continue }
-                    let docKey = "book:\(vol.id.uuidString):\(chapIdx)"
-                    let fp = "\(vol.id.uuidString):\(vol.title.count):\(chapIdx):\(chapter.text.utf8.count)"
-                    bookDocs.append(FTSIndexedDocument(
-                        docKey: docKey,
-                        entityType: .bookChunk,
-                        parentID: vol.id.uuidString,
-                        itemID: "\(vol.id.uuidString):\(chapIdx)",
-                        title: vol.title,
-                        subtitle: chapter.title,
-                        rawBody: cleanText,
-                        rawAux: chapter.title,
-                        folderTag: nil,
-                        isBookmarked: false,
-                        isOtherBranch: false,
-                        role: nil,
-                        speaker: nil,
-                        chapterIndex: chapIdx,
-                        utf16Offset: 0,
-                        createdAt: vol.importedAt,
-                        updatedAt: vol.importedAt,
-                        fingerprint: fp
-                    ))
+                let volumeKey = vol.id.uuidString
+                // BookVolume.id is content-addressed (SHA-256 of manuscript); when already indexed
+                // with matching title, skip faulting the multi-megabyte external manuscript blob.
+                if let existing = indexedBookSummaries[volumeKey],
+                   existing.title == vol.title,
+                   existing.chunkCount > 0 {
+                    retainedBookVolumeIDs.insert(volumeKey)
+                    continue
+                }
+                autoreleasepool {
+                    guard let chapters = try? decoder.decode([BookChapter].self, from: vol.manuscript) else { return }
+                    for (chapIdx, chapter) in chapters.enumerated() {
+                        let cleanText = chapter.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !cleanText.isEmpty else { continue }
+                        let docKey = "book:\(volumeKey):\(chapIdx)"
+                        let fp = deterministicFingerprint(volumeKey, vol.title, "\(chapIdx)", "\(chapter.text.utf8.count)")
+                        bookDocs.append(FTSIndexedDocument(
+                            docKey: docKey,
+                            entityType: .bookChunk,
+                            parentID: volumeKey,
+                            itemID: "\(volumeKey):\(chapIdx)",
+                            title: vol.title,
+                            subtitle: chapter.title,
+                            rawBody: cleanText,
+                            rawAux: chapter.title,
+                            folderTag: nil,
+                            isBookmarked: false,
+                            isOtherBranch: false,
+                            role: nil,
+                            speaker: nil,
+                            chapterIndex: chapIdx,
+                            utf16Offset: 0,
+                            createdAt: vol.importedAt,
+                            updatedAt: vol.importedAt,
+                            fingerprint: fp
+                        ))
+                    }
                 }
             }
         }
@@ -449,6 +443,7 @@ private actor ModelContainerFTSExtractor {
             conversations: convDocs,
             messages: msgDocs,
             books: bookDocs,
+            retainedBookVolumeIDs: retainedBookVolumeIDs,
             conversationUpdatedAt: convUpdatedAt,
             bookmarkedConversationIDs: bookmarkedChatIDs,
             messageComparisonGroups: compGroups,
@@ -476,11 +471,11 @@ actor ConversationHistorySearch {
     }
 
     func results(for request: HistorySearchQuery, in container: ModelContainer) async throws -> [ConversationSearchResult] {
-        let all = try await searchAll(for: request, in: container, flashcards: [])
+        let all = try await searchAll(for: request, in: container)
         return all.conversations
     }
 
-    func rebuildIndex(in container: ModelContainer, flashcards: [StudyFlashcard]) async throws -> FullTextIndexStats {
+    func rebuildIndex(in container: ModelContainer) async throws -> FullTextIndexStats {
         let index = resolveIndex(for: container)
         try await index.resetGlobalSearchTables()
         let extractor = ModelContainerFTSExtractor(modelContainer: container)
@@ -488,14 +483,12 @@ actor ConversationHistorySearch {
         try await index.syncDocuments(entityType: .conversation, documents: snapshot.conversations)
         try await index.syncDocuments(entityType: .message, documents: snapshot.messages)
         try await index.syncDocuments(entityType: .bookChunk, documents: snapshot.books)
-        try await index.syncDocuments(entityType: .flashcard, documents: Self.flashcardDocuments(from: flashcards))
         return await index.stats()
     }
 
     func searchAll(
         for request: HistorySearchQuery,
-        in container: ModelContainer,
-        flashcards: [StudyFlashcard]
+        in container: ModelContainer
     ) async throws -> GlobalSearchResults {
         try Task.checkCancellation()
         let trimmedQuery = request.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -504,10 +497,13 @@ actor ConversationHistorySearch {
         let index = resolveIndex(for: container)
         let wantConversations = request.scope == .all || request.scope == .conversations
         let wantBooks = (request.scope == .all || request.scope == .books) && request.tag == nil && !request.bookmarkedChatsOnly
-        let wantFlashcards = (request.scope == .all || request.scope == .flashcards) && request.tag == nil && !request.bookmarkedChatsOnly
 
+        let bookSummaries = wantBooks ? ((try? await index.indexedBookVolumeSummaries()) ?? [:]) : [:]
         let extractor = ModelContainerFTSExtractor(modelContainer: container)
-        let snapshot = try await extractor.extractSnapshot(includeBooks: wantBooks)
+        let snapshot = try await extractor.extractSnapshot(
+            includeBooks: wantBooks,
+            indexedBookSummaries: bookSummaries
+        )
         try Task.checkCancellation()
 
         if wantConversations {
@@ -515,10 +511,10 @@ actor ConversationHistorySearch {
             try await index.syncDocuments(entityType: .message, documents: snapshot.messages)
         }
         if wantBooks {
-            try await index.syncDocuments(entityType: .bookChunk, documents: snapshot.books)
-        }
-        if wantFlashcards {
-            try await index.syncDocuments(entityType: .flashcard, documents: Self.flashcardDocuments(from: flashcards))
+            try await index.syncBookChunks(
+                documents: snapshot.books,
+                retainingParentIDs: snapshot.retainedBookVolumeIDs
+            )
         }
         try Task.checkCancellation()
 
@@ -631,58 +627,7 @@ actor ConversationHistorySearch {
             }
         }
 
-        if wantFlashcards {
-            let rawCardHits = try await index.search(
-                query: trimmedQuery,
-                entityTypes: [.flashcard],
-                folderTag: nil,
-                includeAux: true,
-                limit: 30
-            )
-            for hit in rawCardHits {
-                guard let cardID = UUID(uuidString: hit.itemID) else { continue }
-                let excerpt = SearchExcerpt.fallbackSnippet(in: hit.title, query: trimmedQuery)
-                    ?? SearchExcerpt.fallbackSnippet(in: hit.rawBody, query: trimmedQuery)
-                    ?? SearchExcerpt.fallbackSnippet(in: hit.rawAux, query: trimmedQuery)
-                guard let excerpt else { continue }
-                output.flashcards.append(FlashcardSearchHit(
-                    id: cardID,
-                    deckName: hit.subtitle,
-                    front: hit.title,
-                    back: hit.rawBody,
-                    excerpt: excerpt
-                ))
-            }
-        }
-
         return output
-    }
-
-    private static func flashcardDocuments(from cards: [StudyFlashcard]) -> [FTSIndexedDocument] {
-        cards.map { card in
-            let aux = [card.deckName, card.hint ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
-            let fp = deterministicFingerprint(card.id.uuidString, card.deckName, card.front, card.back, card.hint ?? "")
-            return FTSIndexedDocument(
-                docKey: "card:\(card.id.uuidString)",
-                entityType: .flashcard,
-                parentID: card.deckName,
-                itemID: card.id.uuidString,
-                title: card.front,
-                subtitle: card.deckName,
-                rawBody: card.back,
-                rawAux: aux,
-                folderTag: nil,
-                isBookmarked: false,
-                isOtherBranch: false,
-                role: nil,
-                speaker: nil,
-                chapterIndex: nil,
-                utf16Offset: nil,
-                createdAt: card.createdAt,
-                updatedAt: card.lastReviewedAt ?? card.createdAt,
-                fingerprint: fp
-            )
-        }
     }
 
     private static func resolveMessageExcerpt(
@@ -738,17 +683,15 @@ final class HistorySearchSession {
     private(set) var completed: HistorySearchQuery?
     private(set) var results: [ConversationSearchResult] = []
     private(set) var bookHits: [BookSearchHit] = []
-    private(set) var flashcardHits: [FlashcardSearchHit] = []
     private(set) var error: String?
 
     var hasAnyResults: Bool {
-        !results.isEmpty || !bookHits.isEmpty || !flashcardHits.isEmpty
+        !results.isEmpty || !bookHits.isEmpty
     }
 
     func update(
         _ query: HistorySearchQuery,
         in container: ModelContainer,
-        flashcards: [StudyFlashcard]? = nil,
         delay: Duration = .milliseconds(160)
     ) async {
         generation += 1
@@ -757,26 +700,22 @@ final class HistorySearchSession {
             completed = nil
             results = []
             bookHits = []
-            flashcardHits = []
             error = nil
             return
         }
-        let cards = flashcards ?? FlashcardStore.shared.cards
         do {
             try await Task.sleep(for: delay)
-            let matched = try await search.searchAll(for: query, in: container, flashcards: cards)
+            let matched = try await search.searchAll(for: query, in: container)
             try Task.checkCancellation()
             guard generation == current else { return }
             results = matched.conversations
             bookHits = matched.books
-            flashcardHits = matched.flashcards
             error = nil
         } catch {
             guard !Task.isCancelled, generation == current else { return }
             self.error = error.localizedDescription
             results = []
             bookHits = []
-            flashcardHits = []
         }
         completed = query
     }

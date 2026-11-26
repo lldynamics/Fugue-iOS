@@ -2,60 +2,73 @@ import SwiftData
 import SwiftUI
 
 struct FirstModelSetupSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
-    @State private var path: [ProviderConfig] = []
-    @State private var adding = false
-    @State private var showQuickSetup = false
     var continuesToGroup = false
     let onConnected: (ResolvedModelTarget) -> Void
 
     var body: some View {
-        NavigationStack(path: $path) {
-            List {
-                if continuesToGroup { Text("连接后将继续选择群成员。").foregroundStyle(.secondary) }
-                Section("极速配置") {
-                    Button {
-                        showQuickSetup = true
-                    } label: {
-                        Label("从剪贴板一键配 Key 并测通", systemImage: "bolt.fill")
-                            .fontWeight(.medium)
-                    }
-                }
-                Section("选择服务商") {
-                    ForEach(providers) { provider in
-                        NavigationLink(value: provider) {
-                            Label(provider.name, systemImage: provider.iconSymbol)
-                        }
-                    }
-                    Button { adding = true } label: { Label("添加自定义 API", systemImage: "plus") }
-                }
-            }
-            .navigationTitle("连接模型")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-            }
-            .navigationDestination(for: ProviderConfig.self) { provider in
-                ProviderDetailView(provider: provider, onVerifiedModel: { target in
-                    if !continuesToGroup { dismiss() }
-                    onConnected(target)
-                })
-            }
-            .sheet(isPresented: $adding) {
-                AddProviderSheet { provider in path.append(provider) }
-            }
-            .sheet(isPresented: $showQuickSetup) {
-                QuickKeySetupSheet { _, target in
-                    if !continuesToGroup { dismiss() }
-                    onConnected(target)
-                }
-            }
+        QuickKeySetupSheet(isFirstConnection: true, continuesToGroup: continuesToGroup) { _, target in
+            onConnected(target)
         }
+    }
+}
+
+struct ManualConnectionProvidersView: View {
+    @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
+    @State private var addedProvider: ProviderConfig?
+    @State private var adding = false
+    let correctKey: (ProviderSetupDraft) -> Void
+    let onConnected: (ProviderConfig, ResolvedModelTarget) -> Void
+
+    var body: some View {
+        List {
+            ForEach(providers) { provider in
+                NavigationLink {
+                    details(provider)
+                } label: {
+                    Label(provider.name, systemImage: provider.iconSymbol)
+                }
+            }
+            Button { adding = true } label: { Label("手动添加服务商", systemImage: "plus") }
+        }
+        .navigationTitle("选择服务商")
+        .sheet(isPresented: $adding) { AddProviderSheet { addedProvider = $0 } }
+        .navigationDestination(item: $addedProvider) { details($0) }
+    }
+
+    private func details(_ provider: ProviderConfig) -> some View {
+        ProviderDetailView(provider: provider, onVerifiedModel: { onConnected(provider, $0) }, correctKey: correctKey)
     }
 }
 
 @MainActor
 enum ModelSetup {
+    static func verificationAdvice(for error: Error, checkingModel: Bool = false) -> String {
+        if let error = error as? LLMError {
+            switch error {
+            case .invalidURL:
+                return String(localized: "请检查接口地址和协议类型。")
+            case .missingAPIKey:
+                return String(localized: "请填写当前服务商的 API Key。")
+            case .httpError(401, _):
+                return String(localized: "HTTP 401 · 密钥验证失败。请确认密钥由所选服务商签发，并完整粘贴。")
+            case .httpError(403, _):
+                return String(localized: "HTTP 403 · 服务商拒绝了请求。请检查项目的模型、接口和地区访问限制。")
+            case .httpError(429, _):
+                return String(localized: "接口暂时限流。请稍后重试，或检查服务商配额。")
+            case .httpError(404, _) where checkingModel, .unavailableModel:
+                return String(localized: "请核对模型 ID 及接口地址。")
+            case .httpError(404, _):
+                return String(localized: "模型列表地址不可用。请核对接口地址，或手动指定模型 ID。")
+            default: break
+            }
+        }
+        if let network = error as? URLError,
+           [.cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .unsupportedURL].contains(network.code) {
+            return String(localized: "无法连接接口。请检查接口地址和网络。")
+        }
+        return error.localizedDescription
+    }
+
     static func use(_ target: ResolvedModelTarget, in chat: Conversation, context: ModelContext, exitGroup: Bool) throws {
         let id = target.providerID
         let provider = try context.fetch(FetchDescriptor<ProviderConfig>(predicate: #Predicate { $0.id == id })).first

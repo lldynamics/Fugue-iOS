@@ -171,19 +171,6 @@ struct LLMChatRequest: Sendable {
     let tools: [LLMToolDefinition]
     var validateBeforeSending: (@MainActor @Sendable () throws -> Void)?
 
-    /// Deduplicated non-empty API keys in priority order (`apiKey` followed by `apiKeys`).
-    var effectiveAPIKeys: [String] {
-        var result: [String] = []
-        var seen = Set<String>()
-        for raw in [apiKey] + apiKeys {
-            let trimmed = LLMClient.sanitizedAPIKey(raw)
-            if !trimmed.isEmpty && seen.insert(trimmed).inserted {
-                result.append(trimmed)
-            }
-        }
-        return result
-    }
-
     init(
         providerName: String,
         protocolType: APIProtocolType,
@@ -486,19 +473,47 @@ final class APIKeyPoolRouter: @unchecked Sendable {
 
     init() {}
 
+    private struct TokenClaims: Decodable {
+        let iss: String
+    }
+
+    // Recognize access tokens by issuer. Signature and expiry are checked by OpenRouter.
+    private static func isOpenRouterAccessToken(_ key: String) -> Bool {
+        guard let match = key.wholeMatch(of: #/[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+/#) else { return false }
+        var payload = match.1.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        payload += String(repeating: "=", count: (4 - payload.utf8.count % 4) % 4)
+        guard let data = Data(base64Encoded: payload),
+              let claims = try? JSONDecoder().decode(TokenClaims.self, from: data) else { return false }
+        return claims.iss == "https://openrouter.ai" || claims.iss == "https://clerk.openrouter.ai"
+    }
+
+    static func validatedKeys(_ rawKeys: [String], baseURL: String) throws -> [String] {
+        let keys = rawKeys.map(LLMClient.sanitizedAPIKey)
+        guard OpenAICompatibleAdapter.isOpenRouter(baseURL) else { return keys }
+        var invalidSlots: [String] = []
+        for (index, key) in keys.enumerated() where !key.isEmpty {
+            if key.wholeMatch(of: #/sk-or-v1-[0-9a-f]{64}/#) != nil || isOpenRouterAccessToken(key) {
+                continue
+            }
+            invalidSlots.append(index == 0 ? String(localized: "主 Key") : String(localized: "备用 Key #\(index)"))
+        }
+        guard invalidSlots.isEmpty else {
+            throw LLMError.apiError(String(localized: "OpenRouter 的\(invalidSlots.formatted(.list(type: .and)))格式有误。请粘贴完整的 OpenRouter API Key（sk-or-v1- 开头）。"))
+        }
+        return keys
+    }
+
     func orderedKeys(
         from rawKeys: [String],
         protocolType: APIProtocolType,
         baseURL: String,
         now: ContinuousClock.Instant = .now
-    ) -> [String] {
+    ) throws -> [String] {
+        let keys = try Self.validatedKeys(rawKeys, baseURL: baseURL)
         var unique: [String] = []
         var seen = Set<String>()
-        for raw in rawKeys {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty && seen.insert(trimmed).inserted {
-                unique.append(trimmed)
-            }
+        for key in keys where !key.isEmpty && seen.insert(key).inserted {
+            unique.append(key)
         }
         guard !unique.isEmpty else { return [""] }
         guard unique.count > 1 else { return unique }
@@ -652,7 +667,11 @@ enum LLMClient {
     static let maxRetryAfterWaitSeconds: TimeInterval = 5.0
 
     private static let session: URLSession = {
-        let config = URLSessionConfiguration.default
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.urlCredentialStorage = nil
+        config.urlCache = nil
         config.timeoutIntervalForRequest = 120
         config.timeoutIntervalForResource = 3600
         return URLSession(configuration: config)
@@ -792,8 +811,8 @@ enum LLMClient {
               !NetworkLocation.isPlainHTTPToPublicHost(baseURL: baseURL) else {
             throw LLMError.invalidURL(baseURL)
         }
-        let orderedKeys = keyRouter.orderedKeys(
-            from: ([apiKey] + apiKeys).map(sanitizedAPIKey),
+        let orderedKeys = try keyRouter.orderedKeys(
+            from: [apiKey] + apiKeys,
             protocolType: protocolType,
             baseURL: baseURL
         )
@@ -864,8 +883,8 @@ enum LLMClient {
                     }
                     var state = initialState
                     var newlyDisabled = Set<GatewayUnsupportedFeature>()
-                    let orderedKeys = keyRouter.orderedKeys(
-                        from: request.effectiveAPIKeys,
+                    let orderedKeys = try keyRouter.orderedKeys(
+                        from: [request.apiKey] + request.apiKeys,
                         protocolType: request.protocolType,
                         baseURL: request.baseURL
                     )
@@ -1124,14 +1143,6 @@ enum LLMClient {
             try await validateHTTPResponseWithMetadata(response, bytes: bytes)
         } catch let err as LLMHTTPStatusError {
             throw LLMError.httpError(err.statusCode, err.message)
-        }
-    }
-
-    static func validateDataResponse(_ response: URLResponse, data: Data) throws {
-        guard let http = response as? HTTPURLResponse else { return }
-        guard (200..<300).contains(http.statusCode) else {
-            let message = enrichErrorMessage(extractReadableErrorMessage(from: data), response: http)
-            throw LLMError.httpError(http.statusCode, message)
         }
     }
 

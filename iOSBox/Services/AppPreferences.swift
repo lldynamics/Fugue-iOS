@@ -90,27 +90,17 @@ final class AppPreferences {
         static let webDAVLastRemoteETag = "iosbox.pref.webDAVLastRemoteETag"
         static let webDAVLastRemoteModifiedEpoch = "iosbox.pref.webDAVLastRemoteModifiedEpoch"
         static let webDAVLastAutoSyncSummary = "iosbox.pref.webDAVLastAutoSyncSummary"
-        static let webDAVShardedSyncEnabled = "iosbox.pref.webDAVShardedSyncEnabled"
-        static let webDAVKnownShardSalt = "iosbox.pref.webDAVKnownShardSalt"
-        static let webDAVKnownShardKeyFingerprint = "iosbox.pref.webDAVKnownShardKeyFingerprint"
-        static let webDAVKnownRemoteBlobs = "iosbox.pref.webDAVKnownRemoteBlobs"
-        static let ragHybridEmbeddingEnabled = "iosbox.pref.ragHybridEmbeddingEnabled"
-        static let ragEmbeddingProviderID = "iosbox.pref.ragEmbeddingProviderID"
-        static let ragEmbeddingModel = "iosbox.pref.ragEmbeddingModel"
+        static let webDAVWorkspaceChangeID = "iosbox.pref.webDAVWorkspaceChangeID"
         static let appLockEnabled = "iosbox.pref.appLockEnabled"
         static let appLockGraceSeconds = "iosbox.pref.appLockGraceSeconds"
         static let privacyBlurOnBackground = "iosbox.pref.privacyBlurOnBackground"
         static let autoRollingSummaryEnabled = "iosbox.pref.autoRollingSummaryEnabled"
-        static let moduleProjectsEnabled = "iosbox.pref.moduleProjectsEnabled"
         static let moduleGroupChatEnabled = "iosbox.pref.moduleGroupChatEnabled"
         static let moduleBookFriendsEnabled = "iosbox.pref.moduleBookFriendsEnabled"
-        static let moduleStudyFlashcardsEnabled = "iosbox.pref.moduleStudyFlashcardsEnabled"
         static let moduleEnglishCoachEnabled = "iosbox.pref.moduleEnglishCoachEnabled"
         static let moduleArenaEnabled = "iosbox.pref.moduleArenaEnabled"
         static let moduleUsageTabEnabled = "iosbox.pref.moduleUsageTabEnabled"
-        static let webSearchProvider = WebSearchService.providerDefaultsKey
-        static let searxngBaseURL = WebSearchService.searxngBaseURLDefaultsKey
-        static let jinaReaderFallbackEnabled = WebSearchService.jinaFallbackDefaultsKey
+        static let imageUploadQuality = ImageUploadQuality.defaultsKey
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -211,44 +201,8 @@ final class AppPreferences {
         didSet { defaults.set(webDAVLastAutoSyncSummary, forKey: Keys.webDAVLastAutoSyncSummary) }
     }
 
-    var webDAVShardedSyncEnabled: Bool {
-        didSet { defaults.set(webDAVShardedSyncEnabled, forKey: Keys.webDAVShardedSyncEnabled) }
-    }
-
-    var webDAVKnownShardSalt: String {
-        didSet { defaults.set(webDAVKnownShardSalt, forKey: Keys.webDAVKnownShardSalt) }
-    }
-
-    var webDAVKnownShardKeyFingerprint: String {
-        didSet { defaults.set(webDAVKnownShardKeyFingerprint, forKey: Keys.webDAVKnownShardKeyFingerprint) }
-    }
-
-    var webDAVKnownRemoteBlobs: [String] {
-        didSet { defaults.set(webDAVKnownRemoteBlobs, forKey: Keys.webDAVKnownRemoteBlobs) }
-    }
-
-    var ragHybridEmbeddingEnabled: Bool {
-        didSet {
-            defaults.set(ragHybridEmbeddingEnabled, forKey: Keys.ragHybridEmbeddingEnabled)
-            if !ragHybridEmbeddingEnabled { defaults.removeObject(forKey: EmbeddingConsent.key) }
-        }
-    }
-
-    var ragEmbeddingProviderID: UUID? {
-        didSet {
-            defaults.set(ragEmbeddingProviderID?.uuidString, forKey: Keys.ragEmbeddingProviderID)
-            if oldValue != ragEmbeddingProviderID { defaults.removeObject(forKey: EmbeddingConsent.key) }
-        }
-    }
-
-    var ragEmbeddingModel: String {
-        didSet {
-            let clean = ragEmbeddingModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            defaults.set(clean.isEmpty ? "text-embedding-3-small" : clean, forKey: Keys.ragEmbeddingModel)
-            if clean != oldValue.trimmingCharacters(in: .whitespacesAndNewlines) {
-                defaults.removeObject(forKey: EmbeddingConsent.key)
-            }
-        }
+    var webDAVWorkspaceChangeID: String {
+        didSet { defaults.set(webDAVWorkspaceChangeID, forKey: Keys.webDAVWorkspaceChangeID) }
     }
 
     var appLockEnabled: Bool {
@@ -295,20 +249,12 @@ final class AppPreferences {
         didSet { defaults.set(autoRollingSummaryEnabled, forKey: Keys.autoRollingSummaryEnabled) }
     }
 
-    var moduleProjectsEnabled: Bool {
-        didSet { defaults.set(moduleProjectsEnabled, forKey: Keys.moduleProjectsEnabled) }
-    }
-
     var moduleGroupChatEnabled: Bool {
         didSet { defaults.set(moduleGroupChatEnabled, forKey: Keys.moduleGroupChatEnabled) }
     }
 
     var moduleBookFriendsEnabled: Bool {
         didSet { defaults.set(moduleBookFriendsEnabled, forKey: Keys.moduleBookFriendsEnabled) }
-    }
-
-    var moduleStudyFlashcardsEnabled: Bool {
-        didSet { defaults.set(moduleStudyFlashcardsEnabled, forKey: Keys.moduleStudyFlashcardsEnabled) }
     }
 
     var moduleEnglishCoachEnabled: Bool {
@@ -323,25 +269,15 @@ final class AppPreferences {
         didSet { defaults.set(moduleUsageTabEnabled, forKey: Keys.moduleUsageTabEnabled) }
     }
 
-    var webSearchProvider: WebSearchProvider {
-        didSet { defaults.set(webSearchProvider.rawValue, forKey: Keys.webSearchProvider) }
-    }
-
-    var searxngBaseURL: String {
-        didSet { defaults.set(searxngBaseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.searxngBaseURL) }
-    }
-
-    var jinaReaderFallbackEnabled: Bool {
-        didSet { defaults.set(jinaReaderFallbackEnabled, forKey: Keys.jinaReaderFallbackEnabled) }
+    var imageUploadQuality: ImageUploadQuality {
+        didSet { defaults.set(imageUploadQuality.rawValue, forKey: Keys.imageUploadQuality) }
     }
 
     var showsUsageTab: Bool { !simpleDailyMode && moduleUsageTabEnabled }
     var showsGroupChat: Bool { !simpleDailyMode && moduleGroupChatEnabled }
     var showsArena: Bool { moduleArenaEnabled }
     var showsBookFriends: Bool { moduleBookFriendsEnabled }
-    var showsStudyFlashcards: Bool { moduleStudyFlashcardsEnabled }
     var showsEnglishCoach: Bool { moduleEnglishCoachEnabled }
-    var showsProjects: Bool { moduleProjectsEnabled }
 
     var defaultTargetID: String? {
         didSet { defaults.set(defaultTargetID, forKey: Keys.defaultTarget) }
@@ -433,7 +369,7 @@ final class AppPreferences {
            let resolvedTheme = DS.AccentTheme(rawValue: rawTheme) {
             self.accentTheme = resolvedTheme
         } else {
-            self.accentTheme = .vermilion
+            self.accentTheme = UIDevice.current.userInterfaceIdiom == .phone ? .vermilion : .cobalt
         }
         if let rawStyle = defaults.string(forKey: Keys.chatMessageStyle),
            let resolvedStyle = ChatMessageStyle(rawValue: rawStyle) {
@@ -490,18 +426,7 @@ final class AppPreferences {
         let remoteModEpoch = defaults.double(forKey: Keys.webDAVLastRemoteModifiedEpoch)
         self.webDAVLastRemoteModifiedAt = remoteModEpoch > 0 ? Date(timeIntervalSince1970: remoteModEpoch) : nil
         self.webDAVLastAutoSyncSummary = defaults.string(forKey: Keys.webDAVLastAutoSyncSummary) ?? ""
-        if defaults.object(forKey: Keys.webDAVShardedSyncEnabled) == nil {
-            self.webDAVShardedSyncEnabled = true
-        } else {
-            self.webDAVShardedSyncEnabled = defaults.bool(forKey: Keys.webDAVShardedSyncEnabled)
-        }
-        self.webDAVKnownShardSalt = defaults.string(forKey: Keys.webDAVKnownShardSalt) ?? ""
-        self.webDAVKnownShardKeyFingerprint = defaults.string(forKey: Keys.webDAVKnownShardKeyFingerprint) ?? ""
-        self.webDAVKnownRemoteBlobs = defaults.stringArray(forKey: Keys.webDAVKnownRemoteBlobs) ?? []
-        self.ragHybridEmbeddingEnabled = defaults.bool(forKey: Keys.ragHybridEmbeddingEnabled)
-        self.ragEmbeddingProviderID = defaults.string(forKey: Keys.ragEmbeddingProviderID).flatMap(UUID.init(uuidString:))
-        let storedEmbedModel = defaults.string(forKey: Keys.ragEmbeddingModel)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        self.ragEmbeddingModel = storedEmbedModel.isEmpty ? "text-embedding-3-small" : storedEmbedModel
+        self.webDAVWorkspaceChangeID = defaults.string(forKey: Keys.webDAVWorkspaceChangeID) ?? ""
         self.appLockEnabled = defaults.bool(forKey: Keys.appLockEnabled)
         if let rawGrace = defaults.object(forKey: Keys.appLockGraceSeconds) as? Int,
            let parsedGrace = AppLockGracePeriod(rawValue: rawGrace) {
@@ -511,16 +436,12 @@ final class AppPreferences {
         }
         self.privacyBlurOnBackground = defaults.bool(forKey: Keys.privacyBlurOnBackground)
         self.autoRollingSummaryEnabled = defaults.bool(forKey: Keys.autoRollingSummaryEnabled)
-        self.moduleProjectsEnabled = defaults.object(forKey: Keys.moduleProjectsEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleProjectsEnabled)
         self.moduleGroupChatEnabled = defaults.object(forKey: Keys.moduleGroupChatEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleGroupChatEnabled)
         self.moduleBookFriendsEnabled = defaults.object(forKey: Keys.moduleBookFriendsEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleBookFriendsEnabled)
-        self.moduleStudyFlashcardsEnabled = defaults.object(forKey: Keys.moduleStudyFlashcardsEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleStudyFlashcardsEnabled)
         self.moduleEnglishCoachEnabled = defaults.object(forKey: Keys.moduleEnglishCoachEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleEnglishCoachEnabled)
         self.moduleArenaEnabled = defaults.object(forKey: Keys.moduleArenaEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleArenaEnabled)
         self.moduleUsageTabEnabled = defaults.object(forKey: Keys.moduleUsageTabEnabled) == nil ? true : defaults.bool(forKey: Keys.moduleUsageTabEnabled)
-        self.webSearchProvider = defaults.string(forKey: Keys.webSearchProvider).flatMap(WebSearchProvider.init(rawValue:)) ?? .tavily
-        self.searxngBaseURL = defaults.string(forKey: Keys.searxngBaseURL) ?? ""
-        self.jinaReaderFallbackEnabled = defaults.bool(forKey: Keys.jinaReaderFallbackEnabled)
+        self.imageUploadQuality = ImageUploadQuality.current(defaults: defaults)
     }
 
     func pricingMultiplier(for providerID: UUID) -> Double {
@@ -548,11 +469,6 @@ final class AppPreferences {
         if updated != recentModelIDs {
             recentModelIDs = updated
         }
-    }
-
-    func recentTargets(from available: [ResolvedModelTarget]) -> [ResolvedModelTarget] {
-        let lookup = Dictionary(uniqueKeysWithValues: available.map { ($0.id, $0) })
-        return recentModelIDs.compactMap { lookup[$0] }
     }
 
     func addCustomGroupTemplate(_ template: GroupRoomTemplate) {

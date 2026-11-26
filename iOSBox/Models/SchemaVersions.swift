@@ -116,6 +116,9 @@ enum SchemaV1: VersionedSchema {
 }
 
 /// V7 moves large JSON metadata/settings columns to external storage and caches book byte size.
+/// NOTE: Non-ProviderConfig models below currently share identical stored properties across V7, V8, and V9.
+/// Before adding, removing, or changing ANY stored property on those live models in a future V10 schema,
+/// snapshot their V7–V9 stored properties into frozen nested `@Model` classes (matching `SchemaV6`).
 enum SchemaV7: VersionedSchema {
     static let versionIdentifier = Schema.Version(7, 0, 0)
     static var models: [any PersistentModel.Type] {
@@ -132,6 +135,7 @@ enum SchemaV7: VersionedSchema {
 }
 
 /// V8 adds independent saved people and personal bookshelf positions. V7 entities are unchanged.
+/// See V7 freeze note above before altering any shared live model in a future V10 schema.
 enum SchemaV8: VersionedSchema {
     static let versionIdentifier = Schema.Version(8, 0, 0)
     static var models: [any PersistentModel.Type] { SchemaV7.models + [PersonaProfile.self, ShelfReadingState.self] }
@@ -176,7 +180,7 @@ enum IOSBoxMigrationPlan: SchemaMigrationPlan {
         toVersion: SchemaV5.self
     )
     static let migrateV5toV6 = MigrationStage.lightweight(fromVersion: SchemaV5.self, toVersion: SchemaV6.self)
+    static let migrateV6toV7 = MigrationStage.lightweight(fromVersion: SchemaV6.self, toVersion: SchemaV7.self)
     static let migrateV7toV8 = MigrationStage.lightweight(fromVersion: SchemaV7.self, toVersion: SchemaV8.self)
     static let migrateV8toV9 = MigrationStage.lightweight(fromVersion: SchemaV8.self, toVersion: SchemaV9.self)
-    static let migrateV6toV7 = MigrationStage.lightweight(fromVersion: SchemaV6.self, toVersion: SchemaV7.self)
 }

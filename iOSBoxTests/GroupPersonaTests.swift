@@ -163,7 +163,7 @@ final class GroupPersonaTests: XCTestCase {
         <summary type="html">&lt;p&gt;摘录&lt;/p&gt;</summary><published>2026-04-02T10:30:00Z</published></entry></feed>
         """
         let fixture = FeedFixture([home, atom])
-        let reader = PersonaFeedReader(fetch: { try await fixture.fetch($0) }, token: { "" })
+        let reader = PersonaFeedReader(fetch: { try await fixture.fetch($0) })
         let feed = try PersonaFeedReader.source("https://blog.example.org/author/home", kind: .blog)
         let baseline = try await reader.read(feed)
         XCTAssertTrue(baseline.items.isEmpty)
@@ -253,91 +253,41 @@ final class GroupPersonaTests: XCTestCase {
         XCTAssertEqual(count, 2)
     }
 
-    func testXUsesReadOnlyAPIAndRemembersPagesAcrossRefreshes() async throws {
-        let fixture = FeedFixture([
-            #"{"data":{"id":"42"}}"#,
-            #"{"data":[{"id":"10","text":"旧帖"}],"meta":{"newest_id":"10","result_count":1}}"#,
-            #"{"data":[{"id":"13","text":"新帖"}],"meta":{"newest_id":"13","result_count":1,"next_token":"page2"}}"#,
-            #"{"data":[{"id":"12","text":"另一篇"}],"meta":{"newest_id":"12","result_count":1}}"#
-        ])
-        let reader = PersonaFeedReader(fetch: { try await fixture.fetch($0) }, token: { "fixture-token" })
-        var feed = try PersonaFeedReader.source("https://twitter.com/Gardener", kind: .x)
-        XCTAssertEqual(feed.address, "gardener")
-        let first = try await reader.read(feed)
-        XCTAssertTrue(first.items.isEmpty)
-        feed.checkpoint = first.checkpoint
-        let next = try await reader.read(feed)
-        XCTAssertTrue(next.items.isEmpty)
-        XCTAssertEqual(next.checkpoint.sinceID, "10")
-        feed.checkpoint = next.checkpoint
-        let last = try await reader.read(feed)
-        XCTAssertEqual(last.items.map(\.id), ["12", "13"])
-        XCTAssertEqual(last.items.last?.url.absoluteString, "https://x.com/i/web/status/13")
-        XCTAssertNil(last.checkpoint.nextPage)
-        XCTAssertEqual(last.checkpoint.sinceID, "13")
-        let sent = await fixture.sent
-        XCTAssertEqual(sent.map { $0.url?.path }, ["/2/users/by/username/gardener", "/2/users/42/tweets", "/2/users/42/tweets", "/2/users/42/tweets"])
-        XCTAssertTrue(sent.allSatisfy { $0.url?.host == "api.x.com" && $0.httpMethod == "GET" && $0.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-token" })
-        XCTAssertTrue(try XCTUnwrap(sent.last?.url?.query).contains("pagination_token=page2"))
-        XCTAssertTrue(try XCTUnwrap(sent.last?.url?.query).contains("since_id=10"))
-        let tokenless = PersonaFeedReader(fetch: { try await fixture.fetch($0) }, token: { "" })
-        do { _ = try await tokenless.read(feed); XCTFail("A missing credential should stop before network access") }
-        catch PersonaError.missingToken { }
-        XCTAssertThrowsError(try PersonaFeedReader.source("https://example.org/gardener", kind: .x))
-        XCTAssertThrowsError(try PersonaFeedReader.source("http://blog.example.org", kind: .blog))
-    }
-
-    func testXPublishesTheWholeBatchInOrderAfterInterruptionAndRelaunch() async throws {
+    func testGroupRefreshSkipsRetiredXFeedsAndKeepsTheirHistory() async throws {
         let db = try container()
-        var feed = try PersonaFeedReader.source("@gardener", kind: .x)
-        feed.checkpoint = .init(userID: "42", sinceID: "100")
-        let (chat, _) = try makeChat(db.mainContext, feed: feed)
-        let fixture = FeedFixture([
-            #"{"data":[{"id":"104","text":"four"},{"id":"103","text":"three"}],"meta":{"newest_id":"104","result_count":2,"next_token":"older"}}"#,
-            "OFFLINE",
-            #"{"data":[{"id":"103","text":"three"},{"id":"102","text":"two"},{"id":"101","text":"one"}],"meta":{"newest_id":"103","result_count":3}}"#,
-            #"{"meta":{"result_count":0}}"#
-        ])
-        let reader = PersonaFeedReader(fetch: { try await fixture.fetch($0) }, token: { "fixture" })
-        let service = PersonaFeedService(reader: reader)
-        let first = await service.refresh(in: db.mainContext, chatID: chat.id, force: true)
-        XCTAssertEqual(first.added, 0)
-        let offline = await service.refresh(in: db.mainContext, chatID: chat.id, force: true)
-        XCTAssertFalse(offline.errors.isEmpty)
-        XCTAssertEqual(chat.groupMembers.first?.persona?.feeds.first?.checkpoint?.sinceID, "100")
-        let fresh = ModelContext(db), restarted = PersonaFeedService(reader: reader)
-        let published = await restarted.refresh(in: fresh, chatID: chat.id, force: true)
-        XCTAssertEqual(published.added, 4)
-        let reopened = try XCTUnwrap(fresh.fetch(FetchDescriptor<Conversation>()).first)
-        XCTAssertEqual(reopened.sortedMessages.compactMap { $0.assistanceMetadata.sourceNotice?.url.lastPathComponent }, ["101", "102", "103", "104"])
-        XCTAssertEqual(reopened.groupMembers.first?.persona?.feeds.first?.checkpoint?.sinceID, "104")
-        let again = await restarted.refresh(in: fresh, chatID: chat.id, force: true)
-        XCTAssertEqual(again.added, 0)
-    }
+        let context = db.mainContext
+        var retired = PersonaFeed(kind: .x, address: "gardener")
+        retired.checkpoint = .init(userID: "42", sinceID: "100")
+        let (chat, _) = try makeChat(context, feed: retired)
+        let url = try XCTUnwrap(URL(string: "https://x.com/i/web/status/100"))
+        let notice = GroupSourceNotice(memberName: "阿青", title: "历史动态", url: url, published: nil)
+        let message = ChatMessage(role: .system, content: notice.body, sortIndex: 0)
+        message.assistanceMetadata.sourceNotice = notice
+        context.insert(message)
+        message.conversation = chat
+        try context.save()
 
-    func testEmptyXBaselineAndExpiredPageCursorDoNotSkipPosts() async throws {
-        let fixture = FeedFixture([
-            #"{"data":{"id":"42"}}"#, #"{"meta":{"result_count":0}}"#,
-            #"{"data":[{"id":"21","text":"first"}],"meta":{"newest_id":"21","result_count":1,"next_token":"expired"}}"#,
-            "EXPIRED", #"{"data":[{"id":"23","text":"new"},{"id":"21","text":"first"}],"meta":{"newest_id":"23","result_count":2}}"#
-        ])
-        let reader = PersonaFeedReader(fetch: { try await fixture.fetch($0) }, token: { "fixture" })
-        var feed = try PersonaFeedReader.source("@gardener", kind: .x)
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let baseline = try await reader.read(feed, now: start)
-        XCTAssertTrue(baseline.items.isEmpty)
-        XCTAssertNil(baseline.checkpoint.sinceID)
-        feed.checkpoint = baseline.checkpoint
-        let first = try await reader.read(feed, now: start.addingTimeInterval(60))
-        XCTAssertTrue(first.items.isEmpty)
-        feed.checkpoint = first.checkpoint
-        let retried = try await reader.read(feed, now: start.addingTimeInterval(120))
-        XCTAssertEqual(retried.checkpoint.sinceID, "23")
-        XCTAssertNil(retried.checkpoint.nextPage)
-        XCTAssertEqual(retried.items.map(\.id), ["21", "23"])
+        let fixture = FeedFixture([rss([1])])
+        let reader = PersonaFeedReader(fetch: { try await fixture.fetch($0) })
+        let service = PersonaFeedService(reader: reader)
+        XCTAssertFalse(PersonaFeedService.hasSubscriptions(chat))
+        let onlyX = await service.refresh(in: context, chatID: chat.id, force: true)
+        let count = await fixture.count
+        XCTAssertEqual(onlyX.checked, 0)
+        XCTAssertEqual(count, 0)
+
+        let blog = try PersonaFeedReader.source(address, kind: .blog)
+        chat.groupMembers[0].persona?.feeds.append(blog)
+        try context.save()
+        XCTAssertTrue(PersonaFeedService.hasSubscriptions(chat))
+        let mixed = await service.refresh(in: context, chatID: chat.id, force: true)
+        XCTAssertEqual(mixed.checked, 1)
+        XCTAssertEqual(mixed.baselines, 1)
         let sent = await fixture.sent
-        XCTAssertTrue(try XCTUnwrap(sent.last?.url?.query).contains("start_time="))
-        XCTAssertFalse(try XCTUnwrap(sent.last?.url?.query).contains("pagination_token"))
+        XCTAssertEqual(sent.compactMap { $0.url?.absoluteString }, [address])
+        XCTAssertEqual(chat.groupMembers[0].persona?.feeds.first, retired)
+        XCTAssertEqual(chat.sortedMessages.compactMap(\.assistanceMetadata.sourceNotice), [notice])
+        XCTAssertThrowsError(try PersonaFeedReader.source("http://blog.example.org", kind: .blog))
     }
 
     func testTwoMembersSharingAnArticlePublishOnlyOneNoticePerGroup() async throws {
@@ -398,5 +348,53 @@ final class GroupPersonaTests: XCTestCase {
         let permitted = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String]
         XCTAssertTrue(permitted?.contains(PersonaRefreshDelegate.identifier) == true)
         XCTAssertTrue((Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String])?.contains("fetch") == true)
+    }
+
+    func testRSSDiscoveryAndCachedFeedRejectCrossOriginHosts() async throws {
+        let base = try XCTUnwrap(URL(string: "https://blog.example.org/author/home"))
+
+        // Cross-origin <link> is skipped in favor of a same-origin feed link.
+        let mixedHTML = """
+        <html><head>
+        <link rel="alternate" type="application/rss+xml" href="https://tracker.evil.example/rss.xml">
+        <link rel="alternate" type="application/atom+xml" href="/atom.xml">
+        </head></html>
+        """
+        XCTAssertEqual(
+            SubscriptionFeedParser.discover(in: mixedHTML, at: base)?.absoluteString,
+            "https://blog.example.org/atom.xml"
+        )
+
+        // Page advertising ONLY a cross-origin feed must fail without fetching the third-party host.
+        let crossOriginOnly = """
+        <html><head>
+        <link rel="alternate" type="application/rss+xml" href="https://tracker.evil.example/rss.xml">
+        </head></html>
+        """
+        XCTAssertNil(SubscriptionFeedParser.discover(in: crossOriginOnly, at: base))
+        let crossFixture = FeedFixture([crossOriginOnly, rss([1])])
+        let crossReader = PersonaFeedReader(fetch: { try await crossFixture.fetch($0) })
+        let crossFeed = try PersonaFeedReader.source(base.absoluteString, kind: .blog)
+        do {
+            _ = try await crossReader.read(crossFeed)
+            XCTFail("Expected invalidFeed for cross-origin-only discovery")
+        } catch let err as PersonaError {
+            XCTAssertEqual(err, .invalidFeed)
+        }
+        let crossSent = await crossFixture.sent
+        XCTAssertEqual(crossSent.count, 1)
+        XCTAssertEqual(crossSent.first?.url?.host, "blog.example.org")
+
+        // A tampered cross-origin cached checkpoint.feedURL is ignored in favor of original address.
+        let cachedFixture = FeedFixture([rss([1])])
+        let cachedReader = PersonaFeedReader(fetch: { try await cachedFixture.fetch($0) })
+        var tamperedFeed = try PersonaFeedReader.source("https://blog.example.org/feed.xml", kind: .blog)
+        tamperedFeed.checkpoint = PersonaFeed.Checkpoint(
+            recentIDs: [],
+            feedURL: URL(string: "https://tracker.evil.example/feed.xml")
+        )
+        _ = try await cachedReader.read(tamperedFeed)
+        let cachedSent = await cachedFixture.sent
+        XCTAssertEqual(cachedSent.map { $0.url?.host }, ["blog.example.org"])
     }
 }

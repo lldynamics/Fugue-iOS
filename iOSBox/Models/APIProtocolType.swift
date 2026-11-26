@@ -24,9 +24,9 @@ enum APIProtocolType: String, Codable, CaseIterable, Identifiable {
     var shortBadge: String {
         switch self {
         case .openAICompatible:
-            return "OpenAI"
+            return "Chat Completions"
         case .openAIResponses:
-            return "Responses"
+            return "Responses API"
         case .anthropic:
             return "Claude"
         case .gemini:

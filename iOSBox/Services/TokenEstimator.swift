@@ -52,9 +52,6 @@ enum TokenEstimator {
     }()
 
     private static func hasTavilySearchKey() -> Bool {
-        if WebSearchService.activeProvider() != .tavily {
-            return WebSearchService.isConfigured()
-        }
         if let cached = cachedTavilyPresence.withLock({ $0 }) {
             return cached
         }

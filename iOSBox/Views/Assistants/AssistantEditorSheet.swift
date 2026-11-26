@@ -43,7 +43,7 @@ struct AssistantEditorSheet: View {
                                         .background(
                                             iconEmoji == emoji
                                                 ? Color.accentColor.opacity(0.2)
-                                                : Color(.secondarySystemBackground),
+                                                : DS.Surface.subtle,
                                             in: Circle()
                                         )
                                 }
@@ -75,7 +75,7 @@ struct AssistantEditorSheet: View {
                                         .font(.caption2.monospaced())
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 4)
-                                        .background(Color(.secondarySystemBackground), in: Capsule())
+                                        .background(DS.Surface.subtle, in: Capsule())
                                 }
                                 .buttonStyle(.plain)
                             }

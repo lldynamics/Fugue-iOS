@@ -65,88 +65,7 @@ final class PhaseBFeatureUpgradesTests: XCTestCase {
         return container
     }
 
-    // MARK: - 1. WebDAV PROPFIND XML Parsing & Orphan Blob GC
-
-    func testWebDAVPropfindParserAndOrphanBlobGC() async throws {
-        let activeHash = String(repeating: "a", count: 64)
-        let orphanHash = String(repeating: "b", count: 64)
-        let xml = """
-        <?xml version="1.0" encoding="utf-8"?>
-        <D:multistatus xmlns:D="DAV:">
-          <D:response><D:href>/dav/Fugue/fugue-sync.shards/blobs/</D:href></D:response>
-          <D:response><D:href>/dav/Fugue/fugue-sync.shards/blobs/\(activeHash).enc.bin</D:href></D:response>
-          <D:response><D:href>/dav/Fugue/fugue-sync.shards/blobs/\(orphanHash).enc.bin</D:href></D:response>
-        </D:multistatus>
-        """
-        let parsed = WebDAVSyncService.parsePropfindChildNames(
-            xmlData: Data(xml.utf8),
-            directoryPath: "/dav/Fugue/fugue-sync.shards/blobs"
-        )
-        XCTAssertEqual(parsed, ["\(activeHash).enc.bin", "\(orphanHash).enc.bin"])
-
-        let container = try makeInMemoryContainer()
-        let book = BookVolume(
-            id: UUID(),
-            title: "GC Test Book",
-            chapterTitles: ["Ch1"],
-            manuscript: try JSONEncoder().encode([BookChapter(title: "Ch1", text: "Hello GC")])
-        )
-        container.mainContext.insert(book)
-        try container.mainContext.save()
-
-        let payload = try EncryptedBackupService.makeExportPayload(context: container.mainContext)
-        let bundle = try WebDAVPayloadSharder.split(payload)
-        let vaultKey = try WebDAVShardCrypto.deriveVaultKey(password: "Passphrase!2026", salt: nil, iterations: 10_000)
-        let realBookHash = try XCTUnwrap(bundle.manifest.bookRefs.first?.blobHash)
-        let manifestData = try WebDAVShardCrypto.encryptManifest(
-            bundle.manifest,
-            presentBlobs: [realBookHash],
-            vaultKey: vaultKey
-        )
-
-        var deletedPaths: [String] = []
-        let lock = NSLock()
-        PhaseBMockURLProtocol.handler = { req in
-            let url = req.url!
-            let method = req.httpMethod ?? "GET"
-            if method == "GET", url.path.hasSuffix("manifest.enc.json") {
-                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, manifestData)
-            }
-            if method == "PROPFIND" {
-                let listing = """
-                <D:multistatus xmlns:D="DAV:">
-                  <D:response><D:href>\(url.path)/</D:href></D:response>
-                  <D:response><D:href>\(url.path)/\(realBookHash).enc.bin</D:href></D:response>
-                  <D:response><D:href>\(url.path)/\(orphanHash).enc.bin</D:href></D:response>
-                </D:multistatus>
-                """
-                return (HTTPURLResponse(url: url, statusCode: 207, httpVersion: nil, headerFields: nil)!, Data(listing.utf8))
-            }
-            if method == "DELETE" {
-                lock.withLock { deletedPaths.append(url.path) }
-                return (HTTPURLResponse(url: url, statusCode: 204, httpVersion: nil, headerFields: nil)!, Data())
-            }
-            return (HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: nil)!, Data())
-        }
-
-        let report = try await WebDAVShardedSyncService.pruneOrphanBlobs(
-            passphrase: "Passphrase!2026",
-            serverURL: "https://dav.example.com/dav",
-            remotePath: "Fugue/fugue-sync.enc.json",
-            username: "u",
-            password: "p",
-            session: makeMockSession()
-        )
-        XCTAssertEqual(report.scannedRemoteBlobs, 2)
-        XCTAssertEqual(report.referencedBlobs, 1)
-        XCTAssertEqual(report.orphanHashes, [orphanHash])
-        XCTAssertEqual(report.deletedCount, 1)
-        XCTAssertEqual(report.failedCount, 0)
-        XCTAssertEqual(deletedPaths.count, 1)
-        XCTAssertTrue(deletedPaths[0].hasSuffix("\(orphanHash).enc.bin"))
-    }
-
-    // MARK: - 2. BookReferenceSearch Hybrid RRF & Spoiler Cutoff
+    // MARK: - 1. BookReferenceSearch Lexical Scoring & Spoiler Cutoff
 
     func testBookReferenceSearchHybridRanksRelevantSceneAndHonorsSpoilerCutoff() async throws {
         let chapters = [
@@ -180,58 +99,6 @@ final class PhaseBFeatureUpgradesTests: XCTestCase {
             question: "青铜古钥匙在哪里捡到的？"
         )
         XCTAssertTrue(refreshed.excerpts.contains { $0.text.contains("青铜古钥匙") })
-    }
-
-    // MARK: - 3. Streaming Sentence TTS Buffer & Controller
-
-    func testStreamingSentenceBufferSplitsCleanlyAndWaitsForCodeFences() {
-        var buffer = StreamingSentenceBuffer(minSentenceCharacters: 10)
-        let first = buffer.ingest(cumulativeText: "你好，今天天气真不错。")
-        XCTAssertEqual(first, ["你好，今天天气真不错。"])
-
-        // Should hold back while inside unclosed code fence
-        let midCode = buffer.ingest(cumulativeText: "你好，今天天气真不错。看代码：\n```swift\nlet x = 3.14")
-        XCTAssertEqual(midCode.count, 1) // flushes "看代码：\n" before code fence, holds back code
-
-        let closedCode = buffer.ingest(cumulativeText: "你好，今天天气真不错。看代码：\n```swift\nlet x = 3.14\n```\n这就是最终结果！")
-        XCTAssertFalse(closedCode.isEmpty)
-        XCTAssertTrue(closedCode.joined().contains("这就是最终结果"))
-        XCTAssertFalse(closedCode.joined().contains("let x = 3.14"), "Code fence contents must not be spoken verbatim")
-
-        // Tail without terminal punctuation flushes on finish()
-        _ = buffer.ingest(cumulativeText: "你好，今天天气真不错。看代码：\n```swift\nlet x = 3.14\n```\n这就是最终结果！补充一句尾注")
-        let tail = buffer.finish()
-        XCTAssertEqual(tail, ["补充一句尾注"])
-    }
-
-    func testVoiceControllerStreamingEmitsSentencesBeforeGenerationCompletes() {
-        let controller = VoiceConversationController()
-        controller.startSession()
-        controller.handleTranscriptUpdate("讲个故事", scheduleTimer: false)
-        controller.liveTranscript = "讲个故事"
-        XCTAssertTrue(controller.commitCurrentTranscript { _ in true })
-        XCTAssertEqual(controller.phase, .thinking)
-
-        let msgID = UUID()
-        var spoken: [String] = []
-        controller.handleStreamingTextUpdate(
-            "从前有座山，山里有座庙。",
-            messageID: msgID,
-            sentenceHandler: { _, sentence in
-                spoken.append(sentence)
-            }
-        )
-        XCTAssertEqual(controller.phase, .speaking)
-        XCTAssertEqual(spoken, ["从前有座山，山里有座庙。"])
-
-        controller.handleGenerationFinished(
-            replyText: "从前有座山，山里有座庙。故事讲完了",
-            errorMessage: nil,
-            messageID: msgID,
-            sentenceHandler: { _, sentence in spoken.append(sentence) }
-        )
-        XCTAssertEqual(spoken, ["从前有座山，山里有座庙。", "故事讲完了"])
-        XCTAssertEqual(controller.turnCount, 1)
     }
 
     // MARK: - 4. Rolling Context Summary & Context Window Catalog
@@ -300,152 +167,16 @@ final class PhaseBFeatureUpgradesTests: XCTestCase {
         XCTAssertTrue(html.contains("subgraph"))
     }
 
-    // MARK: - 7. Project Workspaces, Scoped Memories & Modular Feature Toggles
+    // MARK: - 7. Modular Feature Toggles
 
-    func testProjectWorkspaceAndScopedMemoryFiltering() throws {
-        let container = try makeInMemoryContainer()
-        let ctx = container.mainContext
-
-        let globalMem = PersonalMemory(content: "Respond in concise Chinese")
-        let engMem = PersonalMemory(content: "Uses Swift 6 strict concurrency")
-        let writingMem = PersonalMemory(content: "Prefers literary essay tone")
-        ctx.insert(globalMem)
-        ctx.insert(engMem)
-        ctx.insert(writingMem)
-        try ctx.save()
-
-        let scopeStore = MemoryScopeStore(fileURL: nil)
-        scopeStore.setTags(["工程", "iOS"], for: engMem.id)
-        scopeStore.setTags(["写作"], for: writingMem.id)
-
-        // Engineering project gets global + engineering memories, excludes writing-only memory
-        let engPrompt = try PersonalMemory.prompt(in: ctx, activeProjectTags: ["工程"], scopeStore: scopeStore)
-        XCTAssertEqual(engPrompt.count, 2)
-        XCTAssertTrue(engPrompt.text.contains("Swift 6"))
-        XCTAssertTrue(engPrompt.text.contains("concise Chinese"))
-        XCTAssertFalse(engPrompt.text.contains("literary essay"))
-
-        // Non-project chat still receives all enabled memories
-        let allPrompt = try PersonalMemory.prompt(in: ctx, activeProjectTags: nil, scopeStore: scopeStore)
-        XCTAssertEqual(allPrompt.count, 3)
-
-        // ProjectWorkspace creates pre-wired conversation
-        let wsStore = ProjectWorkspaceStore(fileURL: nil)
-        let bookID = UUID()
-        let ws = ProjectWorkspace(
-            name: "Swift 架构",
-            iconEmoji: "🛠️",
-            systemPrompt: "Act as senior Swift architect",
-            knowledgeVolumeIDs: [bookID],
-            memoryTags: ["工程"],
-            enableThinking: true,
-            enableAgentTools: true
-        )
-        wsStore.upsert(ws)
-        let conv = wsStore.createConversation(in: ws, providers: [], context: ctx)
-        XCTAssertEqual(conv.folderTag, "Swift 架构")
-        XCTAssertEqual(conv.systemPrompt, "Act as senior Swift architect")
-        XCTAssertEqual(conv.assistanceSettings.knowledgeVolumeIDs, [bookID])
-        XCTAssertTrue(conv.assistanceSettings.enableAgentTools)
-        XCTAssertEqual(wsStore.workspace(forFolderTag: "Swift 架构")?.id, ws.id)
-
-        // Modular toggles on isolated UserDefaults
+    func testModularUsageTabToggle() {
         let suiteName = "phaseb.prefs.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let prefs = AppPreferences(defaults: defaults)
-        XCTAssertTrue(prefs.showsProjects)
         XCTAssertTrue(prefs.showsUsageTab)
         prefs.moduleUsageTabEnabled = false
         XCTAssertFalse(prefs.showsUsageTab)
-    }
-
-    // MARK: - 8. Multi-Search Engines (Brave / Exa / SearXNG)
-
-    func testMultiSearchEngineDecodersAndSearXNGValidation() throws {
-        let braveJSON = """
-        {"web":{"results":[{"title":"Swift.org","url":"https://www.swift.org/","description":"Official Swift language site"}]}}
-        """
-        let braveEv = try WebSearchService.decodeBrave(Data(braveJSON.utf8), query: "swift")
-        XCTAssertEqual(braveEv.sources.count, 1)
-        XCTAssertEqual(braveEv.sources[0].title, "Swift.org")
-
-        let exaJSON = """
-        {"results":[{"title":"Exa Doc","url":"https://docs.exa.ai/reference","text":"Semantic web search API"}]}
-        """
-        let exaEv = try WebSearchService.decodeExa(Data(exaJSON.utf8), query: "exa")
-        XCTAssertEqual(exaEv.sources.count, 1)
-        XCTAssertEqual(exaEv.sources[0].snippet, "Semantic web search API")
-
-        let searxJSON = """
-        {"results":[{"title":"SearXNG","url":"https://docs.searxng.org/","content":"Privacy-respecting metasearch engine"}]}
-        """
-        let searxEv = try WebSearchService.decodeSearXNG(Data(searxJSON.utf8), query: "searxng")
-        XCTAssertEqual(searxEv.sources.count, 1)
-        XCTAssertEqual(searxEv.sources[0].title, "SearXNG")
-
-        // SearXNG enforces HTTPS for public hosts, permits local LAN HTTP
-        XCTAssertNil(WebSearchService.validateSearXNGBaseURL("http://public-searx.example.com"))
-        XCTAssertNotNil(WebSearchService.validateSearXNGBaseURL("https://public-searx.example.com"))
-        XCTAssertNotNil(WebSearchService.validateSearXNGBaseURL("http://192.168.1.50:8080"))
-    }
-
-    // MARK: - 9. Remote MCP Client (JSON-RPC 2.0 + SSE)
-
-    func testMCPClientDiscoverAndCallOverJSONAndSSE() async throws {
-        XCTAssertThrowsError(try MCPClient.validateEndpoint("http://mcp.example.com/rpc")) { err in
-            XCTAssertEqual(err as? MCPClientError, .insecurePublicHTTP)
-        }
-        XCTAssertNoThrow(try MCPClient.validateEndpoint("http://127.0.0.1:8080/mcp"))
-
-        PhaseBMockURLProtocol.handler = { req in
-            let body = try JSONSerialization.jsonObject(with: req.httpBody ?? Data()) as? [String: Any] ?? [:]
-            let method = body["method"] as? String ?? ""
-            let url = req.url!
-            if method == "initialize" {
-                let resp = #"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{}}}"#
-                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json", "Mcp-Session-Id": "sess-42"])!, Data(resp.utf8))
-            }
-            if method == "notifications/initialized" {
-                return (HTTPURLResponse(url: url, statusCode: 202, httpVersion: nil, headerFields: nil)!, Data())
-            }
-            if method == "tools/list" {
-                XCTAssertEqual(req.value(forHTTPHeaderField: "Mcp-Session-Id"), "sess-42")
-                let sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"list_issues\",\"description\":\"List project issues\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"repo\":{\"type\":\"string\"}}}}]}}\n\n"
-                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!, Data(sse.utf8))
-            }
-            if method == "tools/call" {
-                let resp = #"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Issue #7: Fix dark mode"}]}}"#
-                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, Data(resp.utf8))
-            }
-            return (HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: nil)!, Data())
-        }
-
-        let tools = try await MCPClient.discoverTools(
-            endpointURL: "https://mcp.example.com/v1",
-            authHeaderName: "Authorization",
-            authHeaderValue: "Bearer token",
-            session: makeMockSession()
-        )
-        XCTAssertEqual(tools.count, 1)
-        XCTAssertEqual(tools[0].name, "list_issues")
-
-        let output = try await MCPClient.callTool(
-            endpointURL: "https://mcp.example.com/v1",
-            toolName: "list_issues",
-            arguments: ["repo": "iosbox"],
-            session: makeMockSession()
-        )
-        XCTAssertTrue(output.contains("Issue #7: Fix dark mode"))
-        XCTAssertTrue(output.contains("Untrusted external MCP tool output"))
-
-        let store = MCPServerStore(fileURL: nil)
-        let server = MCPServerConfig(name: "GitHub", endpointURL: "https://mcp.example.com/v1", discoveredTools: tools)
-        store.upsert(server)
-        let defs = store.enabledToolDefinitions()
-        XCTAssertEqual(defs.count, 1)
-        XCTAssertTrue(defs[0].name.hasPrefix("mcp__"))
-        XCTAssertEqual(store.resolveToolCall(namespacedName: defs[0].name)?.tool.name, "list_issues")
     }
 
     // MARK: - 10. OpenAI Responses API Adapter
@@ -518,31 +249,6 @@ final class PhaseBFeatureUpgradesTests: XCTestCase {
         XCTAssertEqual(e4.count, 2) // usage + cacheUsage
     }
 
-    // MARK: - 11. Unified Image Generation & Editing
-
-    func testImageGenerationEndpointsAndResponseDecoders() async throws {
-        let genEp = try EndpointResolver.imagesGenerationsEndpoint(baseURL: "https://api.openai.com/v1/chat/completions")
-        XCTAssertEqual(genEp.absoluteString, "https://api.openai.com/v1/images/generations")
-        let editEp = try EndpointResolver.imagesEditsEndpoint(baseURL: "https://api.openai.com/v1")
-        XCTAssertEqual(editEp.absoluteString, "https://api.openai.com/v1/images/edits")
-        let gemEp = try EndpointResolver.geminiGenerateContentEndpoint(baseURL: "https://generativelanguage.googleapis.com/v1beta", modelID: "gemini-2.5-flash-image-preview")
-        XCTAssertEqual(gemEp.absoluteString, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent")
-
-        let pngHeader = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
-        let b64 = pngHeader.base64EncodedString()
-
-        let openAIResp = #"{"data":[{"b64_json":"\#(b64)","revised_prompt":"A sleek neon skyline"}]}"#
-        let openAIImg = try await ImageGenerationService.decodeOpenAIImageResponse(Data(openAIResp.utf8))
-        XCTAssertEqual(openAIImg.imageData, pngHeader)
-        XCTAssertEqual(openAIImg.mimeType, "image/png")
-        XCTAssertEqual(openAIImg.revisedPrompt, "A sleek neon skyline")
-
-        let geminiResp = #"{"candidates":[{"content":{"parts":[{"text":"Here is your edited photo"},{"inlineData":{"mimeType":"image/png","data":"\#(b64)"}}]}}]}"#
-        let geminiImg = try ImageGenerationService.decodeGeminiImageResponse(Data(geminiResp.utf8))
-        XCTAssertEqual(geminiImg.imageData, pngHeader)
-        XCTAssertEqual(geminiImg.revisedPrompt, "Here is your edited photo")
-    }
-
     // MARK: - 12. HTTP 400 Auto-Degradation, Sanitization & Error Extraction
 
     func testHTTP400AutoDegradationAndErrorExtractionAcrossAdapters() async throws {
@@ -610,11 +316,6 @@ final class PhaseBFeatureUpgradesTests: XCTestCase {
         XCTAssertNil(respBody["top_p"])
         let respTools = try XCTUnwrap(respBody["tools"] as? [[String: Any]])
         XCTAssertEqual(respTools.first?["strict"] as? Bool, false)
-
-        // 5. Image generation size normalization avoids gpt-image-1 / dall-e-3 size-mismatch 400
-        XCTAssertEqual(ImageGenerationService.resolvedOpenAISize(for: .wide, modelID: "gpt-image-1"), "1536x1024")
-        XCTAssertEqual(ImageGenerationService.resolvedOpenAISize(for: .landscape, modelID: "dall-e-3"), "1792x1024")
-        XCTAssertEqual(ImageGenerationService.resolvedOpenAISize(for: .portrait, modelID: "dall-e-3"), "1024x1792")
 
         // 6. OpenAI-compatible Qwen3 ping rejecting `enable_thinking` auto-degrades & succeeds (and strips Bearer prefix)
         let cache = GatewayCapabilityCache(defaults: nil)

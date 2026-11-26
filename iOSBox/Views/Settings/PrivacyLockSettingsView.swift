@@ -47,7 +47,7 @@ struct PrivacyLockSettingsView: View {
                 if let error = lockController.lastError, !error.isEmpty {
                     Text(error)
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(DS.StatusText.error)
                 }
             } header: {
                 Text("应用锁")

@@ -50,7 +50,6 @@ enum EncryptedBackupService {
         var archive: BackupArchive
         var providerSecrets: [ProviderSecretBundle]
         var tavilyAPIKey: String
-        var personaXBearerToken: String? = nil
     }
 
     private struct MagicProbe: Decodable {
@@ -79,13 +78,11 @@ enum EncryptedBackupService {
     @MainActor
     static func makeExportPayload(
         context: ModelContext,
-        flashcardStore: FlashcardStore? = nil,
         knowledgeStore: PresetKnowledgeStore = .shared,
         tombstoneStore: SyncTombstoneStore? = nil
     ) throws -> FullPayload {
         let archive = try BackupService.makeArchive(
             context: context,
-            flashcardStore: flashcardStore,
             knowledgeStore: knowledgeStore,
             tombstoneStore: tombstoneStore
         )
@@ -119,12 +116,10 @@ enum EncryptedBackupService {
         }
 
         let tavilyKey = KeychainService.shared.loadSecret(account: TavilySearchClient.keychainAccount)
-        let xToken = KeychainService.shared.loadSecret(account: PersonaFeedReader.xTokenAccount)
         return FullPayload(
             archive: archive,
             providerSecrets: bundles,
-            tavilyAPIKey: tavilyKey,
-            personaXBearerToken: xToken.isEmpty ? nil : xToken
+            tavilyAPIKey: tavilyKey
         )
     }
 
@@ -170,13 +165,11 @@ enum EncryptedBackupService {
     static func exportEncryptedData(
         context: ModelContext,
         password: String,
-        flashcardStore: FlashcardStore? = nil,
         knowledgeStore: PresetKnowledgeStore = .shared
     ) throws -> Data {
         guard isValidExportPassword(password) else { throw EncryptedBackupError.emptyPassword }
         let payload = try makeExportPayload(
             context: context,
-            flashcardStore: flashcardStore,
             knowledgeStore: knowledgeStore
         )
         return try encryptPayload(payload, password: password)
@@ -186,13 +179,11 @@ enum EncryptedBackupService {
     static func exportEncryptedTemporaryFile(
         context: ModelContext,
         password: String,
-        flashcardStore: FlashcardStore? = nil,
         knowledgeStore: PresetKnowledgeStore = .shared
     ) async throws -> URL {
         guard isValidExportPassword(password) else { throw EncryptedBackupError.emptyPassword }
         let payload = try makeExportPayload(
             context: context,
-            flashcardStore: flashcardStore,
             knowledgeStore: knowledgeStore
         )
         return try await Task.detached(priority: .userInitiated) {
@@ -262,7 +253,6 @@ enum EncryptedBackupService {
     static func applyDecryptedPayload(
         _ payload: FullPayload,
         to context: ModelContext,
-        flashcardStore: FlashcardStore? = nil,
         knowledgeStore: PresetKnowledgeStore = .shared,
         tombstonePolicy: SyncTombstonePolicy = .ignore,
         restoreSecret: (String, String) -> Bool = KeychainService.shared.restoreSecretIfMissing
@@ -282,7 +272,6 @@ enum EncryptedBackupService {
         var summary = try BackupService.apply(
             .full(archive),
             to: context,
-            flashcardStore: flashcardStore,
             knowledgeStore: knowledgeStore,
             tombstonePolicy: tombstonePolicy
         )
@@ -338,7 +327,6 @@ enum EncryptedBackupService {
             if headerConflict { summary.credentialConflicts.append(provider.name) }
         }
         restore(payload.tavilyAPIKey, account: TavilySearchClient.keychainAccount)
-        restore(payload.personaXBearerToken ?? "", account: PersonaFeedReader.xTokenAccount)
         NotificationCenter.default.post(name: .init("IOSBoxCredentialsChanged"), object: nil)
         return summary
     }
@@ -354,7 +342,6 @@ enum EncryptedBackupService {
         data: Data,
         password: String,
         to context: ModelContext,
-        flashcardStore: FlashcardStore? = nil,
         knowledgeStore: PresetKnowledgeStore = .shared,
         tombstonePolicy: SyncTombstonePolicy = .ignore
     ) throws -> ImportSummary {
@@ -362,7 +349,6 @@ enum EncryptedBackupService {
         return try applyDecryptedPayload(
             payload,
             to: context,
-            flashcardStore: flashcardStore,
             knowledgeStore: knowledgeStore,
             tombstonePolicy: tombstonePolicy
         )
@@ -373,7 +359,6 @@ enum EncryptedBackupService {
         data: Data,
         password: String,
         to context: ModelContext,
-        flashcardStore: FlashcardStore? = nil,
         knowledgeStore: PresetKnowledgeStore = .shared,
         tombstonePolicy: SyncTombstonePolicy = .ignore
     ) async throws -> ImportSummary {
@@ -383,7 +368,6 @@ enum EncryptedBackupService {
         return try applyDecryptedPayload(
             payload,
             to: context,
-            flashcardStore: flashcardStore,
             knowledgeStore: knowledgeStore,
             tombstonePolicy: tombstonePolicy
         )

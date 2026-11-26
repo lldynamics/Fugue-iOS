@@ -6,6 +6,7 @@ final class KeychainService: @unchecked Sendable {
     static let shared = KeychainService()
 
     private let serviceName = "com.iosbox.app.provider-keys"
+    private static let accessibilityAttribute = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
     private let lock = NSLock()
     /// Only holds values that were confirmed by the Keychain (successful read/write or a
     /// definite "not found"), so a transient failure is never cached as "no key".
@@ -109,7 +110,7 @@ final class KeychainService: @unchecked Sendable {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: Self.accessibilityAttribute,
             kSecValueData as String: Data(trimmed.utf8)
         ]
         lock.lock()
@@ -145,12 +146,15 @@ final class KeychainService: @unchecked Sendable {
             let data = Data(trimmed.utf8)
             let updateStatus = SecItemUpdate(
                 baseQuery as CFDictionary,
-                [kSecValueData as String: data] as CFDictionary
+                [
+                    kSecValueData as String: data,
+                    kSecAttrAccessible as String: Self.accessibilityAttribute
+                ] as CFDictionary
             )
             if updateStatus == errSecItemNotFound {
                 var addQuery = baseQuery
                 addQuery[kSecValueData as String] = data
-                addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+                addQuery[kSecAttrAccessible as String] = Self.accessibilityAttribute
                 status = SecItemAdd(addQuery as CFDictionary, nil)
             } else {
                 status = updateStatus
@@ -184,6 +188,7 @@ final class KeychainService: @unchecked Sendable {
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
+            kSecReturnAttributes as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
 
@@ -192,8 +197,22 @@ final class KeychainService: @unchecked Sendable {
         let value: String
         switch status {
         case errSecSuccess:
-            value = (result as? Data).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let dict = result as? [String: Any]
+            let data = (dict?[kSecValueData as String] as? Data) ?? (result as? Data)
+            value = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
             cache[account] = value
+            if let existingAccessible = dict?[kSecAttrAccessible as String] as? String,
+               existingAccessible != (Self.accessibilityAttribute as String) {
+                let upgradeQuery: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrService as String: serviceName,
+                    kSecAttrAccount as String: account
+                ]
+                _ = SecItemUpdate(
+                    upgradeQuery as CFDictionary,
+                    [kSecAttrAccessible as String: Self.accessibilityAttribute] as CFDictionary
+                )
+            }
         case errSecItemNotFound:
             value = ""
             cache[account] = ""

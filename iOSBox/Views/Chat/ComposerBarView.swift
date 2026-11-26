@@ -30,6 +30,45 @@ struct ChatModelPickerButton: View {
     }
 }
 
+struct ChatStartModeMenu: View {
+    let isGenerating: Bool
+    let onOpenArena: () -> Void
+    let onOpenGroup: (() -> Void)?
+    let onOpenOptions: () -> Void
+
+    @State private var preferences = AppPreferences.shared
+
+    var body: some View {
+        if preferences.showsArena || !preferences.simpleDailyMode {
+            Menu {
+                if preferences.showsArena {
+                    Button(action: onOpenArena) { Label("多模型对比", systemImage: "square.split.2x1") }
+                        .disabled(isGenerating)
+                }
+                if preferences.showsGroupChat, let onOpenGroup {
+                    Button(action: onOpenGroup) { Label("圆桌群聊", systemImage: "person.3") }
+                }
+                if !preferences.simpleDailyMode {
+                    Button(action: onOpenOptions) { Label("请求选项", systemImage: "slider.horizontal.3") }
+                }
+            } label: {
+                HStack(spacing: DS.Spacing.xs) {
+                    Text("单聊")
+                    Image(systemName: "chevron.down").font(.caption2).accessibilityHidden(true)
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .padding(.horizontal, DS.Spacing.md)
+                .frame(minHeight: DS.TouchTarget.minimum)
+                .background(DS.Surface.subtle, in: Capsule())
+                .overlay(Capsule().strokeBorder(DS.Surface.hairline).allowsHitTesting(false))
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
 struct ComposerBarView: View {
     @Bindable var conversation: Conversation
     @Bindable var draft: ChatDraftState
@@ -40,24 +79,23 @@ struct ComposerBarView: View {
     @Binding var requestOptions: ComposerRequestOptions
     let onOpenModelPicker: () -> Void
     let onOpenArenaPicker: () -> Void
-    let onOpenBlindPicker: () -> Void
     var onOpenGroupSetup: (() -> Void)? = nil
     let onOpenOptions: () -> Void
     let onManageKnowledge: () -> Void
     var onOpenAudioTranscription: (() -> Void)? = nil
-    var onOpenImageGeneration: (() -> Void)? = nil
-    var onOpenVoiceConversation: (() -> Void)? = nil
     var externalDocumentScanTrigger: Int = 0
     var writingFirst = false
     var needsModel = false
     var canChooseModel = false
     let inputFocus: FocusState<Bool>.Binding
+    @Binding var phoneEntry: PhoneComposeEntry?
     let onInsertContextDivider: () -> Void
     let onSend: () -> Void
     let onStop: () -> Void
 
     @Environment(\.horizontalSizeClass) private var widthClass
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.usesPhoneWorkspace) private var usesPhoneWorkspace
     @State private var isCapabilityDrawerOpen = false
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
@@ -72,6 +110,7 @@ struct ComposerBarView: View {
     @State private var debouncedEstimateText = ""
 
     private var theme: DS.AccentTheme { preferences.accentTheme }
+    private var usesPhoneSingleComposer: Bool { usesPhoneWorkspace && !conversation.isArenaMode && !conversation.isGroupMode }
 
     private var temporaryTarget: ResolvedModelTarget? {
         get { requestOptions.temporaryTarget }
@@ -153,11 +192,18 @@ struct ComposerBarView: View {
         return primary
     }
 
-    private var isSearchActive: Bool {
-        requestOptions.useSearch || (!conversation.isGroupMode && conversation.assistanceSettings.enableNativeGrounding)
+    private enum WebMode {
+        case off, search
     }
 
-    private var searchScopeTitle: String {
+    private var webMode: WebMode {
+        if requestOptions.useSearch || (!conversation.isGroupMode && conversation.assistanceSettings.enableNativeGrounding) {
+            return .search
+        }
+        return .off
+    }
+
+    private var webModeTitle: String {
         if requestOptions.useSearch && !conversation.isGroupMode && conversation.assistanceSettings.enableNativeGrounding {
             return String(localized: "联网搜索 · 本次 + 原生联网 · 本会话")
         }
@@ -174,11 +220,9 @@ struct ComposerBarView: View {
 
     private var hasActiveStatusChips: Bool {
         (!conversation.isGroupMode && requestOptions.temporaryTarget != nil)
-            || (!conversation.isArenaMode && !conversation.isGroupMode && requestOptions.useDeepResearch)
-            || (!isCapabilityDrawerOpen && isSearchActive)
+            || (!isCapabilityDrawerOpen && webMode != .off)
             || (showSessionStatusChips && !conversation.isGroupMode && conversation.enableThinking)
             || (showSessionStatusChips && !conversation.isArenaMode && !conversation.isGroupMode && conversation.assistanceSettings.enableAgentTools)
-            || (showSessionStatusChips && !conversation.isArenaMode && !conversation.isGroupMode && conversation.assistanceSettings.studyCoachMode != .off)
             || (requestOptions.omitMemory && conversation.assistanceSettings.usePersonalMemory)
             || routingUnavailable
             || (routedTarget != nil && routedTarget?.id != conversation.primaryTarget?.id)
@@ -196,11 +240,6 @@ struct ComposerBarView: View {
                             draft.text = ""
                             onInsertContextDivider()
                         } else {
-                            if cmd.id == "socratic-coach" && !conversation.isGroupMode {
-                                conversation.assistanceSettings.studyCoachMode = .socratic
-                            } else if cmd.id == "feynman-coach" && !conversation.isGroupMode {
-                                conversation.assistanceSettings.studyCoachMode = .feynman
-                            }
                             draft.text = cmd.templatePrefix
                         }
                     },
@@ -220,37 +259,10 @@ struct ComposerBarView: View {
             }
 
             // Slim status strip: appears only when capabilities are active, group @ is needed, or draft estimate exists
-            if (isCapabilityDrawerOpen || (!writingFirst && (conversation.readingVolumeID == nil || hasDraftContent))) && (hasActiveStatusChips || hasDraftContent) {
+            // The phone single composer renders these chips inside its own header row.
+            if !usesPhoneSingleComposer,
+               (isCapabilityDrawerOpen || (!writingFirst && (conversation.readingVolumeID == nil || hasDraftContent))) && (hasActiveStatusChips || hasDraftContent) {
                 activeStatusStrip
-            }
-
-            if !conversation.isGroupMode && !conversation.isArenaMode
-                && conversation.assistanceSettings.studyCoachMode != .off
-                && !isGenerating
-                && draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let chips = conversation.assistanceSettings.studyCoachMode.quickChips
-                if !chips.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: DS.Spacing.xs) {
-                            ForEach(chips) { chip in
-                                Button {
-                                    preferences.triggerSelectionHaptic()
-                                    draft.text = chip.prompt
-                                    onSend()
-                                } label: {
-                                    Text(chip.label)
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(theme.readableText)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 5)
-                                        .background(theme.softFill, in: Capsule())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.horizontal, DS.Spacing.md)
-                    }
-                }
             }
 
             if requestOptions.useSearch {
@@ -261,7 +273,7 @@ struct ComposerBarView: View {
                 recordingBanner
             }
 
-            if let quoted = draft.quotedText, !quoted.isEmpty {
+            if !usesPhoneSingleComposer, let quoted = draft.quotedText, !quoted.isEmpty {
                 quotedPreviewBanner(quoted)
             }
 
@@ -270,14 +282,7 @@ struct ComposerBarView: View {
             }
 
             if !draft.attachments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: DS.Spacing.sm) {
-                        ForEach(draft.attachments) { item in
-                            pendingAttachmentChip(item)
-                        }
-                    }
-                    .padding(.horizontal, DS.Spacing.md)
-                }
+                pendingAttachments.padding(.horizontal, DS.Spacing.md)
 
                 if draft.attachments.contains(where: { $0.kind == .image }) {
                     HStack(spacing: DS.Spacing.sm) {
@@ -319,7 +324,7 @@ struct ComposerBarView: View {
             if let visionWarning {
                 Label(visionWarning, systemImage: "eye.trianglebadge.exclamationmark")
                     .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(DS.StatusText.warning)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)
             }
@@ -329,18 +334,38 @@ struct ComposerBarView: View {
             }
 
             // Main single-row minimal input bar (Floating Glass Pill Island)
-            if writingFirst {
+            if usesPhoneSingleComposer {
+                phoneSingleComposer
+            } else if writingFirst {
                 writingEditor
             } else {
-                inputRow
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .dsFloatingIsland(cornerRadius: DS.Radius.island)
+                let messageInput = inputRow.padding(.horizontal, 8).padding(.vertical, 6)
+                Group {
+                    if usesPhoneWorkspace {
+                        messageInput
+                            .background(DS.Surface.card, in: RoundedRectangle(cornerRadius: DS.Radius.xl))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: DS.Radius.xl)
+                                    .strokeBorder(DS.Surface.strongBorder)
+                                    .allowsHitTesting(false)
+                            }
+                    } else {
+                        messageInput.dsFloatingIsland(cornerRadius: DS.Radius.island)
+                    }
+                }
                     .padding(.horizontal, DS.Spacing.md)
                     .padding(.bottom, DS.Spacing.xs)
             }
         }
         .padding(.top, DS.Spacing.xs)
+        .onAppear {
+            guard let entry = phoneEntry else { return }
+            phoneEntry = nil
+            switch entry {
+            case .writing: inputFocus.wrappedValue = true
+            case .attachments: isCapabilityDrawerOpen = true
+            }
+        }
         .onChange(of: draft.text) { _, newText in
             if requestOptions.useSearch && searchQueryAutoSync {
                 requestOptions.searchQuery = String(newText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
@@ -494,12 +519,22 @@ struct ComposerBarView: View {
 
     // MARK: - Active Status Strip (Slim, State-Driven)
 
-    private var activeStatusStrip: some View {
-        let skippingMemory = requestOptions.omitMemory && conversation.assistanceSettings.usePersonalMemory
+    private var skippingMemory: Bool {
+        requestOptions.omitMemory && conversation.assistanceSettings.usePersonalMemory
+    }
 
-        return HStack(spacing: DS.Spacing.xs) {
+    private var activeStatusStrip: some View {
+        HStack(spacing: DS.Spacing.xs) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: DS.Spacing.xs) {
+                HStack(spacing: DS.Spacing.xs) { statusChips }
+            }
+            if hasDraftContent { tokenMeter }
+        }
+        .padding(.horizontal, DS.Spacing.md)
+    }
+
+    @ViewBuilder
+    private var statusChips: some View {
                     if !conversation.isGroupMode, let temp = requestOptions.temporaryTarget {
                         removableChip(
                             title: String(localized: "本次 · \(temp.modelDisplayName)"),
@@ -513,7 +548,7 @@ struct ComposerBarView: View {
                     if routingUnavailable {
                         Text("路由模型不可用")
                             .font(.caption2.weight(.medium))
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(DS.StatusText.warning)
                             .padding(.horizontal, DS.Spacing.sm)
                             .padding(.vertical, 4)
                             .background(Color.orange.opacity(0.12), in: Capsule())
@@ -526,29 +561,13 @@ struct ComposerBarView: View {
                             .background(DS.Surface.subtle, in: Capsule())
                     }
 
-                    if !conversation.isArenaMode && !conversation.isGroupMode && requestOptions.useDeepResearch {
+                    if webMode != .off && !isCapabilityDrawerOpen {
                         removableChip(
-                            title: String(localized: "深度研究"),
-                            systemImage: "doc.text.magnifyingglass",
-                            tint: theme.readableText
-                        ) {
-                            requestOptions.setDeepResearch(false)
-                        }
-                        .disabled(isGenerating)
-                    }
-
-                    if isSearchActive && !isCapabilityDrawerOpen {
-                        removableChip(
-                            title: searchScopeTitle,
+                            title: webModeTitle,
                             systemImage: "globe",
                             tint: theme.readableText
                         ) {
-                            if requestOptions.useSearch {
-                                requestOptions.setSearch(false, draft: "")
-                                searchQueryAutoSync = false
-                            } else {
-                                conversation.assistanceSettings.enableNativeGrounding = false
-                            }
+                            setWebMode(.off)
                         }
                         .disabled(isGenerating)
                     }
@@ -578,25 +597,6 @@ struct ComposerBarView: View {
                             tint: theme.readableText
                         ) {
                             conversation.assistanceSettings.enableAgentTools = false
-                        }
-                        .disabled(isGenerating)
-                    }
-
-                    if showSessionStatusChips && !conversation.isArenaMode && !conversation.isGroupMode && conversation.assistanceSettings.studyCoachMode != .off {
-                        let coachMode = conversation.assistanceSettings.studyCoachMode
-                        Menu {
-                            studyCoachMenuItems
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: coachMode.symbol)
-                                    .font(.caption2.weight(.semibold))
-                                Text(coachMode.shortBadge)
-                                    .font(.caption2.weight(.semibold))
-                            }
-                            .foregroundStyle(theme.readableText)
-                            .padding(.horizontal, DS.Spacing.sm)
-                            .padding(.vertical, 4)
-                            .background(theme.softFill, in: Capsule())
                         }
                         .disabled(isGenerating)
                     }
@@ -637,49 +637,48 @@ struct ComposerBarView: View {
                         }
                         .accessibilityLabel("点名群成员")
                     }
-                }
+    }
+
+    /// Estimated context use. Neutral until it is worth a warning, so the accent color never reads as an alert.
+    private var tokenMeter: some View {
+        let textForEstimate = draft.text.count <= 96 ? draft.text : (debouncedEstimateText.isEmpty ? draft.text : debouncedEstimateText)
+        let estimate = TokenEstimator.estimateUpcomingInput(
+            conversation: conversation,
+            providers: providers,
+            draftText: textForEstimate,
+            attachments: draft.attachments,
+            quotedText: draft.quotedText,
+            target: effectiveTarget,
+            omitMemory: skippingMemory, omitKnowledge: requestOptions.omitKnowledge
+        )
+        let windowLimit = ContextWindowCatalog.contextLimit(for: effectiveTarget?.modelID)
+        let fillRatio = ContextWindowCatalog.fillRatio(inputTokens: estimate.inputTokens, modelID: effectiveTarget?.modelID)
+        let levelColor: Color = fillRatio >= 0.85 ? DS.StatusText.error
+            : (fillRatio >= 0.65 ? DS.StatusText.warning : DS.Surface.inkSecondary)
+
+        return HStack(spacing: 5) {
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(DS.Surface.strongBorder)
+                    .frame(width: 26, height: 4)
+                Capsule()
+                    .fill(levelColor)
+                    .frame(width: max(3, 26 * CGFloat(fillRatio)), height: 4)
             }
+            .accessibilityHidden(true)
 
-            if hasDraftContent {
-                let textForEstimate = draft.text.count <= 96 ? draft.text : (debouncedEstimateText.isEmpty ? draft.text : debouncedEstimateText)
-                let estimate = TokenEstimator.estimateUpcomingInput(
-                    conversation: conversation,
-                    providers: providers,
-                    draftText: textForEstimate,
-                    attachments: draft.attachments,
-                    quotedText: draft.quotedText,
-                    target: effectiveTarget,
-                    omitMemory: skippingMemory, omitKnowledge: requestOptions.omitKnowledge
-                )
-                let windowLimit = ContextWindowCatalog.contextLimit(for: effectiveTarget?.modelID)
-                let fillRatio = ContextWindowCatalog.fillRatio(inputTokens: estimate.inputTokens, modelID: effectiveTarget?.modelID)
-                let barColor: Color = fillRatio >= 0.85 ? .red : (fillRatio >= 0.65 ? .orange : theme.readableText)
-
-                HStack(spacing: 5) {
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(DS.Surface.subtle)
-                            .frame(width: 26, height: 4)
-                        Capsule()
-                            .fill(barColor)
-                            .frame(width: max(3, 26 * CGFloat(fillRatio)), height: 4)
-                    }
-                    .accessibilityHidden(true)
-
-                    HStack(spacing: 3) {
-                        Text("~\(estimate.inputTokens)/\(ContextWindowCatalog.formattedWindow(windowLimit))")
-                        if let cost = estimate.estimatedCostText {
-                            Text("· \(cost)")
-                        }
-                    }
+            HStack(spacing: 3) {
+                Text(verbatim: "~\(estimate.inputTokens) / \(ContextWindowCatalog.formattedWindow(windowLimit))")
+                if let cost = estimate.estimatedCostText {
+                    Text("· \(cost)")
                 }
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(fillRatio >= 0.85 ? .red : (fillRatio >= 0.65 ? .orange : .secondary))
-                .fixedSize()
-                .accessibilityLabel(String(localized: "上下文占用约 \(estimate.inputTokens) Token，窗口上限 \(ContextWindowCatalog.formattedWindow(windowLimit))"))
             }
         }
-        .padding(.horizontal, DS.Spacing.md)
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(fillRatio >= 0.65 ? levelColor : Color.secondary)
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(String(localized: "上下文占用约 \(estimate.inputTokens) Token，窗口上限 \(ContextWindowCatalog.formattedWindow(windowLimit))"))
     }
 
     // MARK: - Expandable Capability & Attachment Drawer
@@ -687,12 +686,13 @@ struct ComposerBarView: View {
     private var capabilityDrawer: some View {
         let kbCount = conversation.assistanceSettings.knowledgeVolumeIDs.count
         let toolsOn = conversation.assistanceSettings.enableAgentTools
-        let coachMode = conversation.assistanceSettings.studyCoachMode
 
         return VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-            Text("添加内容")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+            HStack {
+                Text("添加内容")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
             ScrollView(.horizontal, showsIndicators: true) {
                 HStack(spacing: DS.Spacing.sm) {
                     drawerTile(title: String(localized: "相册"), systemImage: "photo.on.rectangle") {
@@ -722,22 +722,6 @@ struct ComposerBarView: View {
                         showFileImporter = true
                     }
                     .disabled(!draft.isLoaded || draft.processingAttachments > 0)
-
-                    if let onOpenAudioTranscription {
-                        drawerTile(title: String(localized: "音频纪要"), systemImage: "waveform") {
-                            isCapabilityDrawerOpen = false
-                            onOpenAudioTranscription()
-                        }
-                        .disabled(isGenerating)
-                    }
-
-                    if let onOpenImageGeneration {
-                        drawerTile(title: String(localized: "AI 生图"), systemImage: "wand.and.stars") {
-                            isCapabilityDrawerOpen = false
-                            onOpenImageGeneration()
-                        }
-                        .disabled(isGenerating)
-                    }
                 }
             }
 
@@ -748,28 +732,14 @@ struct ComposerBarView: View {
                 .foregroundStyle(.secondary)
             ScrollView(.horizontal, showsIndicators: true) {
                 HStack(spacing: DS.Spacing.sm) {
-                    drawerTogglePill(
-                        title: searchScopeTitle,
-                        systemImage: "globe",
-                        isActive: isSearchActive
-                    ) {
-                        toggleWebSearch()
+                    Menu {
+                        webModeButton("关闭搜索", mode: .off)
+                        webModeButton("搜索", mode: .search)
+                    } label: {
+                        drawerPillLabel(title: webModeTitle, systemImage: "globe", isActive: webMode != .off)
                     }
+                    .accessibilityIdentifier("chatComposer.webMode")
                     .disabled(isGenerating)
-
-                    if !conversation.isArenaMode && !conversation.isGroupMode {
-                        drawerTogglePill(
-                            title: String(localized: "深度研究"),
-                            systemImage: "doc.text.magnifyingglass",
-                            isActive: requestOptions.useDeepResearch
-                        ) {
-                            preferences.triggerSelectionHaptic()
-                            let next = !requestOptions.useDeepResearch
-                            requestOptions.setDeepResearch(next)
-                            if next { searchQueryAutoSync = false }
-                        }
-                        .disabled(isGenerating)
-                    }
 
                     if !preferences.simpleDailyMode && !conversation.isGroupMode {
                         Menu {
@@ -780,18 +750,6 @@ struct ComposerBarView: View {
                                 systemImage: "brain",
                                 isActive: conversation.enableThinking
                             )
-                        }
-                        .disabled(isGenerating)
-                    }
-
-                    if let onOpenVoiceConversation {
-                        drawerTogglePill(
-                            title: String(localized: "语音对谈"),
-                            systemImage: "headphones",
-                            isActive: false
-                        ) {
-                            isCapabilityDrawerOpen = false
-                            onOpenVoiceConversation()
                         }
                         .disabled(isGenerating)
                     }
@@ -816,17 +774,6 @@ struct ComposerBarView: View {
                             ) {
                                 preferences.triggerSelectionHaptic()
                                 conversation.assistanceSettings.enableAgentTools.toggle()
-                            }
-                            .disabled(isGenerating)
-
-                            Menu {
-                                studyCoachMenuItems
-                            } label: {
-                                drawerPillLabel(
-                                    title: coachMode.shortBadge,
-                                    systemImage: coachMode == .off ? "graduationcap" : coachMode.symbol,
-                                    isActive: coachMode != .off
-                                )
                             }
                             .disabled(isGenerating)
                         }
@@ -875,29 +822,111 @@ struct ComposerBarView: View {
         canChooseModel ? String(localized: "选择模型") : String(localized: "连接模型")
     }
 
+    private var pendingAttachments: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: DS.Spacing.sm) {
+                ForEach(draft.attachments) { item in pendingAttachmentChip(item) }
+            }
+        }
+    }
+
+    /// One card: model, session chips and context use share a single header row; a quote sits right above
+    /// the text it is quoted for. Keeps the conversation visible above the keyboard.
+    private var phoneSingleComposer: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            let target = needsModel ? nil : effectiveTarget
+            let modelTitle = target?.modelDisplayName ?? modelActionTitle
+            HStack(spacing: DS.Spacing.sm) {
+                Button {
+                    isCapabilityDrawerOpen = false
+                    onOpenModelPicker()
+                } label: {
+                    HStack(spacing: DS.Spacing.xxs) {
+                        Text(verbatim: modelTitle)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(target == nil ? theme.readableText : Color.primary)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                    }
+                    .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isGenerating)
+                .layoutPriority(1)
+                .accessibilityLabel(Text(verbatim: [modelTitle, target?.providerName ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")))
+                .accessibilityHint("选择模型")
+                .accessibilityIdentifier("chatComposer.model")
+
+                if hasActiveStatusChips {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: DS.Spacing.xs) { statusChips }
+                    }
+                } else {
+                    Spacer(minLength: 0)
+                }
+
+                if hasDraftContent { tokenMeter }
+            }
+            .padding(.horizontal, DS.Spacing.md)
+
+            Divider().accessibilityHidden(true)
+            if let quoted = draft.quotedText, !quoted.isEmpty {
+                inlineQuoteRow(quoted)
+            }
+            inputRow.padding(.horizontal, DS.Spacing.xs).padding(.vertical, DS.Spacing.xxs)
+            if writingFirst && !inputFocus.wrappedValue && hasDraftContent {
+                draftStatus.padding(.horizontal, DS.Spacing.md).padding(.bottom, DS.Spacing.xs)
+            }
+        }
+        .background(DS.Surface.card, in: RoundedRectangle(cornerRadius: DS.Radius.xl))
+        .overlay {
+            RoundedRectangle(cornerRadius: DS.Radius.xl)
+                .strokeBorder(DS.Surface.strongBorder)
+                .allowsHitTesting(false)
+        }
+        .padding(.horizontal, DS.Spacing.md)
+    }
+
+    private func inlineQuoteRow(_ quoted: String) -> some View {
+        HStack(spacing: DS.Spacing.sm) {
+            Capsule()
+                .fill(theme.tintColor.opacity(0.7))
+                .frame(width: 2.5, height: 18)
+                .accessibilityHidden(true)
+            Text(verbatim: quoted)
+                .accessibilityIdentifier("chatComposer.quote")
+                .font(.footnote)
+                .foregroundStyle(DS.Surface.inkSecondary)
+                .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                draft.quotedText = nil
+                draft.save()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(width: DS.TouchTarget.minimum, height: DS.TouchTarget.minimum)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("移除引用")
+        }
+        .padding(.leading, DS.Spacing.md)
+        .padding(.top, DS.Spacing.xxs)
+    }
+
     private var writingEditor: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
                 HStack {
-                    if !preferences.simpleDailyMode {
-                        Menu {
-                            Button(action: onOpenBlindPicker) { Label("双盲对比", systemImage: "eye.slash") }
-                            Button(action: onOpenArenaPicker) { Label("多模型对比", systemImage: "square.split.2x1") }
-                            if let onOpenGroupSetup {
-                                Button(action: onOpenGroupSetup) { Label("圆桌群聊", systemImage: "person.3") }
-                            }
-                            Button(action: onOpenOptions) { Label("请求选项", systemImage: "slider.horizontal.3") }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Text("单聊")
-                                Image(systemName: "chevron.down").font(.caption2)
-                            }
-                                .font(.subheadline.weight(.semibold))
-                                .padding(.horizontal, 12).frame(minHeight: 44)
-                                .background(DS.Surface.subtle, in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    ChatStartModeMenu(isGenerating: isGenerating, onOpenArena: onOpenArenaPicker,
+                                      onOpenGroup: onOpenGroupSetup, onOpenOptions: onOpenOptions)
                     Spacer()
                     if !needsModel {
                         ChatModelPickerButton(modelName: effectiveTarget?.modelDisplayName ?? modelActionTitle, action: onOpenModelPicker)
@@ -974,10 +1003,9 @@ struct ComposerBarView: View {
                 isCapabilityDrawerOpen.toggle()
             }
         } label: {
-            Image(systemName: isCapabilityDrawerOpen ? "xmark.circle" : (writingFirst ? "paperclip" : "plus.circle.fill"))
-                .font(.system(size: 27))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(isCapabilityDrawerOpen ? .secondary : theme.readableText)
+            Image(systemName: isCapabilityDrawerOpen ? "xmark" : "plus")
+                .font(.title3.weight(.medium))
+                .foregroundStyle(isCapabilityDrawerOpen ? Color.secondary : Color.primary)
                 .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
                 .contentShape(Rectangle())
         }
@@ -987,26 +1015,42 @@ struct ComposerBarView: View {
     }
 
     private var microphoneButton: some View {
-        Button {
+        Group {
             if speech.isRecording {
-                speech.stopDictation()
+                Button { speech.stopDictation() } label: { microphoneIcon }
+                    .accessibilityLabel("停止语音输入")
             } else {
-                dictationBaseText = draft.text
-                speech.startDictation { transcript in
-                    let prefix = dictationBaseText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    draft.text = prefix.isEmpty ? transcript : "\(prefix) \(transcript)"
-                }
+                Menu {
+                    Button { startDictation() } label: { Label("语音输入", systemImage: "mic") }
+                    if let onOpenAudioTranscription {
+                        Button {
+                            isCapabilityDrawerOpen = false
+                            onOpenAudioTranscription()
+                        } label: { Label("音频纪要", systemImage: "waveform") }
+                    }
+                } label: { microphoneIcon }
+                .accessibilityLabel("语音")
             }
-        } label: {
-            Image(systemName: speech.isRecording ? "mic.fill" : "mic")
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(speech.isRecording ? .red : .secondary)
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!draft.isLoaded || isGenerating)
-        .accessibilityLabel(speech.isRecording ? String(localized: "停止语音输入") : String(localized: "语音输入"))
+        .disabled(!speech.isRecording && (!draft.isLoaded || isGenerating))
+        .accessibilityIdentifier("chatComposer.voice")
+    }
+
+    private var microphoneIcon: some View {
+        Image(systemName: speech.isRecording ? "mic.fill" : "mic")
+            .font(.system(size: 17, weight: .medium))
+            .foregroundStyle(speech.isRecording ? .red : .secondary)
+            .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
+            .contentShape(Rectangle())
+    }
+
+    private func startDictation() {
+        dictationBaseText = draft.text
+        speech.startDictation { transcript in
+            let prefix = dictationBaseText.trimmingCharacters(in: .whitespacesAndNewlines)
+            draft.text = prefix.isEmpty ? transcript : "\(prefix) \(transcript)"
+        }
     }
 
     private var inputRow: some View {
@@ -1026,7 +1070,8 @@ struct ComposerBarView: View {
                 .padding(.trailing, 4)
                 .padding(.bottom, 1)
             }
-            .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
+            .background(usesPhoneWorkspace ? DS.Surface.canvas : DS.Surface.subtle,
+                        in: RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
                     .strokeBorder(DS.Surface.hairline, lineWidth: 1)
@@ -1037,7 +1082,7 @@ struct ComposerBarView: View {
                     Button(action: onStop) {
                         Image(systemName: "stop.circle.fill")
                             .font(.system(size: 31))
-                            .foregroundStyle(.red)
+                            .foregroundStyle(DS.StatusText.error)
                             .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
                             .contentShape(Rectangle())
                     }
@@ -1059,7 +1104,7 @@ struct ComposerBarView: View {
                         .accessibilityLabel("插话发送")
                     }
                 }
-            } else {
+            } else if !writingFirst || !needsModel {
                 Button {
                     if speech.isRecording { speech.stopDictation() }
                     if isCapabilityDrawerOpen {
@@ -1078,6 +1123,7 @@ struct ComposerBarView: View {
                 .buttonStyle(.plain)
                 .disabled(!canSend)
                 .accessibilityLabel("发送")
+                .accessibilityIdentifier("chatComposer.send")
             }
         }
     }
@@ -1109,35 +1155,33 @@ struct ComposerBarView: View {
         }
     }
 
-    @ViewBuilder
-    private var studyCoachMenuItems: some View {
-        let coachMode = conversation.assistanceSettings.studyCoachMode
-        ForEach(StudyCoachMode.allCases) { mode in
-            Button {
-                conversation.assistanceSettings.studyCoachMode = mode
-                preferences.triggerSelectionHaptic()
-            } label: {
-                Label(
-                    mode.displayName,
-                    systemImage: coachMode == mode ? "checkmark.circle.fill" : mode.symbol
-                )
-            }
+    private func webModeButton(_ title: LocalizedStringKey, mode: WebMode) -> some View {
+        Button {
+            setWebMode(mode)
+        } label: {
+            if webMode == mode { Label(title, systemImage: "checkmark") }
+            else { Text(title) }
         }
     }
 
-    private func toggleWebSearch() {
+    private func setWebMode(_ mode: WebMode) {
         preferences.triggerSelectionHaptic()
-        let hasSearchEngine = WebSearchService.isConfigured()
-        if hasSearchEngine || requestOptions.useSearch {
-            let next = !requestOptions.useSearch
-            let trimmed = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            searchQueryAutoSync = next && requestOptions.searchQuery.isEmpty
-            requestOptions.setSearch(next, draft: trimmed)
-        } else if !conversation.isGroupMode {
-            conversation.assistanceSettings.enableNativeGrounding.toggle()
-        } else {
-            isCapabilityDrawerOpen = false
-            onOpenOptions()
+        if mode != .search && searchQueryAutoSync {
+            requestOptions.searchQuery = ""
+            searchQueryAutoSync = false
+        }
+        switch mode {
+        case .off:
+            requestOptions.setSearch(false, draft: "")
+            if !conversation.isGroupMode { conversation.assistanceSettings.enableNativeGrounding = false }
+        case .search:
+            if TavilySearchClient.isConfigured || conversation.isGroupMode || requestOptions.useSearch {
+                let trimmed = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !requestOptions.useSearch { searchQueryAutoSync = requestOptions.searchQuery.isEmpty }
+                requestOptions.setSearch(true, draft: trimmed)
+            } else {
+                conversation.assistanceSettings.enableNativeGrounding = true
+            }
         }
     }
 
@@ -1214,7 +1258,7 @@ struct ComposerBarView: View {
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(theme.readableText)
             TextField(
-                "搜索词（仅发送此内容给 Tavily）",
+                "搜索词（发送给 \(TavilySearchClient.ledgerTarget.providerName)）",
                 text: Binding(
                     get: { requestOptions.searchQuery },
                     set: {
@@ -1225,8 +1269,7 @@ struct ComposerBarView: View {
             )
             .font(.caption)
             Button {
-                requestOptions.setSearch(false, draft: "")
-                searchQueryAutoSync = false
+                setWebMode(.off)
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.caption)
@@ -1248,7 +1291,7 @@ struct ComposerBarView: View {
                 .frame(width: 8, height: 8)
             Text("正在聆听，请直接说话…")
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.red)
+                .foregroundStyle(DS.StatusText.error)
             Spacer()
             Button("完成") {
                 speech.stopDictation()
@@ -1264,15 +1307,17 @@ struct ComposerBarView: View {
 
     private func quotedPreviewBanner(_ quoted: String) -> some View {
         HStack(spacing: DS.Spacing.sm) {
-            RoundedRectangle(cornerRadius: 1.5)
-                .fill(theme.tintColor)
-                .frame(width: 3)
-            Text(quoted)
+            Capsule()
+                .fill(theme.tintColor.opacity(0.7))
+                .frame(width: 2.5, height: 18)
+                .accessibilityHidden(true)
+            Text(verbatim: quoted)
                 .accessibilityIdentifier("chatComposer.quote")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.footnote)
+                .foregroundStyle(DS.Surface.inkSecondary)
                 .lineLimit(2)
-            Spacer()
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Button {
                 draft.quotedText = nil
                 draft.save()
@@ -1280,12 +1325,13 @@ struct ComposerBarView: View {
                 Image(systemName: "xmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .frame(width: DS.TouchTarget.minimum, height: DS.TouchTarget.minimum)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("移除引用")
         }
-        .padding(.horizontal, DS.Spacing.md)
-        .padding(.vertical, DS.Spacing.xs)
+        .padding(.leading, DS.Spacing.md)
         .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
         .padding(.horizontal, DS.Spacing.md)
     }
@@ -1293,7 +1339,7 @@ struct ComposerBarView: View {
     private var draftRecoveryBanner: some View {
         HStack(spacing: DS.Spacing.sm) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(DS.StatusText.warning)
                 .font(.caption)
             Text("草稿暂未读取成功")
                 .font(.caption)
@@ -1313,6 +1359,7 @@ struct ComposerBarView: View {
     }
 
     private var composerPlaceholder: String {
+        if writingFirst { return String(localized: "写下你的问题…") }
         if conversation.isGroupMode {
             return isGenerating
                 ? String(localized: "讨论进行中，可直接输入插话打断…")

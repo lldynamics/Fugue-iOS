@@ -2,13 +2,39 @@ import XCTest
 
 @MainActor
 final class MainTabFlowTests: XCTestCase {
-    func testNormalLaunchOpensAllFourTabs() throws {
+    func testNormalLaunchReachesChatLibrarySettingsAndUsage() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         if app.staticTexts["请解锁设备。受保护的数据可用后，将自动重新打开本地数据库。"].exists {
             app.buttons["重试"].tap()
+        }
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            let newQuestion = app.buttons["inbox.newQuestion"]
+            XCTAssertTrue(newQuestion.waitForExistence(timeout: 8))
+            newQuestion.tap()
+            let model = app.buttons["chatComposer.model"]
+            XCTAssertTrue(model.waitForExistence(timeout: 8), app.debugDescription)
+            XCTAssertTrue(model.isHittable, app.debugDescription)
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            XCTAssertTrue(newQuestion.waitForExistence(timeout: 5))
+            app.openWorkspaceLibrary()
+            XCTAssertTrue(app.navigationBars["资料库"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["workspace.workshop.books"].isHittable)
+            app.openWorkspaceSettings()
+            let ledgerLink = app.buttons["用量与费用账本"]
+            let readableBottom = app.frame.maxY - 44
+            for _ in 0..<4 where !ledgerLink.isHittable || ledgerLink.frame.maxY > readableBottom {
+                app.swipeUp()
+            }
+            XCTAssertTrue(ledgerLink.isHittable)
+            XCTAssertLessThanOrEqual(ledgerLink.frame.maxY, readableBottom)
+            ledgerLink.tap()
+            XCTAssertTrue(app.buttons["usage.budget"].waitForExistence(timeout: 5), app.debugDescription)
+            let completed = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "完整 ")).firstMatch
+            XCTAssertTrue(completed.exists)
+            return
         }
         if UIDevice.current.userInterfaceIdiom == .phone, !app.navigationBars["夜奔"].exists {
             let history = app.buttons["chat.history"]

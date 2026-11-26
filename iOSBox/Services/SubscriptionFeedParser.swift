@@ -125,7 +125,8 @@ final class SubscriptionFeedParser: NSObject, XMLParserDelegate {
             guard values["rel"]?.lowercased().split(whereSeparator: \.isWhitespace).contains("alternate") == true,
                   ["application/rss+xml", "application/atom+xml"].contains(values["type"]?.lowercased() ?? ""),
                   let raw = values["href"], let url = URL(string: HTMLTextExtractor.decodeEntities(raw), relativeTo: base)?.absoluteURL,
-                  (try? URLReader.validate(url)) != nil else { continue }
+                  (try? URLReader.validate(url)) != nil,
+                  PersonaFeedReader.isSameOrigin(url, base) else { continue }
             return url
         }
         return nil

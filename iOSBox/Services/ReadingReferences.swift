@@ -45,6 +45,19 @@ struct ReadingReferences: Equatable, Sendable {
         return sources[index]
     }
 
+    /// True when `text` links every source with an unambiguous inline marker (rendered as 〔原文 n〕).
+    func citesAllSources(in text: String) -> Bool {
+        guard !sources.isEmpty, text.contains("[") else { return false }
+        var cited = Set<Int>()
+        for match in Self.brackets.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range, in: text),
+                  let matches = markers[Self.normalized(String(text[range]))],
+                  matches.count == 1, let index = matches.first else { continue }
+            cited.insert(index)
+        }
+        return cited.count == sources.count
+    }
+
     func linkingMarkers(in original: AttributedString) -> AttributedString {
         guard !sources.isEmpty else { return original }
         var result = AttributedString()

@@ -342,7 +342,7 @@ final class PhaseThreeTests: XCTestCase {
 
     func testInvalidMemoryBackupIsAtomic() throws {
         var archive=try BackupService.makeArchive(context:context)
-        archive.memories=[PersonalMemory.Snapshot(id:UUID(),content:String(repeating:"x",count:501),isEnabled:true,createdAt:Date())]
+        archive.memories=[PersonalMemory.Snapshot(id:UUID(),content:String(repeating:"x",count:PersonalMemory.maximumCharacters + 1),isEnabled:true,createdAt:Date())]
         XCTAssertThrowsError(try BackupService.apply(.full(archive),to:context))
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<PersonalMemory>()),0)
     }

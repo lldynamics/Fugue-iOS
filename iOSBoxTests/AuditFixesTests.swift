@@ -88,8 +88,6 @@ final class AuditFixesTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let srcFlashcards = FlashcardStore(fileURL: dir.appendingPathComponent("src-cards.json"))
-        let dstFlashcards = FlashcardStore(fileURL: dir.appendingPathComponent("dst-cards.json"))
         let srcKnowledge = PresetKnowledgeStore(fileURL: dir.appendingPathComponent("src-kb.json"))
         let dstKnowledge = PresetKnowledgeStore(fileURL: dir.appendingPathComponent("dst-kb.json"))
 
@@ -100,14 +98,6 @@ final class AuditFixesTests: XCTestCase {
         let boundBookID = UUID()
         try srcKnowledge.setVolumeIDs([boundBookID], for: preset.id)
         srcCtx.insert(preset)
-
-        let card = try XCTUnwrap(srcFlashcards.addCard(
-            deckName: "Swift 并发",
-            front: "Actor 隔离是什么？",
-            back: "保护可变状态避免数据竞争。"
-        ))
-        try srcFlashcards.recordReview(cardID: card.id, rating: .good)
-        let expectedInterval = try XCTUnwrap(srcFlashcards.cards.first { $0.id == card.id }?.intervalDays)
 
         let targetA = ResolvedModelTarget(
             providerID: UUID(), providerName: "P1", protocolType: .openAICompatible,
@@ -132,27 +122,13 @@ final class AuditFixesTests: XCTestCase {
         srcCtx.insert(newerConv)
         try srcCtx.save()
 
-        let previousXToken = KeychainService.shared.loadSecret(account: PersonaFeedReader.xTokenAccount)
-        defer {
-            if previousXToken.isEmpty {
-                KeychainService.shared.deleteSecret(account: PersonaFeedReader.xTokenAccount)
-            } else {
-                _ = KeychainService.shared.saveSecret(previousXToken, account: PersonaFeedReader.xTokenAccount)
-            }
-        }
-        XCTAssertTrue(KeychainService.shared.saveSecret("x-bearer-secret-999", account: PersonaFeedReader.xTokenAccount))
-
         let encryptedData = try EncryptedBackupService.exportEncryptedData(
             context: srcCtx,
             password: "Audit-Pass-2026!",
-            flashcardStore: srcFlashcards,
             knowledgeStore: srcKnowledge
         )
         XCTAssertTrue(EncryptedBackupService.isEncryptedBackup(encryptedData))
         XCTAssertFalse(EncryptedBackupService.isEncryptedBackup(Data(#"{"formatVersion":6}"#.utf8)))
-
-        KeychainService.shared.deleteSecret(account: PersonaFeedReader.xTokenAccount)
-        XCTAssertEqual(KeychainService.shared.loadSecret(account: PersonaFeedReader.xTokenAccount), "")
 
         let dstContainer = try makeInMemoryContainer()
         let dstCtx = dstContainer.mainContext
@@ -165,18 +141,13 @@ final class AuditFixesTests: XCTestCase {
         dstCtx.insert(olderConv)
         try dstCtx.save()
 
-        let summary = try await EncryptedBackupService.decryptAndApplyAsync(
+        _ = try await EncryptedBackupService.decryptAndApplyAsync(
             data: encryptedData,
             password: "Audit-Pass-2026!",
             to: dstCtx,
-            flashcardStore: dstFlashcards,
             knowledgeStore: dstKnowledge
         )
-        XCTAssertEqual(summary.flashcards, 1)
-        XCTAssertEqual(dstFlashcards.cards.first?.id, card.id)
-        XCTAssertEqual(try XCTUnwrap(dstFlashcards.cards.first?.intervalDays), expectedInterval, accuracy: 0.01)
         XCTAssertEqual(dstKnowledge.volumeIDs(for: preset.id), [boundBookID])
-        XCTAssertEqual(KeychainService.shared.loadSecret(account: PersonaFeedReader.xTokenAccount), "x-bearer-secret-999")
 
         // Merge newer parameters without changing the locally selected recipients.
         XCTAssertEqual(olderConv.title, "新版标题")
@@ -275,18 +246,6 @@ final class AuditFixesTests: XCTestCase {
     }
 
     func testAnkiTSVEscapesHTMLAndMermaidSequenceHandlesAliases() throws {
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("anki-escape-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-        let store = FlashcardStore(fileURL: tempURL)
-        _ = try store.addCard(
-            deckName: "Generics",
-            front: "What is Array<String> & Set<Int>?",
-            back: "Line 1: a < b\nLine 2: c > d"
-        )
-        let tsv = store.exportAnkiTSV()
-        XCTAssertTrue(tsv.contains("Array&lt;String&gt; &amp; Set&lt;Int&gt;"))
-        XCTAssertTrue(tsv.contains("Line 1: a &lt; b<br>Line 2: c &gt; d"))
-
         let doc = ArtifactDocumentBuilder.htmlDocument(
             language: "mermaid",
             code: "sequenceDiagram\nparticipant A as Alice\nparticipant B as Bob\nA->>B: Hello"
@@ -418,57 +377,6 @@ final class AuditFixesTests: XCTestCase {
         XCTAssertNil(speech.speakingMessageID)
     }
 
-    func testStudyGeneratorHandlesRetryAndExtraAPIKeys() async throws {
-        let db = try makeInMemoryContainer()
-        let ctx = db.mainContext
-        let provider = ProviderConfig(
-            name: "Local", protocolType: .openAICompatible,
-            baseURL: "http://localhost:11434/v1", models: [ModelSpec(id: "study-m")]
-        )
-        ctx.insert(provider)
-        try ctx.save()
-
-        let providerID = provider.id
-        defer {
-            KeychainService.shared.deleteAPIKey(for: providerID)
-            ProviderConnectionSettingsStore.shared.setIdleTimeoutSeconds(0, for: providerID)
-        }
-        XCTAssertTrue(KeychainService.shared.saveExtraAPIKeys(["sk-backup-1"], for: providerID))
-        ProviderConnectionSettingsStore.shared.setIdleTimeoutSeconds(75, for: providerID)
-
-        let capturedReq = LockedBox<LLMChatRequest?>(nil)
-        let cards = try await StudyGeneratorService.requestFlashcards(
-            sourceText: "Swift Concurrency uses structured tasks and actors.",
-            target: provider.makeTarget(for: provider.models[0]),
-            provider: provider,
-            spec: provider.models[0],
-            conversationID: UUID(),
-            messageID: UUID(),
-            context: ctx,
-            stream: { req in
-                capturedReq.set(req)
-                return AsyncThrowingStream { cont in
-                    cont.yield(.contentDelta("corrupted partial"))
-                    cont.yield(.retrying(httpStatus: 429))
-                    cont.yield(.contentDelta(#"{"cards":[{"front":"Q1","back":"A1"}]}"#))
-                    cont.yield(.usage(promptTokens: 10, completionTokens: 12))
-                    cont.yield(.done)
-                    cont.finish()
-                }
-            }
-        )
-
-        XCTAssertEqual(capturedReq.get()?.apiKeys, ["sk-backup-1"])
-        XCTAssertEqual(capturedReq.get()?.idleTimeoutSeconds, 75)
-        XCTAssertEqual(cards.count, 1)
-        XCTAssertEqual(cards.first?.front, "Q1")
-
-        let records = try ctx.fetch(FetchDescriptor<RequestRecord>(sortBy: [SortDescriptor(\.attempt)]))
-        XCTAssertEqual(records.count, 2)
-        XCTAssertEqual(records.map(\.status), [.failed, .succeeded])
-        XCTAssertEqual(records.first?.httpStatus, 429)
-    }
-
     func testTemporaryExportCleanerRemovesOnlyExpiredManagedFiles() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tmp-clean-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -543,22 +451,6 @@ final class AuditFixesTests: XCTestCase {
         // Full race-free helper recovers automatically
         let recovered = try await ProjectKnowledgeSearch.retrieve(volumeIDs: [book.id], in: ctx, query: "延迟", search: isolatedSearch)
         XCTAssertTrue(recovered.passages.first?.excerpt.contains("9ms") == true)
-
-        // 3. FlashcardStore.mergeImported clamps malformed SM-2 values
-        let storeURL = FileManager.default.temporaryDirectory.appendingPathComponent("sm2-clamp-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: storeURL) }
-        let cardStore = FlashcardStore(fileURL: storeURL)
-        var malformed = StudyFlashcard(deckName: "Math", front: "F", back: "B")
-        malformed.easeFactor = -5.0
-        malformed.intervalDays = -10.0
-        malformed.repetitions = -3
-        malformed.lapses = -2
-        XCTAssertEqual(try cardStore.mergeImported([malformed]), 1)
-        let saved = try XCTUnwrap(cardStore.cards.first)
-        XCTAssertGreaterThanOrEqual(saved.easeFactor, 1.3)
-        XCTAssertGreaterThanOrEqual(saved.intervalDays, 0)
-        XCTAssertEqual(saved.repetitions, 0)
-        XCTAssertEqual(saved.lapses, 0)
 
         // 4. PDFOCRService handles rotated scanned pages cleanly
         let pageRect = CGRect(x: 0, y: 0, width: 420, height: 180)

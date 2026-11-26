@@ -41,6 +41,7 @@ struct PersonaFeed: Codable, Equatable, Identifiable, Sendable {
     }
 
     var displayName: String { kind == .x ? "@" + address : address }
+    var isRefreshable: Bool { kind == .blog && enabled }
 }
 
 // A source notice is part of the local group timeline. Its URL and publisher travel with the message.
@@ -55,18 +56,14 @@ struct GroupSourceNotice: Codable, Equatable, Sendable {
 }
 
 enum PersonaError: LocalizedError {
-    case empty, noSpeaker, noMatches, tooLarge, invalidAccount, invalidFeed, missingToken, credentialSave, api(Int)
+    case empty, noSpeaker, noMatches, tooLarge, invalidFeed
     var errorDescription: String? {
         switch self {
         case .empty: return String(localized: "没有可导入的文字。")
         case .noSpeaker: return String(localized: "请输入记录中这位发言人的名字。")
         case .noMatches: return String(localized: "没有找到此人的发言。请核对名字和聊天记录格式。")
         case .tooLarge: return String(localized: "请选择不超过 2 MB 的文本文件。")
-        case .invalidAccount: return String(localized: "请填写有效的 X 用户名或个人主页地址。")
         case .invalidFeed: return String(localized: "未找到可读取的 RSS 或 Atom 订阅，请填写博客公布的订阅地址。")
-        case .missingToken: return String(localized: "读取 X 动态需要在人物资料中保存有读取权限的 X API Bearer Token。")
-        case .credentialSave: return String(localized: "无法更新钥匙串，请重试。")
-        case .api(let status): return String(localized: "X 接口返回 HTTP \(status)，请检查读取权限、账户额度或稍后再试。")
         }
     }
 }

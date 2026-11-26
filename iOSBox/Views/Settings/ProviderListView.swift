@@ -16,7 +16,7 @@ struct ProviderListView: View {
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
 
     @State private var showAddSheet = false
-    @State private var showQuickSetupSheet = false
+    @State private var connectionDraft: ProviderSetupDraft?
     @State private var preferences = AppPreferences.shared
     @State private var navigationPath = NavigationPath()
     @State private var exportedJSONURL: URL?
@@ -35,29 +35,37 @@ struct ProviderListView: View {
             List {
                 Section {
                     Button {
-                        showQuickSetupSheet = true
+                        connectionDraft = ProviderSetupDraft()
                     } label: {
-                        Label("从剪贴板一键配 Key 并测通", systemImage: "bolt.fill")
-                            .fontWeight(.medium)
-                    }
-
-                    ForEach(providers) { provider in
-                        NavigationLink(value: provider) {
-                            providerRow(provider)
+                        Label {
+                            VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                                Text("连接模型").font(.headline)
+                                Text("OpenAI 官方、OpenRouter 或其他服务商")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "plus.circle")
                         }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                providerPendingDeletion = provider
-                            } label: {
-                                Label("删除", systemImage: "trash")
+                    }
+                    .accessibilityIdentifier("settings.connectModel")
+                }
+
+                if !providers.isEmpty {
+                    Section("已保存的服务商") {
+                        ForEach(providers) { provider in
+                            NavigationLink(value: provider) {
+                                providerRow(provider)
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) {
+                                    providerPendingDeletion = provider
+                                } label: {
+                                    Label("删除", systemImage: "trash")
+                                }
                             }
                         }
+                        .onMove(perform: moveProviders)
                     }
-                    .onMove(perform: moveProviders)
-                } header: {
-                    Text("API 服务商与自定义中转站")
-                } footer: {
-                    Text("点进任意服务商可填入 API Key、修改 Base URL，并支持一键拉取 /models 模型列表或手动添加模型。")
                 }
 
                 Section("对话与显示") {
@@ -76,7 +84,6 @@ struct ProviderListView: View {
                 Section("高级功能") {
                     NavigationLink { PersonalMemoryView() } label: { Label("个人长期记忆", systemImage: "brain.head.profile") }
                     NavigationLink { KnowledgeSearchSettingsView() } label: { Label("全文检索与知识库索引", systemImage: "magnifyingglass.circle") }
-                    NavigationLink { MCPServersSettingsView() } label: { Label("Remote MCP 工具服务", systemImage: "puzzlepiece.extension") }
                     NavigationLink { SystemQuickEntryGuideView() } label: { Label("小组件、控制中心与操作按钮", systemImage: "square.grid.2x2") }
                     DisclosureGroup("查看支持的 API 协议说明") {
                         ForEach(APIProtocolType.allCases) { proto in
@@ -100,7 +107,7 @@ struct ProviderListView: View {
                 Section {
                     HStack(spacing: 10) {
                         Image(systemName: "lock.shield.fill")
-                            .foregroundStyle(.green)
+                            .foregroundStyle(DS.StatusText.success)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("纯客户端本地直连")
                                 .font(.footnote.weight(.semibold))
@@ -182,7 +189,7 @@ struct ProviderListView: View {
                 } header: {
                     Text("数据与隐私安全")
                 } footer: {
-                    Text("导入会补回缺失的对话、附件、分支与助学闪卡，并保留本机已有配置。普通备份会省略密钥、敏感请求头及自定义路径地址；使用「加密导出完整备份」时才会以密码加密包含 API Key 与完整连接地址。")
+                    Text("导入会补回缺失的对话、附件与分支，并保留本机已有配置。普通备份会省略密钥、敏感请求头及自定义路径地址；使用「加密导出完整备份」时才会以密码加密包含 API Key 与完整连接地址。")
                 }
             }
             .scrollContentBackground(.hidden)
@@ -201,20 +208,17 @@ struct ProviderListView: View {
                     Button {
                         showAddSheet = true
                     } label: {
-                        Label("添加 API", systemImage: "plus")
+                        Label("手动添加服务商", systemImage: "plus")
                     }
                 }
             }
             .navigationDestination(for: ProviderConfig.self) { provider in
-                ProviderDetailView(provider: provider)
+                ProviderDetailView(provider: provider, correctKey: { connectionDraft = $0 })
             }
             .sheet(isPresented: $showAddSheet) {
                 AddProviderSheet { created in
                     navigationPath.append(created)
                 }
-            }
-            .sheet(isPresented: $showQuickSetupSheet) {
-                QuickKeySetupSheet()
             }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
                 switch result {
@@ -285,6 +289,11 @@ struct ProviderListView: View {
                 }
             } message: {
                 Text("检测到密码加密备份包，输入密码后将自动恢复数据与 API 凭据。")
+            }
+        }
+        .sheet(item: $connectionDraft) { draft in
+            QuickKeySetupSheet(draft: draft) { provider, _ in
+                navigationPath = NavigationPath([provider])
             }
         }
     }

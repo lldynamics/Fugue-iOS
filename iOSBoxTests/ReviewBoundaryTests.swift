@@ -71,6 +71,34 @@ final class ReviewBoundaryTests: XCTestCase {
         }
     }
 
+    func testInboxRestoresLegacyAndAttachmentDraftsByEditDate() async throws {
+        let directory = tempURL()
+        let store = ChatDraftStore(directory: directory)
+        let textID = UUID(), attachmentID = UUID(), quoteID = UUID()
+        try store.save(ChatDraft(text: "original"), for: textID)
+        try store.save(ChatDraft(attachments: [attachment]), for: attachmentID)
+        try store.save(ChatDraft(quotedText: "a cited passage"), for: quoteID)
+        let oldDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath:
+            directory.appendingPathComponent(textID.uuidString + ".json").path)
+        let reopened = ChatDraftStore(directory: directory)
+        await reopened.loadInboxPreviews()
+        XCTAssertEqual(reopened.previews[textID], .text("original"))
+        XCTAssertEqual(reopened.previews[attachmentID], .attachments(1))
+        XCTAssertEqual(reopened.previews[quoteID], .quotation("a cited passage"))
+        let state = reopened.state(for: textID)
+        state.save()
+        XCTAssertEqual(reopened.draftDates[textID], oldDate)
+        state.text = "new follow-up"
+        state.save()
+        XCTAssertGreaterThan(try XCTUnwrap(reopened.draftDates[textID]), try XCTUnwrap(reopened.draftDates[attachmentID]))
+        state.text = ""
+        state.save()
+        await reopened.loadInboxPreviews()
+        XCTAssertNil(reopened.draftDates[textID])
+        XCTAssertEqual(reopened.previews[textID], .empty)
+    }
+
     func testLateAttachmentCompletionSharesAndPersistsDraft() throws {
         let attachment = self.attachment
         let directory = tempURL()
@@ -175,12 +203,20 @@ final class ReviewBoundaryTests: XCTestCase {
 
     func testPDFPageLimitIsDisclosed() throws {
         let document = PDFDocument()
-        let image = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { _ in }
-        for index in 0..<201 { document.insert(try XCTUnwrap(PDFPage(image: image)), at: index) }
+        let pageRect = CGRect(x: 0, y: 0, width: 120, height: 40)
+        let singlePageData = UIGraphicsPDFRenderer(bounds: pageRect).pdfData { context in
+            context.beginPage()
+            NSString(string: "Page text").draw(at: CGPoint(x: 8, y: 8), withAttributes: [.font: UIFont.systemFont(ofSize: 12)])
+        }
+        let templateDoc = try XCTUnwrap(PDFDocument(data: singlePageData))
+        let templatePage = try XCTUnwrap(templateDoc.page(at: 0))
+        for index in 0..<(AttachmentProcessor.maximumPDFPages + 1) {
+            document.insert(try XCTUnwrap(templatePage.copy() as? PDFPage), at: index)
+        }
         let url = tempURL().appendingPathExtension("pdf")
         XCTAssertTrue(document.write(to: url))
         let result = try AttachmentProcessor.processFileURL(url)
-        XCTAssertTrue(result.extractedText?.contains("200") == true)
+        XCTAssertTrue(result.extractedText?.contains("\(AttachmentProcessor.maximumPDFPages)") == true)
         XCTAssertNotNil(result.dataBase64)
     }
 

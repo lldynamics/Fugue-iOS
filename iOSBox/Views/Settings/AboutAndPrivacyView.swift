@@ -4,7 +4,6 @@ import SwiftUI
 struct AboutAndPrivacyView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage(AppCompliance.consentKey, store: AppCompliance.consentDefaults) private var hasConsent = false
-    @AppStorage(EmbeddingConsent.key) private var approvedEmbeddingScope = ""
     @AppStorage(SpotlightIndexService.enabledKey) private var spotlightEnabled = false
     @AppStorage(WidgetSnapshotService.showRecentTitlesKey) private var widgetShowRecentTitles = false
 
@@ -32,9 +31,6 @@ struct AboutAndPrivacyView: View {
                     Text("尚未授权，下次发送前会显示接收方并请你确认。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                if !approvedEmbeddingScope.isEmpty {
-                    Button("撤回向量服务授权", role: .destructive) { approvedEmbeddingScope = "" }
-                }
             }
 
             Section("锁屏与灵动岛") {
@@ -42,7 +38,7 @@ struct AboutAndPrivacyView: View {
                     get: { LiveActivityCoordinator.shared.showsPreviews },
                     set: { LiveActivityCoordinator.shared.setShowsPreviews($0) }
                 ))
-                Text("默认仅显示生成进度。开启后，新的实时活动可显示标题、发言者和回答片段。盲评揭晓前始终匿名。")
+                Text("默认仅显示生成进度。开启后，新的实时活动可显示标题、发言者和回答片段。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
 
@@ -74,7 +70,7 @@ struct AboutAndPrivacyView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                Text("相机、相册、麦克风、语音识别、日历/提醒事项与局域网权限仅在你主动点击拍照、选图、语音听写、确认添加待办日程或连接本地模型地址时按需请求，不会在后台静默采集。")
+                Text("相机、相册、麦克风、语音识别与局域网权限仅在你主动点击拍照、选图、语音听写或连接本地模型地址时按需请求，不会在后台静默采集。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -121,16 +117,13 @@ struct BuiltInPrivacyPolicyView: View {
 
                     policyBlock(
                         title: String(localized: "1. 零自建后端与零数据收集"),
-                        detail: String(localized: "夜奔（Fugue）是纯本地运行的自带密钥（BYOK）客户端。开发者不运营账号系统、不转发明文请求、不接入第三方广告或行为分析 SDK，也不会向开发者服务器上传任何提示词、回复、电子书、闪卡或 API 密钥。")
+                        detail: String(localized: "夜奔（Fugue）是纯本地运行的自带密钥（BYOK）客户端。开发者不运营账号系统、不转发明文请求、不接入第三方广告或行为分析 SDK，也不会向开发者服务器上传任何提示词、回复、电子书或 API 密钥。")
                     )
 
                     policyBlock(
                         title: String(localized: "2. 向第三方服务商的直连传输"),
                         detail: String(localized: "仅在你首次确认数据出境/第三方传输披露后，你主动发送的会话上下文、所选附件、已启用的个人记忆或联网搜索关键词才会从你的设备直接发送至你所配置的模型 API 地址（如 OpenAI、Anthropic、Google Gemini、DeepSeek、OpenRouter、Tavily 或局域网服务）。相关数据的留存与使用受对应服务商自身的隐私条款约束。你可随时在本页点击「撤回发送授权」。")
                     )
-                    Text("使用向量 API 前需要单独授权。生成书架索引会向获授权的服务发送书架文档原文片段。聊天和工具检索会发送查询词和需要生成向量的绑定文档片段。撤回授权后，知识库检索使用本地索引。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
 
                     policyBlock(
                         title: String(localized: "3. 本机存储、备份加密与删除控制"),
@@ -139,7 +132,7 @@ struct BuiltInPrivacyPolicyView: View {
 
                     policyBlock(
                         title: String(localized: "4. 系统扩展、权限与安全防护"),
-                        detail: String(localized: "分享扩展通过本机 App Group 与主应用交换数据。实时活动默认只显示生成进度，你可以在隐私设置中开启或关闭回答预览。盲评揭晓前会隐藏模型身份和回答内容。网页工具会拦截内网地址，访问未经授权的外部域名时会请你确认。Spotlight 索引默认关闭，开启后才会在本机建立搜索条目。")
+                        detail: String(localized: "分享扩展通过本机 App Group 与主应用交换数据。实时活动默认只显示生成进度，你可以在隐私设置中开启或关闭回答预览。网页工具会拦截内网地址，访问未经授权的外部域名时会请你确认。Spotlight 索引默认关闭，开启后才会在本机建立搜索条目。")
                     )
                 }
             }

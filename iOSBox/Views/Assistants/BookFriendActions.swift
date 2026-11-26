@@ -84,7 +84,7 @@ struct BookReadingProgressSheet: View {
                         } catch { self.error = error.localizedDescription }
                     }.disabled(selected == friend.throughChapter)
                 } else { Text(verbatim: BookImportError.unavailable.localizedDescription) }
-                if let error { Text(verbatim: error).foregroundStyle(.red) }
+                if let error { Text(verbatim: error).foregroundStyle(DS.StatusText.error) }
             }
             .navigationTitle("阅读进度")
             .navigationBarTitleDisplayMode(.inline)
@@ -234,7 +234,7 @@ struct BookInvitationSheet: View {
                     } header: { Text("邀请到已有群聊") } footer: {
                         Text("只带入人物和原书资料。群聊单独保存阅读进度和聊天记录。")
                     }
-                    if let error { Text(verbatim: error).foregroundStyle(.red) }
+                    if let error { Text(verbatim: error).foregroundStyle(DS.StatusText.error) }
                 }
                 .navigationTitle("邀请进群")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }

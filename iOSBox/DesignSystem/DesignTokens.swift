@@ -119,6 +119,12 @@ enum DS {
     enum StatusText {
         static var warning: Color { AccentTheme.amber.readableText }
         static var success: Color { AccentTheme.teal.readableText }
+        /// Deep cinnabar on paper (≈6.5:1) and soft coral on night ink, for errors and destructive states.
+        static let error = Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 1.0, green: 0.506, blue: 0.467, alpha: 1.0)
+                : UIColor(red: 0.690, green: 0.110, blue: 0.090, alpha: 1.0)
+        })
     }
 
     // MARK: - Accent Theme

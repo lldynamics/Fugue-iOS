@@ -3,11 +3,8 @@ import SwiftUI
 struct ArenaComparisonGroupView: View {
     let groupID: UUID
     let messages: [ChatMessage]
-    let isBlindMode: Bool
     let isGenerating: Bool
-    let onToggleBlindMode: (() -> Void)?
     let searchFocus: MessageSearchFocus?
-    let openBallot: () -> Void
     let onFollowUp: (ChatMessage) -> Void
     let onRegenerateSingle: (ChatMessage) -> Void
     let onContinueSingle: ((ChatMessage) -> Void)?
@@ -16,17 +13,12 @@ struct ArenaComparisonGroupView: View {
     let onToggleBookmark: ((ChatMessage) -> Void)?
     let onForkConversation: ((ChatMessage) -> Void)?
     let onSynthesize: () -> Void
-    let onCrossCritique: (() -> Void)?
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var activeTabID: UUID?
     @State private var sideBySideLayout: Bool = false
     @State private var didApplyInitialLayout = false
     @State private var preferences = AppPreferences.shared
-
-    private var isRevealed: Bool {
-        !isBlindMode || messages.filter { !$0.isSynthesis }.contains { $0.assistanceMetadata.blindArenaRevealed }
-    }
 
     private var currentActiveMessage: ChatMessage? {
         let pool = messages
@@ -44,18 +36,6 @@ struct ArenaComparisonGroupView: View {
     }
 
     var body: some View {
-        if !isRevealed {
-            Button(action: openBallot) {
-                Label("进入双盲对比", systemImage: "rectangle.split.2x1")
-                    .frame(maxWidth: .infinity, minHeight: 48)
-            }
-            .buttonStyle(.bordered)
-        } else {
-            revealedComparison
-        }
-    }
-
-    private var revealedComparison: some View {
         let pool = messages
         let completeCount = ArenaSynthesis.eligibleSources(in: messages, groupID: groupID).count
         let theme = preferences.accentTheme
@@ -73,27 +53,6 @@ struct ArenaComparisonGroupView: View {
 
                 Spacer()
 
-                if isBlindMode {
-                    Button("查看选票", action: openBallot).font(.footnote)
-                }
-                if let onToggleBlindMode {
-                    Button(action: onToggleBlindMode) {
-                        HStack(spacing: 3) {
-                            Image(systemName: isBlindMode ? "eye.slash.fill" : "eye")
-                            Text("双盲")
-                        }
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(isBlindMode ? theme.readableText : .secondary)
-                        .padding(.horizontal, DS.Spacing.sm)
-                        .padding(.vertical, DS.Spacing.xxs)
-                        .background(
-                            isBlindMode ? theme.softFill : DS.Surface.neutralChipFill,
-                            in: Capsule()
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-
                 Button {
                     withAnimation(.snappy(duration: 0.25)) {
                         sideBySideLayout.toggle()
@@ -110,12 +69,6 @@ struct ArenaComparisonGroupView: View {
                     .background(DS.Surface.neutralChipFill, in: Capsule())
                 }
                 .buttonStyle(.plain)
-            }
-
-            if isBlindMode && !messages.contains(where: { $0.assistanceMetadata.blindArenaBallot != nil }) {
-                Text("此轮已揭晓，未记录独立选票。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
 
             // Answer-First Content Stage
@@ -167,7 +120,7 @@ struct ArenaComparisonGroupView: View {
                                     } else if msg.errorMessage != nil {
                                         Image(systemName: "exclamationmark.circle.fill")
                                             .font(.caption2)
-                                            .foregroundStyle(.orange)
+                                            .foregroundStyle(DS.StatusText.warning)
                                     } else if msg.isSelectedInGroup {
                                         Image(systemName: "checkmark.seal.fill")
                                             .font(.caption2)
@@ -197,25 +150,15 @@ struct ArenaComparisonGroupView: View {
                 }
             }
 
-            // Bottom Group Synthesis & Critique Bar (placed cleanly after reading)
+            // Bottom Group Synthesis Bar (placed cleanly after reading)
             HStack(spacing: DS.Spacing.sm) {
                 Button(action: onSynthesize) {
-                    Label("由裁判模型综合提炼", systemImage: "sparkles")
+                    Label("汇总", systemImage: "sparkles")
                         .font(.caption.weight(.semibold))
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(isGenerating || completeCount < 2)
-
-                if let onCrossCritique {
-                    Button(action: onCrossCritique) {
-                        Label("互评修正", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.caption.weight(.medium))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(isGenerating || completeCount < 2)
-                }
 
                 Spacer(minLength: 0)
             }
@@ -271,15 +214,13 @@ struct ArenaComparisonGroupView: View {
 
                 if msg.isSynthesis {
                     DSBadge(text: String(localized: "裁判汇总"), icon: "sparkles", style: .accent(theme))
-                } else if msg.assistanceMetadata.blindArenaBallot != nil {
-                    DSBadge(text: String(localized: "盲评得票"), icon: "checkmark.seal.fill", style: .accent(theme))
                 }
             }
 
             if msg.isSynthesis, !ArenaSynthesis.isCurrent(msg, in: messages) {
                 Text("原答案已更新，此汇总已过期，不会用于后续上下文。请重新汇总。")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(DS.StatusText.warning)
             }
 
             // Answer content immediately visible

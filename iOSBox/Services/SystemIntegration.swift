@@ -52,10 +52,43 @@ final class SystemEntryRouter {
     var openOriginalForChatID: UUID?
     var pendingQuickAction: QuickEntryAction?
     var pendingChatToolRequest: ChatToolLaunchRequest?
+    private(set) var isLocked = false
+
+    @ObservationIgnored private var deferredURL: URL?
+    @ObservationIgnored private var deferredSpotlight: (conversationID: UUID, messageID: UUID?)?
+    @ObservationIgnored private var deferredInboxDrain = false
+
+    func setLocked(_ locked: Bool, inbox: QuickEntryInbox = .shared) {
+        isLocked = locked
+        guard !locked else { return }
+        if let url = deferredURL {
+            deferredURL = nil
+            _ = route(url)
+        }
+        if let spotlight = deferredSpotlight {
+            deferredSpotlight = nil
+            routeSpotlight(conversationID: spotlight.conversationID, messageID: spotlight.messageID)
+        }
+        if deferredInboxDrain {
+            deferredInboxDrain = false
+            drainPendingInbox(from: inbox)
+        }
+    }
+
+    func clearDeferredEntries() {
+        deferredURL = nil
+        deferredSpotlight = nil
+        deferredInboxDrain = false
+    }
 
     @discardableResult
     func route(_ url: URL) -> Bool {
         guard let link = SystemDeepLink.parse(url) else { return false }
+        if isLocked {
+            deferredURL = url
+            deferredSpotlight = nil
+            return true
+        }
         switch link {
         case .conversation(let id):
             messageID = nil
@@ -66,7 +99,21 @@ final class SystemEntryRouter {
         return true
     }
 
+    func routeSpotlight(conversationID: UUID, messageID: UUID?) {
+        if isLocked {
+            deferredSpotlight = (conversationID, messageID)
+            deferredURL = nil
+            return
+        }
+        self.messageID = messageID
+        self.conversationID = conversationID
+    }
+
     func drainPendingInbox(from inbox: QuickEntryInbox = .shared) {
+        if isLocked {
+            deferredInboxDrain = true
+            return
+        }
         if let action = inbox.consume() {
             pendingQuickAction = action
         }

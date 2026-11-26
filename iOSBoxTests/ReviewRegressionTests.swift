@@ -72,14 +72,6 @@ final class ReviewRegressionTests: XCTestCase {
     }
 
     func testBoundedReviewDatesAndMalformedStoredNumbers() {
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let card = StudyFlashcard(deckName: "Notes", front: "Q", back: "A", repetitions: .max,
-                                  intervalDays: 10_000, easeFactor: 4, lapses: .max)
-        let reviewed = card.applying(.easy, now: now)
-        XCTAssertEqual(reviewed.repetitions, StudyFlashcard.maximumReviewCount)
-        XCTAssertEqual(reviewed.intervalDays, StudyFlashcard.maximumIntervalDays)
-        XCTAssertEqual(reviewed.dueAt, now.addingTimeInterval(StudyFlashcard.maximumIntervalDays * 86_400))
-        XCTAssertEqual(card.applying(.again, now: now).lapses, StudyFlashcard.maximumReviewCount)
         XCTAssertEqual(LLMUsage.combined(18, nil, .max, -2), 18)
         XCTAssertEqual(LLMUsage.saturatedSum(.max, 1), .max)
         XCTAssertEqual(ReadingCitation.marker(document: "Guide", chapter: "Intro", index: .max, offset: 2), "[Guide · Intro]")
@@ -396,7 +388,7 @@ final class ReviewRegressionTests: XCTestCase {
     }
     func testAttachmentLimits() throws {
         let attachment = MessageAttachment(kind: .document, fileName: "a.txt", mimeType: "text/plain", extractedText: "test", byteSize: 4)
-        XCTAssertThrowsError(try AttachmentProcessor.validate(Array(repeating: attachment, count: 9)))
+        XCTAssertThrowsError(try AttachmentProcessor.validate(Array(repeating: attachment, count: AttachmentProcessor.maximumAttachmentCount + 1)))
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         FileManager.default.createFile(atPath: url.path, contents: nil)
         let file = try FileHandle(forWritingTo: url)

@@ -36,7 +36,7 @@ final class PersonaFeedService {
 
     static func hasSubscriptions(_ chat: Conversation) -> Bool {
         guard chat.assistanceSettingsData != nil else { return false }
-        return chat.isGroupMode && chat.activeGroupMembers.contains { $0.persona?.feeds.contains(where: \.enabled) == true }
+        return chat.isGroupMode && chat.activeGroupMembers.contains { $0.persona?.feeds.contains(where: \.isRefreshable) == true }
     }
 
     func refresh(in context: ModelContext, chatID: UUID? = nil, force: Bool = false, now: Date = Date()) async -> Report {
@@ -48,7 +48,7 @@ final class PersonaFeedService {
             else { descriptor = FetchDescriptor() }
             for chat in try context.fetch(descriptor) where Self.hasSubscriptions(chat) {
                 for member in chat.activeGroupMembers {
-                    for feed in member.persona?.feeds ?? [] where feed.enabled {
+                    for feed in member.persona?.feeds ?? [] where feed.isRefreshable {
                         guard !Task.isCancelled else { return report }
                         let source = Source(chat: chat.id, member: member.id, feed: feed.id)
                         guard let current = liveSettings(chat, member.id, feed)?.feed,
@@ -59,7 +59,7 @@ final class PersonaFeedService {
                         }
                         defer { inFlight.remove(source) }
                         let result: Result<PersonaFeedBatch, Error>
-                        do { result = .success(try await reader.read(current, now: now)) }
+                        do { result = .success(try await reader.read(current)) }
                         catch { result = .failure(error) }
                         guard !Task.isCancelled else { return report }
                         guard let live = liveSettings(chat, member.id, current), live.feed.checkpoint == current.checkpoint else { continue }
@@ -98,7 +98,7 @@ final class PersonaFeedService {
         let members = chat.groupMembers
         guard let m = members.firstIndex(where: { $0.id == memberID && !$0.isMuted }),
               let feeds = members[m].persona?.feeds,
-              let f = feeds.firstIndex(where: { $0.id == source.id && $0.kind == source.kind && $0.address == source.address && $0.enabled })
+              let f = feeds.firstIndex(where: { $0.id == source.id && $0.kind == source.kind && $0.address == source.address && $0.isRefreshable })
         else { return nil }
         return (m, f, members[m].displayLabel, feeds[f])
     }

@@ -465,32 +465,4 @@ final class EnglishCoachStore {
         }
         save()
     }
-
-    func exportChunkToSM2Flashcard(_ chunk: EnglishLessonChunk) throws -> Bool {
-        let deckName = String(localized: "英语私教 · 地道表达")
-        let clozeSentence: String = {
-            if let range = chunk.nativeExample.range(of: chunk.phrase, options: .caseInsensitive) {
-                var copy = chunk.nativeExample
-                copy.replaceSubrange(range, with: "______")
-                return copy
-            }
-            return chunk.nativeExample
-        }()
-        let front = "\(chunk.meaningZh)\n\n\(clozeSentence)"
-        let back = "\(chunk.phrase) \(chunk.phonetic)\n\n例句：\(chunk.nativeExample)\n（\(chunk.exampleZh)）\n\n用法提示：\(chunk.usageTip)"
-        if FlashcardStore.shared.contains(front: front, deckName: deckName) {
-            return false
-        }
-        try FlashcardStore.shared.addCard(
-            deckName: deckName,
-            front: front,
-            back: back,
-            hint: chunk.chinglishTrap
-        )
-        if let idx = memory.masteredChunks.firstIndex(where: { $0.phrase.lowercased() == chunk.phrase.lowercased() }) {
-            memory.masteredChunks[idx].exportedToFlashcard = true
-            save()
-        }
-        return true
-    }
 }

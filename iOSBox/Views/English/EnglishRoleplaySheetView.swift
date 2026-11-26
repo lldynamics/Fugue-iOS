@@ -282,7 +282,7 @@ struct EnglishRoleplaySheetView: View {
             if let err = speechCoach.speechError {
                 Text(err)
                     .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(DS.StatusText.warning)
             }
             HStack(alignment: .bottom, spacing: DS.Spacing.sm) {
                 Button {

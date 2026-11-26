@@ -6,6 +6,8 @@ private struct ReadingReferencesKey: EnvironmentKey {
 }
 
 private extension EnvironmentValues {
+    @Entry var replySelection: ReplySelectionContext? = nil
+
     var readingReferences: ReadingReferences {
         get { self[ReadingReferencesKey.self] }
         set { self[ReadingReferencesKey.self] = newValue }
@@ -18,6 +20,7 @@ struct MarkdownContentView: View {
     var textScale: CGFloat = 1
     var references = ReadingReferences()
     var onOpenCitation: ((ReadingCitation) -> Void)?
+    var replySelection: ReplySelectionContext? = nil
     @Environment(\.openURL) private var openURL
     @State private var preferences = AppPreferences.shared
     @ScaledMetric(relativeTo: .body) private var baseBodySize: CGFloat = 17
@@ -39,6 +42,7 @@ struct MarkdownContentView: View {
             }
         }
         .textSelection(.enabled)
+        .environment(\.replySelection, replySelection)
         .environment(\.readingReferences, references)
         .environment(\.openURL, onOpenCitation.map { open in
             OpenURLAction { url in
@@ -61,14 +65,14 @@ private struct MarkdownBlockView: View, Equatable {
         let bodyFont = DS.Typography.prose(size: bodySize, serif: useSerif)
         switch block {
         case .heading(let level, let content):
-            InlineMarkdownText(raw: content, cacheable: !isStreaming)
-                .font(headingFont(for: level, baseSize: bodySize))
+            InlineMarkdownText(raw: content, cacheable: !isStreaming, size: headingSize(level), serif: useSerif, weight: .bold)
+                .font(DS.Typography.prose(size: headingSize(level), serif: useSerif))
                 .fontWeight(.bold)
                 .padding(.top, level == 1 ? 7 : 4)
                 .accessibilityAddTraits(.isHeader)
 
         case .paragraph(let content):
-            InlineMarkdownText(raw: content, cacheable: !isStreaming)
+            InlineMarkdownText(raw: content, cacheable: !isStreaming, size: bodySize, serif: useSerif, spacing: useSerif ? 5.5 : 4)
                 .font(bodyFont)
                 .lineSpacing(useSerif ? 5.5 : 4)
 
@@ -86,7 +90,7 @@ private struct MarkdownBlockView: View, Equatable {
                 RoundedRectangle(cornerRadius: 2)
                     .fill(Color.accentColor.opacity(0.75))
                     .frame(width: 3)
-                InlineMarkdownText(raw: content, cacheable: !isStreaming)
+                InlineMarkdownText(raw: content, cacheable: !isStreaming, size: max(13, bodySize - 0.5), serif: useSerif, spacing: 4, color: .secondaryLabel)
                     .font(DS.Typography.prose(size: max(13, bodySize - 0.5), serif: useSerif))
                     .foregroundStyle(.secondary)
                     .lineSpacing(4)
@@ -100,7 +104,7 @@ private struct MarkdownBlockView: View, Equatable {
                 Text(marker)
                     .font(.system(size: bodySize).monospacedDigit().weight(.semibold))
                     .foregroundStyle(.secondary)
-                InlineMarkdownText(raw: content, cacheable: !isStreaming)
+                InlineMarkdownText(raw: content, cacheable: !isStreaming, size: bodySize, serif: useSerif, spacing: useSerif ? 4.5 : 3)
                     .font(bodyFont)
                     .lineSpacing(useSerif ? 4.5 : 3)
             }
@@ -113,11 +117,11 @@ private struct MarkdownBlockView: View, Equatable {
         }
     }
 
-    private func headingFont(for level: Int, baseSize: CGFloat) -> Font {
+    private func headingSize(_ level: Int) -> CGFloat {
         switch level {
-        case 1: return DS.Typography.prose(size: baseSize * 1.24, serif: useSerif, weight: .bold)
-        case 2: return DS.Typography.prose(size: baseSize * 1.12, serif: useSerif, weight: .bold)
-        default: return DS.Typography.prose(size: baseSize * 1.03, serif: useSerif, weight: .semibold)
+        case 1: return bodySize * 1.24
+        case 2: return bodySize * 1.12
+        default: return bodySize * 1.03
         }
     }
 }
@@ -160,6 +164,12 @@ enum InlineMarkdownCache {
 private struct InlineMarkdownText: View {
     let raw: String
     var cacheable: Bool = true
+    var size: CGFloat?
+    var serif = false
+    var spacing: CGFloat = 0
+    var weight: UIFont.Weight = .regular
+    var color: UIColor = .label
+    @Environment(\.replySelection) private var selection
     @Environment(\.readingReferences) private var references
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -167,7 +177,17 @@ private struct InlineMarkdownText: View {
     var body: some View {
         let segments = InlineMathParser.split(raw)
         if segments.count == 1, case .text(let only) = segments[0] {
-            markdownText(only)
+            if let size, let selection {
+                let attributed = attributedText(only)
+                if attributed.runs.count == 1, attributed.runs.first?.link != nil {
+                    Text(attributed)
+                } else {
+                    SelectableReplyText(attributed, size: size, serif: serif, lineSpacing: spacing,
+                                        weight: weight, color: color, followUp: selection)
+                }
+            } else {
+                markdownText(only)
+            }
         } else {
             composedText(segments)
         }
@@ -193,13 +213,12 @@ private struct InlineMarkdownText: View {
     }
 
     private func markdownText(_ raw: String) -> Text {
-        if let attributed = InlineMarkdownCache.attributedString(for: raw, cacheable: cacheable) {
-            if references.sources.isEmpty {
-                return Text(attributed)
-            }
-            return Text(references.linkingMarkers(in: attributed))
-        }
-        return Text(verbatim: raw)
+        Text(attributedText(raw))
+    }
+
+    private func attributedText(_ raw: String) -> AttributedString {
+        let attributed = InlineMarkdownCache.attributedString(for: raw, cacheable: cacheable) ?? AttributedString(raw)
+        return references.sources.isEmpty ? attributed : references.linkingMarkers(in: attributed)
     }
 }
 

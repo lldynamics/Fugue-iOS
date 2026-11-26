@@ -26,6 +26,7 @@ final class UIFollowupFixTests: XCTestCase {
     }
 
     private func openReadingChat(_ app: XCUIApplication) {
+        app.openWorkspaceDrawerIfNeeded()
         let chat = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "山路手记")).firstMatch
         XCTAssertTrue(chat.waitForExistence(timeout: 10), app.debugDescription)
         chat.tap()
@@ -65,6 +66,7 @@ final class UIFollowupFixTests: XCTestCase {
 
     func testGroupColorChoicesHaveRoomAndKeepSelection() {
         let app = launch(["-ui-audit-stale-group-model"])
+        app.openWorkspaceDrawerIfNeeded()
         let group = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "失效模型测试群")).firstMatch
         XCTAssertTrue(group.waitForExistence(timeout: 10), app.debugDescription)
         group.tap()
@@ -94,16 +96,21 @@ final class UIFollowupFixTests: XCTestCase {
 
     func testSimpleModeHidesGroupInvitationsAndKeepsUsageReachable() {
         let app = launch(simple: true)
-        app.buttons["工作台"].tap()
+        app.openWorkspaceDrawerIfNeeded()
+        app.openWorkspaceLibrary()
+        app.selectWorkshopSection("好友")
         XCTAssertTrue(app.buttons["与 林舟 私聊"].waitForExistence(timeout: 8), app.debugDescription)
         XCTAssertFalse(app.buttons["邀请 林舟 进群"].exists)
         XCTAssertFalse(app.buttons["邀请 旅人 进群"].exists)
-        XCTAssertFalse(app.tabBars.buttons["用量"].exists)
-        app.buttons["设置"].tap()
+        app.navigationBars.buttons["完成"].tap()
+        app.openWorkspaceDrawerIfNeeded()
+        XCTAssertFalse(app.buttons["用量"].exists)
+        app.openWorkspaceSettings()
         let usage = app.buttons["用量与费用账本"]
         reveal(usage, in: app)
         XCTAssertTrue(usage.isHittable, app.debugDescription)
-        app.buttons["对话"].tap()
+        app.navigationBars["服务商与设置"].buttons["完成"].tap()
+        app.openWorkspaceDrawerIfNeeded()
         let existingGroup = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "读书小组")).firstMatch
         XCTAssertTrue(existingGroup.waitForExistence(timeout: 8), app.debugDescription)
         existingGroup.tap()
@@ -111,42 +118,16 @@ final class UIFollowupFixTests: XCTestCase {
 
         app.terminate()
         let full = launch(simple: false)
-        full.buttons["工作台"].tap()
+        full.openWorkspaceDrawerIfNeeded()
+        full.openWorkspaceLibrary()
+        full.selectWorkshopSection("好友")
         XCTAssertTrue(full.buttons["邀请 林舟 进群"].waitForExistence(timeout: 8), full.debugDescription)
         XCTAssertTrue(full.buttons["邀请 旅人 进群"].exists)
     }
 
-    func testBookshelfEmbeddingShowsRecipientAndRequiresSeparateConsent() {
-        let app = launch(["-iosbox.pref.ragHybridEmbeddingEnabled", "YES"])
-        app.buttons["设置"].tap()
-        let searchSettings = app.buttons["全文检索与知识库索引"]
-        reveal(searchSettings, in: app)
-        XCTAssertTrue(searchSettings.isHittable)
-        searchSettings.tap()
-
-        let authorize = app.buttons["查看并授权向量服务"]
-        reveal(authorize, in: app)
-        XCTAssertTrue(authorize.isHittable)
-        authorize.tap()
-        let alert = app.alerts["授权向量服务？"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 8))
-        let disclosure = alert.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "127.0.0.1")).firstMatch
-        XCTAssertTrue(disclosure.exists)
-        XCTAssertTrue(disclosure.label.contains("书架文档的原文片段"))
-        alert.buttons["暂不授权"].tap()
-        XCTAssertTrue(authorize.waitForExistence(timeout: 5))
-
-        authorize.tap()
-        alert.buttons["同意并授权"].tap()
-        let revoke = app.buttons["撤回向量服务授权"]
-        XCTAssertTrue(revoke.waitForExistence(timeout: 5))
-        revoke.tap()
-        XCTAssertTrue(authorize.waitForExistence(timeout: 5))
-    }
-
     func testWebDAVExplainsDisabledSyncAndKeepsFieldLabels() {
         let app = launch()
-        app.buttons["设置"].tap()
+        app.openWorkspaceSettings()
         let webDAV = app.buttons["WebDAV 加密云同步"]
         reveal(webDAV, in: app)
         XCTAssertTrue(webDAV.isHittable, app.debugDescription)
@@ -163,7 +144,7 @@ final class UIFollowupFixTests: XCTestCase {
 
     func testIncompleteWebDAVConfigurationStillAllowsTurningSyncOff() {
         let app = launch(["-iosbox.pref.webDAVAutoSyncEnabled", "YES"])
-        app.buttons["设置"].tap()
+        app.openWorkspaceSettings()
         let webDAV = app.buttons["WebDAV 加密云同步"]
         reveal(webDAV, in: app)
         XCTAssertTrue(webDAV.isHittable, app.debugDescription)
@@ -178,7 +159,7 @@ final class UIFollowupFixTests: XCTestCase {
 
     func testProviderNameAndAPIKeyVisibilityControlRemainAccessible() {
         let app = launch()
-        app.buttons["设置"].tap()
+        app.openWorkspaceSettings()
         let provider = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "本地模型")).firstMatch
         XCTAssertTrue(provider.waitForExistence(timeout: 8), app.debugDescription)
         provider.tap()
@@ -196,7 +177,7 @@ final class UIFollowupFixTests: XCTestCase {
 
     func testVoiceModelPresetsAreLabeledAndEasyToTap() {
         let app = launch()
-        app.buttons["设置"].tap()
+        app.openWorkspaceSettings()
         let voice = app.buttons["语音转写与自然朗读"]
         reveal(voice, in: app)
         XCTAssertTrue(voice.isHittable, app.debugDescription)
@@ -211,30 +192,9 @@ final class UIFollowupFixTests: XCTestCase {
         XCTAssertEqual(model.value as? String, "gpt-4o-mini-transcribe")
     }
 
-    func testFlashcardEmptyStateAndRequiredFields() {
-        let app = launch()
-        app.buttons["工作台"].tap()
-        app.selectWorkshopSection("闪卡")
-        let create = app.buttons["手动创建闪卡"]
-        XCTAssertTrue(create.waitForExistence(timeout: 8), app.debugDescription)
-        XCTAssertTrue(create.isHittable, app.debugDescription)
-        capture("Flashcard empty state", app: app)
-        create.tap()
-        XCTAssertTrue(app.staticTexts["填写正面和背面后可保存。"].waitForExistence(timeout: 8))
-        let save = app.buttons["保存"]
-        XCTAssertFalse(save.isEnabled)
-        let front = app.textViews.element(boundBy: 0)
-        let back = app.textViews.element(boundBy: 1)
-        XCTAssertTrue(front.exists && back.exists, app.debugDescription)
-        front.tap(); front.typeText("问题")
-        back.tap(); back.typeText("答案")
-        XCTAssertTrue(save.isEnabled)
-        app.buttons["取消"].tap()
-    }
-
     func testLargeTextSettingsUseReadableControls() {
         let app = launch(["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"])
-        app.buttons["设置"].tap()
+        app.openWorkspaceSettings()
         let provider = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "本地模型")).firstMatch
         XCTAssertTrue(provider.waitForExistence(timeout: 8), app.debugDescription)
         let count = app.staticTexts["已启用 2 个模型"]
@@ -256,6 +216,7 @@ final class UIFollowupFixTests: XCTestCase {
 
     func testSimpleModeAlsoHidesInvitationsInBookFriendChat() {
         let app = launch(simple: true)
+        app.openWorkspaceDrawerIfNeeded()
         let chat = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "旅人私聊")).firstMatch
         XCTAssertTrue(chat.waitForExistence(timeout: 8), app.debugDescription)
         chat.tap()
@@ -272,7 +233,9 @@ final class UIFollowupFixTests: XCTestCase {
             (["-ui-audit-tiny-cost"], "Missing usage or pricing: 0 requests (not counted as free)")
         ] {
             let app = launch(arguments, language: "en")
-            app.tabBars.buttons["Usage"].tap()
+            let workshop = app.buttons["workspace.tab.library"]
+            if workshop.isHittable { workshop.tap() }
+            app.buttons["Usage"].firstMatch.tap()
             let text = app.staticTexts[expected]
             reveal(text, in: app)
             XCTAssertTrue(text.exists, app.debugDescription)

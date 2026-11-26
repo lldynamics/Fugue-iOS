@@ -180,7 +180,6 @@ enum FTSIndexEntityType: String, Sendable {
     case conversation
     case message
     case bookChunk = "book_chunk"
-    case flashcard
 }
 
 struct FTSIndexedDocument: Sendable {
@@ -233,8 +232,6 @@ struct RAGStoredChunk: Sendable {
     let sectionTitle: String
     let utf16Offset: Int
     let rawText: String
-    let embeddingModel: String
-    let embedding: [Float]?
 }
 
 struct RAGLexicalCandidate: Sendable {
@@ -252,10 +249,8 @@ struct FullTextIndexStats: Equatable, Sendable {
     var conversationCount: Int = 0
     var messageCount: Int = 0
     var bookChunkCount: Int = 0
-    var flashcardCount: Int = 0
     var ragVolumeCount: Int = 0
     var ragChunkCount: Int = 0
-    var ragEmbeddedChunkCount: Int = 0
     var databaseBytes: Int64 = 0
 }
 
@@ -450,15 +445,40 @@ actor FullTextSearchIndex {
 
     // MARK: - Global Full-Text Search Sync & Query
 
+    struct IndexedBookVolumeSummary: Equatable, Sendable {
+        let title: String
+        let chunkCount: Int
+    }
+
+    /// Returns `parent_id -> (title, indexedChunkCount)` for already-indexed book volumes so search
+    /// extraction can skip faulting multi-megabyte `BookVolume.manuscript` blobs for unchanged books.
+    func indexedBookVolumeSummaries() throws -> [String: IndexedBookVolumeSummary] {
+        let handle = try ensureOpen()
+        let sql = """
+        SELECT parent_id, title, COUNT(*)
+        FROM search_meta
+        WHERE entity_type = ?
+        GROUP BY parent_id, title;
+        """
+        let stmt = try prepare(handle, sql)
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, FTSIndexEntityType.bookChunk.rawValue)
+        var result: [String: IndexedBookVolumeSummary] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let parentID = columnString(stmt, 0)
+            let title = columnString(stmt, 1)
+            let count = Int(sqlite3_column_int(stmt, 2))
+            result[parentID] = IndexedBookVolumeSummary(title: title, chunkCount: count)
+        }
+        return result
+    }
+
     func syncDocuments(entityType: FTSIndexEntityType, documents: [FTSIndexedDocument]) throws {
         let handle = try ensureOpen()
         var existingFingerprints: [String: String] = [:]
 
         let selectSQL = "SELECT doc_key, fingerprint FROM search_meta WHERE entity_type = ?;"
-        var selectStmt: OpaquePointer?
-        guard sqlite3_prepare_v2(handle, selectSQL, -1, &selectStmt, nil) == SQLITE_OK, let sStmt = selectStmt else {
-            throw FTSDatabaseError.statementFailed(lastErrorMessage(handle))
-        }
+        let sStmt = try prepare(handle, selectSQL)
         defer { sqlite3_finalize(sStmt) }
         bindText(sStmt, 1, entityType.rawValue)
         while sqlite3_step(sStmt) == SQLITE_ROW {
@@ -471,6 +491,48 @@ actor FullTextSearchIndex {
         let deletedKeys = existingFingerprints.keys.filter { !incomingKeys.contains($0) }
         let changedDocs = documents.filter { existingFingerprints[$0.docKey] != $0.fingerprint }
 
+        try applyDocumentChanges(handle: handle, deletedKeys: deletedKeys, changedDocs: changedDocs)
+    }
+
+    /// Incrementally updates book chunks while keeping existing rows for `retainingParentIDs` intact.
+    func syncBookChunks(
+        documents: [FTSIndexedDocument],
+        retainingParentIDs unchangedParentIDs: Set<String>
+    ) throws {
+        let handle = try ensureOpen()
+        var existingEntries: [(docKey: String, parentID: String, fingerprint: String)] = []
+
+        let selectSQL = "SELECT doc_key, parent_id, fingerprint FROM search_meta WHERE entity_type = ?;"
+        let sStmt = try prepare(handle, selectSQL)
+        defer { sqlite3_finalize(sStmt) }
+        bindText(sStmt, 1, FTSIndexEntityType.bookChunk.rawValue)
+        while sqlite3_step(sStmt) == SQLITE_ROW {
+            existingEntries.append((
+                docKey: columnString(sStmt, 0),
+                parentID: columnString(sStmt, 1),
+                fingerprint: columnString(sStmt, 2)
+            ))
+        }
+
+        var existingFingerprints: [String: String] = [:]
+        existingFingerprints.reserveCapacity(existingEntries.count)
+        let incomingKeys = Set(documents.map(\.docKey))
+        var deletedKeys: [String] = []
+        for entry in existingEntries {
+            existingFingerprints[entry.docKey] = entry.fingerprint
+            if !unchangedParentIDs.contains(entry.parentID) && !incomingKeys.contains(entry.docKey) {
+                deletedKeys.append(entry.docKey)
+            }
+        }
+        let changedDocs = documents.filter { existingFingerprints[$0.docKey] != $0.fingerprint }
+        try applyDocumentChanges(handle: handle, deletedKeys: deletedKeys, changedDocs: changedDocs)
+    }
+
+    private func applyDocumentChanges(
+        handle: OpaquePointer,
+        deletedKeys: [String],
+        changedDocs: [FTSIndexedDocument]
+    ) throws {
         guard !deletedKeys.isEmpty || !changedDocs.isEmpty else { return }
 
         try withTransaction(handle) {
@@ -548,23 +610,6 @@ actor FullTextSearchIndex {
                     try stepDone(handle, insMeta)
                 }
             }
-        }
-    }
-
-    func removeParent(entityType: FTSIndexEntityType, parentID: String) throws {
-        let handle = try ensureOpen()
-        try withTransaction(handle) {
-            let delFTS = try prepare(handle, "DELETE FROM search_docs WHERE entity_type = ? AND parent_id = ?;")
-            defer { sqlite3_finalize(delFTS) }
-            bindText(delFTS, 1, entityType.rawValue)
-            bindText(delFTS, 2, parentID)
-            try stepDone(handle, delFTS)
-
-            let delMeta = try prepare(handle, "DELETE FROM search_meta WHERE entity_type = ? AND parent_id = ?;")
-            defer { sqlite3_finalize(delMeta) }
-            bindText(delMeta, 1, entityType.rawValue)
-            bindText(delMeta, 2, parentID)
-            try stepDone(handle, delMeta)
         }
     }
 
@@ -685,8 +730,8 @@ actor FullTextSearchIndex {
             let insChunk = try prepare(handle, """
             INSERT INTO rag_chunks(
                 chunk_id, volume_id, document_title, section_index, section_title,
-                utf16_offset, raw_text, embedding_model, embedding_blob
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                utf16_offset, raw_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
             """)
             defer { sqlite3_finalize(insChunk) }
 
@@ -696,8 +741,6 @@ actor FullTextSearchIndex {
             """)
             defer { sqlite3_finalize(insFTS) }
 
-            var embeddedCount = 0
-            var activeModel = ""
             for chunk in chunks {
                 sqlite3_reset(insChunk)
                 bindText(insChunk, 1, chunk.chunkID)
@@ -707,15 +750,6 @@ actor FullTextSearchIndex {
                 bindText(insChunk, 5, chunk.sectionTitle)
                 sqlite3_bind_int(insChunk, 6, Int32(chunk.utf16Offset))
                 bindText(insChunk, 7, chunk.rawText)
-                bindText(insChunk, 8, chunk.embeddingModel)
-                if let vec = chunk.embedding, !vec.isEmpty {
-                    let blob = Self.encodeFloatArray(vec)
-                    bindBlob(insChunk, 9, blob)
-                    embeddedCount += 1
-                    activeModel = chunk.embeddingModel
-                } else {
-                    sqlite3_bind_null(insChunk, 9)
-                }
                 try stepDone(handle, insChunk)
 
                 sqlite3_reset(insFTS)
@@ -730,64 +764,15 @@ actor FullTextSearchIndex {
             let upsertVol = try prepare(handle, """
             INSERT OR REPLACE INTO rag_volumes(
                 volume_id, title, content_hash, chunk_count, embedding_model, embedded_count, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+            ) VALUES (?, ?, ?, ?, '', 0, ?);
             """)
             defer { sqlite3_finalize(upsertVol) }
             bindText(upsertVol, 1, volStr)
             bindText(upsertVol, 2, title)
             bindText(upsertVol, 3, contentHash)
             sqlite3_bind_int(upsertVol, 4, Int32(chunks.count))
-            bindText(upsertVol, 5, activeModel)
-            sqlite3_bind_int(upsertVol, 6, Int32(embeddedCount))
-            sqlite3_bind_double(upsertVol, 7, Date().timeIntervalSince1970)
+            sqlite3_bind_double(upsertVol, 5, Date().timeIntervalSince1970)
             try stepDone(handle, upsertVol)
-        }
-    }
-
-    func updateRAGEmbeddings(
-        volumeID: UUID,
-        embeddingModel: String,
-        embeddingsByChunkID: [String: [Float]]
-    ) throws {
-        guard !embeddingsByChunkID.isEmpty else { return }
-        let handle = try ensureOpen()
-        let volStr = volumeID.uuidString
-
-        try withTransaction(handle) {
-            let updateStmt = try prepare(handle, """
-            UPDATE rag_chunks SET embedding_model = ?, embedding_blob = ? WHERE chunk_id = ? AND volume_id = ?;
-            """)
-            defer { sqlite3_finalize(updateStmt) }
-
-            for (chunkID, vector) in embeddingsByChunkID where !vector.isEmpty {
-                sqlite3_reset(updateStmt)
-                bindText(updateStmt, 1, embeddingModel)
-                bindBlob(updateStmt, 2, Self.encodeFloatArray(vector))
-                bindText(updateStmt, 3, chunkID)
-                bindText(updateStmt, 4, volStr)
-                try stepDone(handle, updateStmt)
-            }
-
-            let countStmt = try prepare(handle, """
-            SELECT COUNT(*) FROM rag_chunks WHERE volume_id = ? AND embedding_model = ? AND embedding_blob IS NOT NULL;
-            """)
-            defer { sqlite3_finalize(countStmt) }
-            bindText(countStmt, 1, volStr)
-            bindText(countStmt, 2, embeddingModel)
-            var count: Int32 = 0
-            if sqlite3_step(countStmt) == SQLITE_ROW {
-                count = sqlite3_column_int(countStmt, 0)
-            }
-
-            let volStmt = try prepare(handle, """
-            UPDATE rag_volumes SET embedding_model = ?, embedded_count = ?, updated_at = ? WHERE volume_id = ?;
-            """)
-            defer { sqlite3_finalize(volStmt) }
-            bindText(volStmt, 1, embeddingModel)
-            sqlite3_bind_int(volStmt, 2, count)
-            sqlite3_bind_double(volStmt, 3, Date().timeIntervalSince1970)
-            bindText(volStmt, 4, volStr)
-            try stepDone(handle, volStmt)
         }
     }
 
@@ -805,14 +790,6 @@ actor FullTextSearchIndex {
                 bindText(stmt, 1, volStr)
                 try stepDone(handle, stmt)
             }
-        }
-    }
-
-    func clearAllRAGEmbeddings() throws {
-        let handle = try ensureOpen()
-        try withTransaction(handle) {
-            try exec(handle, "UPDATE rag_chunks SET embedding_model = '', embedding_blob = NULL;")
-            try exec(handle, "UPDATE rag_volumes SET embedding_model = '', embedded_count = 0;")
         }
     }
 
@@ -876,8 +853,7 @@ actor FullTextSearchIndex {
 
     func fetchRAGChunks(
         volumeIDs: [UUID],
-        chapterLimits: [UUID: Int] = [:],
-        embeddingModel: String? = nil
+        chapterLimits: [UUID: Int] = [:]
     ) throws -> [RAGStoredChunk] {
         guard !volumeIDs.isEmpty else { return [] }
         let handle = try ensureOpen()
@@ -885,7 +861,7 @@ actor FullTextSearchIndex {
         let sql = """
         SELECT
             chunk_id, volume_id, document_title, section_index, section_title,
-            utf16_offset, raw_text, embedding_model, embedding_blob
+            utf16_offset, raw_text
         FROM rag_chunks
         WHERE volume_id IN (\(placeholders))
         ORDER BY volume_id, section_index, utf16_offset;
@@ -904,13 +880,6 @@ actor FullTextSearchIndex {
             guard let vid = UUID(uuidString: columnString(stmt, 1)) else { continue }
             let secIdx = Int(sqlite3_column_int(stmt, 3))
             if let cap = chapterLimits[vid], secIdx > cap { continue }
-            let storedModel = columnString(stmt, 7)
-            let vec: [Float]?
-            if embeddingModel == nil || storedModel == embeddingModel {
-                vec = columnBlob(stmt, 8).flatMap(Self.decodeFloatArray)
-            } else {
-                vec = nil
-            }
             result.append(RAGStoredChunk(
                 chunkID: columnString(stmt, 0),
                 volumeID: vid,
@@ -918,9 +887,7 @@ actor FullTextSearchIndex {
                 sectionIndex: secIdx,
                 sectionTitle: columnString(stmt, 4),
                 utf16Offset: Int(sqlite3_column_int(stmt, 5)),
-                rawText: columnString(stmt, 6),
-                embeddingModel: storedModel,
-                embedding: vec
+                rawText: columnString(stmt, 6)
             ))
         }
         return result
@@ -934,10 +901,8 @@ actor FullTextSearchIndex {
         out.conversationCount = Int(querySingleInt32(handle, sql: "SELECT COUNT(*) FROM search_meta WHERE entity_type = 'conversation';") ?? 0)
         out.messageCount = Int(querySingleInt32(handle, sql: "SELECT COUNT(*) FROM search_meta WHERE entity_type = 'message';") ?? 0)
         out.bookChunkCount = Int(querySingleInt32(handle, sql: "SELECT COUNT(*) FROM search_meta WHERE entity_type = 'book_chunk';") ?? 0)
-        out.flashcardCount = Int(querySingleInt32(handle, sql: "SELECT COUNT(*) FROM search_meta WHERE entity_type = 'flashcard';") ?? 0)
         out.ragVolumeCount = Int(querySingleInt32(handle, sql: "SELECT COUNT(*) FROM rag_volumes;") ?? 0)
         out.ragChunkCount = Int(querySingleInt32(handle, sql: "SELECT COUNT(*) FROM rag_chunks;") ?? 0)
-        out.ragEmbeddedChunkCount = Int(querySingleInt32(handle, sql: "SELECT COUNT(*) FROM rag_chunks WHERE embedding_blob IS NOT NULL;") ?? 0)
         if let databaseURL,
            let values = try? databaseURL.resourceValues(forKeys: [.fileSizeKey]),
            let size = values.fileSize {
@@ -963,24 +928,6 @@ actor FullTextSearchIndex {
             try exec(handle, "DELETE FROM rag_chunks;")
             try exec(handle, "DELETE FROM rag_chunks_fts;")
         }
-    }
-
-    // MARK: - Float32 Embedding Serialization
-
-    static func encodeFloatArray(_ values: [Float]) -> Data {
-        values.withUnsafeBufferPointer { buffer in
-            Data(buffer: buffer)
-        }
-    }
-
-    static func decodeFloatArray(_ data: Data) -> [Float]? {
-        guard !data.isEmpty, data.count % MemoryLayout<Float>.stride == 0 else { return nil }
-        let count = data.count / MemoryLayout<Float>.stride
-        var result = [Float](repeating: 0, count: count)
-        _ = result.withUnsafeMutableBytes { dest in
-            data.copyBytes(to: dest)
-        }
-        return result
     }
 
     // MARK: - Low-level SQLite Helpers
@@ -1052,12 +999,6 @@ actor FullTextSearchIndex {
         }
     }
 
-    private func bindBlob(_ stmt: OpaquePointer, _ index: Int32, _ data: Data) {
-        data.withUnsafeBytes { raw in
-            _ = sqlite3_bind_blob(stmt, index, raw.baseAddress, Int32(data.count), Self.transientDestructor)
-        }
-    }
-
     private func columnString(_ stmt: OpaquePointer, _ index: Int32) -> String {
         guard let ptr = sqlite3_column_text(stmt, index) else { return "" }
         return String(cString: ptr)
@@ -1072,13 +1013,6 @@ actor FullTextSearchIndex {
     private func columnOptionalInt(_ stmt: OpaquePointer, _ index: Int32) -> Int? {
         guard sqlite3_column_type(stmt, index) != SQLITE_NULL else { return nil }
         return Int(sqlite3_column_int(stmt, index))
-    }
-
-    private func columnBlob(_ stmt: OpaquePointer, _ index: Int32) -> Data? {
-        guard sqlite3_column_type(stmt, index) != SQLITE_NULL else { return nil }
-        let byteCount = Int(sqlite3_column_bytes(stmt, index))
-        guard byteCount > 0, let ptr = sqlite3_column_blob(stmt, index) else { return nil }
-        return Data(bytes: ptr, count: byteCount)
     }
 }
 

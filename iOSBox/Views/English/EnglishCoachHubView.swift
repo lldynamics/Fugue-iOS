@@ -45,7 +45,6 @@ struct EnglishCoachHubView: View {
     @State private var isGeneratingLesson = false
     @State private var coachingDrillID: UUID?
     @State private var isArchivingLesson = false
-    @State private var exportedFlashcardPhrases: Set<String> = []
     @State private var toastMessage: String?
     @State private var errorMessage: String?
 
@@ -652,7 +651,7 @@ struct EnglishCoachHubView: View {
                     Button {
                         showQuickKeySetup = true
                     } label: {
-                        Label("秒配模型 Key", systemImage: "bolt.fill")
+                        Label("连接模型", systemImage: "plus.circle")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(theme.readableText)
                             .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum)
@@ -713,9 +712,6 @@ struct EnglishCoachHubView: View {
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(.primary)
                     Spacer()
-                    Text("可一键转入间隔闪卡")
-                        .font(.caption2)
-                        .foregroundStyle(DS.Surface.inkSecondary)
                 }
 
                 ForEach(lesson.chunks) { chunk in
@@ -726,12 +722,7 @@ struct EnglishCoachHubView: View {
     }
 
     private func chunkCard(_ chunk: EnglishLessonChunk) -> some View {
-        let alreadyExported = exportedFlashcardPhrases.contains(chunk.phrase.lowercased())
-            || store.memory.masteredChunks.contains {
-                $0.phrase.caseInsensitiveCompare(chunk.phrase) == .orderedSame && $0.exportedToFlashcard
-            }
-
-        return VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(chunk.phrase)
@@ -816,28 +807,6 @@ struct EnglishCoachHubView: View {
                     .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
                 }
                 .buttonStyle(.plain)
-            }
-
-            HStack {
-                Spacer()
-                Button {
-                    exportChunkToFlashcard(chunk)
-                } label: {
-                    Label(
-                        alreadyExported ? String(localized: "已入闪卡") : String(localized: "收入闪卡"),
-                        systemImage: alreadyExported ? "checkmark.circle.fill" : "rectangle.stack.badge.plus"
-                    )
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(alreadyExported ? DS.AccentTheme.teal.readableText : .primary)
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: DS.TouchTarget.minimum)
-                    .background(
-                        alreadyExported ? DS.AccentTheme.teal.softFill : DS.Surface.subtle,
-                        in: Capsule()
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(alreadyExported)
             }
         }
         .dsCard(cornerRadius: DS.Radius.lg, fill: DS.Surface.card, padding: DS.Spacing.md)
@@ -1356,17 +1325,6 @@ struct EnglishCoachHubView: View {
                     errorMessage = error.localizedDescription
                 }
             }
-        }
-    }
-
-    private func exportChunkToFlashcard(_ chunk: EnglishLessonChunk) {
-        do {
-            let added = try store.exportChunkToSM2Flashcard(chunk)
-            exportedFlashcardPhrases.insert(chunk.phrase.lowercased())
-            preferences.triggerSelectionHaptic()
-            showToast(added ? String(localized: "已加入「英语私教 · 地道表达」闪卡组") : String(localized: "该表达已在闪卡库中"))
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 

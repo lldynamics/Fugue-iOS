@@ -4,13 +4,12 @@ import UIKit
 struct MessageRowView: View {
     let message: ChatMessage
     var isCompactCard: Bool = false
-    var blindLabel: String? = nil
     var branchSiblings: [ChatMessage] = []
     var availableCompareTargets: [ResolvedModelTarget] = []
     var actions: MessageRowActions = .init()
-    var studyDeckName: String = ""
     var conversationID: UUID = UUID()
-    var isGeneratingStudy: Bool = false
+    /// Inline "edit & resend" controls are shown on the latest prompt only; older prompts keep them in the long-press menu.
+    var showsPromptActions: Bool = true
 
     private var isReading: Bool { message.conversation?.readingVolumeID != nil }
 
@@ -21,11 +20,14 @@ struct MessageRowView: View {
     @State private var previewImage: UIImage?
     @State private var showEditSheet = false
     @State private var showTextSelectionSheet = false
+    @State private var pendingSelectedQuote: String?
+    @State private var inlineSelection = ReplyTextSelection()
     @State private var showExpandedMetrics = false
     @State private var editDraftText = ""
     @State private var speech = SpeechService.shared
     @State private var preferences = AppPreferences.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.usesPhoneWorkspace) private var usesPhoneWorkspace
     @ScaledMetric(relativeTo: .body) private var baseBodySize: CGFloat = 17
 
     var body: some View {
@@ -155,7 +157,7 @@ struct MessageRowView: View {
                                 if meta.isBookmarked {
                                     Image(systemName: "bookmark.fill")
                                         .font(.caption2)
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(DS.StatusText.warning)
                                 }
 
                                 Spacer(minLength: 4)
@@ -205,9 +207,11 @@ struct MessageRowView: View {
                         groupReactionsStrip(meta.groupReactions)
                     }
 
-                    HStack(spacing: DS.Spacing.xs) {
-                        Spacer(minLength: 0)
-                        userActionButtons(meta: meta, attachments: attachments)
+                    if showsPromptActions {
+                        HStack(spacing: DS.Spacing.xs) {
+                            Spacer(minLength: 0)
+                            userActionButtons(meta: meta, attachments: attachments)
+                        }
                     }
                 }
             } else {
@@ -283,7 +287,7 @@ struct MessageRowView: View {
                             if meta.isBookmarked {
                                 Image(systemName: "bookmark.fill")
                                     .font(.caption2)
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(DS.StatusText.warning)
                             }
 
                             if branchSiblings.count > 1, let onSwitchBranch = actions.onSwitchBranch {
@@ -303,7 +307,9 @@ struct MessageRowView: View {
                                 )
                             }
 
-                            userActionButtons(meta: meta, attachments: attachments)
+                            if showsPromptActions {
+                                userActionButtons(meta: meta, attachments: attachments)
+                            }
                         }
                         .padding(.trailing, DS.Spacing.xxs)
                     }
@@ -497,6 +503,7 @@ struct MessageRowView: View {
                     .frame(width: DS.TouchTarget.minimum + 2, height: DS.TouchTarget.minimum + 2)
                     .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("更多消息操作")
         }
     }
@@ -582,21 +589,22 @@ struct MessageRowView: View {
         let totalRevisions = meta.activeRevisionIndex == nil ? (meta.revisions.count + 1) : meta.revisions.count
         let currentRevision = meta.activeRevisionIndex ?? (totalRevisions - 1)
         let isSpeaking = speech.speakingMessageID == message.id
-        let groupPersona = blindLabel == nil ? meta.groupSpeakerDisplayTitle : nil
-        let speaker = blindLabel == nil ? meta.speakerByline(privateProfile: message.conversation?.assistanceSettings.privatePersona,
-                                                            accentHex: message.accentHex) : nil
-        let references = blindLabel == nil && actions.onOpenCitation != nil
+        let groupPersona = meta.groupSpeakerDisplayTitle
+        let speaker = meta.speakerByline(privateProfile: message.conversation?.assistanceSettings.privatePersona,
+                                         accentHex: message.accentHex)
+        let references = actions.onOpenCitation != nil
             ? ReadingReferences(knowledge: meta.knowledgeEvidence, book: meta.bookReply, friend: message.conversation?.activeBookFriend,
                                 limits: message.conversation?.readingChapterLimits ?? [:])
             : ReadingReferences()
         let bodyText = MarkdownContentView(text: message.content, isStreaming: message.isStreaming,
-                                           references: references, onOpenCitation: blindLabel == nil ? actions.onOpenCitation : nil)
+                                           references: references, onOpenCitation: actions.onOpenCitation,
+                                           replySelection: replySelectionContext)
 
         return VStack(alignment: .leading, spacing: speaker != nil ? DS.Spacing.sm : 10) {
             if !isCompactCard {
                 assistantHeader(meta: meta, speaker: speaker)
             }
-            if blindLabel == nil, speaker == nil, meta.isPersonaSimulation, meta.bookReply == nil {
+            if speaker == nil, meta.isPersonaSimulation, meta.bookReply == nil {
                 Label("AI 模拟", systemImage: "person.crop.circle").font(.footnote)
             }
 
@@ -631,7 +639,7 @@ struct MessageRowView: View {
             }
 
             if !message.content.isEmpty {
-                if (isReading || speaker != nil) && !isCompactCard {
+                if ((isReading && !usesPhoneWorkspace) || speaker != nil) && !isCompactCard {
                     bodyText
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
@@ -647,9 +655,6 @@ struct MessageRowView: View {
                 }
             } else if message.isStreaming && message.reasoningContent.isEmpty && attachments.isEmpty {
                 let loadingLabel: String = {
-                    if let trace = meta.deepResearchTrace, trace.isRunning {
-                        return trace.steps.last?.title ?? String(localized: "正在规划深度研究…")
-                    }
                     if meta.requestedSearchQuery != nil && meta.search == nil {
                         return String(localized: "正在搜索网页…")
                     }
@@ -665,15 +670,19 @@ struct MessageRowView: View {
                 .padding(.vertical, DS.Spacing.xxs)
             }
 
-            if let open = actions.onOpenCitation, !references.sources.isEmpty {
+            // When every retrieved passage is already linked inline, the list would only repeat the footnotes.
+            if let open = actions.onOpenCitation, !references.sources.isEmpty,
+               message.isStreaming || !references.citesAllSources(in: message.content) {
                 DisclosureGroup {
                     ForEach(Array(references.sources.enumerated()), id: \.offset) { _, source in
                         ReadingCitationButton(citation: source, open: open)
                     }
                 } label: {
                     Label("找到 \(references.sources.count) 段相关原文", systemImage: "books.vertical")
+                        .foregroundStyle(DS.Surface.inkSecondary)
                 }
                 .font(.subheadline)
+                .tint(DS.Surface.inkSecondary)
             }
 
             if speaker != nil {
@@ -690,7 +699,7 @@ struct MessageRowView: View {
                 .font(.subheadline)
             }
 
-            if blindLabel == nil, let samples = meta.personaExcerpts, !samples.isEmpty {
+            if let samples = meta.personaExcerpts, !samples.isEmpty {
                 DisclosureGroup("本次参考的人物资料") {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
@@ -700,7 +709,7 @@ struct MessageRowView: View {
                     }
                 }
             }
-            if let book = meta.bookReply, blindLabel == nil, actions.onOpenCitation == nil || message.conversation?.activeBookFriend == nil {
+            if let book = meta.bookReply, actions.onOpenCitation == nil || message.conversation?.activeBookFriend == nil {
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 9) {
                         ForEach(book.excerpts) { part in
@@ -731,24 +740,11 @@ struct MessageRowView: View {
                 groupReactionsStrip(meta.groupReactions)
             }
 
-            if !isCompactCard && (isGeneratingStudy || !meta.generatedFlashcards.isEmpty || meta.generatedQuiz != nil) {
-                MessageStudyDeckView(
-                    deckName: studyDeckName,
-                    conversationID: conversationID,
-                    messageID: message.id,
-                    flashcards: meta.generatedFlashcards,
-                    quiz: meta.generatedQuiz,
-                    isGenerating: isGeneratingStudy,
-                    onSelectQuizOption: actions.onSelectQuizOption,
-                    onFollowUpQuestion: actions.onQuote
-                )
-            }
-
             if !message.isStreaming, !message.content.isEmpty, let reason = message.finishReasonValue {
                 VStack(alignment: .leading, spacing: DS.Spacing.sm) {
                     Label(reason.userNotice, systemImage: reason == .length ? "scissors" : "shield.lefthalf.filled")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(DS.StatusText.warning)
 
                     if reason == .length, let onContinueGeneration = actions.onContinueGeneration {
                         Button {
@@ -771,7 +767,7 @@ struct MessageRowView: View {
                 let canContinueFromInterruption = !message.content.isEmpty && actions.onContinueGeneration != nil
                 HStack(alignment: .top, spacing: DS.Spacing.sm) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(DS.StatusText.warning)
                     VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                         Text(err)
                             .font(.footnote)
@@ -834,8 +830,13 @@ struct MessageRowView: View {
         )) { wrapper in
             ImageFullScreenSheet(image: wrapper.image)
         }
-        .sheet(isPresented: $showTextSelectionSheet) {
-            TextSelectionSheet(text: message.content)
+        .sheet(isPresented: $showTextSelectionSheet, onDismiss: {
+            if let quote = pendingSelectedQuote {
+                pendingSelectedQuote = nil
+                actions.onQuote?(quote)
+            }
+        }) {
+            TextSelectionSheet(text: message.content, onQuote: prioritizesFollowUp && actions.onQuote != nil ? { pendingSelectedQuote = $0 } : nil)
         }
         .sheet(item: $exportShareItem) { payload in
             ActivityShareSheet(items: [payload.url])
@@ -944,7 +945,7 @@ struct MessageRowView: View {
                 if meta.isBookmarked {
                     Image(systemName: "bookmark.fill")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(DS.StatusText.warning)
                 }
 
                 if message.isStreaming {
@@ -954,16 +955,18 @@ struct MessageRowView: View {
             }
         } else {
             HStack(spacing: DS.Spacing.xs) {
+                // A model color only helps tell speakers apart in comparisons and group chats.
+                let distinguishesModels = message.conversation?.isArenaMode == true || message.conversation?.isGroupMode == true
                 Circle()
-                    .fill(blindLabel != nil ? Color.secondary : Color(hex: message.accentHex))
+                    .fill(distinguishesModels ? Color(hex: message.accentHex) : DS.Surface.inkSecondary.opacity(0.55))
                     .frame(width: 8, height: 8)
                     .accessibilityHidden(true)
 
-                Text(blindLabel ?? meta.bookReply?.byline ?? (message.modelDisplayName.isEmpty ? String(localized: "AI 助手") : message.modelDisplayName))
+                Text(meta.bookReply?.byline ?? (message.modelDisplayName.isEmpty ? String(localized: "AI 助手") : message.modelDisplayName))
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(.primary)
 
-                if blindLabel == nil, !message.providerName.isEmpty {
+                if !message.providerName.isEmpty {
                     Text("· \(message.providerName)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -979,7 +982,7 @@ struct MessageRowView: View {
                 if meta.isBookmarked {
                     Image(systemName: "bookmark.fill")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(DS.StatusText.warning)
                 }
 
                 if message.isStreaming {
@@ -998,8 +1001,7 @@ struct MessageRowView: View {
         isSpeaking: Bool,
         groupPersona: String?
     ) -> some View {
-        let exportSpeaker = blindLabel
-            ?? meta.groupSpeakerDisplayTitle
+        let exportSpeaker = meta.groupSpeakerDisplayTitle
             ?? (message.modelDisplayName.isEmpty ? String(localized: "AI 助手") : message.modelDisplayName)
 
         VStack(alignment: .leading, spacing: 0) {
@@ -1017,181 +1019,135 @@ struct MessageRowView: View {
                     .accessibilityIdentifier("reply.copy")
                 }
 
-                if let onRegenerate = actions.onRegenerate {
-                    Menu {
-                        Button {
-                            onRegenerate()
-                        } label: {
-                            Label(
-                                blindLabel != nil
-                                    ? String(localized: "使用原模型重答")
-                                    : String(localized: "使用原模型重答 (\(message.modelDisplayName))"),
-                                systemImage: "arrow.clockwise"
-                            )
-                        }
-                        if let onRegenerateWithCurrentModel = actions.onRegenerateWithCurrentModel {
-                            Button {
-                                onRegenerateWithCurrentModel()
-                            } label: {
-                                Label("使用当前顶部所选模型重答", systemImage: "arrow.triangle.2.circlepath")
-                            }
-                        }
-                        if let onRegenerateWithOverride = actions.onRegenerateWithOverride, groupPersona != nil, !availableCompareTargets.isEmpty {
-                            let others = availableCompareTargets.filter {
-                                $0.modelID != message.modelID || $0.providerID != message.providerID
-                            }
-                            if !others.isEmpty {
-                                Menu("换用其他模型重答此条") {
-                                    ForEach(others) { target in
-                                        Button("\(target.providerName) · \(target.modelDisplayName)") {
-                                            onRegenerateWithOverride(target)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if !isCompactCard, let onCompareWithModel = actions.onCompareWithModel, !availableCompareTargets.isEmpty {
-                            let others = availableCompareTargets.filter {
-                                $0.modelID != message.modelID || $0.providerID != message.providerID
-                            }
-                            if !others.isEmpty {
-                                Menu("与另一模型并排对比") {
-                                    ForEach(others) { target in
-                                        Button("\(target.providerName) · \(target.modelDisplayName)") {
-                                            onCompareWithModel(target)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        replyActionLabel("重答", icon: "arrow.clockwise")
+                if prioritizesFollowUp, let quote = actions.onQuote, !message.content.isEmpty {
+                    Button { quote(inlineSelection.text ?? message.content) } label: {
+                        replyActionLabel("追问", icon: "quote.opening")
+                            .foregroundStyle(preferences.accentTheme.readableText)
                     }
-                    .accessibilityIdentifier("reply.regenerate")
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("引用追问")
+                    .accessibilityIdentifier("reply.followUp")
+                    .contextMenu {
+                        Button("选择文本") { showTextSelectionSheet = true }
+                    }
+                }
+                if !prioritizesFollowUp, let retry = actions.onRegenerate {
+                    regenerateMenu(retry, groupPersona: groupPersona)
                 }
 
-                let canStudy = !isCompactCard && !message.content.isEmpty && !message.isStreaming && (actions.onGenerateFlashcards != nil || actions.onGenerateQuiz != nil)
-                let hasSecondaryActions = !message.content.isEmpty || canStudy || actions.onQuote != nil || actions.onToggleBookmark != nil || actions.onForkConversation != nil || actions.onToggleExcludeFromContext != nil || actions.onDeleteMessage != nil
-                if hasSecondaryActions {
+                let hasSecondaryActions = !message.content.isEmpty || actions.onQuote != nil || actions.onToggleBookmark != nil || actions.onForkConversation != nil || actions.onToggleExcludeFromContext != nil || actions.onDeleteMessage != nil
+                if hasSecondaryActions || (prioritizesFollowUp && actions.onRegenerate != nil) {
                     Menu {
-                        if !message.content.isEmpty {
-                            if !message.isStreaming, let onContinueGeneration = actions.onContinueGeneration {
+                        // Frequent, non-destructive actions sit in one compact row at the top of the menu.
+                        if !message.content.isEmpty || actions.onToggleBookmark != nil {
+                            ControlGroup {
+                                if !message.content.isEmpty {
+                                    Button {
+                                        if let onToggleSpeak = actions.onToggleSpeak {
+                                            onToggleSpeak()
+                                        } else {
+                                            speech.toggleSpeaking(messageID: message.id, text: message.content, personaID: meta.groupMemberID)
+                                        }
+                                    } label: {
+                                        Label(isSpeaking ? String(localized: "停止朗读") : String(localized: "朗读回复"),
+                                              systemImage: isSpeaking ? "stop.fill" : "speaker.wave.2")
+                                    }
+                                }
+                                if let onToggleBookmark = actions.onToggleBookmark {
+                                    Button {
+                                        onToggleBookmark()
+                                    } label: {
+                                        Label(
+                                            meta.isBookmarked ? String(localized: "取消收藏") : String(localized: "收藏消息"),
+                                            systemImage: meta.isBookmarked ? "bookmark.slash" : "bookmark"
+                                        )
+                                    }
+                                }
+                                if !message.content.isEmpty {
+                                    Button {
+                                        showTextSelectionSheet = true
+                                    } label: {
+                                        Label("选择文本", systemImage: "selection.pin.in.out")
+                                    }
+                                }
+                            }
+                            .controlGroupStyle(.compactMenu)
+                        }
+
+                        Section {
+                            if prioritizesFollowUp, let retry = actions.onRegenerate {
+                                regenerateMenu(retry, groupPersona: groupPersona)
+                            }
+                            if !message.content.isEmpty, !message.isStreaming, let onContinueGeneration = actions.onContinueGeneration {
                                 Button {
                                     onContinueGeneration()
                                 } label: {
                                     Label("从末尾继续生成", systemImage: "text.append")
                                 }
                             }
-                            Button {
-                                if let onToggleSpeak = actions.onToggleSpeak {
-                                    onToggleSpeak()
-                                } else {
-                                    speech.toggleSpeaking(messageID: message.id, text: message.content, personaID: meta.groupMemberID)
-                                }
-                            } label: {
-                                Label(isSpeaking ? String(localized: "停止朗读") : String(localized: "朗读回复"),
-                                      systemImage: isSpeaking ? "stop.fill" : "speaker.wave.2")
-                            }
-                            if !isCompactCard, !message.isStreaming, let onExtractSchedule = actions.onExtractSchedule {
-                                Button(action: onExtractSchedule) { Label("提取待办与日程", systemImage: "calendar.badge.plus") }
-                                    .disabled(isGeneratingStudy)
-                            }
-                            Button {
-                                UIPasteboard.general.string = message.content
-                                triggerCopiedToast(String(localized: "已复制 Markdown"))
-                            } label: {
-                                Label("复制 Markdown 原文", systemImage: "doc.on.doc")
-                            }
-
-                            if !isCompactCard {
-                                Menu {
-                                    Button {
-                                        exportSinglePDF(speaker: exportSpeaker)
-                                    } label: {
-                                        Label("导出 PDF 文档", systemImage: "doc.richtext")
-                                    }
-                                    Button {
-                                        exportSingleShareCard(speaker: exportSpeaker)
-                                    } label: {
-                                        Label("导出分享长图", systemImage: "photo")
-                                    }
+                            if !prioritizesFollowUp, let onQuote = actions.onQuote, !message.content.isEmpty {
+                                Button {
+                                    onQuote(message.content)
                                 } label: {
-                                    Label("导出此回复", systemImage: "square.and.arrow.up")
+                                    Label("引用追问", systemImage: "quote.opening")
                                 }
                             }
-                        }
-
-                        if canStudy {
-                            Menu {
-                                if let onGenerateFlashcards = actions.onGenerateFlashcards {
-                                    Button {
-                                        onGenerateFlashcards()
-                                    } label: {
-                                        Label("生成记忆闪卡", systemImage: "rectangle.stack.badge.plus")
-                                    }
-                                }
-                                if let onGenerateQuiz = actions.onGenerateQuiz {
-                                    Button {
-                                        onGenerateQuiz()
-                                    } label: {
-                                        Label("生成随堂测验", systemImage: "checklist")
-                                    }
-                                }
-                            } label: {
-                                Label("助学", systemImage: "graduationcap")
-                            }
-                            .disabled(isGeneratingStudy)
                         }
 
                         if !message.content.isEmpty {
-                            Divider()
-                            Button {
-                                showTextSelectionSheet = true
-                            } label: {
-                                Label("选择文本", systemImage: "selection.pin.in.out")
+                            Section {
+                                Button {
+                                    UIPasteboard.general.string = message.content
+                                    triggerCopiedToast(String(localized: "已复制 Markdown"))
+                                } label: {
+                                    Label("复制 Markdown 原文", systemImage: "doc.on.doc")
+                                }
+                                if !isCompactCard {
+                                    Menu {
+                                        Button {
+                                            exportSinglePDF(speaker: exportSpeaker)
+                                        } label: {
+                                            Label("导出 PDF 文档", systemImage: "doc.richtext")
+                                        }
+                                        Button {
+                                            exportSingleShareCard(speaker: exportSpeaker)
+                                        } label: {
+                                            Label("导出分享长图", systemImage: "photo")
+                                        }
+                                    } label: {
+                                        Label("导出此回复", systemImage: "square.and.arrow.up")
+                                    }
+                                }
                             }
                         }
 
-                        if let onQuote = actions.onQuote, !message.content.isEmpty {
-                            Button {
-                                onQuote(message.content)
-                            } label: {
-                                Label("引用追问", systemImage: "quote.opening")
+                        Section {
+                            if let onForkConversation = actions.onForkConversation {
+                                Button {
+                                    onForkConversation()
+                                } label: {
+                                    Label("从此处分叉新对话", systemImage: "arrow.triangle.branch")
+                                }
+                            }
+                            if let onToggleExcludeFromContext = actions.onToggleExcludeFromContext {
+                                Button {
+                                    onToggleExcludeFromContext()
+                                } label: {
+                                    Label(
+                                        meta.isExcludedFromContext ? String(localized: "恢复携带上下文") : String(localized: "移出上下文"),
+                                        systemImage: meta.isExcludedFromContext ? "eye" : "eye.slash"
+                                    )
+                                }
                             }
                         }
-                        if let onToggleBookmark = actions.onToggleBookmark {
-                            Button {
-                                onToggleBookmark()
-                            } label: {
-                                Label(
-                                    meta.isBookmarked ? String(localized: "取消收藏") : String(localized: "收藏消息"),
-                                    systemImage: meta.isBookmarked ? "bookmark.slash" : "bookmark"
-                                )
-                            }
-                        }
-                        if let onForkConversation = actions.onForkConversation {
-                            Button {
-                                onForkConversation()
-                            } label: {
-                                Label("从此处分叉新对话", systemImage: "arrow.triangle.branch")
-                            }
-                        }
-                        if let onToggleExcludeFromContext = actions.onToggleExcludeFromContext {
-                            Button {
-                                onToggleExcludeFromContext()
-                            } label: {
-                                Label(
-                                    meta.isExcludedFromContext ? String(localized: "恢复携带上下文") : String(localized: "移出上下文"),
-                                    systemImage: meta.isExcludedFromContext ? "eye" : "eye.slash"
-                                )
-                            }
-                        }
+
                         if let onDeleteMessage = actions.onDeleteMessage {
-                            Divider()
-                            Button(role: .destructive) {
-                                onDeleteMessage()
-                            } label: {
-                                Label("删除此条消息", systemImage: "trash")
+                            Section {
+                                Button(role: .destructive) {
+                                    onDeleteMessage()
+                                } label: {
+                                    Label("删除此条消息", systemImage: "trash")
+                                }
                             }
                         }
                     } label: {
@@ -1228,6 +1184,70 @@ struct MessageRowView: View {
             }
         }
         .padding(.top, 2)
+    }
+
+    private var prioritizesFollowUp: Bool {
+        usesPhoneWorkspace && !isCompactCard && message.conversation?.isArenaMode != true && message.conversation?.isGroupMode != true
+    }
+
+    private var replySelectionContext: ReplySelectionContext? {
+        guard prioritizesFollowUp, !message.isStreaming, let quote = actions.onQuote else { return nil }
+        return ReplySelectionContext(selection: inlineSelection, quote: quote)
+    }
+
+    private func regenerateMenu(_ onRegenerate: @escaping () -> Void, groupPersona: String?) -> some View {
+        Menu {
+            Button {
+                onRegenerate()
+            } label: {
+                Label(
+                    String(localized: "使用原模型重答 (\(message.modelDisplayName))"),
+                    systemImage: "arrow.clockwise"
+                )
+            }
+            if let onRegenerateWithCurrentModel = actions.onRegenerateWithCurrentModel {
+                Button {
+                    onRegenerateWithCurrentModel()
+                } label: {
+                    Label("使用当前所选模型重答", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+            if let onRegenerateWithOverride = actions.onRegenerateWithOverride, groupPersona != nil, !availableCompareTargets.isEmpty {
+                let others = availableCompareTargets.filter {
+                    $0.modelID != message.modelID || $0.providerID != message.providerID
+                }
+                if !others.isEmpty {
+                    Menu("换用其他模型重答此条") {
+                        ForEach(others) { target in
+                            Button("\(target.providerName) · \(target.modelDisplayName)") {
+                                onRegenerateWithOverride(target)
+                            }
+                        }
+                    }
+                }
+            }
+            if !isCompactCard, let onCompareWithModel = actions.onCompareWithModel, !availableCompareTargets.isEmpty {
+                let others = availableCompareTargets.filter {
+                    $0.modelID != message.modelID || $0.providerID != message.providerID
+                }
+                if !others.isEmpty {
+                    Menu("与另一模型并排对比") {
+                        ForEach(others) { target in
+                            Button("\(target.providerName) · \(target.modelDisplayName)") {
+                                onCompareWithModel(target)
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            if prioritizesFollowUp {
+                Label("重答", systemImage: "arrow.clockwise")
+            } else {
+                replyActionLabel("重答", icon: "arrow.clockwise")
+            }
+        }
+        .accessibilityIdentifier("reply.regenerate")
     }
 
     private func replyActionLabel(_ title: LocalizedStringKey, icon: String) -> some View {
@@ -1302,7 +1322,7 @@ struct MessageRowView: View {
                 if showExpandedMetrics, let cached = message.cachedTokens, cached > 0 {
                     Text("缓存 \(cached)")
                         .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.green)
+                        .foregroundStyle(DS.StatusText.success)
                 } else if let cached = message.cachedTokens, cached > 0 {
                     Circle()
                         .fill(Color.green.opacity(0.8))
@@ -1322,9 +1342,23 @@ struct MessageRowView: View {
 
 private struct SelectableTextRepresentable: UIViewRepresentable {
     let text: String
+    @Binding var selection: String?
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        let selection: Binding<String?>
+        init(_ selection: Binding<String?>) { self.selection = selection }
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            selection.wrappedValue = textView.selectedTextRange.flatMap { $0.isEmpty ? nil : textView.text(in: $0) }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator($selection) }
 
     func makeUIView(context: Context) -> UITextView {
         let tv = UITextView()
+        tv.delegate = context.coordinator
+        tv.accessibilityIdentifier = "reply.selectText"
+        tv.adjustsFontForContentSizeCategory = true
         tv.isEditable = false
         tv.isSelectable = true
         tv.backgroundColor = .clear
@@ -1344,11 +1378,13 @@ private struct SelectableTextRepresentable: UIViewRepresentable {
 
 private struct TextSelectionSheet: View {
     let text: String
+    var onQuote: ((String) -> Void)? = nil
+    @State private var selection: String?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            SelectableTextRepresentable(text: text)
+            SelectableTextRepresentable(text: text, selection: $selection)
                 .navigationTitle("选择文本")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -1364,6 +1400,17 @@ private struct TextSelectionSheet: View {
                     }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("完成") { dismiss() }
+                    }
+                    if let onQuote {
+                        ToolbarItem(placement: .bottomBar) {
+                            Button("引用选中文字追问") {
+                                guard let selection, !selection.isEmpty else { return }
+                                onQuote(selection)
+                                dismiss()
+                            }
+                            .disabled(selection?.isEmpty != false)
+                            .accessibilityIdentifier("reply.quoteSelection")
+                        }
                     }
                 }
         }

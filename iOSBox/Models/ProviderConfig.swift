@@ -18,6 +18,11 @@ final class ProviderConfig {
     var updatedAt: Date
     private var restoredCredentialID: UUID?
 
+    @Transient private var cachedModelsSource: Data?
+    @Transient private var cachedModelsDecoded: [ModelSpec]?
+    @Transient private var cachedHeadersSource: Data?
+    @Transient private var cachedHeadersDecoded: [CustomHeader]?
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -32,6 +37,9 @@ final class ProviderConfig {
         notes: String = "",
         isRestored: Bool = false
     ) {
+        let uniqueModels = Self.deduplicated(models)
+        let encodedModels = (try? JSONEncoder().encode(uniqueModels)) ?? Data()
+        let encodedHeaders = (try? JSONEncoder().encode(customHeaders)) ?? Data()
         self.id = id
         self.name = name
         self.protocolRaw = protocolType.rawValue
@@ -40,12 +48,16 @@ final class ProviderConfig {
         self.accentHex = accentHex
         self.isEnabled = isEnabled
         self.sortOrder = sortOrder
-        self.modelsData = (try? JSONEncoder().encode(Self.deduplicated(models))) ?? Data()
-        self.headersData = (try? JSONEncoder().encode(customHeaders)) ?? Data()
+        self.modelsData = encodedModels
+        self.headersData = encodedHeaders
         self.notes = notes
         self.createdAt = Date()
         self.updatedAt = Date()
         self.restoredCredentialID = isRestored ? UUID() : nil
+        self.cachedModelsSource = encodedModels
+        self.cachedModelsDecoded = uniqueModels
+        self.cachedHeadersSource = encodedHeaders
+        self.cachedHeadersDecoded = customHeaders
     }
 
     // Backup IDs preserve conversation references. Only a locally generated ID can
@@ -69,11 +81,20 @@ final class ProviderConfig {
     var models: [ModelSpec] {
         get {
             guard !modelsData.isEmpty else { return [] }
-            let decoded = (try? JSONDecoder().decode([ModelSpec].self, from: modelsData)) ?? []
-            return Self.deduplicated(decoded)
+            if let cached = cachedModelsDecoded, cachedModelsSource == modelsData {
+                return cached
+            }
+            let decoded = Self.deduplicated((try? JSONDecoder().decode([ModelSpec].self, from: modelsData)) ?? [])
+            cachedModelsSource = modelsData
+            cachedModelsDecoded = decoded
+            return decoded
         }
         set {
-            modelsData = (try? JSONEncoder().encode(Self.deduplicated(newValue))) ?? Data()
+            let unique = Self.deduplicated(newValue)
+            let encoded = (try? JSONEncoder().encode(unique)) ?? Data()
+            modelsData = encoded
+            cachedModelsSource = encoded
+            cachedModelsDecoded = unique
             updatedAt = Date()
         }
     }
@@ -125,10 +146,19 @@ final class ProviderConfig {
     var customHeaders: [CustomHeader] {
         get {
             guard !headersData.isEmpty else { return [] }
-            return (try? JSONDecoder().decode([CustomHeader].self, from: headersData)) ?? []
+            if let cached = cachedHeadersDecoded, cachedHeadersSource == headersData {
+                return cached
+            }
+            let decoded = (try? JSONDecoder().decode([CustomHeader].self, from: headersData)) ?? []
+            cachedHeadersSource = headersData
+            cachedHeadersDecoded = decoded
+            return decoded
         }
         set {
-            headersData = (try? JSONEncoder().encode(newValue)) ?? Data()
+            let encoded = (try? JSONEncoder().encode(newValue)) ?? Data()
+            headersData = encoded
+            cachedHeadersSource = encoded
+            cachedHeadersDecoded = newValue
             updatedAt = Date()
         }
     }

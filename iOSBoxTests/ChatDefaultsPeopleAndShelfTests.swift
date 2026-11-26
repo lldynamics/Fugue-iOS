@@ -322,11 +322,11 @@ final class ChatDefaultsPeopleAndShelfTests: XCTestCase {
         state.chapter = 1
         state.paragraph = 1
         try ctx.save()
-        let cards = FlashcardStore(fileURL: nil), bindings = PresetKnowledgeStore(fileURL: nil)
-        let archive = try BackupService.makeArchive(context: ctx, flashcardStore: cards, knowledgeStore: bindings)
+        let bindings = PresetKnowledgeStore(fileURL: nil)
+        let archive = try BackupService.makeArchive(context: ctx, knowledgeStore: bindings)
         let decoded = try BackupService.decode(BackupService.encode(archive))
         func restore() throws -> ImportSummary {
-            try BackupService.apply(decoded, to: to.mainContext, flashcardStore: cards, knowledgeStore: bindings)
+            try BackupService.apply(decoded, to: to.mainContext, knowledgeStore: bindings)
         }
         XCTAssertEqual(try restore().restoredProfiles, 1)
         let restored = try XCTUnwrap(to.mainContext.fetch(FetchDescriptor<PersonaProfile>()).first)

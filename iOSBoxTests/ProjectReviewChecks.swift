@@ -427,7 +427,6 @@ final class ProjectReviewChecks: XCTestCase {
             XCTAssertNil(generator.replyTarget(answer, in: chat, providers: [p]))
             generator.regenerate(assistantMessage: answer, overrideTarget: target, in: chat, providers: [p], context: context)
             generator.continueGeneration(assistantMessage: answer, in: chat, providers: [p], context: context)
-            XCTAssertEqual(generator.crossCritique(groupID: gid, in: chat, providers: [p], context: context), .unavailableModel)
             XCTAssertFalse(generator.isGenerating(in: chat.id))
             XCTAssertEqual(answer.content, "Original")
             XCTAssertEqual(chat.messages.count, 3)

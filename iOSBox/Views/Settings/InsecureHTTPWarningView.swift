@@ -14,7 +14,7 @@ struct InsecureHTTPWarningView: View {
                 Image(systemName: "exclamationmark.shield.fill")
             }
             .font(.caption2)
-            .foregroundStyle(.red)
+            .foregroundStyle(DS.StatusText.error)
         }
     }
 }

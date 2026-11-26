@@ -7,6 +7,8 @@ final class SystemQuickEntryTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        SystemEntryRouter.shared.setLocked(false)
+        SystemEntryRouter.shared.clearDeferredEntries()
         SystemEntryRouter.shared.conversationID = nil
         SystemEntryRouter.shared.messageID = nil
         SystemEntryRouter.shared.pendingQuickAction = nil
@@ -14,6 +16,8 @@ final class SystemQuickEntryTests: XCTestCase {
     }
 
     override func tearDown() {
+        SystemEntryRouter.shared.setLocked(false)
+        SystemEntryRouter.shared.clearDeferredEntries()
         SystemEntryRouter.shared.conversationID = nil
         SystemEntryRouter.shared.messageID = nil
         SystemEntryRouter.shared.pendingQuickAction = nil
@@ -200,5 +204,39 @@ final class SystemQuickEntryTests: XCTestCase {
         QuickBookmarksIntent().recordLaunch(in: inbox)
         XCTAssertEqual(inbox.consume(), .bookmarks)
         XCTAssertTrue(QuickBookmarksIntent.openAppWhenRun)
+    }
+
+    func testSystemEntryRouterDefersDeepLinksSpotlightAndInboxWhileLocked() {
+        let router = SystemEntryRouter()
+        let inbox = QuickEntryInbox(notificationCenter: NotificationCenter())
+        let chatID = UUID()
+        let msgID = UUID()
+
+        router.setLocked(true, inbox: inbox)
+        XCTAssertTrue(router.isLocked)
+
+        // Invalid deep links still return false while locked.
+        XCTAssertFalse(router.route(URL(string: "iosbox://invalid/path")!))
+
+        // Valid deep links, Spotlight hits, and QuickEntry inbox actions are deferred while locked.
+        XCTAssertTrue(router.route(URL(string: "iosbox://conversation/\(chatID.uuidString)")!))
+        XCTAssertNil(router.conversationID)
+        XCTAssertNil(router.pendingQuickAction)
+
+        router.routeSpotlight(conversationID: chatID, messageID: msgID)
+        XCTAssertNil(router.conversationID)
+        XCTAssertNil(router.messageID)
+
+        inbox.enqueue(.voiceNote)
+        router.drainPendingInbox(from: inbox)
+        XCTAssertNil(router.pendingQuickAction)
+
+        // Unlocking flushes deferred Spotlight navigation and queued inbox action.
+        router.setLocked(false, inbox: inbox)
+        XCTAssertFalse(router.isLocked)
+        XCTAssertEqual(router.conversationID, chatID)
+        XCTAssertEqual(router.messageID, msgID)
+        XCTAssertEqual(router.pendingQuickAction, .voiceNote)
+        XCTAssertNil(inbox.consume())
     }
 }

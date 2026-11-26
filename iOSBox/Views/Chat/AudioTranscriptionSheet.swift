@@ -10,7 +10,7 @@ private enum TranscriptionEngine: String, CaseIterable, Identifiable {
 
 struct AudioTranscriptionSheet: View {
     let providers: [ProviderConfig]
-    let onSubmit: (_ transcript: String, _ sourceLabel: String?, _ mode: TranscriptActionMode, _ autoExtractSchedule: Bool) -> Void
+    let onSubmit: (_ transcript: String, _ sourceLabel: String?, _ mode: TranscriptActionMode) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var preferences = AppPreferences.shared
@@ -26,7 +26,6 @@ struct AudioTranscriptionSheet: View {
     @State private var transcriptText = ""
     @State private var isTranscribing = false
     @State private var errorMessage: String?
-    @State private var autoExtractSchedule = true
     @State private var showAudioImporter = false
 
     private var activeProvider: ProviderConfig? {
@@ -94,10 +93,10 @@ struct AudioTranscriptionSheet: View {
                         Label {
                             Text("暂未配置可用的 OpenAI 兼容服务商，可切换上方「设备免费识别」或先配置 Whisper Key。")
                                 .font(.footnote)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(DS.StatusText.warning)
                         } icon: {
                             Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(DS.StatusText.warning)
                         }
                     }
                 } header: {
@@ -233,7 +232,7 @@ struct AudioTranscriptionSheet: View {
                     if let err = errorMessage ?? recorder.errorMessage {
                         Text(err)
                             .font(.footnote)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(DS.StatusText.error)
                     }
                 } header: {
                     Text("音频采集")
@@ -251,13 +250,9 @@ struct AudioTranscriptionSheet: View {
 
                 if !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Section {
-                        Toggle(isOn: $autoExtractSchedule) {
-                            Label("生成纪要后自动提取待办写入日历", systemImage: "calendar.badge.plus")
-                        }
-
                         Button {
                             dismiss()
-                            onSubmit(transcriptText, stagedFileName, .meetingMinutes, autoExtractSchedule)
+                            onSubmit(transcriptText, stagedFileName, .meetingMinutes)
                         } label: {
                             Label("生成会议纪要并发送", systemImage: "list.clipboard")
                                 .fontWeight(.semibold)
@@ -268,7 +263,7 @@ struct AudioTranscriptionSheet: View {
 
                         Button {
                             dismiss()
-                            onSubmit(transcriptText, stagedFileName, .voiceNoteCleanup, false)
+                            onSubmit(transcriptText, stagedFileName, .voiceNoteCleanup)
                         } label: {
                             Label("整理为口述笔记", systemImage: "text.alignleft")
                                 .frame(maxWidth: .infinity)
@@ -277,7 +272,7 @@ struct AudioTranscriptionSheet: View {
 
                         Button {
                             dismiss()
-                            onSubmit(transcriptText, stagedFileName, .insertRaw, false)
+                            onSubmit(transcriptText, stagedFileName, .insertRaw)
                         } label: {
                             Label("仅填入输入框", systemImage: "square.and.arrow.down")
                                 .frame(maxWidth: .infinity)

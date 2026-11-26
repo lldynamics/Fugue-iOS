@@ -3,7 +3,6 @@ import SwiftData
 
 struct ConversationSearchSheet: View {
     let messages: [ChatMessage]
-    var isBlindMode: Bool = false
     let onSelectMessage: (UUID) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -58,13 +57,13 @@ struct ConversationSearchSheet: View {
                                         HStack(spacing: 6) {
                                             Text(msg.role == .user
                                                  ? String(localized: "提问")
-                                                 : ArenaSynthesis.visibleSpeakerName(for: msg, in: messages, blindArenaMode: isBlindMode))
+                                                 : ArenaSynthesis.visibleSpeakerName(for: msg))
                                                 .font(.caption.weight(.semibold))
                                                 .foregroundStyle(msg.role == .user ? Color.accentColor : .secondary)
                                             if msg.assistanceMetadata.isBookmarked {
                                                 Image(systemName: "bookmark.fill")
                                                     .font(.caption2)
-                                                    .foregroundStyle(.orange)
+                                                    .foregroundStyle(DS.StatusText.warning)
                                             }
                                             Spacer()
                                             Text(msg.createdAt, format: .dateTime.month().day().hour().minute())

@@ -19,10 +19,60 @@ struct ImportedPhoto: Transferable {
     }
 }
 
+enum ImageUploadQuality: String, CaseIterable, Identifiable, Sendable {
+    case standard
+    case high
+    case original
+
+    static let defaultsKey = "iosbox.pref.imageUploadQuality"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .standard: return String(localized: "标准（1600px · 省流量）")
+        case .high: return String(localized: "高清（2400px · 清晰文字）")
+        case .original: return String(localized: "原图（最高 4096px）")
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .standard: return String(localized: "标准")
+        case .high: return String(localized: "高清")
+        case .original: return String(localized: "原图")
+        }
+    }
+
+    var maxDimension: CGFloat {
+        switch self {
+        case .standard: return 1600
+        case .high: return 2400
+        case .original: return 4096
+        }
+    }
+
+    var jpegQuality: CGFloat {
+        switch self {
+        case .standard: return 0.82
+        case .high: return 0.90
+        case .original: return 0.95
+        }
+    }
+
+    static func current(defaults: UserDefaults = .standard) -> ImageUploadQuality {
+        guard let raw = defaults.string(forKey: defaultsKey),
+              let parsed = ImageUploadQuality(rawValue: raw) else {
+            return .standard
+        }
+        return parsed
+    }
+}
+
 enum AttachmentProcessor {
     static let maximumFileBytes = 20 * 1024 * 1024
-    static let maximumAttachmentCount = 8
-    static let maximumPayloadBytes = 32 * 1024 * 1024
+    static let maximumAttachmentCount = 12
+    static let maximumPayloadBytes = 64 * 1024 * 1024
 
     static func validate(_ attachments: [MessageAttachment]) throws {
         guard attachments.count <= maximumAttachmentCount else { throw AttachmentError.limit }
@@ -34,14 +84,18 @@ enum AttachmentProcessor {
         }
     }
 
-    private static let maxImageDimension: CGFloat = 1600
-    private static let jpegQuality: CGFloat = 0.82
-    private static let maxTextCharacters = 80_000
-    private static let maxInlinePDFBytes = 8 * 1024 * 1024
+    static let maxTextCharacters = 200_000
+    static let maximumPDFPages = 300
+    static let maxInlinePDFBytes = 16 * 1024 * 1024
+    private static let maxOriginalPassthroughBytes = 12 * 1024 * 1024
 
-    static func processImage(_ image: UIImage, fileName: String = "photo.jpg") -> MessageAttachment? {
-        let resized = downscaleIfNeeded(image, maxDimension: maxImageDimension)
-        guard let jpegData = resized.jpegData(compressionQuality: jpegQuality) else {
+    static func processImage(
+        _ image: UIImage,
+        fileName: String = "photo.jpg",
+        quality: ImageUploadQuality = ImageUploadQuality.current()
+    ) -> MessageAttachment? {
+        let resized = downscaleIfNeeded(image, maxDimension: quality.maxDimension)
+        guard let jpegData = resized.jpegData(compressionQuality: quality.jpegQuality) else {
             return nil
         }
         return MessageAttachment(
@@ -54,16 +108,49 @@ enum AttachmentProcessor {
         )
     }
 
-    static func processImageData(_ data: Data, suggestedName: String = "image.jpg") -> MessageAttachment? {
+    static func processImageData(
+        _ data: Data,
+        suggestedName: String = "image.jpg",
+        quality: ImageUploadQuality = ImageUploadQuality.current()
+    ) -> MessageAttachment? {
         guard data.count <= maximumFileBytes,
               let source = CGImageSourceCreateWithData(data as CFData, nil),
-              CGImageSourceGetCount(source) > 0,
-              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: Int(maxImageDimension)
-              ] as CFDictionary) else { return nil }
-        return processImage(UIImage(cgImage: thumbnail), fileName: suggestedName)
+              CGImageSourceGetCount(source) > 0 else { return nil }
+
+        // In original mode, preserve untouched PNG/JPEG bytes when size is reasonable and dimensions fit.
+        if quality == .original && data.count <= maxOriginalPassthroughBytes {
+            let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+            let w = (props?[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 0
+            let h = (props?[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 0
+            let orientation = (props?[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+            if max(w, h) <= Double(quality.maxDimension) && orientation == 1 {
+                let mime: String?
+                if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) {
+                    mime = "image/png"
+                } else if data.starts(with: [0xFF, 0xD8, 0xFF]) {
+                    mime = "image/jpeg"
+                } else {
+                    mime = nil
+                }
+                if let mime {
+                    return MessageAttachment(
+                        kind: .image,
+                        fileName: suggestedName,
+                        mimeType: mime,
+                        dataBase64: data.base64EncodedString(),
+                        extractedText: nil,
+                        byteSize: data.count
+                    )
+                }
+            }
+        }
+
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: Int(quality.maxDimension)
+        ] as CFDictionary) else { return nil }
+        return processImage(UIImage(cgImage: thumbnail), fileName: suggestedName, quality: quality)
     }
 
     static func processFileURL(_ url: URL, imageOnly: Bool = false) throws -> MessageAttachment {
@@ -148,7 +235,7 @@ enum AttachmentProcessor {
             if sample.contains(0) {
                 throw AttachmentError.unsupportedBinary
             }
-            decoded = String(decoding: data.prefix(120_000), as: UTF8.self)
+            decoded = String(decoding: data.prefix(240_000), as: UTF8.self)
         }
 
         let mimeType = UTType(filenameExtension: ext)?.preferredMIMEType ?? "text/plain"
@@ -164,16 +251,18 @@ enum AttachmentProcessor {
 
     private static func extractPDFText(from data: Data) -> String {
         guard let document = PDFDocument(data: data) else { return "" }
+        let maxPages = maximumPDFPages
+        let maxOCRPages = 60
         var pages: [String] = []
         var remaining = maxTextCharacters
-        var truncated = document.pageCount > 200
+        var truncated = document.pageCount > maxPages
         var ocrPagesUsed = 0
-        for index in 0..<min(document.pageCount, 200) {
+        for index in 0..<min(document.pageCount, maxPages) {
             guard remaining > 0, !Task.isCancelled else { break }
             autoreleasepool {
                 if let page = document.page(at: index) {
                     var text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    if text.isEmpty && ocrPagesUsed < 30 {
+                    if text.isEmpty && ocrPagesUsed < maxOCRPages {
                         ocrPagesUsed += 1
                         text = PDFOCRService.recognizeText(on: page)
                     }
@@ -187,7 +276,7 @@ enum AttachmentProcessor {
             }
         }
         if remaining == 0 { truncated = true }
-        if truncated { pages.append(String(localized: "…[PDF 内容较长，仅提取前 200 页、最多 80000 个字符]…")) }
+        if truncated { pages.append(String(localized: "…[PDF 内容较长，仅提取前 \(maxPages) 页、最多 \(maxTextCharacters) 个字符]…")) }
         return pages.joined(separator: "\n\n")
     }
 
@@ -221,7 +310,7 @@ enum AttachmentError: LocalizedError {
     case legacyOfficeUnsupported
     var errorDescription: String? {
         switch self {
-        case .limit: return String(localized: "附件超出限制：单文件最多 20 MB，每次最多 8 个附件，总内容最多 32 MB。")
+        case .limit: return String(localized: "附件超出限制：单文件最多 20 MB，每次最多 \(AttachmentProcessor.maximumAttachmentCount) 个附件，总内容最多 64 MB。")
         case .unreadableImage: return String(localized: "无法读取图片，或图片超过 20 MB 限制。")
         case .unsupportedBinary: return String(localized: "不支持的二进制文件格式，请选择图片、PDF、Office 文档（DOCX/XLSX/PPTX）或纯文本/代码文件。")
         case .legacyOfficeUnsupported: return String(localized: "暂不支持旧版二进制 .doc / .xls / .ppt，请先另存为 .docx / .xlsx / .pptx 或 PDF 后再试。")

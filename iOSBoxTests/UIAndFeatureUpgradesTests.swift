@@ -20,7 +20,7 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
 
         let prefs = AppPreferences(defaults: defaults)
         XCTAssertEqual(prefs.fontScale, 1.0, accuracy: 0.001)
-        XCTAssertEqual(prefs.accentTheme, .vermilion)
+        XCTAssertEqual(prefs.accentTheme, UIDevice.current.userInterfaceIdiom == .phone ? .vermilion : .cobalt)
         XCTAssertFalse(prefs.codeDefaultLineNumbers)
         XCTAssertTrue(prefs.hapticFeedbackEnabled)
         XCTAssertTrue(prefs.autoCollapseReasoning)
@@ -50,7 +50,6 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
         prefs.recordRecentModel(targets[4], maxCount: 8)
         XCTAssertEqual(prefs.recentModelIDs.count, 8)
         XCTAssertEqual(prefs.recentModelIDs.first, targets[4].id)
-        XCTAssertEqual(prefs.recentTargets(from: targets).first?.modelID, "model-5")
 
         let member = GroupMember(
             name: "架构师",
@@ -376,132 +375,6 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
         XCTAssertTrue(stateDoc.contains("Idle --&gt; Streaming"))
     }
 
-    func testSpacedRepetitionFlashcardStoreAndAnkiExport() throws {
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("flashcards-test-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        let baseNow = Date(timeIntervalSince1970: 1_700_000_000)
-        let store = FlashcardStore(fileURL: tempURL)
-
-        let drafts = [
-            StudyCardDraft(front: "什么是 Swift Actor 可重入性？", back: "await 挂起期间 Actor 可处理其他消息，恢复后状态可能已改变。", hint: "思考 await 前后的不变式"),
-            StudyCardDraft(front: "Sendable 协议的作用？", back: "保证值或引用跨并发域传递时不存在数据竞争。")
-        ]
-        let added = try store.addDrafts(drafts, deckName: "Swift 并发精讲", now: baseNow)
-        XCTAssertEqual(added, 2)
-        // Re-adding identical fronts updates without duplicating
-        XCTAssertEqual(try store.addDrafts(drafts, deckName: "Swift 并发精讲", now: baseNow), 0)
-        XCTAssertEqual(store.cards.count, 2)
-        XCTAssertEqual(store.dueCards(at: baseNow).count, 2)
-
-        // Review progression: Good (1d) -> Good (3d) -> Easy (>= 7d, mastered!)
-        let cardID = try XCTUnwrap(store.cards.first?.id)
-        try store.recordReview(cardID: cardID, rating: .good, now: baseNow)
-        var updated = try XCTUnwrap(store.cards.first { $0.id == cardID })
-        XCTAssertEqual(updated.intervalDays, 1.0, accuracy: 0.01)
-        XCTAssertFalse(updated.isDue(at: baseNow.addingTimeInterval(3600)))
-        XCTAssertTrue(updated.isDue(at: baseNow.addingTimeInterval(86_400 + 1)))
-
-        let dayOne = baseNow.addingTimeInterval(86_400)
-        try store.recordReview(cardID: cardID, rating: .good, now: dayOne)
-        updated = try XCTUnwrap(store.cards.first { $0.id == cardID })
-        XCTAssertEqual(updated.intervalDays, 3.0, accuracy: 0.01)
-
-        let dayFour = dayOne.addingTimeInterval(3 * 86_400)
-        try store.recordReview(cardID: cardID, rating: .easy, now: dayFour)
-        updated = try XCTUnwrap(store.cards.first { $0.id == cardID })
-        XCTAssertTrue(updated.isMastered)
-        XCTAssertEqual(store.masteredCount, 1)
-
-        // Again resets repetitions and schedules 10 minutes out
-        try store.recordReview(cardID: cardID, rating: .again, now: dayFour)
-        updated = try XCTUnwrap(store.cards.first { $0.id == cardID })
-        XCTAssertEqual(updated.repetitions, 0)
-        XCTAssertEqual(updated.lapses, 1)
-
-        // Reload from disk and verify Anki TSV export
-        let reloaded = FlashcardStore(fileURL: tempURL)
-        XCTAssertEqual(reloaded.cards.count, 2)
-        let tsv = reloaded.exportAnkiTSV(deckFilter: "Swift 并发精讲")
-        XCTAssertTrue(tsv.contains("#separator:tab"))
-        XCTAssertTrue(tsv.contains("什么是 Swift Actor 可重入性？"))
-        XCTAssertTrue(tsv.contains("Swift_并发精讲"))
-    }
-
-    func testSocraticCoachPromptInjectionAndInlineStudyGeneration() async throws {
-        // 1. Resilient JSON parser handles <think> blocks and markdown code fences
-        let fencedCards = """
-        <think>Let me pick the two best recall prompts.</think>
-        ```json
-        {"cards":[{"front":"TCP 三次握手为什么不能是两次？","back":"防止历史失效的连接请求报文突然又传送到服务端产生错误锁定。","hint":"失效连接请求"}]}
-        ```
-        """
-        let parsedCards = try StudyGeneratorService.parseFlashcardsJSON(fencedCards)
-        XCTAssertEqual(parsedCards.count, 1)
-        XCTAssertEqual(parsedCards[0].hint, "失效连接请求")
-
-        let fencedQuiz = """
-        ```json
-        {"title":"TCP 握手小测","questions":[{"question":"第三次握手携带的主要标志位是？","options":["SYN","ACK","FIN","RST"],"correctIndex":1,"explanation":"客户端确认服务端 SYN+ACK 时发送 ACK。"}]}
-        ```
-        """
-        let parsedQuiz = try StudyGeneratorService.parseQuizJSON(fencedQuiz)
-        XCTAssertEqual(parsedQuiz.title, "TCP 握手小测")
-        XCTAssertEqual(parsedQuiz.questions.count, 1)
-        XCTAssertEqual(parsedQuiz.questions[0].correctIndex, 1)
-
-        // 2. End-to-end ChatEngine Socratic system prompt injection + inline quiz generation
-        let db = try makeInMemoryContainer()
-        let ctx = db.mainContext
-        let provider = ProviderConfig(
-            name: "Local Tutor",
-            protocolType: .openAICompatible,
-            baseURL: "http://localhost:11434/v1",
-            isEnabled: true,
-            models: [ModelSpec(id: "tutor-model", displayName: "Tutor")]
-        )
-        let target = provider.makeTarget(for: provider.models[0])
-        let chat = Conversation(title: "网络协议助学", primaryTarget: target)
-        chat.assistanceSettings.studyCoachMode = .socratic
-        ctx.insert(provider)
-        ctx.insert(chat)
-        try ctx.save()
-
-        let box = LockedStringBox()
-        let mockEngine = ChatEngine(stream: { req in
-            box.set(req.systemPrompt)
-            return AsyncThrowingStream { cont in
-                if req.systemPrompt.contains("comprehension quiz") {
-                    cont.yield(.contentDelta(#"{"title":"随堂测验","questions":[{"question":"2+2=?","options":["3","4"],"correctIndex":1,"explanation":"基础算术"}]}"#))
-                } else {
-                    cont.yield(.contentDelta("你觉得如果只有两次握手，延迟到达的旧 SYN 包会发生什么？"))
-                }
-                cont.yield(.usage(promptTokens: 30, completionTokens: 20))
-                cont.yield(.done)
-                cont.finish()
-            }
-        })
-
-        XCTAssertEqual(mockEngine.sendUserMessage(text: "帮我理解 TCP 握手", attachments: [], in: chat, providers: [provider], context: ctx), .sent)
-        let deadline = ContinuousClock.now + .seconds(3)
-        while mockEngine.isGenerating(in: chat.id) && ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertTrue(box.get().contains("[Socratic Learning Coach Mode]"))
-
-        let assistantMsg = try XCTUnwrap(chat.sortedMessages.last { $0.role == .assistant })
-        try await mockEngine.generateStudyQuiz(for: assistantMsg, in: chat, providers: [provider], context: ctx)
-        XCTAssertEqual(assistantMsg.assistanceMetadata.generatedQuiz?.questions.count, 1)
-
-        let qID = try XCTUnwrap(assistantMsg.assistanceMetadata.generatedQuiz?.questions.first?.id)
-        mockEngine.selectQuizOption(questionID: qID, optionIndex: 1, on: assistantMsg, context: ctx)
-        XCTAssertEqual(assistantMsg.assistanceMetadata.generatedQuiz?.correctCount, 1)
-
-        let studyRecords = try ctx.fetch(FetchDescriptor<RequestRecord>()).filter { $0.kind == .studyGeneration }
-        XCTAssertEqual(studyRecords.count, 1)
-    }
-
     func testProjectKnowledgeMultiDocRetrievalAndSearchDocumentsTool() async throws {
         let db = try makeInMemoryContainer()
         let ctx = db.mainContext
@@ -536,10 +409,9 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
         XCTAssertEqual(rtoEvidence.passages.first?.sectionTitle, "容灾演练规范")
         XCTAssertTrue(rtoEvidence.passages.first?.excerpt.contains("12 秒") == true)
 
-        // Verify AgentToolRunner exposes search_documents & propose_schedule_item
+        // Verify AgentToolRunner exposes search_documents
         let toolDefs = AgentToolRunner.definitions(hasTavilyKey: false, hasKnowledgeBase: true)
         XCTAssertTrue(toolDefs.contains { $0.name == "search_documents" })
-        XCTAssertTrue(toolDefs.contains { $0.name == "propose_schedule_item" })
 
         let searchCall = LLMToolCall(
             id: "call_kb_1",
@@ -554,59 +426,6 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
         XCTAssertTrue(exec.record.succeeded)
         XCTAssertTrue(exec.toolOutputJSON.contains("128%"))
         XCTAssertNotNil(exec.knowledgeEvidence)
-    }
-
-    func testEventKitScheduleConfirmationCardAndExtractor() async throws {
-        let db = try makeInMemoryContainer()
-        let ctx = db.mainContext
-
-        // 1. Parse schedule items from LLM JSON
-        let sampleJSON = """
-        ```json
-        {"items":[
-          {"kind":"reminder","title":"复盘 Q4 留存漏斗数据","notes":"重点核对企业版续费率","scheduledAt":"2026-11-20 10:30","durationMinutes":30},
-          {"kind":"calendar","title":"架构评审会","notes":"评审多活容灾方案","scheduledAt":"2026-11-21 15:00","durationMinutes":45}
-        ]}
-        ```
-        """
-        let parsed = ScheduleExtractorService.parseScheduleItemsJSON(sampleJSON)
-        XCTAssertEqual(parsed.count, 2)
-        XCTAssertEqual(parsed[0].kind, .reminder)
-        XCTAssertNotNil(parsed[0].scheduledAt)
-        XCTAssertEqual(parsed[1].kind, .calendarEvent)
-        XCTAssertEqual(parsed[1].durationMinutes, 45)
-
-        // 2. Agent tool propose_schedule_item + human-in-the-loop EventKit confirmation
-        let call = LLMToolCall(
-            id: "call_sched_1",
-            name: "propose_schedule_item",
-            argumentsJSON: #"{"kind":"reminder","title":"提交季度预算表","notes":"周五下班前","scheduledAt":"2026-11-22 17:00"}"#
-        )
-        let out = await AgentToolRunner.execute(
-            call,
-            searchHandler: { _ in SearchEvidence(query: "", searchedAt: Date(), sources: [], credits: nil) }
-        )
-        let proposed = try XCTUnwrap(out.proposedSchedule)
-        XCTAssertEqual(proposed.title, "提交季度预算表")
-
-        let msg = ChatMessage(role: .assistant, content: "已为你整理待办确认卡。")
-        var meta = AssistanceMetadata()
-        meta.proposedSchedules = [proposed]
-        msg.assistanceMetadata = meta
-        ctx.insert(msg)
-        try ctx.save()
-
-        var savedItems: [ProposedScheduleItem] = []
-        EventKitService.shared.customSaveHandler = { item in
-            savedItems.append(item)
-        }
-        defer { EventKitService.shared.customSaveHandler = nil }
-
-        try await ChatEngine.shared.confirmScheduleProposal(proposed, on: msg, context: ctx)
-        XCTAssertEqual(savedItems.count, 1)
-        XCTAssertEqual(savedItems.first?.title, "提交季度预算表")
-        XCTAssertTrue(msg.assistanceMetadata.proposedSchedules.isEmpty)
-        XCTAssertTrue(msg.assistanceMetadata.handledScheduleIDs.contains(proposed.id))
     }
 
     func testRunSkillIntentSpotlightIndexingAndLiveActivityCoordinator() async throws {

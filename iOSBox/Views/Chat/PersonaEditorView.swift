@@ -6,11 +6,8 @@ struct PersonaEditorView: View {
     var isProfile = false
     @State private var importing = false
     @State private var editing: PersonaMaterial?
-    @State private var kind: PersonaFeed.Kind = .blog
     @State private var address = ""
     @State private var error: String?
-    @State private var token = ""
-    @State private var hasToken = false
 
     private var persona: GroupPersona { member.persona ?? GroupPersona() }
 
@@ -36,7 +33,13 @@ struct PersonaEditorView: View {
             }
             Section {
                 ForEach(persona.feeds) { feed in
-                    if isProfile {
+                    if feed.kind == .x {
+                        LabeledContent {
+                            Text("已停止更新")
+                        } label: {
+                            Label(feed.displayName, systemImage: "link")
+                        }
+                    } else if isProfile {
                         Label(feed.displayName, systemImage: "link")
                     } else { Toggle(isOn: Binding(get: { feed.enabled }, set: { enabled in
                         update { value in
@@ -46,7 +49,7 @@ struct PersonaEditorView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(verbatim: feed.displayName).lineLimit(2)
                             if let failure = feed.lastError {
-                                Text(verbatim: failure).font(.caption).foregroundStyle(.orange)
+                                Text(verbatim: failure).font(.caption).foregroundStyle(DS.StatusText.warning)
                             } else if let date = feed.lastChecked {
                                 Text("上次检查 \(date.formatted(date: .abbreviated, time: .shortened))")
                                     .font(.caption).foregroundStyle(.secondary)
@@ -57,12 +60,8 @@ struct PersonaEditorView: View {
                     } }
                 }
                 .onDelete { offsets in update { $0.feeds.remove(atOffsets: offsets) } }
-                Picker("订阅类型", selection: $kind) {
-                    Text("博客").tag(PersonaFeed.Kind.blog)
-                    Text(verbatim: "X / Twitter").tag(PersonaFeed.Kind.x)
-                }.pickerStyle(.segmented)
-                TextField(kind == .blog ? String(localized: "博客主页或 RSS / Atom 地址") : String(localized: "X 用户名或个人主页"), text: $address)
-                    .keyboardType(kind == .blog ? .URL : .default).autocorrectionDisabled().textInputAutocapitalization(.never)
+                TextField("博客主页或 RSS / Atom 地址", text: $address)
+                    .keyboardType(.URL).autocorrectionDisabled().textInputAutocapitalization(.never)
                 Button { addFeed() } label: { Label("添加订阅", systemImage: "plus") }
                     .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || persona.feeds.count >= 4)
             } header: {
@@ -71,22 +70,8 @@ struct PersonaEditorView: View {
                 if isProfile { Text("邀请进群后，可在各群分别开启订阅。") }
                 else { Text("首次检查只记录现有内容。之后的新动态会附原文链接发进本群。iOS 决定后台检查时间，也可从群聊菜单手动检查。") }
             }
-            if kind == .x || persona.feeds.contains(where: { $0.kind == .x }) {
-                Section {
-                    SecureField("X API Bearer Token", text: $token)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button(hasToken ? String(localized: "替换读取凭据") : String(localized: "保存读取凭据")) { saveToken(token) }
-                        .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if hasToken { Button("移除读取凭据", role: .destructive) { saveToken("") } }
-                } header: {
-                    Text("X 读取权限")
-                } footer: {
-                    Text("使用你自己的 X API 读取额度。凭据立即保存到本机钥匙串，供此设备上的 X 订阅共用。")
-                }
-            }
         }
         .navigationTitle("人物资料与动态")
-        .onAppear { hasToken = !KeychainService.shared.loadSecret(account: PersonaFeedReader.xTokenAccount).isEmpty }
         .sheet(isPresented: $importing) { PersonaMaterialSheet(speaker: member.name, onSave: store) }
         .sheet(item: $editing) { PersonaMaterialSheet(speaker: member.name, material: $0, onSave: store) }
         .alert("无法更新人物设置", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
@@ -109,21 +94,13 @@ struct PersonaEditorView: View {
 
     private func addFeed() {
         do {
-            let feed = try PersonaFeedReader.source(address, kind: kind)
-            guard !persona.feeds.contains(where: { $0.kind == kind && $0.address == feed.address }) else {
+            let feed = try PersonaFeedReader.source(address, kind: .blog)
+            guard !persona.feeds.contains(where: { $0.kind == .blog && $0.address == feed.address }) else {
                 error = String(localized: "已添加这个订阅。"); return
             }
             update { $0.feeds.append(feed) }
             address = ""
         } catch { self.error = error.localizedDescription }
-    }
-
-    private func saveToken(_ value: String) {
-        guard KeychainService.shared.saveSecret(value, account: PersonaFeedReader.xTokenAccount) else {
-            error = PersonaError.credentialSave.localizedDescription; return
-        }
-        hasToken = !value.isEmpty
-        token = ""
     }
 }
 
@@ -211,7 +188,7 @@ private struct PersonaMaterialSheet: View {
                         } header: { Text("粘贴文字或选择文件") } footer: { Text("支持 TXT、Markdown 和 JSON，文件最大 2 MB。") }
                     }
                 }
-                if let error { Text(verbatim: error).font(.footnote).foregroundStyle(.red) }
+                if let error { Text(verbatim: error).font(.footnote).foregroundStyle(DS.StatusText.error) }
                 if busy { ProgressView() }
             }
             .disabled(busy)

@@ -17,7 +17,6 @@ struct BackupArchive: Codable {
     var requests: [RequestRecord.Snapshot]?
     var memories: [PersonalMemory.Snapshot]?
     var books: [BookVolume.Snapshot]? = nil
-    var flashcards: [StudyFlashcard]? = nil
     var personaProfiles: [GroupMember]? = nil
     var shelfPositions: [ShelfReadingState.Position]? = nil
     var tombstones: [SyncTombstone]? = nil
@@ -259,7 +258,6 @@ struct ImportSummary: Equatable {
     var requests = 0
     var memories = 0
     var books = 0
-    var flashcards = 0
     var deleted = 0
     /// Items already present (same ID) and therefore left untouched.
     var skipped = 0
@@ -268,9 +266,10 @@ struct ImportSummary: Equatable {
     var failedCredentialWrites = 0
     var restoredProfiles = 0
     var knowledgeRestoreFailed = false
-    var flashcardRestoreFailed = false
 
-    var hasWarnings: Bool { !credentialConflicts.isEmpty || failedCredentialWrites > 0 || flashcardRestoreFailed || knowledgeRestoreFailed }
+    var hasWarnings: Bool {
+        !credentialConflicts.isEmpty || failedCredentialWrites > 0 || knowledgeRestoreFailed
+    }
     var title: String { hasWarnings ? String(localized: "备份需继续处理") : String(localized: "导入完成") }
 
     var description: String {
@@ -285,7 +284,6 @@ struct ImportSummary: Equatable {
         if presets > 0 { parts.append(String(localized: "助手 \(presets) 个")) }
         if requests > 0 { parts.append(String(localized: "请求记录 \(requests) 条")) }
         if books > 0 { parts.append(String(localized: "书籍 \(books) 本")) }
-        if flashcards > 0 { parts.append(String(localized: "闪卡 \(flashcards) 张")) }
         if memories > 0 {
             parts.append(String(localized: "记忆 \(memories) 条"))
         }
@@ -315,9 +313,6 @@ struct ImportSummary: Equatable {
         }
         if knowledgeRestoreFailed {
             lines.append(String(localized: "助手知识库绑定未能保存。请在助手编辑页检查绑定文件和设备空间，然后重新导入此备份。"))
-        }
-        if flashcardRestoreFailed {
-            lines.append(String(localized: "闪卡未能保存。请检查闪卡库和设备存储，再重新导入此备份。"))
         }
         return lines.isEmpty ? String(localized: "备份中没有需要导入的内容。") : lines.joined(separator: "\n")
     }
@@ -405,12 +400,10 @@ enum BackupService {
     @MainActor
     static func makeArchive(
         context: ModelContext,
-        flashcardStore: FlashcardStore? = nil,
         knowledgeStore: PresetKnowledgeStore = .shared,
         tombstoneStore: SyncTombstoneStore? = nil
     ) throws -> BackupArchive {
         guard PersistenceController.canCommitUserData(in: context) else { throw BackupError.storageUnavailable }
-        let resolvedFlashcards = flashcardStore ?? .shared
         let providers = try context.fetch(FetchDescriptor<ProviderConfig>(sortBy: [SortDescriptor(\.sortOrder)]))
         let presets = try context.fetch(FetchDescriptor<AssistantPreset>(sortBy: [SortDescriptor(\.sortOrder)]))
         let conversations = try context.fetch(
@@ -418,7 +411,6 @@ enum BackupService {
         )
         let requests = try context.fetch(FetchDescriptor<RequestRecord>(sortBy: [SortDescriptor(\.startedAt)]))
         let memories = try context.fetch(FetchDescriptor<PersonalMemory>(sortBy: [SortDescriptor(\.createdAt)]))
-        let cards = try resolvedFlashcards.readableCards()
         let bindings = try knowledgeStore.readableBindings()
         let tombstones = tombstoneStore?.allTombstones() ?? []
         let isPersistent = !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly)
@@ -469,7 +461,6 @@ enum BackupService {
                 try budget.count(book)
                 return book
             },
-            flashcards: cards.isEmpty ? nil : cards,
             personaProfiles: try context.fetch(FetchDescriptor<PersonaProfile>()).map { try $0.member().portableProfile },
             shelfPositions: try context.fetch(FetchDescriptor<ShelfReadingState>()).map(\.position),
             tombstones: tombstones.isEmpty ? nil : tombstones,
@@ -609,10 +600,11 @@ enum BackupService {
     private struct PostCommitSidecarUpdates {
         var cachePrices: [UUID: CachePriceSnapshotStore.Pair] = [:]
         var presetKnowledgeBindings: [UUID: [UUID]] = [:]
-        var flashcards: [StudyFlashcard] = []
         var deletedConversationIDs: [UUID] = []
         var deletedBookIDs: [UUID] = []
         var deletedPresetIDs: [UUID] = []
+        var deletedMemoryIDs: [UUID] = []
+        var survivingMemoryIDs = Set<UUID>()
         var deletedKeychainAccounts: [String] = []
         var incomingTombstones: [SyncTombstone] = []
         var clearedTombstones: [SyncTombstoneKey] = []
@@ -625,12 +617,11 @@ enum BackupService {
     static func apply(
         _ backup: DecodedBackup,
         to context: ModelContext,
-        flashcardStore: FlashcardStore? = nil,
         knowledgeStore: PresetKnowledgeStore = .shared,
         tombstonePolicy: SyncTombstonePolicy = .ignore
     ) throws -> ImportSummary {
         guard PersistenceController.canCommitUserData(in: context) else { throw BackupError.storageUnavailable }
-        let resolvedFlashcards = flashcardStore ?? .shared
+        let isPersistent = !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly)
         try context.save()
         // All import work is synchronous on the main actor. Preserve earlier edits before
         // the transaction so a rollback affects only the incoming backup.
@@ -668,10 +659,6 @@ enum BackupService {
         for account in sidecars.deletedKeychainAccounts {
             KeychainService.shared.deleteSecret(account: account)
         }
-        if !sidecars.flashcards.isEmpty {
-            do { summary.flashcards = try resolvedFlashcards.mergeImported(sidecars.flashcards) }
-            catch { summary.flashcardRestoreFailed = true }
-        }
         if case .full(let archive) = backup,
            let incomingEnglish = archive.englishCoach,
            !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
@@ -680,29 +667,10 @@ enum BackupService {
 
         switch tombstonePolicy {
         case .enforce(let tombstoneStore):
-            // Propagate remote flashcard deletions locally without resurrecting newer cards.
-            let cardDeletions = sidecars.mergedTombstoneMap.filter { $0.key.kind == .flashcard }
-            if !cardDeletions.isEmpty {
-                var toDelete = Set<UUID>()
-                for card in resolvedFlashcards.cards {
-                    if let deletedAt = cardDeletions[SyncTombstoneKey(kind: .flashcard, id: card.id)] {
-                        if card.createdAt <= deletedAt {
-                            toDelete.insert(card.id)
-                        } else {
-                            sidecars.clearedTombstones.append(SyncTombstoneKey(kind: .flashcard, id: card.id))
-                        }
-                    }
-                }
-                if !toDelete.isEmpty {
-                    let removed = (try? resolvedFlashcards.deleteCards(ids: toDelete)) ?? 0
-                    summary.deleted += removed
-                }
-            }
             tombstoneStore.merge(sidecars.incomingTombstones, removing: sidecars.clearedTombstones)
 
         case .ignore:
             // Manual backup restore: clear stale local tombstones for items explicitly restored on persistent stores.
-            let isPersistent = !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly)
             if isPersistent && !sidecars.manuallyRestoredItems.isEmpty {
                 SyncTombstoneStore.shared.removeTombstones(sidecars.manuallyRestoredItems)
             }
@@ -767,7 +735,6 @@ enum BackupService {
                 .compactMapValues { $0.max(by: { $0.attempt < $1.attempt })?.id }
             let incomingMemories = archive.memories ?? []
             let incomingBooks = archive.books ?? []
-            let incomingFlashcards = archive.flashcards ?? []
 
             guard unique(archive.providers.map(\.id)),
                   unique(archive.presets.map(\.id)),
@@ -776,8 +743,7 @@ enum BackupService {
                   unique(incomingMessages.map(\.id)),
                   unique(incomingRequests.map(\.id)),
                   unique(incomingMemories.map(\.id)),
-                  unique(incomingBooks.map(\.id)),
-                  unique(incomingFlashcards.map(\.id)) else {
+                  unique(incomingBooks.map(\.id)) else {
                 throw BackupError.conflictingIDs
             }
 
@@ -825,6 +791,7 @@ enum BackupService {
                     if isBlockedByTombstone(kind: .memory, id: localMem.id, timestamp: localMem.createdAt) {
                         txContext.delete(localMem)
                         existingMemories.remove(localMem.id)
+                        sidecars.deletedMemoryIDs.append(localMem.id)
                         summary.deleted += 1
                     }
                 }
@@ -932,9 +899,11 @@ enum BackupService {
                     isEnabled: mem.isEnabled,
                     createdAt: mem.createdAt
                 ))
+                existingMemories.insert(mem.id)
                 summary.memories += 1
                 if !enforcingTombstones { sidecars.manuallyRestoredItems.append((.memory, mem.id)) }
             }
+            sidecars.survivingMemoryIDs = existingMemories
 
             for p in archive.providers {
                 if isBlockedByTombstone(kind: .provider, id: p.id, timestamp: nil) { continue }
@@ -968,14 +937,6 @@ enum BackupService {
                 if !enforcingTombstones { sidecars.manuallyRestoredItems.append((.preset, p.id)) }
             }
 
-            sidecars.flashcards = incomingFlashcards.filter { card in
-                if isBlockedByTombstone(kind: .flashcard, id: card.id, timestamp: card.createdAt) {
-                    return false
-                }
-                if !enforcingTombstones { sidecars.manuallyRestoredItems.append((.flashcard, card.id)) }
-                return true
-            }
-
             for var c in archive.conversations {
                 if isBlockedByTombstone(kind: .conversation, id: c.id, timestamp: c.updatedAt) {
                     continue
@@ -993,9 +954,6 @@ enum BackupService {
                     c.assistanceSettings = settings
                 }
                 let missing = c.messages.filter { existingMessages[$0.id] == nil }
-                var votedGroups = Set((existingConversations[c.id]?.messages ?? []).compactMap { message in
-                    message.assistanceMetadata.blindArenaBallot == nil ? nil : message.comparisonGroupID
-                })
                 let conversation: Conversation
                 let localIDs: Set<UUID>
                 if let local = existingConversations[c.id] {
@@ -1038,18 +996,6 @@ enum BackupService {
                         var localMeta = localMsg.assistanceMetadata
                         var metaMutated = mergeReplies(incomingMsg, into: localMsg, metadata: &localMeta,
                                                        requests: recordsByID)
-                        if let group = localMsg.comparisonGroupID, incomingMsg.comparisonGroupID == group {
-                            if incomingMeta.blindArenaRevealed && !localMeta.blindArenaRevealed {
-                                localMeta.blindArenaRevealed = true
-                                metaMutated = true
-                            }
-                            if let ballot = incomingMeta.blindArenaBallot, ballot.winnerID == localMsg.id,
-                               votedGroups.insert(group).inserted {
-                                localMeta.blindArenaBallot = ballot
-                                localMeta.blindArenaRevealed = true
-                                metaMutated = true
-                            }
-                        }
                         if incomingMeta.isBookmarked && !localMeta.isBookmarked {
                             localMeta.isBookmarked = true
                             metaMutated = true
@@ -1128,15 +1074,7 @@ enum BackupService {
                     message.synthesisSourceDigest = m.synthesisSourceDigest
                     message.parentMessageID = m.parentMessageID
                     if let originalMeta = m.assistanceMetadata {
-                        var meta = sanitizedRestoredMetadata(originalMeta)
-                        if let ballot = meta.blindArenaBallot {
-                            if let group = m.comparisonGroupID, ballot.winnerID == m.id, votedGroups.insert(group).inserted {
-                                meta.blindArenaRevealed = true
-                            } else {
-                                meta.blindArenaBallot = nil
-                            }
-                        }
-                        message.assistanceMetadata = meta
+                        message.assistanceMetadata = sanitizedRestoredMetadata(originalMeta)
                     }
                     if let reqID = m.latestRequestID, let linked = recordsByID[reqID] {
                         message.latestRequest = linked

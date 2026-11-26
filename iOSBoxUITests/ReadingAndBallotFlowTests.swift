@@ -2,7 +2,8 @@ import XCTest
 
 @MainActor
 final class ReadingAndBallotFlowTests: XCTestCase {
-    private func launch(personas: Bool = false, sourceLayout: Bool = false, extraArguments: [String] = []) -> XCUIApplication {
+    private func launch(personas: Bool = false, sourceLayout: Bool = false, showHistory: Bool = true,
+                        extraArguments: [String] = []) -> XCUIApplication {
         continueAfterFailure = false
         let original = XCUIDevice.shared.orientation
         if UIDevice.current.userInterfaceIdiom == .pad {
@@ -15,6 +16,8 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         if sourceLayout { app.launchArguments.append("-ui-test-source-layout") }
         app.launchArguments += extraArguments
         app.launch()
+        if showHistory { app.openWorkspaceDrawerIfNeeded() }
+        else if UIDevice.current.userInterfaceIdiom == .phone { app.buttons["inbox.resume"].tap() }
         return app
     }
 
@@ -31,24 +34,31 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         XCTAssertTrue(draft.waitForExistence(timeout: 8), app.debugDescription)
         capture("Draft shown in chat history")
         let input = app.descendants(matching: .any).matching(identifier: "chatComposer.input").firstMatch
-        if !input.exists { draft.tap() }
+        if UIDevice.current.userInterfaceIdiom == .phone || !input.isHittable { draft.tap() }
         XCTAssertTrue(input.waitForExistence(timeout: 8), app.debugDescription)
         XCTAssertEqual(input.value as? String, "帮我把这份走访笔记整理成三个要点。")
         XCTAssertEqual(app.buttons.matching(identifier: "chatComposer.model").count, 1)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            let model = app.buttons["chatComposer.model"]
+            XCTAssertTrue(model.label.contains("连接模型"), model.label)
+            verifyModelPosition(model, in: app, tabletTopFraction: 0.25)
+        }
         capture("Writing-workspace")
         app.buttons["chatComposer.model"].tap()
         app.navigationBars["连接模型"].buttons["取消"].tap()
         XCTAssertEqual(input.value as? String, "帮我把这份走访笔记整理成三个要点。")
     }
 
-    func testChooseBlindModeFromTheWritingEditorAndKeepTheDraft() {
-        let app = launch()
+    func testOpenComparisonPickerFromTheWritingEditorAndKeepTheDraft() {
+        let app = launch(personas: true, showHistory: false,
+                         extraArguments: ["-ui-test-model-details", "-iosbox.pref.simpleDailyMode", "YES"])
         let input = app.descendants(matching: .any).matching(identifier: "chatComposer.input").firstMatch
         if !input.exists {
             app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "新对话")).firstMatch.tap()
         }
         app.buttons["单聊"].tap()
-        app.buttons["双盲对比"].tap()
+        XCTAssertFalse(app.buttons["双盲对比"].exists)
+        app.buttons["多模型对比"].tap()
         let picker = app.navigationBars["选择并发对比模型"]
         XCTAssertTrue(picker.waitForExistence(timeout: 8), app.debugDescription)
         picker.buttons["关闭"].tap()
@@ -56,12 +66,12 @@ final class ReadingAndBallotFlowTests: XCTestCase {
     }
 
     func testModelPickerExplainsUnconfiguredPrices() {
-        let app = launch(personas: true, extraArguments: ["-ui-test-model-details"])
+        let app = launch(personas: true, showHistory: false, extraArguments: ["-ui-test-model-details"])
         if !app.descendants(matching: .any).matching(identifier: "chatComposer.input").firstMatch.exists {
             app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "新对话")).firstMatch.tap()
         }
         app.buttons["单聊"].tap()
-        app.buttons["双盲对比"].tap()
+        app.buttons["多模型对比"].tap()
         let picker = app.navigationBars["选择并发对比模型"]
         XCTAssertTrue(picker.waitForExistence(timeout: 8), app.debugDescription)
         if UIDevice.current.userInterfaceIdiom == .phone {
@@ -74,6 +84,29 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["思考"].exists)
         XCTAssertTrue(app.staticTexts["能力是本地标记，可能按名称推测；显示的基础单价不含服务商倍率。"].exists)
         capture("Model details in comparison picker")
+    }
+
+    func testComposerUsesOneWebMenuAndOneVoiceMenu() {
+        let app = launch(personas: true, showHistory: false, extraArguments: ["-ui-test-model-details"])
+        let drawer = app.buttons["添加附件与能力"]
+        XCTAssertTrue(drawer.waitForExistence(timeout: 8), app.debugDescription)
+        drawer.tap()
+
+        let web = app.buttons["chatComposer.webMode"]
+        XCTAssertTrue(web.waitForExistence(timeout: 5))
+        web.tap()
+        app.buttons["搜索"].tap()
+        XCTAssertTrue(web.label.contains("联网"))
+        web.tap()
+        app.buttons["关闭搜索"].tap()
+        XCTAssertEqual(web.label, "联网")
+
+        let voice = app.buttons["chatComposer.voice"]
+        XCTAssertTrue(voice.exists)
+        voice.tap()
+        XCTAssertTrue(app.buttons["语音输入"].exists)
+        app.buttons["音频纪要"].tap()
+        XCTAssertTrue(app.navigationBars["录音与音频转会议纪要"].waitForExistence(timeout: 8))
     }
 
     func testReturnToShelfAndStartAReadingConversation() {
@@ -117,7 +150,7 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         XCTAssertTrue(sources.label.contains("山路手记"), sources.label)
         let model = app.buttons["chatComposer.model"]
         XCTAssertTrue(model.isHittable)
-        XCTAssertLessThan(model.frame.midY, app.frame.height * 0.25)
+        verifyModelPosition(model, in: app, tabletTopFraction: 0.25)
         if app.buttons["reading.open"].exists {
             XCTAssertEqual(sources.frame.midY, app.buttons["reading.open"].frame.midY, accuracy: 5)
         }
@@ -145,6 +178,112 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         XCTAssertEqual(input.value as? String, "draft")
     }
 
+    private func verifyModelPosition(_ model: XCUIElement, in app: XCUIApplication, tabletTopFraction: CGFloat) {
+        XCTAssertEqual(app.buttons.matching(identifier: "chatComposer.model").count, 1)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            let input = app.descendants(matching: .any).matching(identifier: "chatComposer.input").firstMatch
+            XCTAssertGreaterThan(model.frame.midY, app.frame.height * 0.5)
+            XCTAssertLessThanOrEqual(model.frame.maxY, input.frame.minY + 1)
+        } else {
+            XCTAssertLessThan(model.frame.midY, app.frame.height * tabletTopFraction)
+        }
+    }
+
+    func testPhoneFollowUpQuotesAnswerAndKeepsDraftWhenChangingModel() throws {
+        let app = try openPhoneReply()
+        let followUp = app.buttons["reply.followUp"]
+        XCTAssertTrue(followUp.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertFalse(app.buttons["reply.regenerate"].exists)
+        app.buttons["reply.more"].tap()
+        let regenerate = app.buttons["重答"]
+        XCTAssertTrue(regenerate.waitForExistence(timeout: 4), app.debugDescription)
+        regenerate.tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "原模型重答")).firstMatch.waitForExistence(timeout: 4), app.debugDescription)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.15)).tap()
+        capture("Reply actions and model above input")
+        followUp.tap()
+        let quote = app.staticTexts["chatComposer.quote"]
+        XCTAssertTrue(quote.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(quote.label.contains("山路手记 · 溪边的旧路"), quote.label)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let input = app.descendants(matching: .any).matching(identifier: "chatComposer.input").firstMatch
+        input.typeText("draft")
+        let model = app.buttons["chatComposer.model"]
+        model.tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "sample-b")).firstMatch.tap()
+        XCTAssertTrue(model.label.contains("sample-b"), model.label)
+        XCTAssertEqual(input.value as? String, "draft")
+        XCTAssertTrue(quote.exists)
+        app.buttons["移除引用"].tap()
+        XCTAssertFalse(quote.exists)
+        XCTAssertEqual(input.value as? String, "draft")
+    }
+
+    private func openPhoneReply() throws -> XCUIApplication {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone)
+        let app = launch(personas: true)
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "山路手记")).firstMatch.tap()
+        return app
+    }
+
+    private func selectWords(in paragraph: XCUIElement) throws -> String {
+        XCTAssertTrue(paragraph.waitForExistence(timeout: 5))
+        let body = try XCTUnwrap(paragraph.value as? String)
+        paragraph.coordinate(withNormalizedOffset: CGVector(dx: 0.28, dy: 0.18)).press(forDuration: 1)
+        return body
+    }
+
+    private func verifySelectedQuote(in app: XCUIApplication, from body: String) {
+        let quote = app.staticTexts["chatComposer.quote"]
+        XCTAssertTrue(quote.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertFalse(quote.label.isEmpty)
+        XCTAssertNotEqual(quote.label, body)
+        XCTAssertTrue(body.contains(quote.label), quote.label)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+    }
+
+    func testPhoneFollowUpQuotesOnlySelectedText() throws {
+        let app = try openPhoneReply()
+        let body = try selectWords(in: app.textViews.matching(identifier: "reply.paragraph").firstMatch)
+        let action = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "追问")).firstMatch
+        XCTAssertTrue(action.waitForExistence(timeout: 5), app.debugDescription)
+        action.tap()
+        verifySelectedQuote(in: app, from: body)
+        capture("Follow up on selected words")
+    }
+
+    func testPhoneReplyFooterUsesActiveSelection() throws {
+        let app = try openPhoneReply()
+        let body = try selectWords(in: app.textViews.matching(identifier: "reply.paragraph").firstMatch)
+        app.buttons["reply.followUp"].tap()
+        verifySelectedQuote(in: app, from: body)
+    }
+
+    func testPhoneCanQuoteSelectionFromFullReplySheet() throws {
+        let app = try openPhoneReply()
+        app.buttons["reply.more"].tap()
+        app.buttons["选择文本"].tap()
+        let quoteSelection = app.buttons["reply.quoteSelection"]
+        XCTAssertTrue(quoteSelection.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertFalse(quoteSelection.isEnabled)
+        let text = app.textViews["reply.selectText"]
+        let body = try XCTUnwrap(text.value as? String)
+        text.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.08)).press(forDuration: 1)
+        XCTAssertTrue(quoteSelection.isEnabled)
+        quoteSelection.tap()
+        verifySelectedQuote(in: app, from: body)
+    }
+
+    func testPhoneComparisonKeepsRegenerateOnAnswer() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone)
+        let app = launch(personas: true)
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "访谈笔记")).firstMatch.tap()
+        let regenerate = app.buttons.matching(identifier: "reply.regenerate").firstMatch
+        XCTAssertTrue(regenerate.waitForExistence(timeout: 6), app.debugDescription)
+        XCTAssertFalse(app.buttons["reply.followUp"].exists)
+        XCTAssertFalse(app.buttons["chatComposer.model"].exists)
+    }
+
     func testBookFriendKeepsSeparateProgressAndModelControls() {
         let app = launch(sourceLayout: true)
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "旅人私聊")).firstMatch.tap()
@@ -152,7 +291,7 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         XCTAssertTrue(progress.waitForExistence(timeout: 8))
         let model = app.buttons["chatComposer.model"]
         XCTAssertTrue(model.isHittable)
-        XCTAssertLessThan(model.frame.midY, app.frame.height * 0.35)
+        verifyModelPosition(model, in: app, tabletTopFraction: 0.35)
         XCTAssertFalse(app.buttons["composer.knowledge"].exists)
         let open = app.buttons["reading.open"]
         if open.exists { open.tap() }
@@ -174,11 +313,13 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         XCTAssertTrue(more.waitForExistence(timeout: 8), app.debugDescription)
         let input = app.descendants(matching: .any).matching(identifier: "chatComposer.input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 8), app.debugDescription)
-        for _ in 0..<3 where !more.isHittable || more.frame.maxY > input.frame.minY {
+        let composerTop = UIDevice.current.userInterfaceIdiom == .phone ? app.buttons["chatComposer.model"] : input
+        for _ in 0..<3 where !more.isHittable || more.frame.maxY > composerTop.frame.minY {
             app.swipeUp()
         }
-        XCTAssertLessThanOrEqual(more.frame.maxY, input.frame.minY, app.debugDescription)
-        for id in ["reply.copy", "reply.regenerate", "reply.more"] {
+        XCTAssertLessThanOrEqual(more.frame.maxY, composerTop.frame.minY, app.debugDescription)
+        let primaryAction = UIDevice.current.userInterfaceIdiom == .phone ? "reply.followUp" : "reply.regenerate"
+        for id in ["reply.copy", primaryAction, "reply.more"] {
             let item = app.buttons[id]
             XCTAssertTrue(item.isHittable, id)
             XCTAssertGreaterThanOrEqual(item.frame.width, 44, id)
@@ -187,14 +328,14 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         XCTAssertFalse(app.buttons["朗读回复"].exists)
         capture("Reply actions with large text")
         more.tap()
-        for title in ["朗读回复", "提取待办与日程", "复制 Markdown 原文"] {
+        for title in ["朗读回复", "选择文本", "复制 Markdown 原文"] {
             XCTAssertTrue(app.buttons[title].waitForExistence(timeout: 4), title)
         }
     }
 
     func testLargeTextKeepsConversationTitlesSeparateFromBadges() {
         let app = launch(extraArguments: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"])
-        let title = app.staticTexts["访谈笔记盲评"]
+        let title = app.staticTexts["访谈笔记对比"]
         let badge = app.staticTexts["对比"]
         XCTAssertTrue(title.waitForExistence(timeout: 8), app.debugDescription)
         XCTAssertTrue(badge.exists)
@@ -225,8 +366,9 @@ final class ReadingAndBallotFlowTests: XCTestCase {
 
     func testDirectoryShowsPeopleAndBookFriendsAndKeepsShelfSeparate() {
         let app = launch(personas: true, sourceLayout: true)
-        let sidebar = app.buttons["工作台"]
-        if sidebar.exists && sidebar.isHittable { sidebar.tap() } else { app.tabBars.buttons["工作台"].tap() }
+        app.openWorkspaceDrawerIfNeeded()
+        app.openWorkspaceLibrary()
+        app.selectWorkshopSection("好友")
         XCTAssertTrue(app.buttons["林舟"].waitForExistence(timeout: 8), app.debugDescription)
         let bookFriend = app.buttons.matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "旅人", "山路手记")).firstMatch
         XCTAssertTrue(bookFriend.exists, app.debugDescription)
@@ -239,15 +381,14 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         app.selectWorkshopSection("书架")
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "开始阅读《")).firstMatch.waitForExistence(timeout: 6))
         XCTAssertFalse(app.buttons["林舟"].exists)
+        app.selectWorkshopSection("学习")
+        XCTAssertTrue(app.buttons["AI 英语私教"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["新建闪卡"].exists)
     }
 
     private func openUsage(in app: XCUIApplication) {
-        if app.buttons["设置"].exists && app.buttons["设置"].isHittable {
-            app.buttons["设置"].tap()
-            app.buttons["用量与费用账本"].tap()
-        } else {
-            app.buttons["用量"].tap()
-        }
+        app.openWorkspaceSettings()
+        app.buttons["用量与费用账本"].tap()
     }
 
     func testUnpricedRequestShowsItsCountAndPricingState() {
@@ -260,7 +401,7 @@ final class ReadingAndBallotFlowTests: XCTestCase {
 
     func testSettingsCanOpenBothProviderAndUsage() {
         let app = launch(personas: true)
-        app.buttons["设置"].tap()
+        app.openWorkspaceSettings()
         let provider = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "本地模型")).firstMatch
         XCTAssertTrue(provider.waitForExistence(timeout: 8), app.debugDescription)
         provider.tap()
@@ -321,19 +462,7 @@ final class ReadingAndBallotFlowTests: XCTestCase {
 
     func testSettingsListConfiguredModelsAndDirectoryOpensPrivatePersona() throws {
         let app = launch(personas: true)
-        func openTab(_ name: String) throws {
-            let settings = app.buttons["设置"]
-            if name == "设置", settings.exists, settings.isHittable, UIDevice.current.userInterfaceIdiom == .pad {
-                settings.tap()
-                app.buttons["服务商与设置"].tap()
-                return
-            }
-            let sidebar = app.buttons["工作台"]
-            if name == "工作台", sidebar.exists, sidebar.isHittable { sidebar.tap(); return }
-            let matches = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", name))
-            try XCTUnwrap(matches.allElementsBoundByIndex.first(where: \.isHittable), app.debugDescription).tap()
-        }
-        try openTab("设置")
+        app.openWorkspaceSettings()
         app.buttons["新对话默认设置"].tap()
         let model = app.buttons["newChat.defaultModel"]
         XCTAssertTrue(model.waitForExistence(timeout: 5), app.debugDescription)
@@ -342,7 +471,11 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         XCTAssertTrue(choice.waitForExistence(timeout: 5), app.debugDescription)
         choice.tap()
         XCTAssertTrue(app.buttons["newChat.defaultAssistant"].exists)
-        try openTab("工作台")
+        app.navigationBars["新对话默认设置"].buttons.firstMatch.tap()
+        let closeSettings = app.navigationBars["服务商与设置"].buttons["完成"]
+        if closeSettings.isHittable { closeSettings.tap() }
+        app.openWorkspaceLibrary()
+        app.selectWorkshopSection("好友")
         let person = app.buttons["林舟"]
         XCTAssertTrue(person.waitForExistence(timeout: 8), app.debugDescription)
         XCTAssertTrue(app.buttons["与 林舟 私聊"].isHittable)
@@ -374,41 +507,22 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         XCTAssertTrue(chat.waitForNonExistence(timeout: 5))
     }
 
-    func testSelectAnonymousAnswerThenReveal() {
+    func testInspectorOpensSourceUsedByLatestReply() {
         let app = launch()
-        let chat = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "访谈笔记盲评")).firstMatch
+        app.openWorkspaceDrawerIfNeeded()
+        let chat = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "山路手记")).firstMatch
         XCTAssertTrue(chat.waitForExistence(timeout: 8), app.debugDescription)
         chat.tap()
-        let choice = app.buttons["ballot.choose.A"]
-        XCTAssertTrue(choice.waitForExistence(timeout: 8), app.debugDescription)
-        let vote = app.buttons["ballot.vote"]
-        XCTAssertFalse(vote.isEnabled)
-        XCTAssertTrue(app.staticTexts["请选择一个回答后投票。"].exists)
-        XCTAssertFalse(app.staticTexts["ballot.identity.A"].exists)
-        if app.segmentedControls["ballot.answers"].exists {
-            let opened = app.staticTexts["ballot.opened"]
-            XCTAssertTrue(opened.label.contains("1/2"), app.debugDescription)
-            choice.tap()
-            XCTAssertTrue(vote.isEnabled, "Voting remains available before opening every answer")
-            XCTAssertFalse(app.staticTexts["请选择一个回答后投票。"].exists)
-            app.segmentedControls["ballot.answers"].buttons["B"].tap()
-            XCTAssertTrue(app.buttons["ballot.choose.B"].exists)
-            XCTAssertTrue(opened.label.contains("2/2"), app.debugDescription)
-            app.segmentedControls["ballot.answers"].buttons["A"].tap()
-        } else {
-            let other = app.buttons["ballot.choose.B"]
-            XCTAssertTrue(other.isHittable)
-            XCTAssertEqual(choice.frame.width, other.frame.width, accuracy: 2)
-        }
-        choice.tap()
-        XCTAssertTrue(vote.isEnabled)
-        capture("Blind-comparison")
-        vote.tap()
-        XCTAssertTrue(app.staticTexts["ballot.identity.A"].waitForExistence(timeout: 8))
-        XCTAssertFalse(vote.exists)
-        app.buttons["ballot.close"].tap()
-        app.buttons["查看选票"].tap()
-        XCTAssertTrue(app.staticTexts["ballot.identity.A"].waitForExistence(timeout: 8))
+        let inspector = app.buttons["chat.inspector"]
+        XCTAssertTrue(inspector.waitForExistence(timeout: 8), app.debugDescription)
+        inspector.tap()
+        let source = app.buttons["reading.citation.1"]
+        for _ in 0..<3 where !source.isHittable { app.swipeUp() }
+        XCTAssertTrue(source.isHittable, app.debugDescription)
+        source.tap()
+        XCTAssertTrue(app.staticTexts["reading.highlight"].waitForExistence(timeout: 8), app.debugDescription)
+        app.buttons["reading.quote"].tap()
+        XCTAssertEqual(app.staticTexts["chatComposer.quote"].label, "路边的草倒向同一侧")
     }
 
     func testCitationOpensOriginalAndQuotesIntoSameChat() {
@@ -416,12 +530,10 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         let chat = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "山路手记")).firstMatch
         XCTAssertTrue(chat.waitForExistence(timeout: 8), app.debugDescription)
         chat.tap()
-        let citation = app.buttons["reading.citation.1"]
-        let sources = app.buttons["找到 1 段相关原文"]
-        XCTAssertTrue(sources.waitForExistence(timeout: 8), app.debugDescription)
-        XCTAssertFalse(citation.exists && citation.isHittable)
-        sources.tap()
+        // A passage already linked inline as a footnote is not repeated in a "found N passages" list.
+        let citation = app.links["〔原文 1〕"]
         XCTAssertTrue(citation.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertFalse(app.buttons["找到 1 段相关原文"].exists)
         citation.tap()
         XCTAssertTrue(app.staticTexts["reading.highlight"].waitForExistence(timeout: 8), app.debugDescription)
         XCTAssertTrue(app.staticTexts["reading.highlight"].label.contains("草倒向同一侧"))
@@ -432,7 +544,16 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         app.buttons["reading.quote"].tap()
         let input = app.descendants(matching: .any).matching(identifier: "chatComposer.input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 8))
-        XCTAssertEqual(app.staticTexts["chatComposer.quote"].label, "路边的草倒向同一侧")
+        let quote = app.staticTexts["chatComposer.quote"]
+        XCTAssertEqual(quote.label, "路边的草倒向同一侧")
+        XCTAssertTrue(input.isHittable)
+        XCTAssertGreaterThanOrEqual(input.frame.minY, quote.frame.maxY)
+        XCTAssertLessThan(input.frame.minY - quote.frame.maxY, 80, "The quote should stay next to the input instead of filling the conversation.")
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            app.openWorkspaceDrawerIfNeeded()
+            XCTAssertTrue(app.navigationBars["历史"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        }
     }
 
     func testInlineCitationOpensItsPassageWithoutExpandingRetrievedSources() {

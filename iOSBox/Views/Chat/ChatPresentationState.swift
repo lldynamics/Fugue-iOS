@@ -16,7 +16,6 @@ enum ChatActiveSheet: Identifiable, Equatable {
     case search
     case modelSetup
     case audioTranscription
-    case imageGeneration
     case synthesis(UUID)
     case shareFile(URL)
 
@@ -35,7 +34,6 @@ enum ChatActiveSheet: Identifiable, Equatable {
         case .search: return "search"
         case .modelSetup: return "modelSetup"
         case .audioTranscription: return "audioTranscription"
-        case .imageGeneration: return "imageGeneration"
         case .synthesis(let groupID): return "synthesis-\(groupID.uuidString)"
         case .shareFile(let url): return "share-\(url.absoluteString)"
         }
@@ -66,9 +64,5 @@ struct MessageRowActions {
     var onCompareWithModel: ((ResolvedModelTarget) -> Void)? = nil
     var onMentionMember: ((UUID) -> Void)? = nil
     var onDeleteMessage: (() -> Void)? = nil
-    var onGenerateFlashcards: (() -> Void)? = nil
-    var onGenerateQuiz: (() -> Void)? = nil
-    var onExtractSchedule: (() -> Void)? = nil
     var onToggleSpeak: (() -> Void)? = nil
-    var onSelectQuizOption: ((UUID, Int) -> Void)? = nil
 }

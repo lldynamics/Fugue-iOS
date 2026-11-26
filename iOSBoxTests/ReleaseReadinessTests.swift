@@ -26,30 +26,25 @@ final class ReleaseReadinessTests: XCTestCase {
     func testRecoveryModeRejectsAllImportsBeforeDatabaseSidecarsOrCredentials() throws {
         let source = try container()
         source.mainContext.insert(Conversation(title: "Read me"))
-        let card = StudyFlashcard(deckName: "Shelf", front: "Question", back: "Answer")
-        var data = try BackupService.makeArchive(context: source.mainContext, flashcardStore: FlashcardStore(fileURL: nil))
-        data.flashcards = [card]
+        let data = try BackupService.makeArchive(context: source.mainContext)
         let recovered = try PersistenceController.makeRecoveryContainer(schema: Schema(versionedSchema: CurrentSchema.self))
         let context = recovered.mainContext
-        let cards = FlashcardStore(fileURL: nil)
-        XCTAssertThrowsError(try BackupService.apply(.full(data), to: context, flashcardStore: cards))
-        XCTAssertThrowsError(try BackupService.apply(.legacy([]), to: context, flashcardStore: cards))
+        XCTAssertThrowsError(try BackupService.apply(.full(data), to: context))
+        XCTAssertThrowsError(try BackupService.apply(.legacy([]), to: context))
         let encrypted = EncryptedBackupService.FullPayload(archive: data, providerSecrets: [], tavilyAPIKey: "fixture")
-        XCTAssertThrowsError(try EncryptedBackupService.applyDecryptedPayload(encrypted, to: context, flashcardStore: cards) { _, _ in
+        XCTAssertThrowsError(try EncryptedBackupService.applyDecryptedPayload(encrypted, to: context) { _, _ in
             XCTFail("Keychain wrote in recovery mode"); return false
         })
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<Conversation>()), 0)
-        XCTAssertTrue(cards.cards.isEmpty)
-        XCTAssertThrowsError(try BackupService.makeArchive(context: context, flashcardStore: cards))
-        XCTAssertThrowsError(try EncryptedBackupService.makeExportPayload(context: context, flashcardStore: cards))
+        XCTAssertThrowsError(try BackupService.makeArchive(context: context))
+        XCTAssertThrowsError(try EncryptedBackupService.makeExportPayload(context: context))
         let disk = try directory().appendingPathComponent("library.store")
         do {
             let target = try container(at: disk)
-            XCTAssertEqual(try BackupService.apply(.full(data), to: target.mainContext, flashcardStore: cards).conversations, 1)
+            XCTAssertEqual(try BackupService.apply(.full(data), to: target.mainContext).conversations, 1)
         }
         let reopened = try container(at: disk)
         XCTAssertEqual(try reopened.mainContext.fetch(FetchDescriptor<Conversation>()).first?.title, "Read me")
-        XCTAssertEqual(cards.cards.map(\.id), [card.id])
     }
 
     private func payload(for provider: ProviderConfig, header: CustomHeader) -> EncryptedBackupService.FullPayload {
@@ -102,9 +97,8 @@ final class ReleaseReadinessTests: XCTestCase {
         let header = CustomHeader(key: "X-Test", value: "", isSecret: true)
         var data = payload(for: local, header: header)
         data.tavilyAPIKey = "search"
-        data.personaXBearerToken = "feed"
         let first = try EncryptedBackupService.applyDecryptedPayload(data, to: db.mainContext) { _, _ in false }
-        XCTAssertEqual(first.failedCredentialWrites, 5)
+        XCTAssertEqual(first.failedCredentialWrites, 4)
         XCTAssertTrue(first.hasWarnings)
         let restored = try XCTUnwrap(db.mainContext.fetch(FetchDescriptor<ProviderConfig>()).first)
         XCTAssertFalse(restored.isEnabled)
@@ -114,7 +108,7 @@ final class ReleaseReadinessTests: XCTestCase {
             if saved[account] == nil { saved[account] = value }; return true
         }
         XCTAssertFalse(retry.hasWarnings)
-        XCTAssertEqual(saved.count, 6)
+        XCTAssertEqual(saved.count, 5)
         XCTAssertEqual(saved[local.id.uuidString], "original")
         XCTAssertEqual(saved[restored.credentialID.uuidString], "local")
         XCTAssertEqual(try db.mainContext.fetchCount(FetchDescriptor<ProviderConfig>()), 1)
@@ -148,49 +142,6 @@ final class ReleaseReadinessTests: XCTestCase {
         XCTAssertEqual(ready.map(\.modelID), ["premium"])
         try ProviderModelCatalog.save([high, low], to: provider, in: db.mainContext)
         XCTAssertEqual(ProviderConfig.readyTargets(in: [provider]).first?.modelID, "basic")
-    }
-
-    func testFlashcardWriteFailurePreservesCardsReviewAndBackupRetry() throws {
-        let folder = try directory(), parent = folder.appendingPathComponent("store")
-        let file = parent.appendingPathComponent("cards.json")
-        let store = FlashcardStore(fileURL: file)
-        let card = try XCTUnwrap(store.addCard(deckName: "A", front: "Q", back: "A"))
-        let original = folder.appendingPathComponent("original")
-        try FileManager.default.moveItem(at: parent, to: original)
-        try Data("blocked".utf8).write(to: parent)
-        let saved = store.cards
-        XCTAssertThrowsError(try store.addCard(deckName: "B", front: "New", back: "A"))
-        XCTAssertThrowsError(try store.updateCard(id: card.id, deckName: "Edit", front: "Edit", back: "Edit", hint: nil))
-        XCTAssertThrowsError(try store.recordReview(cardID: card.id, rating: .easy))
-        XCTAssertThrowsError(try store.deleteDeck("A"))
-        XCTAssertEqual(store.cards, saved)
-        var data = archive
-        data.flashcards = [StudyFlashcard(deckName: "B", front: "New", back: "A")]
-        let db = try container()
-        let result = try BackupService.apply(.full(data), to: db.mainContext, flashcardStore: store)
-        XCTAssertTrue(result.flashcardRestoreFailed)
-        XCTAssertEqual(result.flashcards, 0)
-        try FileManager.default.removeItem(at: parent)
-        try FileManager.default.moveItem(at: original, to: parent)
-        XCTAssertEqual(try BackupService.apply(.full(data), to: db.mainContext, flashcardStore: store).flashcards, 1)
-        XCTAssertEqual(try BackupService.apply(.full(data), to: db.mainContext, flashcardStore: store).flashcards, 0)
-        XCTAssertEqual(Set(FlashcardStore(fileURL: file).cards.map(\.id)), Set(store.cards.map(\.id)))
-    }
-
-    func testCorruptFlashcardsStayIntactUntilExplicitRecovery() throws {
-        let folder = try directory(), file = folder.appendingPathComponent("cards.json")
-        let original = Data("incomplete".utf8)
-        try original.write(to: file)
-        let store = FlashcardStore(fileURL: file)
-        XCTAssertEqual(store.loadIssue, .damaged)
-        XCTAssertThrowsError(try store.addCard(deckName: "B", front: "New", back: "A"))
-        XCTAssertEqual(try Data(contentsOf: file), original)
-        try store.preserveDamagedLibrary()
-        let copy = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).first)
-        XCTAssertNotEqual(copy, file)
-        XCTAssertEqual(try Data(contentsOf: copy), original)
-        try store.addCard(deckName: "B", front: "New", back: "A")
-        XCTAssertEqual(FlashcardStore(fileURL: file).cards.count, 1)
     }
 }
 

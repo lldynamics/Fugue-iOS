@@ -7,12 +7,11 @@ struct AssistanceSettings: Codable, Equatable {
     var codeTarget: ResolvedModelTarget?
     var fallbackEnabled = false
     var fallbackTargets: [ResolvedModelTarget] = []
+    var fallbackOnExtendedErrors = false
     var enablePromptCaching = true
-    var blindArenaMode = false
     var enableAgentTools = false
     var enableNativeGrounding = false
     var autoGenerateTitle = false
-    var studyCoachMode: StudyCoachMode = .off
     var knowledgeVolumeIDs: [UUID] = []
     var isGroupMode = false
     var bookFriend: BookFriend?
@@ -32,7 +31,6 @@ struct AssistanceSettings: Codable, Equatable {
         fallbackEnabled: Bool = false,
         fallbackTargets: [ResolvedModelTarget] = [],
         enablePromptCaching: Bool = true,
-        blindArenaMode: Bool = false,
         enableAgentTools: Bool = false,
         autoGenerateTitle: Bool = false,
         isGroupMode: Bool = false,
@@ -49,7 +47,6 @@ struct AssistanceSettings: Codable, Equatable {
         self.fallbackEnabled = fallbackEnabled
         self.fallbackTargets = fallbackTargets
         self.enablePromptCaching = enablePromptCaching
-        self.blindArenaMode = blindArenaMode
         self.enableAgentTools = enableAgentTools
         self.autoGenerateTitle = autoGenerateTitle
         self.isGroupMode = isGroupMode
@@ -68,12 +65,11 @@ struct AssistanceSettings: Codable, Equatable {
         codeTarget = try c.decodeIfPresent(ResolvedModelTarget.self, forKey: .codeTarget)
         fallbackEnabled = try c.decodeIfPresent(Bool.self, forKey: .fallbackEnabled) ?? false
         fallbackTargets = try c.decodeIfPresent([ResolvedModelTarget].self, forKey: .fallbackTargets) ?? []
+        fallbackOnExtendedErrors = try c.decodeIfPresent(Bool.self, forKey: .fallbackOnExtendedErrors) ?? false
         enablePromptCaching = try c.decodeIfPresent(Bool.self, forKey: .enablePromptCaching) ?? true
-        blindArenaMode = try c.decodeIfPresent(Bool.self, forKey: .blindArenaMode) ?? false
         enableAgentTools = try c.decodeIfPresent(Bool.self, forKey: .enableAgentTools) ?? false
         enableNativeGrounding = try c.decodeIfPresent(Bool.self, forKey: .enableNativeGrounding) ?? false
         autoGenerateTitle = try c.decodeIfPresent(Bool.self, forKey: .autoGenerateTitle) ?? false
-        studyCoachMode = try c.decodeIfPresent(StudyCoachMode.self, forKey: .studyCoachMode) ?? .off
         knowledgeVolumeIDs = try c.decodeIfPresent([UUID].self, forKey: .knowledgeVolumeIDs) ?? []
         isGroupMode = try c.decodeIfPresent(Bool.self, forKey: .isGroupMode) ?? false
         bookFriend = try c.decodeIfPresent(BookFriend.self, forKey: .bookFriend)
@@ -82,7 +78,7 @@ struct AssistanceSettings: Codable, Equatable {
         groupMembers = try c.decodeIfPresent([GroupMember].self, forKey: .groupMembers) ?? []
         groupSpeakingMode = try c.decodeIfPresent(GroupSpeakingMode.self, forKey: .groupSpeakingMode) ?? .smartRelay
         groupSpeechStyle = try c.decodeIfPresent(GroupSpeechStyle.self, forKey: .groupSpeechStyle) ?? .naturalShort
-        groupMaxRelayTurns = min(max(try c.decodeIfPresent(Int.self, forKey: .groupMaxRelayTurns) ?? 3, 1), 6)
+        groupMaxRelayTurns = min(max(try c.decodeIfPresent(Int.self, forKey: .groupMaxRelayTurns) ?? 3, 1), 10)
         groupSplitShortBubbles = try c.decodeIfPresent(Bool.self, forKey: .groupSplitShortBubbles) ?? true
     }
 }
@@ -91,7 +87,6 @@ struct GenerationOptions: Equatable, Sendable {
     var omitMemory = false
     var omitKnowledge = false
     var searchQuery: String?
-    var useDeepResearch = false
     var quotedExcerpt: String?
     var overrideTarget: ResolvedModelTarget?
     var pickedMentions: [PickedGroupMention] = []
@@ -101,33 +96,22 @@ struct GenerationOptions: Equatable, Sendable {
 struct ComposerRequestOptions: Equatable {
     var useSearch = false
     var searchQuery = ""
-    var useDeepResearch = false
     var omitMemory = false
     var omitKnowledge = false
     var temporaryTarget: ResolvedModelTarget?
 
     mutating func setSearch(_ enabled: Bool, draft: String) {
         useSearch = enabled
-        if enabled {
-            useDeepResearch = false
-            if searchQuery.isEmpty { searchQuery = String(draft.prefix(400)) }
-        }
-    }
-
-    mutating func setDeepResearch(_ enabled: Bool) {
-        useDeepResearch = enabled
-        if enabled {
-            useSearch = false
+        if enabled && searchQuery.isEmpty {
+            searchQuery = String(draft.prefix(400))
         }
     }
 
     func forSend(in chat: Conversation, quote: String?) -> GenerationOptions {
-        let allowDeepResearch = useDeepResearch && !chat.isArenaMode && !chat.isGroupMode
-        return GenerationOptions(
+        GenerationOptions(
             omitMemory: omitMemory && chat.assistanceSettings.usePersonalMemory,
             omitKnowledge: omitKnowledge && !chat.assistanceSettings.knowledgeVolumeIDs.isEmpty,
-            searchQuery: (!allowDeepResearch && useSearch) ? searchQuery : nil,
-            useDeepResearch: allowDeepResearch,
+            searchQuery: useSearch ? searchQuery : nil,
             quotedExcerpt: quote,
             overrideTarget: chat.isArenaMode || chat.isGroupMode ? nil : temporaryTarget
         )
@@ -269,8 +253,6 @@ struct AssistanceMetadata: Codable {
     var proposedMemories: [String] = []
     var handledMemories: [String] = []
     var toolCalls: [ToolCallRecord] = []
-    var blindArenaRevealed = false
-    var blindArenaBallot: ArenaBallot?
     var groupMemberID: UUID?
     var groupMemberName: String?
     var groupMemberTitle: String?
@@ -286,12 +268,7 @@ struct AssistanceMetadata: Codable {
     var groupReplyToExcerpt: String?
     var groupReactions: [GroupReaction] = []
     var groupAskedHost = false
-    var generatedFlashcards: [StudyCardDraft] = []
-    var generatedQuiz: StudyQuizBundle?
     var knowledgeEvidence: KnowledgeEvidence?
-    var proposedSchedules: [ProposedScheduleItem] = []
-    var handledScheduleIDs: [UUID] = []
-    var deepResearchTrace: DeepResearchTrace? = nil
 
     init() {}
 
@@ -313,8 +290,6 @@ struct AssistanceMetadata: Codable {
         proposedMemories = try c.decodeIfPresent([String].self, forKey: .proposedMemories) ?? []
         handledMemories = try c.decodeIfPresent([String].self, forKey: .handledMemories) ?? []
         toolCalls = try c.decodeIfPresent([ToolCallRecord].self, forKey: .toolCalls) ?? []
-        blindArenaRevealed = try c.decodeIfPresent(Bool.self, forKey: .blindArenaRevealed) ?? false
-        blindArenaBallot = try c.decodeIfPresent(ArenaBallot.self, forKey: .blindArenaBallot)
         groupMemberID = try c.decodeIfPresent(UUID.self, forKey: .groupMemberID)
         groupMemberName = try c.decodeIfPresent(String.self, forKey: .groupMemberName)
         groupMemberTitle = try c.decodeIfPresent(String.self, forKey: .groupMemberTitle)
@@ -330,12 +305,7 @@ struct AssistanceMetadata: Codable {
         groupReplyToExcerpt = try c.decodeIfPresent(String.self, forKey: .groupReplyToExcerpt)
         groupReactions = try c.decodeIfPresent([GroupReaction].self, forKey: .groupReactions) ?? []
         groupAskedHost = try c.decodeIfPresent(Bool.self, forKey: .groupAskedHost) ?? false
-        generatedFlashcards = try c.decodeIfPresent([StudyCardDraft].self, forKey: .generatedFlashcards) ?? []
-        generatedQuiz = try c.decodeIfPresent(StudyQuizBundle.self, forKey: .generatedQuiz)
         knowledgeEvidence = try c.decodeIfPresent(KnowledgeEvidence.self, forKey: .knowledgeEvidence)
-        proposedSchedules = try c.decodeIfPresent([ProposedScheduleItem].self, forKey: .proposedSchedules) ?? []
-        handledScheduleIDs = try c.decodeIfPresent([UUID].self, forKey: .handledScheduleIDs) ?? []
-        deepResearchTrace = try c.decodeIfPresent(DeepResearchTrace.self, forKey: .deepResearchTrace)
     }
 
     var groupSpeakerName: String? {
@@ -367,10 +337,9 @@ struct AssistanceMetadata: Codable {
         memoryCount > 0 || omittedMemory || omittedKnowledge || requestedSearchQuery != nil || search != nil ||
         routeNotice != nil || !fallbackNotices.isEmpty || isContextDivider || isExcludedFromContext ||
         isBookmarked || quotedExcerpt != nil || !revisions.isEmpty || activeRevisionIndex != nil ||
-        !proposedMemories.isEmpty || !handledMemories.isEmpty || !toolCalls.isEmpty || blindArenaRevealed || blindArenaBallot != nil ||
+        !proposedMemories.isEmpty || !handledMemories.isEmpty || !toolCalls.isEmpty ||
         isPersonaSimulation || personaExcerpts?.isEmpty == false || bookReply != nil || sourceNotice != nil || groupMemberID != nil || groupMemberName != nil || groupReplyToExcerpt != nil ||
-        !groupReactions.isEmpty || groupAskedHost || groupSpeechIntent != nil || !generatedFlashcards.isEmpty || generatedQuiz != nil ||
-        knowledgeEvidence != nil || !proposedSchedules.isEmpty || !handledScheduleIDs.isEmpty || deepResearchTrace != nil
+        !groupReactions.isEmpty || groupAskedHost || groupSpeechIntent != nil || knowledgeEvidence != nil
     }
 }
 
@@ -402,21 +371,32 @@ enum AssistancePolicy {
         return resolve(primary, providers: providers)
     }
 
+    static let maxFallbackTargets = 5
+
     @MainActor
     static func fallbacks(after primary: ResolvedModelTarget, settings: AssistanceSettings,
                           providers: [ProviderConfig], requiresVision: Bool) -> [ResolvedModelTarget] {
         guard settings.fallbackEnabled else { return [] }
         var seen: Set<String> = [primary.id]
-        return settings.fallbackTargets.prefix(3).compactMap { candidate in
+        return settings.fallbackTargets.prefix(maxFallbackTargets).compactMap { candidate in
             guard let resolved = resolve(candidate, providers: providers, requiresVision: requiresVision),
                   seen.insert(resolved.id).inserted else { return nil }
             return resolved
         }
     }
 
-    static func mayFallback(_ error: Error, receivedOutput: Bool, abnormalFinish: Bool) -> Bool {
+    static func mayFallback(
+        _ error: Error,
+        receivedOutput: Bool,
+        abnormalFinish: Bool,
+        includeExtendedErrors: Bool = false
+    ) -> Bool {
         guard !receivedOutput, !abnormalFinish, !(error is CancellationError) else { return false }
-        if case LLMError.httpError(let status, _) = error { return [429, 502, 503, 504, 529].contains(status) }
+        if case LLMError.httpError(let status, _) = error {
+            if [429, 502, 503, 504, 529].contains(status) { return true }
+            if includeExtendedErrors && [402, 404, 500].contains(status) { return true }
+            return false
+        }
         let ns = error as NSError
         return ns.domain == NSURLErrorDomain && ns.code == NSURLErrorTimedOut
     }

@@ -57,7 +57,7 @@ struct MessageAttachment: Codable, Hashable, Identifiable {
 
     var cachedImage: UIImage? {
         guard kind == .image, let b64 = dataBase64, b64.utf8.count <= Self.maximumEncodedImageBytes else { return nil }
-        let key = "\(id.uuidString):\(b64.hashValue)" as NSString
+        let key = "\(id.uuidString):\(byteSize):\(b64.utf8.count):\(b64.prefix(16)):\(b64.suffix(16))" as NSString
         if let hit = Self.imageCache.object(forKey: key) {
             return hit
         }

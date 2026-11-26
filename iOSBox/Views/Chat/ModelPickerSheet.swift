@@ -37,13 +37,13 @@ struct ModelPickerSheet: View {
     let selectSingle: (ResolvedModelTarget) throws -> Void
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.usesPhoneWorkspace) private var usesPhoneWorkspace
 
     @State private var showingSetup = false
     @State private var verified: ResolvedModelTarget?
     @State private var selectionError: String?
     @State private var searchText: String = ""
     @State private var draftArenaTargets: [ResolvedModelTarget] = []
-    @State private var draftBlindMode = false
     @State private var preferences = AppPreferences.shared
     @State private var configuredProviders: [ProviderConfig] = []
 
@@ -79,37 +79,36 @@ struct ModelPickerSheet: View {
                     ContentUnavailableView {
                         Label("尚未配置可用的 API", systemImage: "server.rack")
                     } description: {
-                        Text("请在「设置」中配置 API 连接并启用模型。")
+                        Text("选择服务商并验证连接后，即可在当前对话使用模型。")
                     } actions: {
                         configureButton.buttonStyle(.borderedProminent)
                     }
-                    .background(DS.Surface.grouped)
+                    .background(usesPhoneWorkspace ? DS.Surface.canvas : DS.Surface.grouped)
                 } else {
                     List {
-                        if allEnabledTargets.count < (mode == .arenaMulti ? 2 : 1) {
+                        if !isSearching {
                             Section { configureButton }
-                        }
-                        if mode == .arenaMulti {
-                            Section {
-                                HStack {
-                                    Image(systemName: "bolt.horizontal.circle.fill")
-                                        .foregroundStyle(Color.accentColor)
-                                    Text("勾选 2–4 个模型，发送消息时将同时并发请求并同屏对比结果。")
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
+                            if mode == .arenaMulti {
+                                Section {
+                                    HStack {
+                                        Image(systemName: "bolt.horizontal.circle.fill")
+                                            .foregroundStyle(Color.accentColor)
+                                        Text("勾选 2–4 个模型，发送消息时将同时并发请求并同屏对比结果。")
+                                            .font(.footnote)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                             }
-                        }
-                        Section {
-                            Text("能力是本地标记，可能按名称推测；显示的基础单价不含服务商倍率。")
-                                .font(.footnote).foregroundStyle(.secondary)
+                            Section {
+                                Text("能力是本地标记，可能按名称推测；显示的基础单价不含服务商倍率。")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
                         }
 
                         if isSearching && allEnabledTargets.isEmpty {
                             Section {
                                 Text("暂无可选模型，请在「设置」中启用模型。")
                                     .foregroundStyle(.secondary)
-                                configureButton
                             }
                         } else if isSearching && configuredProviders.allSatisfy({ filterModels($0.enabledModels).isEmpty }) {
                             Section {
@@ -119,15 +118,9 @@ struct ModelPickerSheet: View {
                                     Text("请尝试其他模型名称或 ID。")
                                 } actions: {
                                     Button("清除搜索") { searchText = "" }
+                                        .buttonStyle(.bordered)
                                 }
                                 .accessibilityIdentifier("modelPicker.noMatches")
-                            }
-                        }
-
-                        if mode == .arenaMulti && !isSearching {
-                            Section {
-                                Toggle("双盲对比", isOn: $draftBlindMode)
-                                    .accessibilityIdentifier("modelPicker.blindArena")
                             }
                         }
 
@@ -197,7 +190,7 @@ struct ModelPickerSheet: View {
                         }
                     }
                     .scrollContentBackground(.hidden)
-                    .background(DS.Surface.grouped)
+                    .background(usesPhoneWorkspace ? DS.Surface.canvas : DS.Surface.grouped)
                     .searchable(text: $searchText, prompt: "搜索模型名称或 ID")
                 }
             }
@@ -213,15 +206,14 @@ struct ModelPickerSheet: View {
                             let valid = validTargets(draftArenaTargets)
                             guard valid.count >= 2 else { draftArenaTargets = valid; return }
                             let previous = (conversation.arenaTargetsData, conversation.isArenaMode,
-                                            conversation.isGroupMode, conversation.assistanceSettingsData)
+                                            conversation.isGroupMode)
                             conversation.arenaTargets = valid
                             conversation.isGroupMode = false
                             conversation.isArenaMode = true
-                            conversation.assistanceSettings.blindArenaMode = draftBlindMode
                             do { try modelContext.save() }
                             catch {
                                 (conversation.arenaTargetsData, conversation.isArenaMode,
-                                 conversation.isGroupMode, conversation.assistanceSettingsData) = previous
+                                 conversation.isGroupMode) = previous
                                 selectionError = error.localizedDescription
                                 return
                             }
@@ -244,7 +236,6 @@ struct ModelPickerSheet: View {
             .onAppear {
                 reloadProviders()
                 if mode == .arenaMulti {
-                    draftBlindMode = conversation.assistanceSettings.blindArenaMode
                     let validExisting = validTargets(conversation.arenaTargets)
                     if !validExisting.isEmpty {
                         draftArenaTargets = validExisting
@@ -260,7 +251,7 @@ struct ModelPickerSheet: View {
     }
 
     private var configureButton: some View {
-        Button { showingSetup = true } label: { Label("配置 API 与模型", systemImage: "plus.circle") }
+        Button { showingSetup = true } label: { Label("连接模型", systemImage: "plus.circle") }
             .accessibilityIdentifier("modelPicker.configure")
     }
 

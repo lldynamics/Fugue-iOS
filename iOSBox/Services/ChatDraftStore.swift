@@ -1,8 +1,9 @@
 import Foundation
 import Observation
+import os
 import UIKit
 
-struct ChatDraft: Codable {
+struct ChatDraft: Codable, Equatable {
     var text = ""
     var attachments: [MessageAttachment] = []
     var quotedText: String?
@@ -76,23 +77,81 @@ final class ChatDraftStore {
         return ChatDraftStore(directory: URL.applicationSupportDirectory.appendingPathComponent("Drafts"))
     }()
     private let directory: URL
-    // Keep failed writes in memory for retry, but do not retain every saved attachment forever.
+    private nonisolated let ioQueue = DispatchQueue(label: "com.iosbox.chatDraftStore.io", qos: .userInitiated)
+    private nonisolated let writeGenerations = OSAllocatedUnfairLock(initialState: [UUID: UInt64]())
+    // Keep failed or in-flight async writes in memory so reads immediately see the latest state.
     @ObservationIgnored private var unsaved: [UUID: ChatDraft] = [:]
     private class WeakState { weak var value: ChatDraftState?; init(_ value: ChatDraftState) { self.value = value } }
     @ObservationIgnored private var states: [UUID: WeakState] = [:]
     private(set) var previews: [UUID: ChatDraftPreview] = [:]
+    private(set) var draftDates: [UUID: Date] = [:]
 
     init(directory: URL) { self.directory = directory }
+
+    private nonisolated func nextGeneration(for id: UUID) -> UInt64 {
+        writeGenerations.withLock { map in
+            let next = (map[id] ?? 0) &+ 1
+            map[id] = next
+            return next
+        }
+    }
+
+    private nonisolated func isCurrentGeneration(_ generation: UInt64, for id: UUID) -> Bool {
+        writeGenerations.withLock { $0[id] == generation }
+    }
+
+    private nonisolated static func writeDraftToDisk(_ draft: ChatDraft, directory: URL, url: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if draft.text.isEmpty && draft.attachments.isEmpty && draft.quotedText == nil {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+        } else {
+            try JSONEncoder().encode(draft).write(
+                to: url,
+                options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+            )
+        }
+    }
+
+    fileprivate func hasPendingWrite(for id: UUID) -> Bool { unsaved[id] != nil }
+
+    /// Existing drafts have no timestamp in their JSON. Read the dates of actual draft files,
+    /// so an unfinished reply in an old conversation can still be the first one in the inbox.
+    func loadInboxPreviews() async {
+        let directory = directory
+        let known = previews
+        let entries = await Task.detached(priority: .utility) {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.contentModificationDateKey], options: .skipsHiddenFiles
+            )) ?? []
+            return files.compactMap { url -> (UUID, Date, ChatDraftPreview)? in
+                guard url.pathExtension == "json", let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
+                      let date = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                      let preview = known[id] ?? Self.readPreview(at: url), preview != .empty else { return nil }
+                return (id, date, preview)
+            }
+        }.value
+        guard !Task.isCancelled else { return }
+        for (id, date, preview) in entries where previews[id] != .empty && draftDates[id] == nil {
+            previews[id] = preview
+            draftDates[id] = date
+        }
+    }
+
+    private nonisolated static func readPreview(at url: URL) -> ChatDraftPreview? {
+        do {
+            return try JSONDecoder().decode(ChatDraftPreview.self, from: Data(contentsOf: url, options: .mappedIfSafe))
+        } catch CocoaError.fileReadNoSuchFile {
+            return .empty
+        } catch { return nil }
+    }
 
     func loadPreview(for id: UUID) async {
         guard previews[id] == nil else { return }
         let url = fileURL(id)
         let preview = await Task.detached(priority: .utility) { () -> ChatDraftPreview? in
-            do {
-                return try JSONDecoder().decode(ChatDraftPreview.self, from: Data(contentsOf: url, options: .mappedIfSafe))
-            } catch CocoaError.fileReadNoSuchFile {
-                return .empty
-            } catch { return nil }
+            Self.readPreview(at: url)
         }.value
         // A save or deletion on the main actor takes precedence over an older disk read.
         if !Task.isCancelled, previews[id] == nil, let preview { previews[id] = preview }
@@ -122,16 +181,13 @@ final class ChatDraftStore {
     func save(_ draft: ChatDraft, for id: UUID) throws {
         let preview = ChatDraftPreview(text: draft.text, attachmentCount: draft.attachments.count, quotedText: draft.quotedText)
         if previews[id] != preview { previews[id] = preview }
+        draftDates[id] = preview == .empty ? nil : Date()
+        _ = nextGeneration(for: id)
+        let dir = directory
+        let url = fileURL(id)
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = fileURL(id)
-            if draft.text.isEmpty && draft.attachments.isEmpty && draft.quotedText == nil {
-                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
-            } else {
-                try JSONEncoder().encode(draft).write(
-                    to: url,
-                    options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
-                )
+            try ioQueue.sync {
+                try Self.writeDraftToDisk(draft, directory: dir, url: url)
             }
             unsaved[id] = nil
         } catch {
@@ -140,17 +196,62 @@ final class ChatDraftStore {
         }
     }
 
+    /// Encodes and writes the draft on a serial background I/O queue so large image/PDF drafts
+    /// never block `@MainActor` during typing autosave, while preserving strict linearizability
+    /// against synchronous `save`, `remove`, and `load` calls.
+    func saveAsync(_ draft: ChatDraft, for id: UUID) async throws {
+        let preview = ChatDraftPreview(text: draft.text, attachmentCount: draft.attachments.count, quotedText: draft.quotedText)
+        if previews[id] != preview { previews[id] = preview }
+        draftDates[id] = preview == .empty ? nil : Date()
+        unsaved[id] = draft
+        let generation = nextGeneration(for: id)
+        let dir = directory
+        let url = fileURL(id)
+        let generations = writeGenerations
+
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                ioQueue.async {
+                    let isCurrent = generations.withLock { $0[id] == generation }
+                    guard isCurrent else {
+                        continuation.resume(returning: ())
+                        return
+                    }
+                    do {
+                        try Self.writeDraftToDisk(draft, directory: dir, url: url)
+                        continuation.resume(returning: ())
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+            if isCurrentGeneration(generation, for: id) {
+                unsaved[id] = nil
+            }
+        } catch {
+            // If a newer save/remove already superseded this write, do not report a stale error.
+            guard isCurrentGeneration(generation, for: id) else { return }
+            unsaved[id] = draft
+            throw error
+        }
+    }
+
     /// Quarantines a damaged draft file alongside `Drafts/` without silent data loss, allowing
     /// the user to unblock sending in the conversation.
     func quarantineAndReset(_ id: UUID) throws {
+        _ = nextGeneration(for: id)
+        let dir = directory
         let url = fileURL(id)
-        if FileManager.default.fileExists(atPath: url.path) {
-            let stamp = Int(Date().timeIntervalSince1970)
-            let archived = directory.appendingPathComponent("\(id.uuidString).corrupt-\(stamp).json")
-            try FileManager.default.moveItem(at: url, to: archived)
+        try ioQueue.sync {
+            if FileManager.default.fileExists(atPath: url.path) {
+                let stamp = Int(Date().timeIntervalSince1970)
+                let archived = dir.appendingPathComponent("\(id.uuidString).corrupt-\(stamp).json")
+                try FileManager.default.moveItem(at: url, to: archived)
+            }
         }
         unsaved[id] = nil
         previews[id] = .empty
+        draftDates[id] = nil
     }
 
     func remove(_ id: UUID) throws {
@@ -158,9 +259,15 @@ final class ChatDraftStore {
         states[id]?.value?.invalidate()
         states[id] = nil
         unsaved[id] = nil
+        _ = nextGeneration(for: id)
         let url = fileURL(id)
-        if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+        try ioQueue.sync {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+        }
         previews[id] = .empty
+        draftDates[id] = nil
     }
 
     private func fileURL(_ id: UUID) -> URL { directory.appendingPathComponent(id.uuidString + ".json") }
@@ -183,6 +290,7 @@ final class ChatDraftState {
     private(set) var isDeleted = false
     private let id: UUID
     private let store: ChatDraftStore
+    @ObservationIgnored private var lastSavedDraft: ChatDraft?
     @ObservationIgnored private var autosaveTask: Task<Void, Never>?
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
 
@@ -215,6 +323,7 @@ final class ChatDraftState {
         guard !isLoaded, !isDeleted else { return }
         do {
             let draft = try store.load(id)
+            lastSavedDraft = draft
             text = draft.text
             pickedMentions = draft.pickedMentions
             savedText = draft.text
@@ -232,6 +341,7 @@ final class ChatDraftState {
         guard !isDeleted else { return }
         do {
             try store.quarantineAndReset(id)
+            lastSavedDraft = ChatDraft()
             text = ""
             attachments = []
             quotedText = nil
@@ -246,12 +356,30 @@ final class ChatDraftState {
         autosaveTask?.cancel()
         autosaveTask = nil
         guard isLoaded, !isDeleted else { return }
+        let snapshot = ChatDraft(text: text, attachments: attachments, quotedText: quotedText, pickedMentions: pickedMentions)
+        guard snapshot != lastSavedDraft || persistenceError != nil || store.hasPendingWrite(for: id) else { return }
         do {
-            try store.save(.init(text: text, attachments: attachments, quotedText: quotedText,
-                                 pickedMentions: pickedMentions), for: id)
+            try store.save(snapshot, for: id)
+            lastSavedDraft = snapshot
             savedText = text
             persistenceError = nil
         } catch { persistenceError = error.localizedDescription }
+    }
+
+    func saveAsync() async {
+        guard isLoaded, !isDeleted else { return }
+        let snapshot = ChatDraft(text: text, attachments: attachments, quotedText: quotedText, pickedMentions: pickedMentions)
+        guard snapshot != lastSavedDraft || persistenceError != nil || store.hasPendingWrite(for: id) else { return }
+        do {
+            try await store.saveAsync(snapshot, for: id)
+            guard !isDeleted else { return }
+            lastSavedDraft = snapshot
+            savedText = snapshot.text
+            persistenceError = nil
+        } catch {
+            guard !isDeleted else { return }
+            persistenceError = error.localizedDescription
+        }
     }
 
     func insertGroupMention(_ token: String, memberID: UUID? = nil) {
@@ -273,7 +401,7 @@ final class ChatDraftState {
         autosaveTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(delayMilliseconds))
             guard !Task.isCancelled, let self, self.isLoaded, !self.isDeleted else { return }
-            self.save()
+            await self.saveAsync()
         }
     }
 
@@ -291,6 +419,7 @@ final class ChatDraftState {
         autosaveTask?.cancel()
         autosaveTask = nil
         isDeleted = true
+        lastSavedDraft = nil
         text = ""
         attachments = []
         quotedText = nil

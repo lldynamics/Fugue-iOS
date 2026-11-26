@@ -39,7 +39,7 @@ enum MeetingMinutesPromptBuilder {
             要求：
             1. **一句话结论 (TL;DR)**：提炼核心议题与最终结论。
             2. **关键讨论要点**：按主题分点列出重要信息、共识与分歧（去除口水话与重复）。
-            3. **待办行动项与日程**：列出具体待办、负责人（如提及），若涉及具体时间或截止日期请换算为明确日期时间格式（例如 `YYYY-MM-DD HH:mm` 或 `YYYY-MM-DD`），方便一键写入系统日历。
+            3. **待办行动项与日程**：列出具体待办、负责人（如提及），若涉及具体时间或截止日期请换算为明确日期时间格式（例如 `YYYY-MM-DD HH:mm` 或 `YYYY-MM-DD`）。
             4. **待确认问题**：如有遗留问题请单独标出；全篇请保持客观、忠于原文。
 
             <transcript>
@@ -131,7 +131,11 @@ struct CloudTTSRequest: Sendable {
 
 private enum AudioHTTPExecutor {
     static let defaultSession: URLSession = {
-        let config = URLSessionConfiguration.default
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.urlCredentialStorage = nil
+        config.urlCache = nil
         config.timeoutIntervalForRequest = 120
         config.timeoutIntervalForResource = 600
         return URLSession(configuration: config)
@@ -152,7 +156,7 @@ private enum AudioHTTPExecutor {
             throw LLMError.invalidURL(baseURL)
         }
 
-        let orderedKeys = keyRouter.orderedKeys(
+        let orderedKeys = try keyRouter.orderedKeys(
             from: [primaryKey] + extraKeys,
             protocolType: .openAICompatible,
             baseURL: baseURL

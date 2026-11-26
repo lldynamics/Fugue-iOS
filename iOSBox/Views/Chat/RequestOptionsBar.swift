@@ -1,132 +1,6 @@
 import SwiftUI
 import SwiftData
 
-struct RequestOptionsBar: View {
-    @Bindable var conversation: Conversation
-    let providers: [ProviderConfig]
-    let text: String
-    let attachments: [MessageAttachment]
-    var quotedText: String? = nil
-    let options: ComposerRequestOptions
-    let onOpenOptions: () -> Void
-
-    @State private var debouncedText: String = ""
-
-    private var activeOptions: [String] {
-        var labels: [String] = []
-        if options.useDeepResearch { labels.append(String(localized: "深度研究")) }
-        if options.useSearch { labels.append(String(localized: "本次联网")) }
-        if options.omitMemory && conversation.assistanceSettings.usePersonalMemory {
-            labels.append(String(localized: "本次不使用记忆"))
-        }
-        if !conversation.isArenaMode && !conversation.isGroupMode && conversation.assistanceSettings.enableAgentTools {
-            labels.append(String(localized: "本会话允许工具"))
-        }
-        return labels
-    }
-
-    private var hasDraftContent: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !attachments.isEmpty
-            || (quotedText?.isEmpty == false)
-    }
-
-    private var effectiveTarget: ResolvedModelTarget? {
-        if let target = options.forSend(in: conversation, quote: quotedText).overrideTarget { return target }
-        guard let primary = conversation.primaryTarget else { return nil }
-        if conversation.assistanceSettings.automaticRouting {
-            return AssistancePolicy.route(
-                primary: primary,
-                settings: conversation.assistanceSettings,
-                text: text,
-                attachments: attachments,
-                providers: providers
-            ) ?? primary
-        }
-        return primary
-    }
-
-    var body: some View {
-        let routedTarget: ResolvedModelTarget? = {
-            guard !conversation.isArenaMode, !conversation.isGroupMode, options.temporaryTarget == nil,
-                  conversation.assistanceSettings.automaticRouting,
-                  let primary = conversation.primaryTarget else { return nil }
-            return AssistancePolicy.route(
-                primary: primary,
-                settings: conversation.assistanceSettings,
-                text: text,
-                attachments: attachments,
-                providers: providers
-            )
-        }()
-        let routingUnavailable = !conversation.isArenaMode && !conversation.isGroupMode && options.temporaryTarget == nil
-            && conversation.assistanceSettings.automaticRouting && conversation.primaryTarget != nil && routedTarget == nil
-        let skippingMemory = options.omitMemory && conversation.assistanceSettings.usePersonalMemory
-        let showBar = hasDraftContent || routedTarget != nil || routingUnavailable || skippingMemory
-
-        if showBar {
-            HStack(spacing: 8) {
-                if skippingMemory {
-                    Button(action: onOpenOptions) {
-                        Text("本次不使用记忆")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                if routingUnavailable {
-                    Text("路由模型不可用，请检查会话参数中的能力路由。")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                        .lineLimit(1)
-                } else if let target = routedTarget, target.id != conversation.primaryTarget?.id {
-                    Text("本次模型：\(target.providerName) · \(target.modelDisplayName)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 0)
-
-                if hasDraftContent {
-                    let textForEstimate = text.count <= 96 ? text : (debouncedText.isEmpty ? text : debouncedText)
-                    let estimate = TokenEstimator.estimateUpcomingInput(
-                        conversation: conversation,
-                        providers: providers,
-                        draftText: textForEstimate,
-                        attachments: attachments,
-                        quotedText: quotedText,
-                        target: effectiveTarget,
-                        omitMemory: skippingMemory, omitKnowledge: options.omitKnowledge
-                    )
-                    HStack(spacing: 4) {
-                        Text("预估输入 ~\(estimate.inputTokens) tok")
-                        if let cost = estimate.estimatedCostText {
-                            Text("· 约 \(cost)")
-                        }
-                    }
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 5)
-            .padding(.bottom, 2)
-            .task(id: text) {
-                if text.count <= 96 {
-                    debouncedText = text
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(120))
-                if !Task.isCancelled {
-                    debouncedText = text
-                }
-            }
-        }
-    }
-}
-
 struct BoundKnowledgeMenu: View {
     let ids: [UUID]
     @Binding var omitted: Bool
@@ -159,7 +33,7 @@ struct BoundKnowledgeMenu: View {
                 }
             }
             .font(.subheadline.weight(.medium))
-            .foregroundStyle(omitted ? Color.secondary : AppPreferences.shared.accentTheme.readableText)
+            .foregroundStyle(omitted ? Color.secondary : Color.primary)
             .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
             .contentShape(Rectangle())
         }
@@ -171,45 +45,32 @@ struct BoundKnowledgeMenu: View {
 struct ComposerOptionsSheet: View {
     @Bindable var conversation: Conversation
     @Binding var options: ComposerRequestOptions
-    let draftText: String
     let targets: [ResolvedModelTarget]
-    let onOpenArena: () -> Void
     let onOpenSettings: () -> Void
     @Environment(\.dismiss) private var dismiss
+
+    private var canSelectTemporaryTarget: Bool {
+        !conversation.isArenaMode && !conversation.isGroupMode && !targets.isEmpty
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("仅本条消息") {
-                    if !conversation.isArenaMode && !conversation.isGroupMode {
-                        Toggle("深度研究（多轮检索 + 网页深读）", isOn: Binding(
-                            get: { options.useDeepResearch },
-                            set: { options.setDeepResearch($0) }
-                        ))
-                        if options.useDeepResearch {
-                            Text("自动拆解研究子问题、并发联网检索、深读高相关网页并输出带来源引用的长报告。")
-                                .font(.footnote).foregroundStyle(.secondary)
+                if !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty ||
+                    conversation.assistanceSettings.usePersonalMemory || canSelectTemporaryTarget {
+                    Section("仅本条消息") {
+                        if !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty {
+                            Toggle("本次不使用知识库", isOn: $options.omitKnowledge)
                         }
-                    }
-                    Toggle("联网搜索", isOn: Binding(get: { options.useSearch }, set: {
-                        options.setSearch($0, draft: draftText)
-                    }))
-                    if options.useSearch {
-                        TextField("搜索词（仅发送此内容给 Tavily）", text: $options.searchQuery, axis: .vertical)
-                        Text("搜索词将发送给 Tavily；来源摘要将发送给回答模型。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty {
-                        Toggle("本次不使用知识库", isOn: $options.omitKnowledge)
-                    }
-                    if conversation.assistanceSettings.usePersonalMemory {
-                        Toggle("本次不使用记忆", isOn: $options.omitMemory)
-                    }
-                    if !conversation.isArenaMode && !conversation.isGroupMode && !targets.isEmpty {
-                        Picker("本次临时指定模型", selection: $options.temporaryTarget) {
-                            Text("恢复默认模型").tag(ResolvedModelTarget?.none)
-                            ForEach(targets) { target in
-                                Text("\(target.providerName) · \(target.modelDisplayName)").tag(Optional(target))
+                        if conversation.assistanceSettings.usePersonalMemory {
+                            Toggle("本次不使用记忆", isOn: $options.omitMemory)
+                        }
+                        if canSelectTemporaryTarget {
+                            Picker("本次临时指定模型", selection: $options.temporaryTarget) {
+                                Text("恢复默认模型").tag(ResolvedModelTarget?.none)
+                                ForEach(targets) { target in
+                                    Text("\(target.providerName) · \(target.modelDisplayName)").tag(Optional(target))
+                                }
                             }
                         }
                     }
@@ -233,12 +94,8 @@ struct ComposerOptionsSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    if !conversation.isGroupMode {
-                        if conversation.isArenaMode {
-                            Button("退出对比") { conversation.isArenaMode = false }
-                        } else {
-                            Button("多模型对比", action: onOpenArena)
-                        }
+                    if conversation.isArenaMode {
+                        Button("退出对比") { conversation.isArenaMode = false }
                     }
                     Button("系统提示词与参数", action: onOpenSettings)
                 }
@@ -257,9 +114,7 @@ struct AssistanceEvidenceView: View {
     var message: ChatMessage? = nil
     var showsKnowledge = true
     @Environment(\.modelContext) private var modelContext
-    @State private var scheduleError: String?
     @State private var memoryLimitError: String?
-    @State private var savedScheduleToast: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -270,10 +125,7 @@ struct AssistanceEvidenceView: View {
                 Text(notice).font(.caption2).foregroundStyle(.secondary)
             }
             ForEach(Array(metadata.fallbackNotices.enumerated()), id: \.offset) { _, notice in
-                Label(notice, systemImage: "arrow.triangle.branch").font(.caption2).foregroundStyle(.orange)
-            }
-            if let trace = metadata.deepResearchTrace {
-                DeepResearchTraceCard(trace: trace)
+                Label(notice, systemImage: "arrow.triangle.branch").font(.caption2).foregroundStyle(DS.StatusText.warning)
             }
             if !metadata.toolCalls.isEmpty {
                 DisclosureGroup {
@@ -359,66 +211,6 @@ struct AssistanceEvidenceView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            if let savedScheduleToast {
-                Label(savedScheduleToast, systemImage: "checkmark.circle.fill")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.green)
-            }
-
-            if let message, !metadata.proposedSchedules.isEmpty {
-                ForEach(metadata.proposedSchedules) { item in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 6) {
-                            Label(item.kind.badgeTitle, systemImage: item.kind.symbol)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.teal)
-                            if let dt = item.scheduledAt {
-                                Text(dt, format: .dateTime.month().day().hour().minute())
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Text(item.title)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.primary)
-                        if !item.notes.isEmpty {
-                            Text(item.notes)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        HStack(spacing: 8) {
-                            Button(item.kind.confirmButtonTitle) {
-                                Task { @MainActor in
-                                    do {
-                                        try await ChatEngine.shared.confirmScheduleProposal(item, on: message, context: modelContext)
-                                        AppPreferences.shared.triggerLightHaptic()
-                                        savedScheduleToast = item.kind == .reminder
-                                            ? String(localized: "已加入系统提醒事项")
-                                            : String(localized: "已写入系统日历")
-                                    } catch {
-                                        scheduleError = error.localizedDescription
-                                    }
-                                }
-                            }
-                            .font(.caption2.weight(.semibold))
-                            .buttonStyle(.borderedProminent)
-                            .tint(.teal)
-                            .controlSize(.mini)
-
-                            Button("忽略") {
-                                ChatEngine.shared.dismissScheduleProposal(item, on: message, context: modelContext)
-                            }
-                            .font(.caption2)
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                        }
-                    }
-                    .padding(9)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.teal.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-            }
-
             if let message, !metadata.proposedMemories.isEmpty {
                 ForEach(metadata.proposedMemories, id: \.self) { fact in
                     VStack(alignment: .leading, spacing: 6) {
@@ -452,121 +244,10 @@ struct AssistanceEvidenceView: View {
                 }
             }
         }
-        .alert("日程提示", isPresented: Binding(get: { scheduleError != nil }, set: { if !$0 { scheduleError = nil } })) {
-            Button("好", role: .cancel) { scheduleError = nil }
-        } message: {
-            Text(verbatim: scheduleError ?? "")
-        }
         .alert("记忆容量已满", isPresented: Binding(get: { memoryLimitError != nil }, set: { if !$0 { memoryLimitError = nil } })) {
             Button("好", role: .cancel) { memoryLimitError = nil }
         } message: {
             Text(verbatim: memoryLimitError ?? "")
-        }
-    }
-}
-
-private struct DeepResearchTraceCard: View {
-    let trace: DeepResearchTrace
-    @State private var isExpanded: Bool
-
-    init(trace: DeepResearchTrace) {
-        self.trace = trace
-        _isExpanded = State(initialValue: trace.isRunning)
-    }
-
-    private var summaryTitle: String {
-        if trace.isRunning {
-            return trace.steps.last?.title ?? String(localized: "深度研究进行中…")
-        }
-        if trace.totalSources > 0 {
-            return String(localized: "深度研究 · \(trace.subQueries.count) 维检索 · \(trace.totalSources) 来源 · 深读 \(trace.pagesRead) 页")
-        }
-        return String(localized: "深度研究 · \(max(1, trace.subQueries.count)) 维分析")
-    }
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 8) {
-                if !trace.subQueries.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("研究维度")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        ForEach(Array(trace.subQueries.enumerated()), id: \.offset) { idx, query in
-                            HStack(alignment: .top, spacing: 5) {
-                                Text("\(idx + 1).")
-                                    .font(.caption2.monospacedDigit().weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                Text(verbatim: query)
-                                    .font(.caption2)
-                                    .foregroundStyle(.primary)
-                            }
-                        }
-                    }
-                }
-
-                if !trace.steps.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(trace.steps) { step in
-                            HStack(alignment: .top, spacing: 7) {
-                                Image(systemName: step.phase.symbol)
-                                    .font(.caption2)
-                                    .foregroundStyle(step.succeeded ? Color.accentColor : Color.orange)
-                                    .frame(width: 14)
-                                    .padding(.top, 2)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    HStack(spacing: 6) {
-                                        Text(step.title)
-                                            .font(.caption2.weight(.semibold))
-                                        if let ms = step.durationMs, ms > 0 {
-                                            Text(ms >= 1000 ? String(format: "%.1fs", Double(ms) / 1000.0) : "\(ms)ms")
-                                                .font(.caption2.monospacedDigit())
-                                                .foregroundStyle(.tertiary)
-                                        }
-                                    }
-                                    if !step.detail.isEmpty {
-                                        Text(step.detail)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(3)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(.top, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            HStack(spacing: 7) {
-                if trace.isRunning {
-                    ProgressView()
-                        .controlSize(.mini)
-                } else {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                }
-                Text(summaryTitle)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(DS.Surface.hairline, lineWidth: 1)
-        )
-        .onChange(of: trace.isRunning) { wasRunning, nowRunning in
-            if wasRunning && !nowRunning {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isExpanded = false
-                }
-            }
         }
     }
 }

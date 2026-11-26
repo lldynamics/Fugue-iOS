@@ -20,9 +20,9 @@
 
 ### 书架和知识库
 
-在「工作台 → 书架」导入文档，或在对话中绑定书架资料。要用第三方向量服务，在「设置 → 全文检索与知识库索引」选择服务商和模型，点「查看并授权向量服务」。确认页会列出接收方和可能发送的内容。向量服务不可用、未获授权或授权撤回后，知识库检索仍可使用本地索引。
+在「工作台 → 书架」导入文档，或在对话中绑定书架资料；可在「设置 → 全文检索与知识库索引」查看或重建本地检索索引。
 
-在「设置 → 关于与隐私声明」可以分别撤回对话发送和向量服务授权，也可以管理 Spotlight、实时活动和桌面小组件的预览选项。「设置 → 隐私锁与防窥遮罩」可配置设备认证。
+在「设置 → 关于与隐私声明」可以撤回对话发送授权，也可以管理 Spotlight、实时活动和桌面小组件的预览选项。「设置 → 隐私锁与防窥遮罩」可配置设备认证。
 
 ### 备份与换机
 
@@ -58,9 +58,9 @@ If you have a billing question, check the provider and request count in Settings
 
 ### Bookshelf and knowledge search
 
-Import documents in Workspace → Bookshelf or link bookshelf documents to a chat. To use a third-party embedding service, choose a provider and model in Settings → Full-Text Search & Knowledge Index, then tap Review and Authorize Embedding Service. The confirmation shows the recipient and what may be sent. Knowledge search can use the local index if permission is absent or revoked, or if the service is unavailable.
+Import documents in Workspace → Bookshelf or link bookshelf documents to a chat. You can view or rebuild the local search index in Settings → Full-Text Search & Knowledge Index.
 
-In Settings → About & Privacy, you can withdraw chat sending permission or embedding service permission and manage previews for Spotlight, Live Activities, and Home Screen widgets. Go to Settings → Privacy Lock & Blur Shield to configure device authentication.
+In Settings → About & Privacy, you can withdraw chat sending permission and manage previews for Spotlight, Live Activities, and Home Screen widgets. Go to Settings → Privacy Lock & Blur Shield to configure device authentication.
 
 ### Back up or move to a new device
 

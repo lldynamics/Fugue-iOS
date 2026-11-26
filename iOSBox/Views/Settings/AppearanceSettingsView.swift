@@ -134,10 +134,8 @@ struct AppearanceSettingsView: View {
 
             Section {
                 Toggle("AI 英语私教（无课本跟读与日志）", isOn: $preferences.moduleEnglishCoachEnabled)
-                Toggle("项目空间", isOn: $preferences.moduleProjectsEnabled)
                 Toggle("书中好友与角色目录", isOn: $preferences.moduleBookFriendsEnabled)
                 Toggle("圆桌群聊", isOn: $preferences.moduleGroupChatEnabled)
-                Toggle("助学闪卡与互动导师", isOn: $preferences.moduleStudyFlashcardsEnabled)
                 Toggle("多模型并发对比", isOn: $preferences.moduleArenaEnabled)
                 Toggle("侧栏用量快捷入口", isOn: $preferences.moduleUsageTabEnabled)
             } header: {

@@ -19,6 +19,7 @@ final class UIAuditRegressionTests: XCTestCase {
 
     func testUnavailableGroupModelSurvivesOpeningAndSaving() {
         let app = launch(["-ui-test-personas", "-ui-test-model-details", "-ui-audit-stale-group-model"])
+        app.openWorkspaceDrawerIfNeeded()
         let group = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "失效模型测试群")).firstMatch
         XCTAssertTrue(group.waitForExistence(timeout: 10), app.debugDescription)
         group.tap()
@@ -42,6 +43,7 @@ final class UIAuditRegressionTests: XCTestCase {
 
     func testExistingEmptyGroupDoesNotApplyDefaultTemplate() {
         let app = launch(["-ui-test-personas", "-ui-test-source-layout"])
+        app.openWorkspaceDrawerIfNeeded()
         let group = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "读书小组")).firstMatch
         XCTAssertTrue(group.waitForExistence(timeout: 10), app.debugDescription)
         group.tap()
@@ -58,11 +60,15 @@ final class UIAuditRegressionTests: XCTestCase {
 
     func testTinyUsageAndMissingCurrencyAreNotShownAsZeroOrUSD() {
         let app = launch(["-ui-audit-incomplete-currency", "-ui-audit-tiny-cost"])
+        let workshop = app.buttons["workspace.tab.library"]
+        if workshop.isHittable { workshop.tap() }
         app.buttons["用量"].tap()
         let amount = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "USD <")).firstMatch
         XCTAssertTrue(amount.waitForExistence(timeout: 10), app.debugDescription)
         capture("Small nonzero estimate", app: app)
-        app.buttons["设置"].tap()
+        let close = app.navigationBars["用量与测速"].buttons["完成"]
+        if close.isHittable { close.tap() }
+        app.openWorkspaceSettings()
         let provider = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "币种缺失测试")).firstMatch
         XCTAssertTrue(provider.waitForExistence(timeout: 10), app.debugDescription)
         provider.tap()
@@ -75,7 +81,7 @@ final class UIAuditRegressionTests: XCTestCase {
 
     func testProviderSwitchesAndCapabilitiesHaveNamesStatesAndHitTargets() throws {
         let app = launch(["-ui-test-personas", "-ui-test-model-details"])
-        app.buttons["设置"].tap()
+        app.openWorkspaceSettings()
         let provider = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "本地模型")).firstMatch
         XCTAssertTrue(provider.waitForExistence(timeout: 10), app.debugDescription)
         provider.tap()
@@ -128,6 +134,7 @@ final class UIAuditRegressionTests: XCTestCase {
 
     func testSearchEmptyStateCanBeCleared() {
         let app = launch(["-ui-test-personas", "-ui-test-model-details"])
+        if app.buttons["inbox.resume"].exists { app.buttons["inbox.resume"].tap() }
         if !app.descendants(matching: .any).matching(identifier: "chatComposer.input").firstMatch.exists {
             app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "新对话")).firstMatch.tap()
         }
@@ -145,7 +152,7 @@ final class UIAuditRegressionTests: XCTestCase {
 
     func testEmptyPresetsAndBookActionsAreIdentifiable() {
         let app = launch(["-ui-test-personas", "-ui-test-source-layout"])
-        app.buttons["工作台"].tap()
+        app.openWorkspaceLibrary()
         app.selectWorkshopSection("助手预设")
         XCTAssertTrue(app.staticTexts["暂无助手预设"].waitForExistence(timeout: 8), app.debugDescription)
         XCTAssertTrue(app.buttons["新建助手"].firstMatch.exists)
@@ -158,7 +165,7 @@ final class UIAuditRegressionTests: XCTestCase {
 
     func testLargeTypeRoundtablesHaveRoomForTitlesAndActions() {
         let app = launch(["-ui-test-personas", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"])
-        app.buttons["工作台"].tap()
+        app.openWorkspaceLibrary()
         app.selectWorkshopSection("圆桌")
         let title = app.staticTexts["创业点子审委会"]
         XCTAssertTrue(title.waitForExistence(timeout: 8), app.debugDescription)
@@ -169,7 +176,7 @@ final class UIAuditRegressionTests: XCTestCase {
 
     func testLargeTypeModelControlsStackVertically() {
         let app = launch(["-ui-test-personas", "-ui-test-model-details", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"])
-        app.buttons["设置"].tap()
+        app.openWorkspaceSettings()
         let provider = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "本地模型")).firstMatch
         XCTAssertTrue(provider.waitForExistence(timeout: 10), app.debugDescription)
         provider.tap()

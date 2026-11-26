@@ -1,12 +1,9 @@
 import CryptoKit
 import Foundation
-import NaturalLanguage
 
-/// A per-character hybrid index (IDF-weighted CJK/Latin lexical + cached semantic vectors + RRF fusion)
-/// over the selected reading range, built off the main actor.
+/// A per-character lexical index (IDF-weighted CJK/Latin) over the selected reading range, built off the main actor.
 actor BookReferenceSearch {
     static let shared = BookReferenceSearch()
-    private static let maxCachedSemanticScenes = 600
 
     private struct Scene {
         let excerpt: BookExcerpt
@@ -18,29 +15,19 @@ actor BookReferenceSearch {
     private var cachedFriend: BookFriend?
     private var cachedManuscriptDigest: Data?
     private var cachedScenes: [Scene] = []
-    private var cachedLocalLanguage: String?
-    private var cachedLocalVectors: [Int: [Float]] = [:]
-    private var cachedCloudModelKey: String?
-    private var cachedCloudVectors: [Int: [Float]] = [:]
 
     func invalidate(bookID: UUID) {
         if cachedFriend?.bookID == bookID {
             cachedFriend = nil
             cachedManuscriptDigest = nil
             cachedScenes.removeAll(keepingCapacity: false)
-            cachedLocalLanguage = nil
-            cachedLocalVectors.removeAll(keepingCapacity: false)
-            cachedCloudModelKey = nil
-            cachedCloudVectors.removeAll(keepingCapacity: false)
         }
     }
 
     func reference(
         for friend: BookFriend,
         manuscript: Data,
-        question: String,
-        embeddingConfig: EmbeddingConfig? = nil,
-        embeddingSession: URLSession? = nil
+        question: String
     ) async throws -> BookReplyEvidence {
         try Task.checkCancellation()
         let digest = Data(SHA256.hash(data: manuscript))
@@ -51,10 +38,6 @@ actor BookReferenceSearch {
             cachedFriend = friend
             cachedManuscriptDigest = digest
             cachedScenes = scenes
-            cachedLocalLanguage = nil
-            cachedLocalVectors.removeAll(keepingCapacity: true)
-            cachedCloudVectors.removeAll(keepingCapacity: true)
-            cachedCloudModelKey = nil
         }
 
         let cleanQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -64,7 +47,7 @@ actor BookReferenceSearch {
             .sorted()
             .prefix(32)
 
-        // 1. Channel A: IDF-weighted lexical scoring over all character scenes.
+        // IDF-weighted lexical scoring over all character scenes.
         var termDocFreq: [String: Int] = [:]
         if !queryTerms.isEmpty {
             for scene in cachedScenes {
@@ -89,41 +72,13 @@ actor BookReferenceSearch {
             }
         }
         lexicalRanked.sort { $0.score > $1.score }
-        let lexicalIDs = lexicalRanked.prefix(60).map { String($0.index) }
-
-        // 2. Channel B: Cached dense semantic vectors (optional Embedding API -> local NLEmbedding fallback).
-        var semanticIDs: [String] = []
-        var usedCloudVectors = false
-        if !cleanQuestion.isEmpty {
-            if let embeddingConfig {
-                if let cloud = try? await rankViaCloudEmbeddings(
-                    query: cleanQuestion,
-                    config: embeddingConfig,
-                    session: embeddingSession
-                ), !cloud.isEmpty {
-                    semanticIDs = cloud
-                    usedCloudVectors = true
-                }
-            }
-            if !usedCloudVectors {
-                semanticIDs = try rankViaCachedLocalEmbeddings(query: cleanQuestion)
-            }
-        }
-
-        // 3. Fuse via Reciprocal Rank Fusion (RRF) + voiced dialogue & chapter diversity bonus.
-        let fused = RAGHybridRanker.fuseRRF(
-            lexicalRankedIDs: lexicalIDs,
-            semanticRankedIDs: semanticIDs,
-            k: RAGHybridRanker.defaultRRFK,
-            lexicalWeight: 1.0,
-            semanticWeight: usedCloudVectors ? 1.1 : 0.75
-        )
 
         var scores = [Double](repeating: 0, count: cachedScenes.count)
-        for i in cachedScenes.indices {
-            let base = fused[String(i)] ?? 0.0
-            let voiceTieBreak = cachedScenes[i].voiced ? 0.0025 : 0.0
-            scores[i] = base + voiceTieBreak
+        for (rank, entry) in lexicalRanked.prefix(60).enumerated() {
+            scores[entry.index] = 1.0 / (60.0 + Double(rank + 1))
+        }
+        for i in cachedScenes.indices where cachedScenes[i].voiced {
+            scores[i] += 0.0025
         }
 
         var chosen: [BookExcerpt] = [], usedChapters = Set<Int>(), used = Set<Int>()
@@ -142,104 +97,12 @@ actor BookReferenceSearch {
         return BookReplyEvidence(name: friend.name, title: friend.bookTitle, excerpts: chosen)
     }
 
-    private func rankViaCloudEmbeddings(
-        query: String,
-        config: EmbeddingConfig,
-        session: URLSession?
-    ) async throws -> [String] {
-        if cachedCloudModelKey != config.cacheKey {
-            cachedCloudModelKey = config.cacheKey
-            cachedCloudVectors.removeAll(keepingCapacity: true)
-        }
-        let budget = min(cachedScenes.count, 128)
-        let strideStep = max(1, cachedScenes.count / max(1, budget))
-        var missingIndices: [Int] = []
-        for idx in stride(from: 0, to: cachedScenes.count, by: strideStep) {
-            if missingIndices.count + cachedCloudVectors.count >= budget { break }
-            if cachedCloudVectors[idx] == nil {
-                missingIndices.append(idx)
-            }
-        }
-        if !missingIndices.isEmpty {
-            let texts = missingIndices.map { cachedScenes[$0].excerpt.text }
-            let vectors = try await EmbeddingClient.embed(texts: texts, config: config, session: session)
-            for (idx, vec) in zip(missingIndices, vectors) {
-                cachedCloudVectors[idx] = vec
-            }
-        }
-        guard let queryVec = try await EmbeddingClient.embed(
-            texts: [String(query.suffix(400))],
-            config: config,
-            session: session
-        ).first else { return [] }
-
-        var scored: [(index: Int, sim: Double)] = []
-        for (idx, vec) in cachedCloudVectors {
-            let sim = EmbeddingClient.dotSimilarity(queryVec, vec)
-            if sim > 0.24 {
-                scored.append((idx, sim))
-            }
-        }
-        scored.sort { $0.sim > $1.sim }
-        return scored.prefix(40).map { String($0.index) }
-    }
-
-    private func rankViaCachedLocalEmbeddings(query: String) throws -> [String] {
-        guard let (langKey, emb) = Self.sentenceEmbedding(for: query),
-              let rawQueryVec = emb.vector(for: String(query.suffix(300))),
-              let queryVec = try? EmbeddingClient.normalizeVector(rawQueryVec.map(Float.init)) else {
-            return []
-        }
-        if cachedLocalLanguage != langKey {
-            cachedLocalLanguage = langKey
-            cachedLocalVectors.removeAll(keepingCapacity: true)
-        }
-        if cachedLocalVectors.isEmpty {
-            let budget = min(cachedScenes.count, Self.maxCachedSemanticScenes)
-            let strideStep = max(1, cachedScenes.count / max(1, budget))
-            var count = 0
-            for idx in stride(from: 0, to: cachedScenes.count, by: strideStep) {
-                if count >= budget { break }
-                if count.isMultiple(of: 32) { try Task.checkCancellation() }
-                if let raw = emb.vector(for: String(cachedScenes[idx].excerpt.text.prefix(280))),
-                   let norm = try? EmbeddingClient.normalizeVector(raw.map(Float.init)) {
-                    cachedLocalVectors[idx] = norm
-                }
-                count += 1
-            }
-        }
-        var scored: [(index: Int, sim: Double)] = []
-        for (idx, vec) in cachedLocalVectors where vec.count == queryVec.count {
-            let sim = EmbeddingClient.dotSimilarity(queryVec, vec)
-            if sim > 0.30 {
-                scored.append((idx, sim))
-            }
-        }
-        scored.sort { $0.sim > $1.sim }
-        return scored.prefix(40).map { String($0.index) }
-    }
-
     private static func sceneTokens(in text: String) -> Set<String> {
         var tokens = PersonaMaterials.terms(in: text)
         for token in SearchTokenizer.indexText(text, maxCharacters: 2_000).split(separator: " ") where token.count >= 2 {
             tokens.insert(String(token))
         }
         return tokens
-    }
-
-    private static func sentenceEmbedding(for text: String) -> (String, NLEmbedding)? {
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(String(text.prefix(200)))
-        if let lang = recognizer.dominantLanguage, let emb = NLEmbedding.sentenceEmbedding(for: lang) {
-            return (lang.rawValue, emb)
-        }
-        if let zh = NLEmbedding.sentenceEmbedding(for: .simplifiedChinese) {
-            return (NLLanguage.simplifiedChinese.rawValue, zh)
-        }
-        if let en = NLEmbedding.sentenceEmbedding(for: .english) {
-            return (NLLanguage.english.rawValue, en)
-        }
-        return nil
     }
 
     private func build(chapters: [BookChapter], friend: BookFriend) throws -> [Scene] {

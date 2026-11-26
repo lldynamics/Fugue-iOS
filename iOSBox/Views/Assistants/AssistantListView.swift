@@ -4,7 +4,6 @@ import UniformTypeIdentifiers
 
 struct AssistantListView: View {
     enum WorkshopSection: String, CaseIterable, Identifiable {
-        case projects
         case friends
         case books
         case presets
@@ -15,7 +14,6 @@ struct AssistantListView: View {
 
         var title: String {
             switch self {
-            case .projects: return String(localized: "项目")
             case .friends: return String(localized: "好友")
             case .presets: return String(localized: "助手预设")
             case .roundtables: return String(localized: "圆桌")
@@ -44,8 +42,6 @@ struct AssistantListView: View {
     @State private var preselectedBookID: UUID?
     @State private var editingPreset: AssistantPreset?
     @State private var showCreateSheet = false
-    @State private var editingWorkspace: ProjectWorkspace?
-    @State private var showCreateWorkspace = false
     @State private var showGroupSetup = false
     @State private var pickingBookFile = false
     @State private var importingBook = false
@@ -53,32 +49,16 @@ struct AssistantListView: View {
     @State private var bookError: String?
     @State private var preferences = AppPreferences.shared
     @State private var ocrQueue = BackgroundPDFOCRQueue.shared
-    @State private var cardError: String?
-    @State private var confirmRebuildCards = false
-    @State private var flashcardStore = FlashcardStore.shared
-    @State private var selectedStudyDeck: String = ""
-    @State private var studySearchQuery: String = ""
-    @State private var activeReviewBatch: IdentifiableCardBatch?
-    @State private var editingFlashcard: StudyFlashcard?
-    @State private var showCreateFlashcard = false
     @State private var showEnglishCoach = false
-    @State private var ankiExportURL: URL?
-
-    private struct IdentifiableCardBatch: Identifiable {
-        let id = UUID()
-        let title: String
-        let cards: [StudyFlashcard]
-    }
 
     private var visibleSections: [WorkshopSection] {
         let sections = WorkshopSection.allCases.filter { section in
             switch section {
-            case .projects: return preferences.showsProjects
             case .friends: return preferences.showsBookFriends
             case .books: return true
             case .presets: return true
             case .roundtables: return preferences.showsGroupChat
-            case .study: return preferences.showsStudyFlashcards || preferences.showsEnglishCoach
+            case .study: return preferences.showsEnglishCoach
             }
         }
         return sections.isEmpty ? [.presets, .books] : sections
@@ -110,14 +90,6 @@ struct AssistantListView: View {
                 }
 
                 switch activeSection {
-                case .projects:
-                    ProjectWorkspaceListSection(
-                        providers: providers,
-                        books: books,
-                        conversations: conversations,
-                        editingWorkspace: $editingWorkspace,
-                        showCreateWorkspace: $showCreateWorkspace
-                    )
                 case .friends:
                     PersonaDirectorySection(invite: { invitedProfile = $0 }, allowsGroupInvitations: preferences.showsGroupChat)
                     bookFriendsSection
@@ -135,14 +107,13 @@ struct AssistantListView: View {
                             }
                         }
                     }
-                    if preferences.showsStudyFlashcards { studySection }
                 }
             }
             .scrollContentBackground(.hidden)
             .background(DS.Surface.grouped)
             .onAppear { reconcileVisibleSection() }
             .onChange(of: visibleSections) { _, _ in reconcileVisibleSection() }
-            .navigationTitle("工作台")
+            .navigationTitle(UIDevice.current.userInterfaceIdiom == .phone ? activeSection.title : String(localized: "工作台"))
             .toolbar {
                 if let onClose {
                     ToolbarItem(placement: .cancellationAction) {
@@ -156,8 +127,6 @@ struct AssistantListView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     switch activeSection {
-                    case .projects:
-                        Button { showCreateWorkspace = true } label: { Label("新建项目空间", systemImage: "plus") }
                     case .friends: EmptyView()
                     case .presets:
                         Button { showCreateSheet = true } label: { Label("新建助手", systemImage: "plus") }
@@ -167,17 +136,9 @@ struct AssistantListView: View {
                         Button { pickingBookFile = true } label: { Label("从文件导入书籍", systemImage: "plus") }
                             .disabled(importingBook)
                     case .study:
-                        if preferences.showsStudyFlashcards {
-                            Button { showCreateFlashcard = true } label: { Label("新建闪卡", systemImage: "plus") }
-                        }
+                        EmptyView()
                     }
                 }
-            }
-            .sheet(item: $editingWorkspace) { workspace in
-                ProjectWorkspaceEditorSheet(existing: workspace)
-            }
-            .sheet(isPresented: $showCreateWorkspace) {
-                ProjectWorkspaceEditorSheet(existing: nil)
             }
             .sheet(isPresented: $showBookFriends) {
                 BookFriendSetupSheet(initialBookID: preselectedBookID) { chat in
@@ -200,22 +161,6 @@ struct AssistantListView: View {
             }
             .sheet(isPresented: $showCreateSheet) {
                 AssistantEditorSheet(preset: nil)
-            }
-            .sheet(item: $activeReviewBatch) { batch in
-                FlashcardReviewSheet(
-                    initialCards: batch.cards,
-                    sessionTitle: batch.title,
-                    onJumpToConversation: { convID, msgID in
-                        SystemEntryRouter.shared.messageID = msgID
-                        SystemEntryRouter.shared.conversationID = convID
-                    }
-                )
-            }
-            .sheet(item: $editingFlashcard) { card in
-                FlashcardEditorSheet(existingCard: card, defaultDeckName: selectedStudyDeck)
-            }
-            .sheet(isPresented: $showCreateFlashcard) {
-                FlashcardEditorSheet(existingCard: nil, defaultDeckName: selectedStudyDeck)
             }
             .sheet(isPresented: $showEnglishCoach) {
                 EnglishCoachHubView(onClose: { showEnglishCoach = false })
@@ -511,7 +456,7 @@ struct AssistantListView: View {
                                         }
                                     }
                                 }
-                            } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
+                            } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                             .accessibilityLabel("不同进度的对话")
                         }
                     }
@@ -655,301 +600,9 @@ struct AssistantListView: View {
                 showBookFriends = true
             } label: { Label("创建角色", systemImage: "person.badge.plus") }
         } label: {
-            Image(systemName: "ellipsis.circle").frame(width: DS.TouchTarget.minimum, height: DS.TouchTarget.minimum)
+            Image(systemName: "ellipsis").frame(width: DS.TouchTarget.minimum, height: DS.TouchTarget.minimum)
         }
         .accessibilityLabel(Text("《\(book.title)》的书籍操作"))
-    }
-
-    // MARK: - Section 4: Study Coach & Spaced-Repetition Flashcards
-
-    @ViewBuilder
-    private var studySection: some View {
-        let deckFilter: String? = selectedStudyDeck.isEmpty ? nil : selectedStudyDeck
-        let dueList = flashcardStore.dueCards(inDeck: deckFilter)
-        let visibleCards = flashcardStore.filteredCards(deck: deckFilter, query: studySearchQuery)
-
-        if let issue = flashcardStore.loadIssue {
-            Section {
-                Text(verbatim: issue.localizedDescription).foregroundStyle(.red)
-                if issue == .damaged {
-                    Button("保留损坏副本并重建卡库") { confirmRebuildCards = true }
-                        .confirmationDialog("保留原文件并新建空卡库？", isPresented: $confirmRebuildCards) {
-                            Button("重建卡库") {
-                                do { try flashcardStore.preserveDamagedLibrary(); cardError = nil }
-                                catch { cardError = error.localizedDescription }
-                            }
-                            Button("取消", role: .cancel) {}
-                        } message: { Text("原文件将另存为副本。重建后可重新导入备份中的闪卡。") }
-                } else {
-                    Button("重新读取") { flashcardStore.reload() }
-                }
-            }
-        }
-        if let cardError { Text(verbatim: cardError).foregroundStyle(.red) }
-
-        Section {
-            VStack(alignment: .leading, spacing: DS.Spacing.md) {
-                HStack(spacing: DS.Spacing.sm) {
-                    DSMetricTile(title: String(localized: "待复习"), value: "\(dueList.count)", valueTint: theme.readableText)
-                    DSMetricTile(title: String(localized: "总卡片"), value: "\(flashcardStore.cards.count)")
-                    DSMetricTile(title: String(localized: "已熟记"), value: "\(flashcardStore.masteredCount)", valueTint: DS.StatusText.success)
-                }
-
-                HStack(spacing: DS.Spacing.sm) {
-                    let hasCards = !flashcardStore.cards.isEmpty
-                    let canUsePrimary = hasCards ? (!dueList.isEmpty || !visibleCards.isEmpty) : flashcardStore.loadIssue == nil
-                    Button {
-                        if !hasCards {
-                            showCreateFlashcard = true
-                            return
-                        }
-                        let targetCards = dueList.isEmpty ? Array(visibleCards.shuffled().prefix(15)) : dueList
-                        guard !targetCards.isEmpty else { return }
-                        activeReviewBatch = IdentifiableCardBatch(
-                            title: dueList.isEmpty ? String(localized: "随机巩固复习") : String(localized: "今日到期复习"),
-                            cards: targetCards
-                        )
-                    } label: {
-                        Label(
-                            !hasCards ? String(localized: "手动创建闪卡") : (dueList.isEmpty ? String(localized: "随机抽查巩固") : String(localized: "开始今日复习 (\(dueList.count))")),
-                            systemImage: hasCards ? "play.fill" : "plus"
-                        )
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(theme.solidForeground)
-                        .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum)
-                        .background(canUsePrimary ? theme.solidFill : Color.secondary.opacity(0.35), in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canUsePrimary)
-
-                    if !visibleCards.isEmpty {
-                        Button {
-                            let tsv = flashcardStore.exportAnkiTSV(deckFilter: deckFilter)
-                            if let url = try? FlashcardStore.writeTemporaryTSVFile(tsv) {
-                                ankiExportURL = url
-                            }
-                        } label: {
-                            Label("导出 Anki", systemImage: "square.and.arrow.up")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.primary)
-                                .padding(.horizontal, DS.Spacing.md)
-                                .frame(minHeight: DS.TouchTarget.minimum)
-                                .background(DS.Surface.neutralChipFill, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                if let ankiExportURL {
-                    ShareLink(item: ankiExportURL) {
-                        Label("点击分享或保存导出的 Anki 卡包 (.tsv)", systemImage: "doc.badge.arrow.up")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(theme.readableText)
-                    }
-                }
-            }
-            .padding(.vertical, DS.Spacing.xxs)
-        } header: {
-            Text("间隔重复记忆舱")
-        } footer: {
-            Text("在助手回复下选择「更多 → 助学」即可提炼闪卡与随堂测验；导出的 .tsv 文件可直接导入 Anki。")
-        }
-
-        Section {
-            Button {
-                startStudyCoachChat(mode: .socratic)
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "lightbulb.max.fill")
-                        .font(.title3)
-                        .foregroundStyle(.indigo)
-                        .frame(width: 36, height: 36)
-                        .background(Color.indigo.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("开启苏格拉底启发导师")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                        Text("不直接给答案，通过递进追问帮你定位盲区并独立推导")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                startStudyCoachChat(mode: .feynman)
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "person.wave.2.fill")
-                        .font(.title3)
-                        .foregroundStyle(.teal)
-                        .frame(width: 36, height: 36)
-                        .background(Color.teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("开启费曼挑刺学生演练")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                        Text("由你用白话讲解概念，AI 追问逻辑漏洞并输出掌握度评分卡")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                startStudyCoachChat(mode: .drill)
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "flag.checkered")
-                        .font(.title3)
-                        .foregroundStyle(.orange)
-                        .frame(width: 36, height: 36)
-                        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("开启闯关实战特训")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                        Text("Lv.1 → Lv.3 逐级出题实战批改，练透编程、算法或外语技能")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .buttonStyle(.plain)
-        } header: {
-            Text("互动导师工作流")
-        }
-
-        Section {
-            if !flashcardStore.deckNames.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        deckChip(title: String(localized: "全部卡组"), tag: "")
-                        ForEach(flashcardStore.deckNames, id: \.self) { deck in
-                            deckChip(title: deck, tag: deck)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-
-            if !flashcardStore.cards.isEmpty {
-                TextField("搜索卡片问题或解析…", text: $studySearchQuery)
-                    .font(.subheadline)
-            }
-
-            if visibleCards.isEmpty {
-                if flashcardStore.cards.isEmpty {
-                    Text("暂无闪卡。可在助手回复下选择「更多 → 助学 → 生成记忆闪卡」，或手动创建。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("没有匹配的闪卡，请调整搜索或卡组。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                ForEach(visibleCards) { card in
-                    Button {
-                        editingFlashcard = card
-                    } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack {
-                                Text(card.deckName)
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.indigo)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.indigo.opacity(0.11), in: Capsule())
-
-                                Spacer()
-
-                                Text(card.isDue() ? String(localized: "待复习") : String(localized: "间隔 \(max(1, Int(card.intervalDays.rounded()))) 天"))
-                                    .font(.caption2)
-                                    .foregroundStyle(card.isDue() ? .orange : .secondary)
-                            }
-
-                            Text(card.front)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(2)
-
-                            Text(card.back)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                        .padding(.vertical, 3)
-                    }
-                    .buttonStyle(.plain)
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            do { try flashcardStore.deleteCard(id: card.id); cardError = nil }
-                            catch { cardError = error.localizedDescription }
-                        } label: {
-                            Label("删除", systemImage: "trash")
-                        }
-                    }
-                }
-            }
-        } header: {
-            Text("我的闪卡库（\(visibleCards.count)）")
-        }
-    }
-
-    private func deckChip(title: String, tag: String) -> some View {
-        let selected = selectedStudyDeck == tag
-        return Button {
-            selectedStudyDeck = tag
-            ankiExportURL = nil
-        } label: {
-            Text(title)
-                .font(.caption.weight(selected ? .semibold : .regular))
-                .foregroundStyle(selected ? theme.readableText : .primary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(
-                    selected ? theme.softFill : DS.Surface.subtle,
-                    in: Capsule()
-                )
-                .frame(minHeight: DS.TouchTarget.minimum)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func startStudyCoachChat(mode: StudyCoachMode) {
-        let ready = preferences.initialTarget(from: ProviderConfig.readyTargets(in: providers))
-        let emoji: String
-        switch mode {
-        case .socratic: emoji = "💡"
-        case .feynman: emoji = "🧑‍🏫"
-        case .drill: emoji = "🎯"
-        case .off: emoji = "🎓"
-        }
-        let chat = Conversation(
-            title: mode.displayName,
-            assistantEmoji: emoji,
-            primaryTarget: ready
-        )
-        chat.assistanceSettings.studyCoachMode = mode
-        modelContext.insert(chat)
-        try? modelContext.save()
-        SystemEntryRouter.shared.conversationID = chat.id
     }
 
     private func startKnowledgeChat(with book: BookVolume, newDiscussion: Bool = false) {

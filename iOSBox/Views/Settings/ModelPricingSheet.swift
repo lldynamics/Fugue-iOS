@@ -99,8 +99,8 @@ struct ModelPricingSheet: View {
                     Text("填写缓存命中或写入单价后，新请求将自动按实际缓存 Token 折算费用并统计缓存节省金额。单价只影响新请求，清空输入与输出两项可停止计价。")
                 }
 
-                if !isValid { Text("请同时填写两个非负单价，或同时留空。").foregroundStyle(.orange) }
-                if let error { Text(error).foregroundStyle(.red) }
+                if !isValid { Text("请同时填写两个非负单价，或同时留空。").foregroundStyle(DS.StatusText.warning) }
+                if let error { Text(error).foregroundStyle(DS.StatusText.error) }
             }
             .navigationTitle("设置单价")
             .navigationBarTitleDisplayMode(.inline)

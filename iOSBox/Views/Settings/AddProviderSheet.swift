@@ -9,30 +9,20 @@ struct AddProviderSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var saveError: String?
-    @State private var selectedTemplateID: String = "custom_openai"
-    @State private var name: String = String(localized: "自定义服务商")
-    @State private var protocolType: APIProtocolType = .openAICompatible
-    @State private var baseURL = "https://api.example.com/v1"
-    @State private var apiKey: String = ""
-    @State private var accentHex: String = "#3F6EF6"
-    @State private var iconSymbol = "slider.horizontal.below.square.and.square.filled"
+    @State private var draft = ProviderSetupDraft()
+    @State private var showingAdvanced = false
     @State private var catalog = ProviderModelCatalog()
     @State private var chosenID: String?
-    @State private var manualFirstModelID: String = ""
     @State private var clipboardHint: String?
 
     private var request: ModelCatalogRequest {
-        ModelCatalogRequest(protocolType: protocolType, baseURL: baseURL, apiKey: LLMClient.sanitizedAPIKey(apiKey))
-    }
-
-    private var suggestions: [ModelSpec] {
-        ProviderTemplate.matching(baseURL: baseURL, protocolType: protocolType)?.suggestedModels ?? []
+        ModelCatalogRequest(protocolType: draft.protocolType, baseURL: draft.baseURL, apiKey: LLMClient.sanitizedAPIKey(draft.apiKey))
     }
 
     private var selectedID: String {
-        let manual = manualFirstModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let manual = draft.manualModelID.trimmingCharacters(in: .whitespacesAndNewlines)
         if !manual.isEmpty { return manual }
-        let options = catalog.models ?? suggestions
+        let options = catalog.models ?? draft.suggestedModels
         if let chosenID, options.contains(where: { $0.id == chosenID }) { return chosenID }
         return options.first?.id ?? ""
     }
@@ -40,101 +30,36 @@ struct AddProviderSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                if let saveError { Text(saveError).foregroundStyle(.red) }
-                Section("快速选择常见模板（或自定义）") {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 10) {
-                            ForEach(ProviderTemplate.catalog) { tpl in
-                                let isChosen = selectedTemplateID == tpl.id
-                                Button {
-                                    applyTemplate(tpl)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: tpl.iconSymbol)
-                                                .foregroundStyle(Color(hex: tpl.accentHex))
-                                            Text(tpl.protocolType.shortBadge)
-                                                .font(.caption2.weight(.semibold))
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        Text(tpl.name)
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
-                                    }
-                                    .frame(width: 136, alignment: .leading)
-                                    .padding(10)
-                                    .background(
-                                        isChosen ? Color.accentColor.opacity(0.14) : Color(.secondarySystemBackground),
-                                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .strokeBorder(isChosen ? Color.accentColor : Color.clear, lineWidth: 1.5)
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-
-                Section("接口协议与地址") {
-                    TextField("服务商显示名称", text: $name)
-
-                    Picker("API 协议类型", selection: Binding(get: { protocolType }, set: { newProtocol in
-                        baseURL = ProviderTemplate.baseURLAfterProtocolChange(currentBaseURL: baseURL, from: protocolType, to: newProtocol)
-                        protocolType = newProtocol
-                    })) {
-                        ForEach(APIProtocolType.allCases) { proto in
-                            Text(proto.displayName).tag(proto)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 5) {
-                        TextField("Base URL（如 https://api.xxx.com/v1）", text: $baseURL)
+                if let saveError { Text(saveError).foregroundStyle(DS.StatusText.error) }
+                ProviderSetupPicker(draft: $draft)
+                ProviderSetupKeySection(draft: $draft)
+                Section {
+                    DisclosureGroup("高级设置", isExpanded: $showingAdvanced) {
+                        TextField("服务商显示名称", text: $draft.name)
+                        ProviderSetupProtocolPicker(draft: $draft)
+                        TextField("Base URL", text: $draft.baseURL)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
-                            .font(.subheadline.monospaced())
-
-                        Text("实际对话端点：\(EndpointResolver.previewChatEndpoint(baseURL: baseURL, protocolType: protocolType))")
-                            .font(.caption2.monospaced())
+                        Text("实际对话端点：\(EndpointResolver.previewChatEndpoint(baseURL: draft.baseURL, protocolType: draft.protocolType))")
+                            .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
-
-                        InsecureHTTPWarningView(baseURL: baseURL)
+                        InsecureHTTPWarningView(baseURL: draft.baseURL)
                     }
-                }
-
-                Section {
-                    Button {
-                        fillFromClipboard()
-                    } label: {
+                    Button { fillFromClipboard() } label: {
                         Label("从剪贴板识别 Key 与地址", systemImage: "doc.on.clipboard")
                     }
-                    if let clipboardHint {
-                        Text(clipboardHint)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    SecureField("粘贴 API Key（加密保存在系统钥匙串）", text: $apiKey)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                } header: {
-                    Text("API Key")
-                } footer: {
-                    Text("API Key 仅保存在本机 iOS 安全钥匙串（Keychain）中，直连目标接口，不经过任何第三方服务器。")
+                    if let clipboardHint { Text(clipboardHint).font(.footnote).foregroundStyle(.secondary) }
                 }
 
                 Section {
-                    ModelCatalogPicker(catalog: catalog, request: request, fallback: suggestions, fallbackTitle: "内置参考模型",
+                    ModelCatalogPicker(catalog: catalog, request: request, fallback: draft.suggestedModels, fallbackTitle: "内置参考模型",
                                        selected: selectedID, refresh: refreshModels) { model in
-                        manualFirstModelID = ""
+                        draft.manualModelID = ""
                         chosenID = model.id
                     }
                     ModelCatalogRefreshButton(catalog: catalog, request: request, refresh: refreshModels)
-                    TextField("手动输入模型 ID", text: $manualFirstModelID)
+                    TextField("手动输入模型 ID", text: $draft.manualModelID)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.subheadline.monospaced())
@@ -144,7 +69,7 @@ struct AddProviderSheet: View {
                     Text("填写连接信息后可获取当前接口提供的模型。也可以直接输入模型 ID。")
                 }
             }
-            .navigationTitle("添加自定义 API")
+            .navigationTitle("手动添加服务商")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -156,8 +81,8 @@ struct AddProviderSheet: View {
                     }
                     .fontWeight(.semibold)
                     .disabled(
-                        name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                        baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || catalog.isLoading
+                        draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        !request.canFetch || catalog.isLoading
                     )
                 }
             }
@@ -165,19 +90,11 @@ struct AddProviderSheet: View {
                 catalog.reset()
                 chosenID = nil
             }
+            .onChange(of: draft.serviceID) {
+                if ["custom_openai", "ollama"].contains(draft.serviceID) { showingAdvanced = true }
+            }
             .onDisappear { catalog.reset() }
         }
-    }
-
-    private func applyTemplate(_ tpl: ProviderTemplate) {
-        if URLComponents(string: baseURL)?.host != URLComponents(string: tpl.baseURL)?.host { apiKey = "" }
-        if selectedTemplateID != tpl.id { manualFirstModelID = "" }
-        selectedTemplateID = tpl.id
-        name = tpl.id == "custom_openai" ? String(localized: "自定义服务商") : tpl.name
-        protocolType = tpl.protocolType
-        baseURL = tpl.baseURL
-        accentHex = tpl.accentHex
-        iconSymbol = tpl.iconSymbol
     }
 
     private func fillFromClipboard() {
@@ -186,15 +103,7 @@ struct AddProviderSheet: View {
             clipboardHint = String(localized: "剪贴板中未检测到可识别的 Key 或接口地址。")
             return
         }
-        selectedTemplateID = candidate.templateID
-        name = candidate.providerName
-        protocolType = candidate.protocolType
-        baseURL = candidate.baseURL
-        if !candidate.apiKey.isEmpty {
-            apiKey = candidate.apiKey
-        }
-        accentHex = candidate.accentHex
-        iconSymbol = candidate.iconSymbol
+        draft.apply(candidate)
         clipboardHint = candidate.confidenceNote
     }
 
@@ -203,23 +112,23 @@ struct AddProviderSheet: View {
     }
 
     private func createProvider() {
-        var initialModels = ProviderModelCatalog.merging(catalog.models ?? suggestions, with: [], choosing: selectedID,
+        var initialModels = ProviderModelCatalog.merging(catalog.models ?? draft.suggestedModels, with: [], choosing: selectedID,
                                                         fromAPI: catalog.models != nil)
-        if !manualFirstModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !initialModels.isEmpty {
+        if !draft.manualModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !initialModels.isEmpty {
             initialModels[0].catalogStatus = .manual
         }
         let provider = ProviderConfig(
-            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-            protocolType: protocolType,
-            baseURL: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
-            iconSymbol: iconSymbol,
-            accentHex: accentHex,
+            name: draft.name.trimmingCharacters(in: .whitespacesAndNewlines),
+            protocolType: draft.protocolType,
+            baseURL: draft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            iconSymbol: draft.iconSymbol,
+            accentHex: draft.accentHex,
             isEnabled: true,
             sortOrder: Int(Date().timeIntervalSince1970),
             models: initialModels
         )
 
-        if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard KeychainService.shared.saveAPIKey(request.apiKey, for: provider.credentialID) else {
                 saveError = String(localized: "保存失败，请保留输入并重试。")
                 return

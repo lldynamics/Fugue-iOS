@@ -10,6 +10,7 @@ struct ChatContextInspectorSheet: View {
     let onOpenModelPicker: () -> Void
     let onOpenKnowledgePicker: () -> Void
     let onOpenFullSettings: () -> Void
+    let onOpenCitation: (ReadingCitation) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \BookVolume.importedAt, order: .reverse) private var books: [BookVolume]
@@ -24,6 +25,14 @@ struct ChatContextInspectorSheet: View {
     private var boundBooks: [BookVolume] {
         let ids = Set(conversation.assistanceSettings.knowledgeVolumeIDs)
         return books.filter { ids.contains($0.id) }
+    }
+
+    private var latestSources: [ReadingCitation] {
+        guard let last = activeMessages.last(where: { $0.role == .assistant && !$0.isStreaming }) else { return [] }
+        return ReadingReferences(knowledge: last.assistanceMetadata.knowledgeEvidence,
+                                 book: last.assistanceMetadata.bookReply,
+                                 friend: conversation.activeBookFriend,
+                                 limits: conversation.readingChapterLimits).sources
     }
 
     private var totalPromptTokens: Int {
@@ -107,11 +116,22 @@ struct ChatContextInspectorSheet: View {
                     }
                 }
 
+                if !latestSources.isEmpty {
+                    Section("最近回答实际使用的资料") {
+                        ForEach(latestSources, id: \.number) { source in
+                            ReadingCitationButton(citation: source) { citation in
+                                dismiss()
+                                onOpenCitation(citation)
+                            }
+                        }
+                    }
+                }
+
                 if !conversation.isGroupMode {
                     Section("推演与辅助能力") {
                         Toggle("启用深度思考链", isOn: $conversation.enableThinking)
                         if !conversation.isArenaMode {
-                            Toggle("启用智能工具 (Agent / MCP)", isOn: $conversation.assistanceSettings.enableAgentTools)
+                            Toggle("启用智能工具", isOn: $conversation.assistanceSettings.enableAgentTools)
                         }
                         Toggle("服务商原生联网 Grounding", isOn: $conversation.assistanceSettings.enableNativeGrounding)
                         Toggle("携带个人长期记忆", isOn: $conversation.assistanceSettings.usePersonalMemory)

@@ -33,7 +33,7 @@ struct EnglishShadowingSectionView: View {
             if let err = speechCoach.speechError {
                 Text(err)
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(DS.StatusText.warning)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))

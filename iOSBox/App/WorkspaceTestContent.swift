@@ -8,6 +8,7 @@ enum WorkspaceTestContent {
     static func insert(in context: ModelContext) throws {
         if ProcessInfo.processInfo.arguments.contains("-ui-test-personas") {
             var sample = ModelSpec(id: "sample-a")
+            sample.catalogStatus = .manual
             if ProcessInfo.processInfo.arguments.contains("-ui-test-model-details") {
                 sample.supportsVision = true
                 sample.supportsReasoning = true
@@ -15,8 +16,10 @@ enum WorkspaceTestContent {
                 sample.outputPricePerMillion = 1
                 sample.priceCurrency = "USD"
             }
+            var sampleB = ModelSpec(id: "sample-b")
+            sampleB.catalogStatus = .manual
             let provider = ProviderConfig(name: "本地模型", protocolType: .openAICompatible, baseURL: "http://127.0.0.1:11434/v1",
-                                          models: [sample, ModelSpec(id: "sample-b")])
+                                          models: [sample, sampleB])
             context.insert(provider)
             let member = GroupMember(name: "林舟", rolePrompt: "记录自然观察。", target: provider.makeTarget(for: provider.models[1]))
             _ = try PersonaLibrary.save(member, in: context)
@@ -80,8 +83,7 @@ enum WorkspaceTestContent {
             }
         }
 
-        let arena = Conversation(title: "访谈笔记盲评", isArenaMode: true)
-        arena.assistanceSettings.blindArenaMode = true
+        let arena = Conversation(title: "访谈笔记对比", isArenaMode: true)
         context.insert(arena)
         let group = UUID()
         let prompt = ChatMessage(role: .user, content: "怎样让一份访谈笔记更容易复用？")
@@ -97,6 +99,7 @@ enum WorkspaceTestContent {
         }
         if ProcessInfo.processInfo.arguments.contains("-ui-audit-incomplete-currency") {
             var legacy = ModelSpec(id: "legacy-pricing")
+            legacy.catalogStatus = .manual
             legacy.inputPricePerMillion = 0.1
             legacy.outputPricePerMillion = 1
             let provider = ProviderConfig(name: "币种缺失测试", protocolType: .openAICompatible,

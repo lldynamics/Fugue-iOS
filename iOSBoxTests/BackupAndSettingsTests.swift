@@ -53,16 +53,14 @@ final class BackupServiceTests: XCTestCase {
         conversation.assistanceSettings = AssistanceSettings(usePersonalMemory: true, automaticRouting: true,
                                                              codeTarget: conversation.primaryTarget, fallbackEnabled: true,
                                                              autoGenerateTitle: true)
-        let srcCards = FlashcardStore(fileURL: nil)
-        let dstCards = FlashcardStore(fileURL: nil)
         let srcKB = PresetKnowledgeStore(fileURL: nil)
         let dstKB = PresetKnowledgeStore(fileURL: nil)
 
-        let data = try BackupService.encode(BackupService.makeArchive(context: source, flashcardStore: srcCards, knowledgeStore: srcKB))
+        let data = try BackupService.encode(BackupService.makeArchive(context: source, knowledgeStore: srcKB))
         XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("should-not-leak"), "secret header values must not be exported")
 
         let target = try makeContext()
-        let summary = try BackupService.apply(BackupService.decode(data), to: target, flashcardStore: dstCards, knowledgeStore: dstKB)
+        let summary = try BackupService.apply(BackupService.decode(data), to: target, knowledgeStore: dstKB)
         XCTAssertEqual(summary, ImportSummary(providers: 1, presets: 1, conversations: 1, messages: 2, skipped: 0))
 
         let restoredProvider = try XCTUnwrap(target.fetch(FetchDescriptor<ProviderConfig>()).first)
@@ -104,10 +102,9 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertTrue(keys.saveSecret("header-fixture", account: oldHeaderAccount))
 
         let target = try makeContext()
-        let cards = FlashcardStore(fileURL: nil)
         let knowledge = PresetKnowledgeStore(fileURL: nil)
-        let archive = try BackupService.makeArchive(context: original, flashcardStore: cards, knowledgeStore: knowledge)
-        try BackupService.apply(.full(archive), to: target, flashcardStore: cards, knowledgeStore: knowledge)
+        let archive = try BackupService.makeArchive(context: original, knowledgeStore: knowledge)
+        try BackupService.apply(.full(archive), to: target, knowledgeStore: knowledge)
         let restored = try XCTUnwrap(target.fetch(FetchDescriptor<ProviderConfig>()).first)
         defer { restored.deleteAllSecrets() }
         XCTAssertEqual(restored.id, provider.id)
@@ -169,11 +166,10 @@ final class BackupServiceTests: XCTestCase {
     func testImportingSameBackupTwiceSkipsExistingItems() throws {
         let context = try makeContext()
         _ = seed(context)
-        let cards = FlashcardStore(fileURL: nil)
         let kb = PresetKnowledgeStore(fileURL: nil)
-        let data = try BackupService.encode(BackupService.makeArchive(context: context, flashcardStore: cards, knowledgeStore: kb))
+        let data = try BackupService.encode(BackupService.makeArchive(context: context, knowledgeStore: kb))
 
-        let summary = try BackupService.apply(BackupService.decode(data), to: context, flashcardStore: cards, knowledgeStore: kb)
+        let summary = try BackupService.apply(BackupService.decode(data), to: context, knowledgeStore: kb)
         XCTAssertEqual(summary.conversations, 0)
         XCTAssertEqual(summary.skipped, 3)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<Conversation>()), 1)
@@ -206,6 +202,65 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertThrowsError(try BackupService.decode(Data(#"{"formatVersion":99}"#.utf8))) { error in
             guard case BackupError.newerFormat(99) = error else { return XCTFail("\(error)") }
         }
+    }
+
+    func testCrossPlatformInteropWireFormatContract() throws {
+        let source = try makeContext()
+        let (provider, _) = seed(source)
+        defer { provider.deleteAllSecrets() }
+        XCTAssertTrue(KeychainService.shared.saveAPIKey("interop-secret-key", for: provider.credentialID))
+
+        let chapters = [BookChapter(title: "Ch1", text: "Hello / world")]
+        let prepared = try PreparedBook(BookManuscript(title: "Interop Book", chapters: chapters))
+        let book = BookVolume(id: prepared.id, title: prepared.title, chapterTitles: prepared.chapterTitles, manuscript: prepared.data)
+        source.insert(book)
+        try source.save()
+
+        // 1. Canonical BookVolume deterministic ID matches sorted-keys UTF-8 JSON without escaping slashes.
+        let canonicalJSON = Data(#"[{"text":"Hello / world","title":"Ch1"}]"#.utf8)
+        XCTAssertEqual(prepared.data, canonicalJSON)
+        XCTAssertEqual(prepared.id, BookManuscript.identifier(for: canonicalJSON))
+
+        // 2. Plain JSON archive preserves v7 schema, uppercase UUIDs, ISO-8601 timestamps, tombstones, and strips secrets.
+        let tombstones = SyncTombstoneStore(fileURL: nil)
+        let deletedID = UUID()
+        tombstones.recordDeletion(kind: .conversation, id: deletedID, at: Date().addingTimeInterval(-60))
+        let kb = PresetKnowledgeStore(fileURL: nil)
+        let plainData = try BackupService.encode(
+            BackupService.makeArchive(context: source, knowledgeStore: kb, tombstoneStore: tombstones)
+        )
+        let plainText = String(decoding: plainData, as: UTF8.self)
+        XCTAssertFalse(plainText.contains("interop-secret-key"))
+        let plainObj = try XCTUnwrap(try JSONSerialization.jsonObject(with: plainData) as? [String: Any])
+        XCTAssertEqual(plainObj["formatVersion"] as? Int, BackupArchive.currentFormatVersion)
+        XCTAssertEqual(BackupArchive.currentFormatVersion, 7)
+        XCTAssertTrue((plainObj["exportedAt"] as? String)?.hasSuffix("Z") == true)
+
+        // 3. Forward-compatible decoding tolerates unknown keys added by future cross-platform clients.
+        var extendedObj = plainObj
+        extendedObj["futureClientMeta"] = ["platform": "web", "schema": 1]
+        let extendedData = try JSONSerialization.data(withJSONObject: extendedObj)
+        guard case .full(let decodedArchive) = try BackupService.decode(extendedData) else {
+            return XCTFail("Expected full backup archive")
+        }
+        XCTAssertEqual(decodedArchive.books?.first?.id, prepared.id)
+        XCTAssertEqual(decodedArchive.tombstones?.first?.id, deletedID)
+
+        // 4. Encrypted envelope matches IOSBOX_ENCRYPTED_BACKUP_V1 contract (PBKDF2 600k + AES-256-GCM + AAD).
+        let payload = try EncryptedBackupService.makeExportPayload(context: source, knowledgeStore: kb, tombstoneStore: tombstones)
+        let encryptedData = try EncryptedBackupService.encryptPayload(payload, password: "InteropPass!2026")
+        XCTAssertTrue(EncryptedBackupService.isEncryptedBackup(encryptedData))
+        let envObj = try XCTUnwrap(try JSONSerialization.jsonObject(with: encryptedData) as? [String: Any])
+        XCTAssertEqual(envObj["magic"] as? String, "IOSBOX_ENCRYPTED_BACKUP_V1")
+        XCTAssertEqual(envObj["iterations"] as? Int, 600_000)
+        XCTAssertEqual(Data(base64Encoded: envObj["saltBase64"] as? String ?? "")?.count, 16)
+        let combined = try XCTUnwrap(Data(base64Encoded: envObj["combinedCiphertextBase64"] as? String ?? ""))
+        XCTAssertGreaterThan(combined.count, 12 + 16)
+
+        let decrypted = try EncryptedBackupService.decryptPayload(data: encryptedData, password: "InteropPass!2026")
+        XCTAssertEqual(decrypted.providerSecrets.first?.apiKey, "interop-secret-key")
+        XCTAssertEqual(decrypted.archive.books?.first?.id, prepared.id)
+        XCTAssertEqual(decrypted.archive.tombstones?.first?.id, deletedID)
     }
 }
 

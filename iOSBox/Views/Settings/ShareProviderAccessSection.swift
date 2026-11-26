@@ -12,7 +12,7 @@ struct ShareProviderAccessSection: View {
         Section {
             Toggle("允许系统分享使用此服务商", isOn: Binding(get: { isEnabled }, set: updateAccess))
             if let error {
-                Text(error).font(.caption).foregroundStyle(.red)
+                Text(error).font(.caption).foregroundStyle(DS.StatusText.error)
                 Button("重试") { updateAccess(isEnabled) }
             }
         } header: { Text("系统分享") } footer: {

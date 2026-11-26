@@ -1,0 +1,101 @@
+name: iOS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-ios:
+    name: Build & Unit Tests (iOS Simulator)
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode & inspect toolchain
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Verify String Catalogs & InfoPlist compliance
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          loc_path = Path("iOSBox/Localizable.xcstrings")
+          info_path = Path("iOSBox/InfoPlist.xcstrings")
+
+          loc = json.loads(loc_path.read_text(encoding="utf-8"))
+          info = json.loads(info_path.read_text(encoding="utf-8"))
+
+          missing = []
+          for key, entry in loc["strings"].items():
+              locs = entry.get("localizations", {})
+              for lang in ("en", "zh-Hans"):
+                  lang_entry = locs.get(lang, {})
+                  val = lang_entry.get("stringUnit", {}).get("value", "")
+                  plural = lang_entry.get("variations", {}).get("plural", {})
+                  if not val and not plural:
+                      missing.append((key, lang))
+          assert not missing, f"Empty localizations in Localizable.xcstrings: {missing[:10]}"
+
+          forbidden_keys = {
+              "NSCalendarsWriteOnlyAccessUsageDescription",
+              "NSRemindersFullAccessUsageDescription",
+          }
+          present_forbidden = forbidden_keys.intersection(info["strings"].keys())
+          assert not present_forbidden, f"Deprecated InfoPlist keys still present: {present_forbidden}"
+
+          print(f"String catalogs OK: {len(loc['strings'])} Localizable keys, {len(info['strings'])} InfoPlist keys.")
+          PY
+
+      - name: Pick available iPhone Simulator
+        id: sim
+        run: |
+          SIM_ID=$(python3 - <<'PY'
+          import json, subprocess, sys
+          data = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "--json"]))
+          candidates = []
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              for dev in devices:
+                  if dev.get("isAvailable") and "iPhone" in dev.get("name", ""):
+                      candidates.append((runtime, dev["name"], dev["udid"]))
+          if not candidates:
+              sys.exit("No available iPhone simulator found")
+          candidates.sort(reverse=True)
+          print(candidates[0][2])
+          PY
+          )
+          echo "id=$SIM_ID" >> "$GITHUB_OUTPUT"
+          echo "Selected simulator: $SIM_ID"
+          xcrun simctl boot "$SIM_ID" || true
+
+      - name: Build for testing (all targets)
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project iOSBox.xcodeproj \
+            -scheme iOSBox \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.id }}"
+
+      - name: Run iOSBoxTests
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -project iOSBox.xcodeproj \
+            -scheme iOSBox \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.id }}" \
+            -parallel-testing-enabled NO \
+            -only-testing:iOSBoxTests

@@ -8,9 +8,6 @@ struct WorkspaceSpaceCardsView: View {
 
     var body: some View {
         HStack(spacing: DS.Spacing.xs) {
-            if preferences.showsProjects {
-                shortcut(.projects, title: "项目空间", icon: "folder.fill")
-            }
             shortcut(.books, title: "书架", icon: "books.vertical.fill",
                      detail: bookCount > 0 ? String(localized: "\(bookCount) 本") : nil)
         }
@@ -80,11 +77,11 @@ struct WorkspaceBottomDockView: View {
                                 .font(.caption.weight(.bold))
                                 .foregroundStyle(theme.readableText)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text("剪贴板秒配 Key")
+                                Text("连接模型")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
-                                Text("自动识别并测通模型")
+                                Text("选择服务商并验证")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
@@ -101,42 +98,17 @@ struct WorkspaceBottomDockView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                } else {
+                } else if showsUsage {
                     Button {
                         preferences.triggerSelectionHaptic()
-                        if showsUsage {
-                            onOpenUsage()
-                        } else {
-                            onOpenSettings()
-                        }
+                        onOpenUsage()
                     } label: {
-                        HStack(spacing: DS.Spacing.xs) {
-                            Circle()
-                                .fill(Color.green)
-                                .frame(width: 7, height: 7)
-                                .accessibilityHidden(true)
-
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(String(localized: "\(readyProviderCount) 家服务商就绪"))
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-
-                                if let monthlySpendText, !monthlySpendText.isEmpty {
-                                    Text(monthlySpendText)
-                                        .font(.caption2.monospacedDigit())
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, DS.Spacing.sm)
-                        .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum, alignment: .leading)
-                        .contentShape(Rectangle())
+                        providerStatus.contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(showsUsage ? String(localized: "用量") : String(localized: "设置"))
+                    .accessibilityLabel("用量")
+                } else {
+                    providerStatus
                 }
 
                 Button {
@@ -183,5 +155,31 @@ struct WorkspaceBottomDockView: View {
         .background(DS.Surface.drawer)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.bottomDock")
+    }
+
+    private var providerStatus: some View {
+        HStack(spacing: DS.Spacing.xs) {
+            Circle()
+                .fill(Color.green)
+                .frame(width: 7, height: 7)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(readyProviderCount) 家服务商就绪")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                if let monthlySpendText, !monthlySpendText.isEmpty {
+                    Text(monthlySpendText)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, DS.Spacing.sm)
+        .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum, alignment: .leading)
     }
 }

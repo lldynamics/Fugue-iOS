@@ -31,7 +31,7 @@ enum RequestKind: String, Codable {
         case .continuation: return String(localized: "续写")
         case .agentTool: return String(localized: "工具调用")
         case .titleGeneration: return String(localized: "智能标题")
-        case .studyGeneration: return String(localized: "助学制卡")
+        case .studyGeneration: return String(localized: "学习辅导")
         }
     }
 }
@@ -368,17 +368,6 @@ final class CachePriceSnapshotStore: @unchecked Sendable {
             mutated = true
         }
         if mutated { schedulePersistLocked() }
-        lock.unlock()
-    }
-
-    func prune(keeping validIDs: Set<UUID>) {
-        let validKeys = Set(validIDs.map(\.uuidString))
-        lock.lock()
-        let before = cache.count
-        cache = cache.filter { validKeys.contains($0.key) }
-        if cache.count != before {
-            schedulePersistLocked()
-        }
         lock.unlock()
     }
 

@@ -584,7 +584,8 @@ enum OpenAICompatibleAdapter {
 
     static func isOpenRouter(_ baseURL: String) -> Bool {
         let host = URLComponents(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased() ?? ""
-        return host == "openrouter.ai" || host.hasSuffix(".openrouter.ai")
+        let domain = host.hasSuffix(".") ? host.dropLast() : host[...]
+        return domain == "openrouter.ai" || domain.hasSuffix(".openrouter.ai")
     }
 
     private static func isDirectOpenAIHost(_ baseURL: String) -> Bool {

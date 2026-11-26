@@ -55,35 +55,12 @@ struct AssistanceSettingsSection: View {
             }
         }
 
-        if !conversation.isGroupMode {
-            Section {
-                Picker("助学导师模式", selection: Binding(
-                    get: { conversation.assistanceSettings.studyCoachMode },
-                    set: { conversation.assistanceSettings.studyCoachMode = $0 }
-                )) {
-                    ForEach(StudyCoachMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-            } header: {
-                Text("技能学习与导师引导")
-            } footer: {
-                Text(conversation.assistanceSettings.studyCoachMode.subtitle)
-            }
-        }
-
         Section {
             Toggle("启用提示词缓存 (Prompt Caching)", isOn: binding(\.enablePromptCaching))
             if !conversation.isGroupMode {
                 Toggle("开启智能工具 (联网 / 网页 / 记忆建议)", isOn: binding(\.enableAgentTools))
             }
             Toggle("首轮对话后自动生成标题", isOn: binding(\.autoGenerateTitle))
-            if !conversation.isGroupMode {
-                Toggle("Arena 双盲对比模式", isOn: Binding(
-                    get: { conversation.assistanceSettings.blindArenaMode },
-                    set: { ChatEngine.setBlindArenaMode($0, in: conversation) }
-                ))
-            }
         } header: { Text("智能增强") } footer: {
             Text("提示词缓存可显著降低 Anthropic 长上下文与系统提示词成本；智能工具仅在单聊生效，记忆建议需经你手动确认后才会保存。")
         }

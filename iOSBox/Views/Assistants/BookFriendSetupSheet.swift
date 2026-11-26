@@ -35,7 +35,7 @@ struct BookFriendSetupSheet: View {
                             Menu {
                                 Button { pickingFile = true } label: { Label("从文件导入书籍", systemImage: "book.badge.plus") }
                                 Button("从书架移除", role: .destructive) { removing = true }
-                            } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
+                            } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                             .accessibilityLabel(Text("《\(book.title)》的书籍操作"))
                         }
                     }
@@ -85,7 +85,7 @@ struct BookFriendSetupSheet: View {
                     }
                 }
                 if working { ProgressView("正在读取书中资料…") }
-                if let error { Text(verbatim: error).font(.callout).foregroundStyle(.red) }
+                if let error { Text(verbatim: error).font(.callout).foregroundStyle(DS.StatusText.error) }
             }
             .scrollDismissesKeyboard(.interactively)
             .disabled(working)

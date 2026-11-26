@@ -4,7 +4,6 @@ enum SyncEntityKind: String, Codable, Hashable, CaseIterable, Sendable {
     case conversation
     case memory
     case book
-    case flashcard
     case preset
     case personaProfile
     case provider
@@ -45,6 +44,7 @@ final class SyncTombstoneStore: @unchecked Sendable {
     private let lock = NSLock()
     private let fileURL: URL?
     private var inMemory: [SyncTombstoneKey: Date] = [:]
+    private var hasLoadedFromDisk = false
 
     init(fileURL: URL? = SyncTombstoneStore.defaultFileURL()) {
         self.fileURL = fileURL
@@ -149,6 +149,7 @@ final class SyncTombstoneStore: @unchecked Sendable {
     func clearAll() {
         lock.withLock {
             inMemory.removeAll()
+            hasLoadedFromDisk = true
             if let fileURL {
                 try? FileManager.default.removeItem(at: fileURL)
             }
@@ -179,21 +180,28 @@ final class SyncTombstoneStore: @unchecked Sendable {
             }
     }
 
+    private struct RawTombstone: Decodable {
+        var kind: String
+        var id: UUID
+        var deletedAt: Date
+    }
+
     private func loadLocked(now: Date) -> [SyncTombstoneKey: Date] {
-        var map: [SyncTombstoneKey: Date]
-        if let fileURL {
+        if let fileURL, !hasLoadedFromDisk {
             if let data = try? Data(contentsOf: fileURL),
-               let decoded = try? Self.makeDecoder().decode([SyncTombstone].self, from: data) {
-                map = Dictionary(
-                    decoded.map { ($0.key, $0.deletedAt) },
+               let decoded = try? Self.makeDecoder().decode([RawTombstone].self, from: data) {
+                inMemory = Dictionary(
+                    decoded.compactMap { raw in
+                        SyncEntityKind(rawValue: raw.kind).map { (SyncTombstoneKey(kind: $0, id: raw.id), raw.deletedAt) }
+                    },
                     uniquingKeysWith: { max($0, $1) }
                 )
             } else {
-                map = [:]
+                inMemory = [:]
             }
-        } else {
-            map = inMemory
+            hasLoadedFromDisk = true
         }
+        var map = inMemory
         _ = pruneLocked(&map, now: now)
         return map
     }
@@ -211,6 +219,8 @@ final class SyncTombstoneStore: @unchecked Sendable {
     }
 
     private func persistLocked(_ map: [SyncTombstoneKey: Date]) {
+        inMemory = map
+        hasLoadedFromDisk = true
         if let fileURL {
             let list = Self.sortedList(from: map)
             if let data = try? Self.makeEncoder().encode(list) {
@@ -220,8 +230,6 @@ final class SyncTombstoneStore: @unchecked Sendable {
                 )
                 try? data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             }
-        } else {
-            inMemory = map
         }
     }
 }

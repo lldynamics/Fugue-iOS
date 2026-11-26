@@ -72,7 +72,7 @@ struct GroupSetupSheet: View {
                             .font(.title2)
                             .multilineTextAlignment(.center)
                             .frame(width: 46, height: 42)
-                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                             .onChange(of: roomEmoji) { _, newValue in
                                 if let first = newValue.first {
                                     let single = String(first)
@@ -124,7 +124,7 @@ struct GroupSetupSheet: View {
                     if availableTargets.isEmpty && members.isEmpty {
                         Label("请先在「设置」页面启用至少一个模型后再配置群成员。", systemImage: "exclamationmark.triangle.fill")
                             .font(.footnote)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(DS.StatusText.warning)
                     } else {
                         ForEach($members) { $member in
                             memberEditorCard(member: $member)
@@ -231,7 +231,7 @@ struct GroupSetupSheet: View {
                         .foregroundStyle(.secondary)
 
                     if speakingMode == .smartRelay {
-                        Stepper(value: $maxRelayTurns, in: 1...6) {
+                        Stepper(value: $maxRelayTurns, in: 1...10) {
                             HStack {
                                 Text("单轮自动接力上限")
                                 Spacer()
@@ -341,7 +341,7 @@ struct GroupSetupSheet: View {
                             }
                             .frame(width: 210, alignment: .leading)
                             .padding(11)
-                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
@@ -388,7 +388,7 @@ struct GroupSetupSheet: View {
                             if m.isMuted {
                                 Text("潜水禁言")
                                     .font(.caption2)
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(DS.StatusText.warning)
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 1)
                                     .background(Color.orange.opacity(0.12), in: Capsule())
@@ -419,7 +419,7 @@ struct GroupSetupSheet: View {
                 if profiles.contains(where: { $0.id == m.profileID }) {
                     Text("人物资料和模型可在「助手」中的人物档案编辑。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    ForEach(m.persona?.feeds ?? []) { feed in
+                    ForEach((m.persona?.feeds ?? []).filter { $0.kind == .blog }) { feed in
                         Toggle(isOn: Binding(get: {
                             member.wrappedValue.persona?.feeds.first { $0.id == feed.id }?.enabled ?? false
                         }, set: { enabled in
@@ -430,7 +430,7 @@ struct GroupSetupSheet: View {
                             VStack(alignment: .leading) {
                                 Text("自动分享到本群")
                                 Text(verbatim: feed.displayName).font(.caption).foregroundStyle(.secondary)
-                                if let error = feed.lastError { Text(verbatim: error).font(.caption).foregroundStyle(.orange) }
+                                if let error = feed.lastError { Text(verbatim: error).font(.caption).foregroundStyle(DS.StatusText.warning) }
                             }
                         }
                     }
@@ -466,7 +466,7 @@ struct GroupSetupSheet: View {
                 .frame(width: 40)
                 .multilineTextAlignment(.center)
                 .padding(.vertical, 6)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: 8))
                 .onChange(of: member.wrappedValue.avatarEmoji) { _, val in
                     if let first = val.first {
                         let single = String(first)
@@ -551,7 +551,7 @@ struct GroupSetupSheet: View {
                 .lineLimit(2...5)
                 .font(.footnote)
                 .padding(8)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: 8))
         }
 
         HStack {

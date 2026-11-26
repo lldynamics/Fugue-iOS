@@ -51,18 +51,23 @@ final class WidgetSnapshotService {
         )
     }
 
-    func sync(context: ModelContext, forceReload: Bool = false) {
+    func sync(context: ModelContext, forceReload: Bool = false, bookmarkedCount suppliedBookmarkedCount: Int? = nil) {
         guard PersistenceController.canCommitUserData(in: context) else { return }
         guard context.container.configurations.allSatisfy({ !$0.isStoredInMemoryOnly }) else { return }
 
         let conversations = (try? context.fetch(FetchDescriptor<Conversation>())) ?? []
         let providers = (try? context.fetch(FetchDescriptor<ProviderConfig>())) ?? []
-        let metadataMessages = (try? context.fetch(
-            FetchDescriptor<ChatMessage>(predicate: #Predicate { $0.assistanceMetadataData != nil })
-        )) ?? []
-        let bookmarkedCount = metadataMessages.reduce(into: 0) { count, message in
-            if message.assistanceMetadata.isBookmarked {
-                count += 1
+        let bookmarkedCount: Int
+        if let suppliedBookmarkedCount {
+            bookmarkedCount = suppliedBookmarkedCount
+        } else {
+            let metadataMessages = (try? context.fetch(
+                FetchDescriptor<ChatMessage>(predicate: #Predicate { $0.assistanceMetadataData != nil })
+            )) ?? []
+            bookmarkedCount = metadataMessages.reduce(into: 0) { count, message in
+                if message.assistanceMetadata.isBookmarked {
+                    count += 1
+                }
             }
         }
 

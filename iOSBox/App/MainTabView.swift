@@ -11,10 +11,8 @@ final class WorkspaceNavigation {
         var id: String { rawValue }
     }
 
-    var tab = 0
     var assistantSection: AssistantListView.WorkshopSection = .friends
     var isDrawerPresented = false
-    var isInspectorPresented = false
     var activeModal: ModalDestination?
 
     func openWorkshop(_ section: AssistantListView.WorkshopSection? = nil) {
@@ -22,25 +20,21 @@ final class WorkspaceNavigation {
             assistantSection = section
         }
         isDrawerPresented = false
-        tab = 1
         activeModal = .workshop
     }
 
     func openSettings() {
         isDrawerPresented = false
-        tab = 2
         activeModal = .settings
     }
 
     func openUsage() {
         isDrawerPresented = false
-        tab = 3
         activeModal = .usage
     }
 
     func closeModal() {
         activeModal = nil
-        tab = 0
     }
 
     func openBookshelf() {
@@ -54,7 +48,6 @@ final class WorkspaceNavigation {
         case 3: openUsage()
         default:
             activeModal = nil
-            tab = 0
         }
     }
 }
@@ -165,7 +158,6 @@ struct MainTabView: View {
         integration.refresh(context: modelContext)
         do {
             if let store = try? SystemEntryStore() { try ExternalReceiptImporter.drain(store, context: modelContext) }
-            try ExternalReceiptImporter.drain(ReaderSheet.localStore, context: modelContext)
         } catch { integration.error = error.localizedDescription }
         if !hasSyncedSpotlightOnLaunch || SpotlightIndexService.shared.needsLegacyPreviewPurge {
             hasSyncedSpotlightOnLaunch = true

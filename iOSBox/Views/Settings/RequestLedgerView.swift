@@ -6,8 +6,6 @@ struct RequestLedgerView: View {
     var onClose: (() -> Void)? = nil
 
     @Query(sort: \RequestRecord.startedAt, order: .reverse) private var records: [RequestRecord]
-    @Query(filter: #Predicate<ChatMessage> { $0.comparisonGroupID != nil && $0.synthesisSourceDigest == nil })
-    private var arenaMessages: [ChatMessage]
     @State private var period: LedgerPeriod = .month
     @State private var referenceDate = Date()
     @State private var providerID: UUID?
@@ -79,7 +77,7 @@ struct RequestLedgerView: View {
             alertRatio: preferences.monthlyBudgetAlertRatio
         )
 
-        return NavigationStack {
+        let ledger = Group {
             List {
                 Section {
                     let speedSummary = overallMedianTPS(in: modelRows)
@@ -240,45 +238,6 @@ struct RequestLedgerView: View {
                     }
                 }
 
-                let blindLeaderboard = ArenaBallot.standings(from: arenaMessages)
-                if !blindLeaderboard.isEmpty || arenaMessages.contains(where: {
-                    $0.assistanceMetadataData != nil && $0.assistanceMetadata.blindArenaRevealed
-                }) {
-                    Section {
-                        if blindLeaderboard.isEmpty { Text("尚无独立选票").foregroundStyle(.secondary) }
-                        ForEach(blindLeaderboard) { stat in
-                            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(stat.modelName)
-                                            .font(.subheadline.weight(.semibold))
-                                        Text(stat.providerName)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    VStack(alignment: .trailing, spacing: 2) {
-                                        Text(stat.winRate, format: .percent.precision(.fractionLength(0)))
-                                            .font(.subheadline.monospacedDigit().weight(.semibold))
-                                            .foregroundStyle(theme.readableText)
-                                        Text("胜 \(stat.wins)/\(stat.rounds)")
-                                            .font(.caption2.monospacedDigit())
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                ProgressView(value: min(max(stat.winRate, 0), 1))
-                                    .tint(theme.tintColor)
-                                    .accessibilityHidden(true)
-                            }
-                            .padding(.vertical, 2)
-                        }
-                    } header: {
-                        Text("双盲评测胜率榜")
-                    } footer: {
-                        Text("胜率按投票时已完成的回答统计。旧版已揭晓的轮次没有独立选票，不计入胜率。")
-                    }
-                }
-
                 if !rows.isEmpty {
                     Section("请求明细") {
                         ForEach(Array(rows.prefix(visibleLimit))) { record in
@@ -376,6 +335,12 @@ struct RequestLedgerView: View {
                 }
                 .presentationDetents([.medium])
             }
+        }
+        // A settings link uses the existing navigation stack. The standalone sheet owns its stack.
+        if onClose != nil {
+            NavigationStack { ledger }
+        } else {
+            ledger
         }
     }
 
@@ -542,7 +507,7 @@ struct RequestRecordDetailView: View {
                         LabeledContent("预估费用", value: RequestLedger.costText(cost, currency: currency))
                         if let saved = record.estimatedCacheSavings {
                             LabeledContent("缓存已节省", value: RequestLedger.costText(saved, currency: currency))
-                                .foregroundStyle(.green)
+                                .foregroundStyle(DS.StatusText.success)
                         }
                     } else { Text("用量或单价不完整，费用未知。") }
                     Text("按服务商返回用量与已设单价（含缓存单价快照）估算，不含阶梯价格和额外收费。")

@@ -41,16 +41,16 @@ final class ReleaseRepairRegressionTests: XCTestCase {
 
     func testTwoDeviceMergePreservesOrganizationAndRegeneratedAnswersOnRepeat() throws {
         let first = try database(), second = try database()
-        let cards = FlashcardStore(fileURL: nil), bindings = PresetKnowledgeStore(fileURL: nil)
+        let bindings = PresetKnowledgeStore(fileURL: nil)
         let chat = Conversation(title: "游记")
         let answer = ChatMessage(role: .assistant, content: "第一版回答")
         first.mainContext.insert(chat)
         first.mainContext.insert(answer)
         answer.conversation = chat
         func transfer() throws -> ImportSummary {
-            let archive = try BackupService.makeArchive(context: first.mainContext, flashcardStore: cards, knowledgeStore: bindings)
+            let archive = try BackupService.makeArchive(context: first.mainContext, knowledgeStore: bindings)
             return try BackupService.apply(BackupService.decode(BackupService.encode(archive)), to: second.mainContext,
-                                           flashcardStore: cards, knowledgeStore: bindings)
+                                           knowledgeStore: bindings)
         }
         try first.mainContext.save()
         _ = try transfer()
@@ -97,19 +97,19 @@ final class ReleaseRepairRegressionTests: XCTestCase {
 
     func testBindingImportReportsWriteFailureAndRetriesAfterReopening() throws {
         let first = try database(), second = try database(), root = try directory()
-        let source = PresetKnowledgeStore(fileURL: nil), cards = FlashcardStore(fileURL: nil)
+        let source = PresetKnowledgeStore(fileURL: nil)
         let book = try BookLibrary.store(PreparedBook(BookManuscript(title: "参考书", chapters: [.init(title: "一", text: "原文")])), in: first.mainContext)
         let preset = AssistantPreset(name: "助理")
         first.mainContext.insert(preset)
         try first.mainContext.save()
         try source.setVolumeIDs([book.id], for: preset.id)
-        let archive = try BackupService.makeArchive(context: first.mainContext, flashcardStore: cards, knowledgeStore: source)
+        let archive = try BackupService.makeArchive(context: first.mainContext, knowledgeStore: source)
         let parent = root.appendingPathComponent("parent")
         try Data("occupied".utf8).write(to: parent)
         let file = parent.appendingPathComponent("bindings.json")
         let storage = PresetKnowledgeStore(fileURL: file)
         func restore() throws -> ImportSummary {
-            try BackupService.apply(.full(archive), to: second.mainContext, flashcardStore: cards, knowledgeStore: storage)
+            try BackupService.apply(.full(archive), to: second.mainContext, knowledgeStore: storage)
         }
         let failure = try restore()
         XCTAssertEqual(failure.presets, 1)
@@ -130,7 +130,7 @@ final class ReleaseRepairRegressionTests: XCTestCase {
         let corrupt = Data("truncated{".utf8)
         try corrupt.write(to: file)
         XCTAssertThrowsError(try storage.setVolumeIDs([], for: preset.id))
-        XCTAssertThrowsError(try BackupService.makeArchive(context: second.mainContext, flashcardStore: cards, knowledgeStore: storage))
+        XCTAssertThrowsError(try BackupService.makeArchive(context: second.mainContext, knowledgeStore: storage))
         XCTAssertFalse(try restore().knowledgeRestoreFailed)
         XCTAssertEqual(try Data(contentsOf: file), corrupt)
         try storage.preserveDamagedLibrary()
@@ -154,7 +154,7 @@ final class ReleaseRepairRegressionTests: XCTestCase {
             msg.conversation = old
         }
         func restore(_ chats: [LegacyExportConversation], to destination: ModelContainer) throws -> ImportSummary {
-            try BackupService.apply(.legacy(chats), to: destination.mainContext, flashcardStore: FlashcardStore(fileURL: nil), knowledgeStore: PresetKnowledgeStore(fileURL: nil))
+            try BackupService.apply(.legacy(chats), to: destination.mainContext, knowledgeStore: PresetKnowledgeStore(fileURL: nil))
         }
         XCTAssertEqual(try restore([legacy], to: db).conversations, 0)
         old.rename(to: "本机重命名")
