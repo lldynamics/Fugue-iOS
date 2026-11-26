@@ -50,6 +50,7 @@
 | `englishCoach` | `EnglishCoachStore.PersistedState?` | iOS 英语私教状态（不支持该模块的客户端应忽略或透传保留） |
 | `annotations` | `[ReadingAnnotation.Snapshot]?` | 带章节、UTF-16 偏移及引用原文的读书摘录与批注，可独立保留 |
 | `memoryCollections` | `[NamedMemoryCollection]?`（`[MemoryCollectionBackup]?`） | 命名记忆集合（每项包含集合 `id`、`name` 与 `memoryIDs`；仅手工完整备份写入，WebDAV 同步归档省略） |
+| `friendMemories` | `FriendMemoryStore.PersistedState?` | 好友持续记忆（覆盖人物档案 `persona:<uuid>` 与书中好友 `book:<bookUUID>:<name>` 的关系小结、最多 25 条带章节进度与更新时间戳的共同记忆条目及单条删除墓碑；随手工完整备份与加密 WebDAV 同步合并） |
 
 v8 将阅读位置、个人记忆和消息收藏的修改时间记录为 Unix 秒数（包含小数秒），双向同步采用较新的显式修改。清空对话会在该会话的 `messageChanges` 中记录具体消息 UUID、操作时间及删除状态。跨端合并保留另一台设备独有的新消息。手工恢复被清空的消息或在原设备撤销会产生更新的恢复记录。参与持续同步的设备应同时升级到支持 v8 的版本。
 

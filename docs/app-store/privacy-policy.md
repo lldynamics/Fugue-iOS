@@ -18,7 +18,7 @@
 
 - **对话及模型连接。** 你确认第三方 AI 数据传输后，设备将本次请求用到的消息、历史上下文、提示词、附件或提取文字发给你配置的模型接口。启用相关功能时，请求还可能包含个人记忆、书架或人物资料的相关片段、搜索结果和工具结果。在多模型对比、圆桌或备用模型流程中，参与本次请求的服务商会收到各自所需的数据。认证信息随请求提供给相应的接口。验证连接时，应用可能验证凭据、读取模型列表并发送固定的测试消息。
 - **联网搜索、网页和订阅。** 使用 Tavily 时，搜索词和 API 认证信息会发给 Tavily，返回的搜索摘要可随对话发给回答模型。启用取网页或模型服务商自带的搜索功能时，应用或你所选的服务商会访问相应网站或搜索服务。你启用人物动态订阅后，应用可在前台或由系统安排的后台刷新中访问所填的公开站点、RSS 或 Atom 订阅源。
-- **语音。** 听写可使用 Apple 系统语音识别，是否在设备上处理取决于设备、语言及系统服务。选择云端转写会把所选录音发给配置的转写服务。使用云端朗读会把待朗读的文字发给配置的语音服务。转写结果随你发起的对话或摘要请求发送给所选模型。
+- **语音。** 听写可使用 Apple 系统语音识别，是否在设备上处理取决于设备、语言及系统服务。实时语音通话会将麦克风音频流发送到所选的 Google Gemini 账号，并在本机保存收到的通话转写。选择云端转写会把所选录音发给配置的转写服务。使用云端朗读会把待朗读的文字发给配置的语音服务。转写结果随你发起的对话或摘要请求发送给所选模型。
 
 这些接收方包括你填写的第三方服务、自部署地址及所用的网站。服务商可收到建立连接所需的信息，例如来源 IP 地址。服务商处理、保存和删除所收数据的方式以其政策、所在地区及你的服务设置为准。你可向相应服务商提出删除请求。
 
@@ -58,7 +58,7 @@ Fugue connects directly from your device to the recipients described below. The 
 
 - **Chats and model connections.** After you confirm the third-party AI data disclosure, your device sends the messages, conversation history, prompts, attachments, or extracted text used for the request to the model endpoints you configured. Depending on your settings, a request can also include personal memories, relevant passages from your bookshelf or character references, search results, and tool results. When you compare models, run an AI roundtable, or use a fallback model, the providers involved receive the data needed for their part of the request. Authentication information accompanies requests to the relevant endpoints. Connection verification can check credentials, retrieve a model list, and send a fixed test message.
 - **Web search, webpages, and feeds.** When you use Tavily, the search query and API authentication go to Tavily. Returned search summaries can be sent to the model answering your question. When you use webpage tools or a model provider’s built-in search, Fugue or the model provider may access the relevant websites or search services. If you enable character feed subscriptions, Fugue can request the selected public sites or RSS or Atom feeds when the app is open or during a background refresh scheduled by the system.
-- **Voice.** Dictation can use Apple’s system speech recognition. On-device processing depends on the device, language, and system service. Choosing cloud transcription sends the selected recording to your configured transcription service. Choosing cloud speech sends the text to be read aloud to your configured voice service. Transcripts are sent to the selected model when you use them in a chat or summary request.
+- **Voice.** Dictation can use Apple’s system speech recognition. On-device processing depends on the device, language, and system service. Live voice sends microphone audio to the selected Google Gemini account and saves returned transcripts on the device. Choosing cloud transcription sends the selected recording to your configured transcription service. Choosing cloud speech sends the text to be read aloud to your configured voice service. Transcripts are sent to the selected model when you use them in a chat or summary request.
 
 Recipients include third-party services, self-hosted endpoints, and websites you use. Recipients can receive connection information such as your IP address. How a provider processes, retains, or deletes the information it receives depends on its policies, region, and your settings with that provider. Contact the provider directly to request deletion of data it has received.
 
