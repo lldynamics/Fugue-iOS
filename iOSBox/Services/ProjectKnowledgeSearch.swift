@@ -342,7 +342,19 @@ actor ProjectKnowledgeSearch {
                 }
                 if let model = scorer.model { try await storage.storePassageVectors(updates, model: model) }
             }
-            for (rank, hit) in hits.sorted(by: { $0.1 > $1.1 }).prefix(60).enumerated() {
+            hits.sort { $0.1 > $1.1 }
+            if let wordScore = PassageSemantics.chineseWordScore(for: searchText) {
+                let lexical = Set(lexicalIDs)
+                hits = try hits.enumerated().compactMap { index, hit in
+                    guard index < 120 || lexical.contains(hit.0) else { return nil }
+                    try Task.checkCancellation()
+                    guard hit.1 < 1, let text = chunkByID[hit.0]?.text else { return hit }
+                    let words = wordScore(text) ?? 0
+                    return (hit.0, 0.15 * hit.1 + 0.85 * words)
+                }
+                hits.sort { $0.1 > $1.1 }
+            }
+            for (rank, hit) in hits.prefix(60).enumerated() {
                 scoresByID[hit.0, default: 0] += hit.1 / (rrfK + Double(rank + 1))
             }
         }

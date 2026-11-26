@@ -86,13 +86,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Used for dictation, speaking practice, voice notes, and live conversations. Cloud transcription sends recordings to your configured service. Starting a live call streams microphone audio to your selected Gemini service."
+            "value": "Used for dictation, speaking practice, voice notes, and live conversations. Cloud transcription sends recordings to your configured service. Starting a live call streams microphone audio to your selected OpenAI or Google Gemini service."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用于听写、英语陪练、会议录音和实时语音。你选择云端转写时，录音会发送给配置的转写服务。开始实时通话时，麦克风音频会发送给所选的 Gemini 服务。"
+            "value": "用于听写、英语陪练、会议录音和实时语音。你选择云端转写时，录音会发送给配置的转写服务。开始实时通话时，麦克风音频会发送给所选的 OpenAI 或 Google Gemini 服务。"
           }
         }
       }

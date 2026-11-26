@@ -87,6 +87,9 @@ final class ProviderModelCatalog {
                     if item.displayName == item.id { item.displayName = discovered.displayName }
                 }
             }
+            if fromAPI, let report = live[item.id]?.reportedMedia {
+                item.reportedMedia = report
+            }
             // Legacy prices have no source. Treat existing amounts as user overrides.
             let hasLegacyPrice = [item.inputPricePerMillion, item.outputPricePerMillion, item.cacheReadPricePerMillion,
                                   item.cacheWritePricePerMillion].contains { $0 != nil }
@@ -278,6 +281,7 @@ struct ModelCatalogPicker: View {
                 HStack {
                     VStack(alignment: .leading) {
                         Text(verbatim: model.displayName).foregroundStyle(.primary)
+                        ModelMediaSummary(capabilities: model.mediaCapabilities(baseURL: request.baseURL))
                         if model.displayName != model.id {
                             Text(verbatim: model.id).font(.caption.monospaced()).foregroundStyle(.secondary)
                         }

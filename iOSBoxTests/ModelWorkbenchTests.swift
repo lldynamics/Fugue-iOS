@@ -5,6 +5,60 @@ import Vision
 @testable import iOSBox
 
 final class ModelWorkbenchTests: XCTestCase {
+    @MainActor func testTimeoutPreservesConfirmedCapabilityAndLegacyUnknownStaysUnknown() async throws {
+        let schema = Schema(versionedSchema: CurrentSchema.self)
+        let db = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let spec = ModelSpec(id: "pdf-retry")
+        let provider = ProviderConfig(name: "Retry", protocolType: .openAICompatible, baseURL: "http://127.0.0.1/v1", models: [spec])
+        db.mainContext.insert(provider)
+        let accepted = AppCompliance.hasAcceptedAIDisclosure()
+        AppCompliance.setAcceptedAIDisclosure(true)
+        defer { AppCompliance.setAcceptedAIDisclosure(accepted) }
+        let model = TaskModel(provider: provider, spec: spec) { _ in
+            AsyncThrowingStream { $0.finish(throwing: URLError(.timedOut)) }
+        }
+        let probe = CapabilityProbe.pdf, key = probe.key(model)
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        struct Old: Encodable { let passed: Bool; let date: Date; let detail: String }
+        let yesterday = Date(timeIntervalSinceNow: -86400)
+        UserDefaults.standard.set(try JSONEncoder().encode(Old(passed: true, date: yesterday, detail: "通过")), forKey: key)
+        do { try await probe.test(model); XCTFail("expected a timeout") } catch {}
+        let result = try XCTUnwrap(probe.result(model))
+        XCTAssertEqual(result.passed, true)
+        XCTAssertEqual(result.confirmedAt, yesterday)
+        XCTAssertEqual(result.detail, "timeout")
+        let ranked = ModelRecommendation.rank(providers: [provider], recent: [], requirement: probe.rawValue,
+                                              preference: "速度优先", currency: "USD", budget: "", estimate: 10)
+        XCTAssertEqual(ranked.map(\.model.id), [model.id])
+        UserDefaults.standard.set(try JSONEncoder().encode(Old(passed: false, date: yesterday, detail: "请求失败，能力未知")), forKey: key)
+        XCTAssertNil(probe.result(model)?.passed)
+    }
+
+    @MainActor func testClaimRecordsFollowRevisionAfterReloadAndRejectLateResults() throws {
+        let schema = Schema(versionedSchema: CurrentSchema.self)
+        let db = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = db.mainContext
+        let reply = ChatMessage(role: .assistant, content: "The allowed time is seven days.")
+        let chat = Conversation(title: "Verification")
+        context.insert(chat); context.insert(reply); reply.conversation = chat
+        let old = ClaimCheckRecord.Version(reply)
+        let report = ClaimCheckRecord(checkedText: "seven days", model: "Verifier", statements: [.init(text: "seven days", verdict: "材料不足", quote: nil, citation: nil)])
+        try report.save(to: reply, version: old)
+        reply.assistanceMetadata.revisions = [ChatEngine.snapshotRevision(of: reply)]
+        reply.assistanceMetadata.claimChecks = nil
+        reply.content = "The allowed time is ten days."
+        XCTAssertThrowsError(try report.save(to: reply, version: old))
+        ChatEngine.shared.selectRevision(index: 0, for: reply, context: context)
+        XCTAssertEqual(reply.assistanceMetadata.claimChecks, [report])
+        let another = ClaimCheckRecord(checkedText: "time", model: "Verifier", statements: report.statements)
+        try another.save(to: reply, version: .init(reply))
+        ChatEngine.shared.selectRevision(index: 1, for: reply, context: context)
+        XCTAssertNil(reply.assistanceMetadata.claimChecks)
+        let reopened = try XCTUnwrap(ModelContext(db).fetch(FetchDescriptor<ChatMessage>()).first)
+        XCTAssertEqual(reopened.assistanceMetadata.revisions.first?.claimChecks, [another, report])
+        let backup = BackupService.snapshot(chat, forExport: true)
+        XCTAssertEqual(backup.messages.first?.assistanceMetadata?.revisions.first?.claimChecks, [another, report])
+    }
     @MainActor func testRealProbeFixturesAndAccountScopedResults() async throws {
         let schema = Schema(versionedSchema: CurrentSchema.self)
         let db = try ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)])
@@ -74,6 +128,26 @@ final class ModelWorkbenchTests: XCTestCase {
         let gemini = GeminiAdapter.buildRequestBody(req)["generationConfig"] as? [String: Any]
         XCTAssertNotNil(gemini?["responseJsonSchema"])
         XCTAssertEqual(gemini?["responseModalities"] as? [String], ["TEXT","IMAGE"])
+    }
+
+    @MainActor func testResponsesImageEditHandlesStreamAndJSONWithoutDuplicateVersions() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 8, height: 8)
+        let data = UIGraphicsImageRenderer(bounds: bounds).pngData { ctx in
+            UIColor.blue.setFill(); ctx.fill(bounds)
+        }
+        let item: [String: Any] = ["type": "image_generation_call", "id": "img-1", "result": data.base64EncodedString()]
+        let response = ["output": [item]]
+        var state = OpenAIResponsesAdapter.StreamParserState()
+        func countImages(_ events: [LLMStreamEvent]) -> Int {
+            events.filter { if case .attachmentDelta = $0 { return true }; return false }.count
+        }
+        let stream = try OpenAIResponsesAdapter.parseSSEEventObject(["type": "response.output_item.done", "item": item], state: &state)
+        XCTAssertEqual(countImages(stream), 1)
+        let complete: [String: Any] = ["type": "response.completed", "response": response]
+        XCTAssertEqual(countImages(try OpenAIResponsesAdapter.parseSSEEventObject(complete, state: &state)), 0)
+        var fresh = OpenAIResponsesAdapter.StreamParserState()
+        XCTAssertEqual(countImages(try OpenAIResponsesAdapter.parseSSEEventObject(complete, state: &fresh)), 1)
+        XCTAssertEqual(countImages(try OpenAIResponsesAdapter.parseNonStreamingResponse(JSONSerialization.data(withJSONObject: response))), 1)
     }
 
     func testHybridRetrievalFindsParaphraseAndHonorsReadingLimit() async throws {

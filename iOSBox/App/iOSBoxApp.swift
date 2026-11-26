@@ -236,6 +236,53 @@ struct iOSBoxApp: App {
                 runtime.retryStorageIfAvailable()
             }
         }
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("新对话") {
+                    NotificationCenter.default.post(name: .fugueCreateNewChat, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
+            CommandGroup(after: .toolbar) {
+                Button("快速跳转") {
+                    NotificationCenter.default.post(name: .fugueOpenCommandPalette, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: .command)
+
+                Button("会话检视器") {
+                    NotificationCenter.default.post(name: .fugueToggleInspector, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: [.command, .option])
+
+                Divider()
+
+                Button("对话") {
+                    NotificationCenter.default.post(name: .fugueSwitchPadSpace, object: WorkspaceNavigation.PadSpace.chat.rawValue)
+                }
+                .keyboardShortcut("1", modifiers: .command)
+
+                Button("书架") {
+                    NotificationCenter.default.post(name: .fugueSwitchPadSpace, object: WorkspaceNavigation.PadSpace.bookshelf.rawValue)
+                }
+                .keyboardShortcut("2", modifiers: .command)
+
+                Button("好友") {
+                    NotificationCenter.default.post(name: .fugueSwitchPadSpace, object: WorkspaceNavigation.PadSpace.friends.rawValue)
+                }
+                .keyboardShortcut("3", modifiers: .command)
+
+                Button("工作台") {
+                    NotificationCenter.default.post(name: .fugueSwitchPadSpace, object: WorkspaceNavigation.PadSpace.workshop.rawValue)
+                }
+                .keyboardShortcut("4", modifiers: .command)
+            }
+            CommandGroup(replacing: .appSettings) {
+                Button("设置") {
+                    NotificationCenter.default.post(name: .fugueSwitchPadSpace, object: WorkspaceNavigation.PadSpace.settings.rawValue)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
             #if DEBUG && targetEnvironment(simulator)
             if testingPicker || testingWorkspaces { return }

@@ -18,9 +18,29 @@ struct ChatDetailView: View {
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     @Query(sort: \AssistantPreset.sortOrder) private var presets: [AssistantPreset]
 
+    private enum ReadingSplitLayout: String, CaseIterable, Identifiable {
+        case bookOnly
+        case split
+        case chatOnly
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .bookOnly: return String(localized: "沉浸阅读")
+            case .split: return String(localized: "书聊并排")
+            case .chatOnly: return String(localized: "聚焦对话")
+            }
+        }
+    }
+
     @State private var draft: ChatDraftState
     @State private var readingRequest: ReadingRequest?
     @State private var showsShelfReader = false
+    @State private var showPadInspector = false
+    @State private var readingSplitLayout: ReadingSplitLayout = .split
+    @State private var readingSplitFraction: CGFloat = 0.56
+    @State private var readingDragStartFraction: CGFloat?
     @State private var citationVolumeID: UUID?
     @State private var citationPlace = BookReadingPlace()
     @State private var readingPlace = BookReadingPlace()
@@ -206,8 +226,12 @@ struct ChatDetailView: View {
         )
     }
 
-    private var timelineAndComposer: some View {
-        let currentActiveMessages = activeMessages
+    private var timelineAndComposer: some View { conversationTimeline() }
+
+    private func conversationTimeline(voice: LiveVoiceSession? = nil) -> some View {
+        // Completed turns are already in SwiftData while their live captions are still visible.
+        let callIDs = Set(voice?.lines.map(\.id) ?? [])
+        let currentActiveMessages = activeMessages.filter { !callIDs.contains($0.id) }
         let items = TimelineEntry.build(from: currentActiveMessages)
         let promptMilestones = ChatTopicScrubberView.PromptMilestone.questions(in: currentActiveMessages)
 
@@ -215,13 +239,15 @@ struct ChatDetailView: View {
             let timeline = ZStack(alignment: .bottomTrailing) {
                 ScrollView {
                     LazyVStack(spacing: 18) {
-                        if needsAPIKeyBanner && conversation.readingVolumeID == nil && (!usesPhoneWorkspace || conversation.isGroupMode || conversation.isArenaMode) {
+                        if voice == nil && needsAPIKeyBanner && conversation.readingVolumeID == nil && (!usesPhoneWorkspace || conversation.isGroupMode || conversation.isArenaMode) {
                             missingKeyCard
                         } else if let unreadyPeerSummary {
                             partialUnreadyCard(unreadyPeerSummary)
                         }
 
-                        if items.isEmpty && conversation.readingVolumeID != nil {
+                        if items.isEmpty && voice != nil {
+                            EmptyView()
+                        } else if items.isEmpty && conversation.readingVolumeID != nil {
                             Text("可以就原文提问，也可以长按段落引用。")
                                 .foregroundStyle(.secondary).padding()
                         } else if items.isEmpty {
@@ -276,6 +302,11 @@ struct ChatDetailView: View {
                                     .id(entry.id)
                                 }
                             }
+                            .disabled(voice != nil)
+                        }
+                        if let voice {
+                            LiveTranscriptSection(voice: voice)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
 
                         Color.clear
@@ -290,6 +321,9 @@ struct ChatDetailView: View {
                     .padding(.bottom, 10)
                 }
                 .scrollDismissesKeyboard(.interactively)
+                .onChange(of: voice?.lines.last?.text, initial: true) {
+                    if voice != nil && isPinnedToBottom { proxy.scrollTo("BOTTOM_ANCHOR", anchor: .bottom) }
+                }
                 .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.1) { ids in
                     guard isUserScrolling else { return }
                     let visible = Set(ids)
@@ -331,7 +365,7 @@ struct ChatDetailView: View {
                     pendingScrollMessageID = nil
                 }
 
-                if promptMilestones.count >= 3 {
+                if voice == nil && promptMilestones.count >= 3 {
                     ChatTopicScrubberView(milestones: promptMilestones, openDirectory: { presentSheet(.questionDirectory) }) { targetMessageID in
                         questionNavigationAnchor = targetMessageID
                         isPinnedToBottom = false
@@ -370,7 +404,9 @@ struct ChatDetailView: View {
                     .padding(.bottom, 14)
                 }
             }
-            if usesPhoneWorkspace {
+            if voice != nil {
+                timeline
+            } else if usesPhoneWorkspace {
                 VStack(spacing: 0) {
                     timeline
                     timelineFooter
@@ -436,6 +472,10 @@ struct ChatDetailView: View {
             onOpenGroupSetup: { presentSheet(.groupSetup) },
             onOpenOptions: { presentSheet(.options) },
             onManageKnowledge: { presentSheet(.knowledge) },
+            onOpenLiveCall: conversation.isGroupMode || conversation.isArenaMode ? nil : {
+                inputFocused = false
+                presentSheet(.liveCall)
+            },
             onOpenAudioTranscription: { presentSheet(.audioTranscription) },
             externalDocumentScanTrigger: externalDocumentScanTrigger,
             writingFirst: writingFirst,
@@ -456,14 +496,14 @@ struct ChatDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Spacing.lg) {
                     HStack(spacing: DS.Spacing.md) {
-                        FugueSealMark(character: "夜", size: 38, theme: theme)
-                        VStack(alignment: .leading, spacing: 2) {
+                        FugueSealMark(character: "夜", size: 42, theme: theme)
+                        VStack(alignment: .leading, spacing: 3) {
                             Text("今晚想推演什么问题？")
-                                .font(.system(.headline, design: preferences.literarySerifBody ? .serif : .default).weight(.bold))
+                                .font(.system(.title3, design: preferences.literarySerifBody ? .serif : .default).weight(.bold))
                                 .foregroundStyle(.primary)
-                            Text("右滑打开历史对话 · 右上角检视路由与知识库")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text("支持拖入文档与图片提问 · ⌘K 快速切换对话与书架")
+                                .font(.footnote)
+                                .foregroundStyle(.primary)
                         }
                     }
                     .padding(.top, DS.Spacing.xs)
@@ -471,10 +511,43 @@ struct ChatDetailView: View {
                     composer(writingFirst: true)
 
                     if draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        if let workspaceNavigation, geometry.size.width >= 600 {
+                            LazyVGrid(
+                                columns: [GridItem(.adaptive(minimum: 190), spacing: DS.Spacing.sm)],
+                                spacing: DS.Spacing.sm
+                            ) {
+                                padQuickEntryCard(
+                                    title: String(localized: "打开书架精读"),
+                                    subtitle: String(localized: "双栏原文伴读、批注与语义检索"),
+                                    symbol: "books.vertical.fill"
+                                ) {
+                                    workspaceNavigation.openBookshelf()
+                                }
+                                if preferences.showsArena {
+                                    padQuickEntryCard(
+                                        title: String(localized: "开启多模型对比"),
+                                        subtitle: String(localized: "并排比对思考链与裁判汇总"),
+                                        symbol: "square.split.2x1.fill"
+                                    ) {
+                                        presentSheet(.arena)
+                                    }
+                                }
+                                if preferences.showsBookFriends {
+                                    padQuickEntryCard(
+                                        title: String(localized: "好友与圆桌"),
+                                        subtitle: String(localized: "书中好友伴读与持续记忆"),
+                                        symbol: "person.2.fill"
+                                    ) {
+                                        workspaceNavigation.openFriends()
+                                    }
+                                }
+                            }
+                        }
+
                         VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                             Text("推演灵感")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(DS.Surface.inkSecondary)
                                 .padding(.horizontal, 2)
 
                             quickSuggestionButton(String(localized: "帮我对比一下 Swift Actor 和传统锁的性能与适用场景"))
@@ -484,14 +557,49 @@ struct ChatDetailView: View {
                         .padding(.top, DS.Spacing.xxs)
                     }
                 }
-                .frame(maxWidth: 1000)
+                .frame(maxWidth: 820)
                 .padding(.horizontal, geometry.size.width >= 600 ? 36 : 16)
-                .padding(.vertical, 16)
+                .padding(.vertical, 20)
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: geometry.size.height, alignment: geometry.size.width < 600 ? .top : .center)
             }
             .scrollDismissesKeyboard(.interactively)
         }
+    }
+
+    private func padQuickEntryCard(title: String, subtitle: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button {
+            preferences.triggerSelectionHaptic()
+            action()
+        } label: {
+            HStack(spacing: DS.Spacing.sm) {
+                Image(systemName: symbol)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.readableText)
+                    .frame(width: 28, height: 28)
+                    .background(theme.softFill, in: RoundedRectangle(cornerRadius: DS.Radius.xs, style: .continuous))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: title)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(verbatim: subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(DS.Surface.inkSecondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, DS.Spacing.md)
+            .padding(.vertical, DS.Spacing.sm)
+            .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum, alignment: .leading)
+            .background(DS.Surface.subtle, in: RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous).strokeBorder(DS.Surface.hairline, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .hoverEffect(.highlight)
     }
 
     private var phoneWritingWorkspace: some View {
@@ -558,42 +666,68 @@ struct ChatDetailView: View {
         if let volumeID = conversation.readingVolumeID {
             GeometryReader { geometry in
                 let wide = geometry.size.width >= 720
+                let showBook = wide && readingSplitLayout != .chatOnly
+                let showChat = !wide || readingSplitLayout != .bookOnly
+
                 HStack(spacing: 0) {
-                    if wide {
-                        originalBook(defaultID: volumeID)
-                            .frame(width: geometry.size.width * (geometry.size.width >= 1024 ? 0.60 : 0.53))
-                        Divider()
-                    }
-                    VStack(spacing: 0) {
-                        HStack(spacing: DS.Spacing.sm) {
-                            if !usesPhoneWorkspace && conversation.activeBookFriend != nil {
-                                modelPickerButton()
-                            }
-                            if !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty {
-                                knowledgeMenu(compact: conversation.activeBookFriend != nil && !wide)
-                            }
-                            Spacer(minLength: 0)
-                            if !wide {
-                                Button {
-                                    citationVolumeID = nil
-                                    readingRequest = nil
-                                    presentSheet(.originalBook)
-                                } label: {
-                                    Label(dynamicTypeSize.isAccessibilitySize ? String(localized: "原文") : String(localized: "查看原文"),
-                                          systemImage: "book")
-                                        .font(.subheadline.weight(.medium))
-                                        .foregroundStyle(.primary)
-                                        .fixedSize(horizontal: true, vertical: false)
-                                        .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
+                    if showBook {
+                        VStack(spacing: 0) {
+                            if readingSplitLayout == .bookOnly {
+                                HStack {
+                                    Spacer()
+                                    readingLayoutPicker
                                 }
-                                .accessibilityLabel("查看原文")
-                                    .tint(.primary)
-                                    .accessibilityIdentifier("reading.open")
+                                .padding(.horizontal, 16)
+                                .frame(minHeight: DS.TouchTarget.minimum)
+                                Divider()
                             }
+                            originalBook(defaultID: volumeID)
                         }
-                        .padding(.horizontal, 16).frame(minHeight: DS.TouchTarget.minimum)
-                        Divider()
-                        timelineAndComposer
+                        .frame(
+                            width: readingSplitLayout == .bookOnly
+                                ? geometry.size.width
+                                : max(300, min(geometry.size.width - 300, geometry.size.width * readingSplitFraction))
+                        )
+                    }
+
+                    if showBook && showChat {
+                        readingSplitDivider(totalWidth: geometry.size.width)
+                    }
+
+                    if showChat {
+                        VStack(spacing: 0) {
+                            HStack(spacing: DS.Spacing.sm) {
+                                if !usesPhoneWorkspace && conversation.activeBookFriend != nil {
+                                    modelPickerButton()
+                                }
+                                if !conversation.assistanceSettings.knowledgeVolumeIDs.isEmpty {
+                                    knowledgeMenu(compact: conversation.activeBookFriend != nil && !wide)
+                                }
+                                Spacer(minLength: 0)
+                                if wide {
+                                    readingLayoutPicker
+                                } else {
+                                    Button {
+                                        citationVolumeID = nil
+                                        readingRequest = nil
+                                        presentSheet(.originalBook)
+                                    } label: {
+                                        Label(dynamicTypeSize.isAccessibilitySize ? String(localized: "原文") : String(localized: "查看原文"),
+                                              systemImage: "book")
+                                            .font(.subheadline.weight(.medium))
+                                            .foregroundStyle(.primary)
+                                            .fixedSize(horizontal: true, vertical: false)
+                                            .frame(minWidth: DS.TouchTarget.minimum, minHeight: DS.TouchTarget.minimum)
+                                    }
+                                    .accessibilityLabel("查看原文")
+                                        .tint(.primary)
+                                        .accessibilityIdentifier("reading.open")
+                                }
+                            }
+                            .padding(.horizontal, 16).frame(minHeight: DS.TouchTarget.minimum)
+                            Divider()
+                            timelineAndComposer
+                        }
                     }
                 }
                 .onChange(of: SystemEntryRouter.shared.openOriginalForChatID, initial: true) { _, id in
@@ -601,7 +735,10 @@ struct ChatDetailView: View {
                     SystemEntryRouter.shared.openOriginalForChatID = nil
                     citationVolumeID = nil
                     readingRequest = nil
-                    guard !wide else { return }
+                    if wide {
+                        if readingSplitLayout == .chatOnly { readingSplitLayout = .split }
+                        return
+                    }
                     ModalPresentationGate.performWhenClear(
                         extraCheck: {
                             workspaceNavigation?.activeModal != nil || sheetHandoff.isPresentingOrDismissing
@@ -624,11 +761,55 @@ struct ChatDetailView: View {
         }
     }
 
+    private var readingLayoutPicker: some View {
+        Picker("阅读布局", selection: $readingSplitLayout) {
+            ForEach(ReadingSplitLayout.allCases) { mode in
+                Text(mode.label).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: 250)
+        .accessibilityIdentifier("reading.layoutMode")
+    }
+
+    private func readingSplitDivider(totalWidth: CGFloat) -> some View {
+        ZStack {
+            Divider()
+            Capsule()
+                .fill(DS.Surface.strongBorder)
+                .frame(width: 4, height: 36)
+        }
+        .frame(width: 14)
+        .contentShape(Rectangle())
+        .hoverEffect(.highlight)
+        .gesture(
+            DragGesture(minimumDistance: 2)
+                .onChanged { value in
+                    let start = readingDragStartFraction ?? readingSplitFraction
+                    if readingDragStartFraction == nil { readingDragStartFraction = start }
+                    let delta = value.translation.width / max(totalWidth, 1)
+                    readingSplitFraction = min(max(start + delta, 0.36), 0.72)
+                }
+                .onEnded { _ in
+                    readingDragStartFraction = nil
+                }
+        )
+        .accessibilityLabel("调节原文与对话分栏宽度")
+    }
+
     private func openCitation(_ citation: ReadingCitation) {
         if let friend = conversation.activeBookFriend, citation.volumeID != friend.bookID { return }
         citationVolumeID = citation.volumeID
         readingRequest = ReadingRequest(citation: citation)
-        if !hasInlineBook { presentSheet(.originalBook) }
+        if hasInlineBook {
+            if readingSplitLayout == .chatOnly {
+                withAnimation(.snappy(duration: 0.22)) {
+                    readingSplitLayout = .split
+                }
+            }
+        } else {
+            presentSheet(.originalBook)
+        }
     }
 
     private func originalBook(defaultID: UUID) -> some View {
@@ -667,7 +848,18 @@ struct ChatDetailView: View {
     }
 
     private var chatWithToolbar: some View {
-        workspaceContent
+        HStack(spacing: 0) {
+            workspaceContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if usesDockedInspector && showPadInspector {
+                Divider()
+                dockedInspectorPanel
+                    .frame(width: 312)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.22), value: showPadInspector)
         .background(DS.Surface.canvas.ignoresSafeArea())
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -721,9 +913,16 @@ struct ChatDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     preferences.triggerSelectionHaptic()
-                    presentSheet(.inspector)
+                    if usesDockedInspector {
+                        withAnimation(.snappy(duration: 0.22)) {
+                            showPadInspector.toggle()
+                        }
+                    } else {
+                        presentSheet(.inspector)
+                    }
                 } label: {
-                    Image(systemName: "sidebar.right")
+                    Image(systemName: usesDockedInspector && showPadInspector ? "sidebar.right" : "sidebar.right")
+                        .symbolVariant(usesDockedInspector && showPadInspector ? .fill : .none)
                 }
                 .accessibilityLabel("会话检视器")
                 .accessibilityIdentifier("chat.inspector")
@@ -918,8 +1117,70 @@ struct ChatDetailView: View {
         } message: { Text(draft.persistenceError ?? "") }
     }
 
+    private var usesDockedInspector: Bool {
+        !usesPhoneWorkspace && horizontalSizeClass == .regular
+    }
+
+    private var dockedInspectorPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("会话检视器")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer()
+                Button {
+                    withAnimation(.snappy(duration: 0.22)) {
+                        showPadInspector = false
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DS.Surface.inkSecondary)
+                        .frame(width: DS.TouchTarget.minimum, height: DS.TouchTarget.minimum)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverEffect(.highlight)
+                .accessibilityLabel("关闭")
+            }
+            .padding(.leading, DS.Spacing.lg)
+            .padding(.trailing, DS.Spacing.xs)
+            .frame(minHeight: DS.TouchTarget.minimum)
+            .background(DS.Surface.grouped)
+
+            Divider()
+
+            ChatContextInspectorContent(
+                conversation: conversation,
+                providers: providers,
+                omitKnowledgeOnce: $requestOptions.omitKnowledge,
+                onOpenModelPicker: {
+                    beginModelSetup()
+                },
+                onOpenKnowledgePicker: {
+                    presentSheet(.knowledge)
+                },
+                onOpenFullSettings: {
+                    presentSheet(.settings)
+                },
+                onOpenCitation: { citation in
+                    openCitation(citation)
+                }
+            )
+        }
+        .background(DS.Surface.grouped)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.inspectorPanel")
+    }
+
     var body: some View {
         chatWithDraftControls
+        .onReceive(NotificationCenter.default.publisher(for: .fugueToggleInspector)) { _ in
+            guard usesDockedInspector else { return }
+            withAnimation(.snappy(duration: 0.22)) {
+                showPadInspector.toggle()
+            }
+        }
         .onChange(of: conversation.readingVolumeID) { _, _ in
             readingRequest = nil
             citationVolumeID = nil
@@ -1144,6 +1405,11 @@ struct ChatDetailView: View {
                 catch { presentHistoryError(error.localizedDescription) }
             }
 
+        case .liveCall:
+            ConversationVoiceView(chat: conversation, omitMemory: requestOptions.omitMemory) { voice in
+                conversationTimeline(voice: voice)
+            }
+                .id(conversation.id)
         case .audioTranscription:
             AudioTranscriptionSheet(providers: providers) { transcript, sourceLabel, mode in
                 let clean = transcript.trimmingCharacters(in: .whitespacesAndNewlines)

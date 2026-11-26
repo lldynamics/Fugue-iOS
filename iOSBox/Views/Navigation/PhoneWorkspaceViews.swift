@@ -128,6 +128,11 @@ struct PhoneLibraryView: View {
                 }
             }
             Section("资料") {
+                if let paused = conversations.first(where: { $0.assistanceSettings.voicePractice?.isResumable == true }) {
+                    NavigationLink { VoicePracticeView(savedLesson: paused) } label: {
+                        PhoneWorkspaceRow(title: String(localized: "继续上次练习"), subtitle: paused.title, symbol: "waveform")
+                    }
+                }
                 if preferences.showsArena {
                     NavigationLink { ArenaDecisionLibrary() } label: { Label("模型对比记录", systemImage: "checkmark.bubble") }
                 }

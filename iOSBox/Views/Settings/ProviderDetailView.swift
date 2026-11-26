@@ -1147,6 +1147,7 @@ struct ProviderDetailView: View {
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(spec.isSelectable ? .primary : .secondary)
                         }
+                        ModelMediaSummary(capabilities: spec.mediaCapabilities(baseURL: provider.baseURL))
                         if spec.catalogStatus == .unlisted {
                             Text("已移出可选列表，可手动启用").font(.caption2).foregroundStyle(.secondary)
                         }
@@ -1156,6 +1157,7 @@ struct ProviderDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("provider.inspect.\(spec.id)")
 
                 Toggle("启用 \(spec.displayName)", isOn: Binding(
                     get: { spec.isSelectable },

@@ -1049,6 +1049,9 @@ enum BackupService {
             for snapshot in incomingRequests where recordsByID[snapshot.id] == nil {
                 let record = RequestRecord(snapshot: snapshot, persistCachePrices: false)
                 txContext.insert(record)
+                if record.kind.usesAudioPricing, let meter = snapshot.practiceMeter {
+                    txContext.insert(try PracticeMeterRecord(requestID: record.id, meter: meter))
+                }
                 recordsByID[record.id] = record
                 let validRead = RequestRecord.validPrice(snapshot.cacheReadPricePerMillion)
                 let validWrite = RequestRecord.validPrice(snapshot.cacheWritePricePerMillion)
@@ -1247,6 +1250,12 @@ enum BackupService {
                         var localMeta = localMsg.assistanceMetadata
                         var metaMutated = mergeReplies(incomingMsg, into: localMsg, metadata: &localMeta,
                                                        requests: recordsByID)
+                        if localMsg.role == .user, incomingMsg.role == localMsg.roleRaw,
+                           let card = incomingMeta.practiceCard, card.messageID == localMsg.id,
+                           localMsg.content.contains(card.quote), card.updatedAt > (localMeta.practiceCard?.updatedAt ?? .distantPast) {
+                            localMeta.practiceCard = card
+                            metaMutated = true
+                        }
                         if enforcingTombstones, let timestamp = incomingMeta.bookmarkUpdatedTimestamp,
                            timestamp > (localMeta.bookmarkUpdatedTimestamp ?? 0) {
                             localMeta.isBookmarked = incomingMeta.isBookmarked
@@ -1449,6 +1458,12 @@ enum BackupService {
         var modelsMutated = false
         for idx in updatedModels.indices {
             guard let remoteSpec = incomingByID[updatedModels[idx].id] else { continue }
+            if updatedModels[idx].audioRates == nil, let rates = remoteSpec.audioRates,
+               updatedModels[idx].priceCurrency == nil || updatedModels[idx].priceCurrency == remoteSpec.priceCurrency {
+                updatedModels[idx].audioRates = rates
+                updatedModels[idx].priceCurrency = remoteSpec.priceCurrency
+                modelsMutated = true
+            }
             if updatedModels[idx].inputPricePerMillion == nil, let price = remoteSpec.inputPricePerMillion {
                 updatedModels[idx].inputPricePerMillion = price
                 updatedModels[idx].priceCurrency = remoteSpec.priceCurrency
@@ -1612,7 +1627,7 @@ enum BackupService {
                                      thinkingDurationMs: LLMUsage.valid(incoming.thinkingDurationMs), finishReason: incoming.finishReason,
                                      isPersonaSimulation: remoteMeta.isPersonaSimulation, bookReply: remoteMeta.bookReply, personaExcerpts: remoteMeta.personaExcerpts,
                                      privateSpeaker: remoteMeta.privateSpeaker, knowledgeEvidence: remoteMeta.knowledgeEvidence,
-                                     createdAt: incoming.createdAt)
+                                     claimChecks: remoteMeta.claimChecks, createdAt: incoming.createdAt)
         let current = ChatEngine.snapshotRevision(of: local)
         let history = remoteMeta.revisions
         let promote = metadata.activeRevisionIndex == nil && remoteMeta.activeRevisionIndex == nil &&
@@ -1625,9 +1640,22 @@ enum BackupService {
         }
         let selected = metadata.activeRevisionIndex
         var insertAt = selected == nil ? metadata.revisions.count : max(0, metadata.revisions.count - 1)
-        for version in history + [remote] {
+        for incomingVersion in history + [remote] {
+            var version = incomingVersion
+            if promote && current.representsSameReply(as: version) {
+                version.claimChecks = ClaimCheckRecord.merging(current.claimChecks, version.claimChecks)
+            }
             let isActive = (promote ? remote : current).representsSameReply(as: version)
-            guard version.hasContent, !isActive, !metadata.revisions.contains(where: { $0.id == version.id || $0.representsSameReply(as: version) }) else { continue }
+            if !promote && isActive {
+                let checks = ClaimCheckRecord.merging(metadata.claimChecks, version.claimChecks)
+                if checks != metadata.claimChecks { metadata.claimChecks = checks; added = true }
+            }
+            if let index = metadata.revisions.firstIndex(where: { $0.id == version.id || $0.representsSameReply(as: version) }) {
+                let checks = ClaimCheckRecord.merging(metadata.revisions[index].claimChecks, version.claimChecks)
+                if checks != metadata.revisions[index].claimChecks { metadata.revisions[index].claimChecks = checks; added = true }
+                continue
+            }
+            guard version.hasContent, !isActive else { continue }
             metadata.revisions.insert(version, at: insertAt)
             if let index = metadata.activeRevisionIndex, index >= insertAt { metadata.activeRevisionIndex = index + 1 }
             insertAt += 1

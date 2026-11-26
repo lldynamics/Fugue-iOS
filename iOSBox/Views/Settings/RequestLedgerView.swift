@@ -9,6 +9,7 @@ struct RequestLedgerView: View {
         let provider: ProviderConfig
         let modelID: String
         let modelDisplayName: String
+        var usesAudioPricing = false
         var id: String { "\(provider.id.uuidString)::\(modelID)" }
     }
 
@@ -71,7 +72,7 @@ struct RequestLedgerView: View {
     private func resolvePricingTarget(for record: RequestRecord) -> PricingTarget? {
         guard record.kind != .webSearch,
               let provider = providers.first(where: { $0.id == record.providerID }) else { return nil }
-        return PricingTarget(provider: provider, modelID: record.modelID, modelDisplayName: record.modelDisplayName)
+        return PricingTarget(provider: provider, modelID: record.modelID, modelDisplayName: record.modelDisplayName, usesAudioPricing: record.kind.usesAudioPricing)
     }
 
     private func distinctUnpricedTargets(in modelRows: [RequestRecord]) -> [PricingTarget] {
@@ -87,7 +88,7 @@ struct RequestLedgerView: View {
     private func autoMatchAndBackfillUnpriced(targets: [PricingTarget]) {
         var matchedModels = 0
         var backfilledRecords = 0
-        for item in targets {
+        for item in targets where !item.usesAudioPricing {
             guard let preset = ModelPricingCatalog.match(modelID: item.modelID, baseURL: item.provider.baseURL) else { continue }
             var models = item.provider.models
             if let idx = models.firstIndex(where: { $0.id == item.modelID }) {
@@ -409,7 +410,7 @@ struct RequestLedgerView: View {
             .onChange(of: period) { _, _ in visibleLimit = 50; autoPriceFeedback = nil }
             .onChange(of: modelID) { _, _ in visibleLimit = 50; autoPriceFeedback = nil }
             .sheet(item: $pricingTarget) { target in
-                ModelPricingSheet(provider: target.provider, modelID: target.modelID, defaultBackfill: true)
+                ModelPricingSheet(provider: target.provider, modelID: target.modelID, defaultBackfill: !target.usesAudioPricing, showsAudioRates: target.usesAudioPricing)
             }
             .sheet(isPresented: $showBudgetSheet) {
                 NavigationStack {
@@ -608,6 +609,11 @@ struct RequestRecordDetailView: View {
                     metric("总耗时", value: record.durationMs)
                     LabeledContent("输入 Token", value: record.promptTokens.map(String.init) ?? String(localized: "未返回"))
                     LabeledContent("输出 Token", value: record.completionTokens.map(String.init) ?? String(localized: "未返回"))
+                    if let meter = record.practiceMeter {
+                        if let n = meter.audioInput { LabeledContent("其中音频输入 Token", value: n.formatted()) }
+                        if let n = meter.audioOutput { LabeledContent("其中音频输出 Token", value: n.formatted()) }
+                        if let seconds = meter.seconds { LabeledContent("转写时长", value: Duration.seconds(seconds).formatted()) }
+                    }
                     if let cached = record.cachedTokens, cached > 0 {
                         LabeledContent("缓存命中 Token", value: String(cached))
                     }
@@ -654,7 +660,7 @@ struct RequestRecordDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showPricingSheet) {
             if let provider {
-                ModelPricingSheet(provider: provider, modelID: record.modelID, defaultBackfill: true)
+                ModelPricingSheet(provider: provider, modelID: record.modelID, defaultBackfill: !record.kind.usesAudioPricing, showsAudioRates: record.kind.usesAudioPricing)
             }
         }
     }

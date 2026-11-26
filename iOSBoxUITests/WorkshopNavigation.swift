@@ -21,7 +21,14 @@ extension XCUIApplication {
         let history = buttons["chat.history"]
         if history.isHittable {
             history.tap()
-            let list = navigationBars.matching(NSPredicate(format: "identifier IN %@", ["历史", "夜奔"])).firstMatch
+        } else {
+            let sidebarToggle = buttons.matching(NSPredicate(format: "label IN %@", ["显示边栏", "边栏", "Toggle Sidebar", "Sidebar", "夜奔"])).firstMatch
+            if sidebarToggle.isHittable {
+                sidebarToggle.tap()
+            }
+        }
+        let list = navigationBars.matching(NSPredicate(format: "identifier IN %@", ["历史", "夜奔"])).firstMatch
+        if !list.exists {
             XCTAssertTrue(list.waitForExistence(timeout: 5), debugDescription, file: file, line: line)
         }
     }

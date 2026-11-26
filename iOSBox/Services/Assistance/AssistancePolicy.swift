@@ -1,6 +1,7 @@
 import Foundation
 
 struct AssistanceSettings: Codable, Equatable {
+    var voicePractice: PracticeLesson?
     var scopedMemoryIDs: Set<UUID>?
     var usePersonalMemory = false
     var automaticRouting = false
@@ -60,6 +61,7 @@ struct AssistanceSettings: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        voicePractice = try? c.decode(PracticeLesson.self, forKey: .voicePractice)
         scopedMemoryIDs = try c.decodeIfPresent(Set<UUID>.self, forKey: .scopedMemoryIDs)
         usePersonalMemory = try c.decodeIfPresent(Bool.self, forKey: .usePersonalMemory) ?? false
         automaticRouting = try c.decodeIfPresent(Bool.self, forKey: .automaticRouting) ?? false
@@ -127,6 +129,7 @@ struct ComposerRequestOptions: Equatable {
 
 struct MessageRevision: Codable, Equatable, Sendable, Identifiable {
     var id = UUID()
+    var claimChecks: [ClaimCheckRecord]?
     var content: String
     var reasoningContent: String
     var attachments: [MessageAttachment] = []
@@ -180,9 +183,10 @@ struct MessageRevision: Codable, Equatable, Sendable, Identifiable {
         personaExcerpts: [PersonaExcerpt]? = nil,
         privateSpeaker: PersonaByline? = nil,
         knowledgeEvidence: KnowledgeEvidence? = nil,
-        createdAt: Date
+        claimChecks: [ClaimCheckRecord]? = nil, createdAt: Date
     ) {
         self.id = id
+        self.claimChecks = claimChecks
         self.content = content
         self.reasoningContent = reasoningContent
         self.attachments = attachments
@@ -208,6 +212,7 @@ struct MessageRevision: Codable, Equatable, Sendable, Identifiable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        claimChecks = try? c.decode([ClaimCheckRecord].self, forKey: .claimChecks)
         content = try c.decodeIfPresent(String.self, forKey: .content) ?? ""
         reasoningContent = try c.decodeIfPresent(String.self, forKey: .reasoningContent) ?? ""
         attachments = try c.decodeIfPresent([MessageAttachment].self, forKey: .attachments) ?? []
@@ -240,6 +245,8 @@ struct ToolCallRecord: Codable, Equatable, Sendable, Identifiable {
 }
 
 struct AssistanceMetadata: Codable {
+    var claimChecks: [ClaimCheckRecord]?
+    var practiceCard: PracticeCard?
     var arenaDecisions: [ArenaDecision]?
     var selectedMemoryIDs: Set<UUID>?
     var memoryCount = 0
@@ -280,6 +287,8 @@ struct AssistanceMetadata: Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        practiceCard = try? c.decode(PracticeCard.self, forKey: .practiceCard)
+        claimChecks = try? c.decode([ClaimCheckRecord].self, forKey: .claimChecks)
         arenaDecisions = try c.decodeIfPresent([ArenaDecision].self, forKey: .arenaDecisions)
         selectedMemoryIDs = try c.decodeIfPresent(Set<UUID>.self, forKey: .selectedMemoryIDs)
         memoryCount = try c.decodeIfPresent(Int.self, forKey: .memoryCount) ?? 0
@@ -343,7 +352,7 @@ struct AssistanceMetadata: Codable {
     }
 
     var hasPersistedContent: Bool {
-        arenaDecisions?.isEmpty == false || selectedMemoryIDs != nil || memoryCount > 0 || omittedMemory || omittedKnowledge || requestedSearchQuery != nil || search != nil ||
+        claimChecks?.isEmpty == false || arenaDecisions?.isEmpty == false || selectedMemoryIDs != nil || memoryCount > 0 || omittedMemory || omittedKnowledge || requestedSearchQuery != nil || search != nil ||
         routeNotice != nil || !fallbackNotices.isEmpty || isContextDivider || isExcludedFromContext ||
         isBookmarked || bookmarkUpdatedTimestamp != nil || quotedExcerpt != nil || !revisions.isEmpty || activeRevisionIndex != nil ||
         !proposedMemories.isEmpty || !handledMemories.isEmpty || !toolCalls.isEmpty ||

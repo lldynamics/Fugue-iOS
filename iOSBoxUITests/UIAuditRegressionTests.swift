@@ -59,6 +59,27 @@ final class UIAuditRegressionTests: XCTestCase {
         capture("Empty group remains empty", app: app)
     }
 
+    func testModelInspectorShowsDirectionalMediaCapabilities() {
+        let app = launch(["-ui-audit-incomplete-currency", "-ui-test-media-capabilities"])
+        app.openWorkspaceSettings()
+        let provider = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "币种缺失测试")).firstMatch
+        XCTAssertTrue(provider.waitForExistence(timeout: 10))
+        provider.tap()
+        let model = app.buttons["provider.inspect.legacy-pricing"]
+        for _ in 0..<6 where !model.isHittable { app.swipeUp() }
+        XCTAssertTrue(model.isHittable)
+        XCTAssertTrue(model.label.contains("语音输出"))
+        model.tap()
+        XCTAssertTrue(app.navigationBars["模型详情与测速"].waitForExistence(timeout: 8))
+        func status(_ feature: String) -> String? {
+            app.descendants(matching: .any).matching(identifier: "model.media." + feature).firstMatch.value as? String
+        }
+        XCTAssertEqual(status("imageOutput"), "不支持")
+        XCTAssertEqual(status("audioInput"), "支持")
+        XCTAssertEqual(status("audioOutput"), "支持")
+        capture("Model media capabilities", app: app)
+    }
+
     func testTinyUsageAndMissingCurrencyAreNotShownAsZeroOrUSD() {
         let app = launch(["-ui-audit-incomplete-currency", "-ui-audit-tiny-cost"])
         let workshop = app.buttons["workspace.tab.library"]

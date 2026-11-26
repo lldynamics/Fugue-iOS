@@ -14,6 +14,7 @@ enum OpenAIResponsesAdapter {
     struct StreamParserState: Sendable {
         var activeFunctionCalls: [String: (callID: String, name: String, arguments: String)] = [:]
         var emittedToolCallIDs: Set<String> = []
+        var emittedImageIDs: Set<String> = []
         var emittedVisibleText = false
         var completed = false
         var reportedFinish = false
@@ -164,6 +165,7 @@ enum OpenAIResponsesAdapter {
                 try await consumeAcceptedResponse(
                     bytes: bytes,
                     response: response,
+                    expectsImage: request.wantsImage,
                     onActivity: touch,
                     continuation: continuation
                 )
@@ -336,6 +338,10 @@ enum OpenAIResponsesAdapter {
                 "strict": false
             ])
         }
+        if request.wantsImage {
+            tools.append(["type": "image_generation", "action": "edit", "output_format": "png"])
+            body["tool_choice"] = ["type": "image_generation"]
+        }
         if includeNativeSearch {
             tools.append(["type": "web_search_preview"])
         }
@@ -352,6 +358,7 @@ enum OpenAIResponsesAdapter {
     private static func consumeAcceptedResponse(
         bytes: URLSession.AsyncBytes,
         response: URLResponse,
+        expectsImage: Bool,
         onActivity: @escaping @Sendable () -> Void,
         continuation: AsyncThrowingStream<LLMStreamEvent, Error>.Continuation
     ) async throws {
@@ -366,7 +373,7 @@ enum OpenAIResponsesAdapter {
         }
 
         var state = StreamParserState()
-        for try await dataPart in SSEDecoder.events(bytes, onActivity: onActivity) {
+        for try await dataPart in SSEDecoder.events(bytes, maximumBytes: expectsImage ? 20 * 1024 * 1024 : SSEDecoder.defaultMaximumBytes, onActivity: onActivity) {
             try Task.checkCancellation()
             if dataPart == "[DONE]" { state.completed = true; break }
             if dataPart.isEmpty { continue }
@@ -381,6 +388,19 @@ enum OpenAIResponsesAdapter {
         guard state.completed else {
             throw LLMError.interruptedStream
         }
+    }
+
+    private static func generatedImage(_ item: [String: Any], state: inout StreamParserState) -> LLMStreamEvent? {
+        guard item["type"] as? String == "image_generation_call",
+              let encoded = item["result"] as? String, !encoded.isEmpty else { return nil }
+        let id = item["id"] as? String
+        if let id, state.emittedImageIDs.contains(id) { return nil }
+        let padding = encoded.hasSuffix("==") ? 2 : (encoded.hasSuffix("=") ? 1 : 0)
+        let attachment = MessageAttachment(kind: .image, fileName: "edited.png", mimeType: "image/png",
+            dataBase64: encoded, extractedText: nil, byteSize: max(0, encoded.utf8.count / 4 * 3 - padding)).withBoundedImagePayload
+        guard attachment.dataBase64 != nil else { return nil }
+        if let id { state.emittedImageIDs.insert(id) }
+        return .attachmentDelta(attachment)
     }
 
     static func parseSSEEventObject(
@@ -448,6 +468,7 @@ enum OpenAIResponsesAdapter {
             }
 
         case "response.output_item.done":
+            if let item = obj["item"] as? [String: Any], let image = generatedImage(item, state: &state) { emitted.append(image) }
             if let item = obj["item"] as? [String: Any],
                (item["type"] as? String) == "function_call" {
                 let itemID = (item["id"] as? String) ?? ""
@@ -466,6 +487,9 @@ enum OpenAIResponsesAdapter {
         case "response.completed", "response.incomplete":
             state.completed = true
             if let resp = obj["response"] as? [String: Any] {
+                for item in resp["output"] as? [[String: Any]] ?? [] {
+                    if let image = generatedImage(item, state: &state) { emitted.append(image) }
+                }
                 if !state.emittedVisibleText, let outputs = resp["output"] as? [[String: Any]] {
                     for item in outputs {
                         let kind = item["type"] as? String ?? ""
@@ -561,11 +585,13 @@ enum OpenAIResponsesAdapter {
         if let err = obj["error"] as? [String: Any], let msg = err["message"] as? String {
             throw LLMError.apiError(msg)
         }
+        var state = StreamParserState()
         var events: [LLMStreamEvent] = []
         if let outputs = obj["output"] as? [[String: Any]] {
             for item in outputs {
                 let kind = item["type"] as? String ?? ""
-                if kind == "message", let content = item["content"] as? [[String: Any]] {
+                if let image = generatedImage(item, state: &state) { events.append(image) }
+                else if kind == "message", let content = item["content"] as? [[String: Any]] {
                     for part in content {
                         let partType = part["type"] as? String ?? ""
                         if partType == "refusal", let refusal = part["refusal"] as? String, !refusal.isEmpty {
@@ -598,7 +624,6 @@ enum OpenAIResponsesAdapter {
         } else if let refusal = obj["refusal"] as? String, !refusal.isEmpty {
             events.append(.contentDelta(refusal))
         }
-        var state = StreamParserState()
         events.append(contentsOf: extractUsageAndFinishEvents(from: obj, state: &state))
         return events
     }

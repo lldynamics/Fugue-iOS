@@ -7,13 +7,16 @@ struct ConversationListView: View {
     @Binding var pendingMessageRoute: ConversationMessageRoute?
 
     var selectSection: ((Int) -> Void)?
+    var onStartChatWithPreset: ((AssistantPreset) -> Void)?
 
     init(
         pendingConversationToOpen: Binding<Conversation?>,
         pendingMessageRoute: Binding<ConversationMessageRoute?> = .constant(nil),
-        selectSection: ((Int) -> Void)? = nil
+        selectSection: ((Int) -> Void)? = nil,
+        onStartChatWithPreset: ((AssistantPreset) -> Void)? = nil
     ) {
         self.selectSection = selectSection
+        self.onStartChatWithPreset = onStartChatWithPreset
         self._pendingConversationToOpen = pendingConversationToOpen
         self._pendingMessageRoute = pendingMessageRoute
     }
@@ -81,8 +84,9 @@ struct ConversationListView: View {
     @State private var phoneComposeEntry: PhoneComposeEntry?
     @State private var historySearchPresented = false
     @State private var isPhoneKeyboardVisible = false
-    @State private var localDrawerPresented = false
-    @State private var drawerDragOffset: CGFloat = 0
+    @State private var hasAppliedInitialPadVisibility = false
+    @State private var localPadSpace: WorkspaceNavigation.PadSpace = .chat
+    @State private var localCommandPalettePresented = false
     @State private var preferences = AppPreferences.shared
 
     private var theme: DS.AccentTheme { preferences.accentTheme }
@@ -91,19 +95,32 @@ struct ConversationListView: View {
         UIDevice.current.userInterfaceIdiom == .phone
     }
 
-    private var showsPhoneTabBar: Bool {
-        !isPhoneKeyboardVisible && (phoneTab != .conversation || phonePath.last != .chat)
-    }
-
-    private var isDrawerOpen: Bool {
-        get { workspaceNavigation?.isDrawerPresented ?? localDrawerPresented }
+    private var activePadSpace: WorkspaceNavigation.PadSpace {
+        get { workspaceNavigation?.padSpace ?? localPadSpace }
         nonmutating set {
             if let workspaceNavigation {
-                workspaceNavigation.isDrawerPresented = newValue
+                workspaceNavigation.padSpace = newValue
             } else {
-                localDrawerPresented = newValue
+                localPadSpace = newValue
             }
         }
+    }
+
+    private var commandPaletteBinding: Binding<Bool> {
+        Binding(
+            get: { workspaceNavigation?.isCommandPalettePresented ?? localCommandPalettePresented },
+            set: { value in
+                if let workspaceNavigation {
+                    workspaceNavigation.isCommandPalettePresented = value
+                } else {
+                    localCommandPalettePresented = value
+                }
+            }
+        )
+    }
+
+    private var showsPhoneTabBar: Bool {
+        !isPhoneKeyboardVisible && (phoneTab != .conversation || phonePath.last != .chat)
     }
 
     private var availableTags: [String] {
@@ -174,61 +191,36 @@ struct ConversationListView: View {
         Group {
             if usesPhoneWorkspace {
                 phoneWorkspace
-            } else if horizontalSizeClass == .regular {
-                NavigationSplitView(columnVisibility: $columnVisibility) {
-                    drawerSidebarStack
-                        .navigationSplitViewColumnWidth(min: 255, ideal: 320, max: 365)
-                } detail: {
-                    stageDetailStack
-                }
             } else {
                 GeometryReader { proxy in
-                    let drawerWidth = min(334, proxy.size.width * 0.86)
-                    let progress = drawerProgress(drawerWidth: drawerWidth)
-
-                    ZStack(alignment: .leading) {
-                        stageDetailStack
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .scaleEffect(1.0 - 0.025 * progress)
-                            .offset(x: progress * 16)
-                            .clipShape(RoundedRectangle(cornerRadius: 18 * progress, style: .continuous))
-                            .accessibilityHidden(isDrawerOpen)
-                            .simultaneousGesture(leftEdgeInteractiveGesture(drawerWidth: drawerWidth))
-
-                        if progress > 0.001 {
-                            Color.black.opacity(0.46 * Double(progress))
-                                .ignoresSafeArea()
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    closeDrawerAnimated()
-                                }
-                                .gesture(drawerCloseInteractiveGesture(drawerWidth: drawerWidth))
-                                .zIndex(10)
-
-                            drawerSidebarStack
-                                .frame(width: drawerWidth)
-                                .frame(maxHeight: .infinity)
-                                .background(DS.Surface.drawer.ignoresSafeArea())
-                                .overlay(alignment: .trailing) {
-                                    Rectangle()
-                                        .fill(DS.Surface.hairline)
-                                        .frame(width: 1)
-                                        .ignoresSafeArea()
-                                }
-                                .shadow(color: Color.black.opacity(0.26 * Double(progress)), radius: 24, x: 8, y: 0)
-                                .offset(x: -drawerWidth * (1.0 - progress))
-                                .gesture(drawerCloseInteractiveGesture(drawerWidth: drawerWidth))
-                                .zIndex(11)
+                    NavigationSplitView(columnVisibility: $columnVisibility) {
+                        padSidebarColumn
+                            .navigationSplitViewColumnWidth(min: 256, ideal: 296, max: 350)
+                    } detail: {
+                        padDetailColumn
+                    }
+                    .navigationSplitViewStyle(.balanced)
+                    .onAppear {
+                        if !hasAppliedInitialPadVisibility {
+                            hasAppliedInitialPadVisibility = true
+                            columnVisibility = proxy.size.width >= 900 ? .all : .detailOnly
                         }
                     }
-                    .animation(.interactiveSpring(response: 0.28, dampingFraction: 0.86), value: isDrawerOpen)
                 }
             }
         }
         .background(DS.Surface.canvas.ignoresSafeArea())
         .onChange(of: splitSearchRoute?.conversation.readingVolumeID ?? splitSelection?.readingVolumeID) { _, bookID in
-            if bookID != nil && horizontalSizeClass == .regular {
+            if bookID != nil && !usesPhoneWorkspace {
                 columnVisibility = .detailOnly
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .fugueCreateNewChat)) { _ in
+            if usesPhoneWorkspace {
+                startPhoneChat(.writing)
+            } else {
+                activePadSpace = .chat
+                createNewConversation(arenaMode: false)
             }
         }
         .onAppear {
@@ -278,6 +270,34 @@ struct ConversationListView: View {
         }
         .sheet(isPresented: $showQuickKeySetup) {
             QuickKeySetupSheet()
+        }
+        .sheet(isPresented: commandPaletteBinding) {
+            PadCommandPaletteSheet(
+                conversations: conversations,
+                books: books,
+                onSelectSpace: { space in
+                    selectPadSpace(space)
+                },
+                onSelectConversation: { conv in
+                    openConversation(conv)
+                },
+                onOpenBook: { book in
+                    openBookFromPalette(book)
+                },
+                onCreateNewChat: {
+                    activePadSpace = .chat
+                    createNewConversation(arenaMode: false)
+                },
+                onCreateArenaChat: {
+                    activePadSpace = .chat
+                    createNewConversation(arenaMode: true)
+                },
+                onToggleInspector: {
+                    activePadSpace = .chat
+                    NotificationCenter.default.post(name: .fugueToggleInspector, object: nil)
+                }
+            )
+            .tint(theme.tintColor)
         }
         .sheet(isPresented: $showBookmarksHub) {
             BookmarksHubSheet(
@@ -520,84 +540,95 @@ struct ConversationListView: View {
     }
 
     private var toggleDrawer: (() -> Void)? {
-        guard !usesPhoneWorkspace && horizontalSizeClass != .regular else { return nil }
-        return {
-            preferences.triggerSelectionHaptic()
-            withAnimation(.spring(response: 0.30, dampingFraction: 0.86)) {
-                isDrawerOpen.toggle()
-            }
-        }
-    }
-
-    // MARK: - Interactive Follow-Finger Drawer Gestures
-
-    private func drawerProgress(drawerWidth: CGFloat) -> CGFloat {
-        guard drawerWidth > 1 else { return isDrawerOpen ? 1 : 0 }
-        let base: CGFloat = isDrawerOpen ? 1 : 0
-        return min(max(base + drawerDragOffset / drawerWidth, 0), 1)
-    }
-
-    private func leftEdgeInteractiveGesture(drawerWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 14, coordinateSpace: .local)
-            .onChanged { value in
-                guard !isDrawerOpen,
-                      value.startLocation.x < 30,
-                      value.translation.width > 0,
-                      abs(value.translation.height) < max(60, value.translation.width * 0.9) else { return }
-                drawerDragOffset = min(value.translation.width, drawerWidth)
-            }
-            .onEnded { value in
-                guard !isDrawerOpen, drawerDragOffset > 0 else {
-                    drawerDragOffset = 0
-                    return
-                }
-                let shouldOpen = value.predictedEndTranslation.width > drawerWidth * 0.36
-                    || drawerDragOffset > drawerWidth * 0.38
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                    drawerDragOffset = 0
-                    if shouldOpen {
-                        preferences.triggerSelectionHaptic()
-                        isDrawerOpen = true
-                    }
-                }
-            }
-    }
-
-    private func drawerCloseInteractiveGesture(drawerWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 16, coordinateSpace: .local)
-            .onChanged { value in
-                guard isDrawerOpen,
-                      value.translation.width < -6,
-                      abs(value.translation.width) > abs(value.translation.height) * 1.25 else { return }
-                drawerDragOffset = max(value.translation.width, -drawerWidth)
-            }
-            .onEnded { value in
-                guard isDrawerOpen, drawerDragOffset < 0 else {
-                    drawerDragOffset = 0
-                    return
-                }
-                let shouldClose = value.predictedEndTranslation.width < -drawerWidth * 0.28
-                    || drawerDragOffset < -drawerWidth * 0.34
-                withAnimation(.spring(response: 0.26, dampingFraction: 0.88)) {
-                    drawerDragOffset = 0
-                    if shouldClose {
-                        isDrawerOpen = false
-                    }
-                }
-            }
+        nil
     }
 
     private func closeDrawerAnimated() {
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-            drawerDragOffset = 0
-            isDrawerOpen = false
+        workspaceNavigation?.isDrawerPresented = false
+    }
+
+    private func selectPadSpace(_ space: WorkspaceNavigation.PadSpace) {
+        preferences.triggerSelectionHaptic()
+        switch space {
+        case .chat:
+            if let workspaceNavigation { workspaceNavigation.openChat() } else { localPadSpace = .chat }
+        case .bookshelf:
+            if let workspaceNavigation { workspaceNavigation.openBookshelf() } else { localPadSpace = .bookshelf }
+        case .friends:
+            if let workspaceNavigation { workspaceNavigation.openFriends() } else { localPadSpace = .friends }
+        case .workshop:
+            if let workspaceNavigation { workspaceNavigation.openWorkshop() } else { localPadSpace = .workshop }
+        case .settings:
+            if let workspaceNavigation { workspaceNavigation.openSettings() } else { localPadSpace = .settings }
+        case .usage:
+            if let workspaceNavigation { workspaceNavigation.openUsage() } else { localPadSpace = .usage }
         }
     }
 
-    // MARK: - Stage & Drawer Stacks
+    private func openBookFromPalette(_ book: BookVolume) {
+        do {
+            let target = preferences.initialTarget(from: ProviderConfig.readyTargets(in: providers))
+            let chat = try BookLibrary.companion(for: book, newDiscussion: false, target: target, in: modelContext)
+            SystemEntryRouter.shared.openOriginalForChatID = chat.id
+            openConversation(chat)
+        } catch {
+            deletionError = error.localizedDescription
+        }
+    }
+
+    private func startChatFromWorkshopPreset(_ preset: AssistantPreset) {
+        if let onStartChatWithPreset {
+            onStartChatWithPreset(preset)
+            return
+        }
+        let ready = ProviderConfig.readyTargets(in: providers)
+        let conv = Conversation(
+            title: preset.name,
+            primaryTarget: preferences.initialTarget(from: ready),
+            arenaTargets: Array(ready.prefix(2))
+        )
+        conv.applyPreset(preset)
+        modelContext.insert(conv)
+        try? modelContext.save()
+        openConversation(conv)
+    }
+
+    // MARK: - Stage & Sidebar Columns
 
     private var stageDetailStack: some View {
         NavigationStack { stageDetailContent }
+    }
+
+    @ViewBuilder
+    private var padDetailColumn: some View {
+        switch activePadSpace {
+        case .chat:
+            stageDetailStack
+        case .bookshelf:
+            NavigationStack {
+                PadBookshelfView()
+            }
+        case .friends:
+            NavigationStack {
+                PadFriendsWorkspaceView()
+            }
+        case .workshop:
+            AssistantListView(
+                activeSection: Binding(
+                    get: { workspaceNavigation?.assistantSection ?? .presets },
+                    set: { workspaceNavigation?.assistantSection = $0 }
+                ),
+                onClose: nil
+            ) { preset in
+                startChatFromWorkshopPreset(preset)
+            }
+        case .settings:
+            PadSettingsSplitView()
+        case .usage:
+            NavigationStack {
+                RequestLedgerView(onClose: nil)
+            }
+        }
     }
 
     @ViewBuilder
@@ -617,47 +648,84 @@ struct ConversationListView: View {
         }
     }
 
-    private var drawerSidebarStack: some View {
-        NavigationStack {
-            conversationSidebarContent()
-                .safeAreaInset(edge: .bottom) {
-                    if !isBatchSelecting {
-                        WorkspaceBottomDockView(
-                            readyProviderCount: readyProviderCount,
-                            monthlySpendText: monthlySpendSummary,
-                            showsUsage: preferences.showsUsageTab,
-                            onOpenQuickKeySetup: {
-                                closeDrawerAnimated()
-                                showQuickKeySetup = true
-                            },
-                            onOpenWorkshop: {
-                                if let workspaceNavigation {
-                                    workspaceNavigation.openWorkshop()
-                                } else {
-                                    selectSection?(1)
-                                }
-                            },
-                            onOpenUsage: {
-                                if let workspaceNavigation {
-                                    workspaceNavigation.openUsage()
-                                } else {
-                                    selectSection?(3)
-                                }
-                            },
-                            onOpenSettings: {
-                                if let workspaceNavigation {
-                                    workspaceNavigation.openSettings()
-                                } else {
-                                    selectSection?(2)
-                                }
+    private var padSidebarColumn: some View {
+        conversationSidebarContent()
+            .safeAreaInset(edge: .bottom) {
+                if !isBatchSelecting {
+                    PadSidebarFooterView(
+                        readyProviderCount: readyProviderCount,
+                        monthlySpendText: monthlySpendSummary,
+                        showsUsage: preferences.showsUsageTab,
+                        activeSpace: activePadSpace,
+                        onOpenQuickKeySetup: {
+                            showQuickKeySetup = true
+                        },
+                        onOpenUsage: {
+                            if let workspaceNavigation {
+                                workspaceNavigation.openUsage()
+                            } else {
+                                selectSection?(3)
                             }
-                        )
-                    }
+                        },
+                        onOpenSettings: {
+                            if let workspaceNavigation {
+                                workspaceNavigation.openSettings()
+                            } else {
+                                selectSection?(2)
+                            }
+                        }
+                    )
                 }
-                .navigationTitle("夜奔")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { listToolbarItems }
+            }
+            .navigationTitle("夜奔")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { listToolbarItems }
+    }
+
+    @ViewBuilder
+    private func padSpaceSidebarRow(
+        _ space: WorkspaceNavigation.PadSpace,
+        badge: String? = nil,
+        accessibilityID: String
+    ) -> some View {
+        let isSelected = activePadSpace == space
+        Button {
+            selectPadSpace(space)
+        } label: {
+            HStack(spacing: DS.Spacing.sm) {
+                Image(systemName: space.symbol)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(isSelected ? theme.readableText : DS.Surface.inkSecondary)
+                    .frame(width: 22)
+                    .accessibilityHidden(true)
+                Text(verbatim: space.title)
+                    .font(.subheadline.weight(isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? theme.readableText : .primary)
+                Spacer(minLength: 0)
+                if let badge, !badge.isEmpty {
+                    Text(verbatim: badge)
+                        .font(.caption2.monospacedDigit().weight(.medium))
+                        .foregroundStyle(isSelected ? theme.readableText : DS.Surface.inkSecondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(isSelected ? theme.softFill : DS.Surface.neutralChipFill, in: Capsule())
+                }
+            }
+            .padding(.horizontal, DS.Spacing.xs)
+            .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .hoverEffect(.highlight)
+        .accessibilityLabel(Text(verbatim: space.title))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier(accessibilityID)
+        .listRowInsets(EdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10))
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                .fill(isSelected ? theme.softFill : Color.clear)
+                .padding(.vertical, 1)
+        )
     }
 
     @ViewBuilder
@@ -665,9 +733,9 @@ struct ConversationListView: View {
         let tags = availableTags
         let filtered = filteredConversations
         let store = ChatDraftStore.shared
-        let drafts = compact ? filtered.filter { store.previews[$0.id]?.summary != nil }.sorted {
+        let drafts = filtered.filter { store.previews[$0.id]?.summary != nil }.sorted {
             store.draftDates[$0.id, default: $0.updatedAt] > store.draftDates[$1.id, default: $1.updatedAt]
-        } : []
+        }
         let draftIDs = Set(drafts.map(\.id))
         let pinned = filtered.filter { $0.isPinned && !draftIDs.contains($0.id) }
         let regular = filtered.filter { !$0.isPinned && !draftIDs.contains($0.id) }
@@ -675,20 +743,17 @@ struct ConversationListView: View {
         let list = List {
             if !compact && searchQuery.text.isEmpty {
                 Section {
-                    WorkspaceSpaceCardsView(bookCount: books.count) { section in
-                        if let workspaceNavigation {
-                            workspaceNavigation.openWorkshop(section)
-                        } else {
-                            selectSection?(1)
-                        }
+                    padSpaceSidebarRow(.chat, badge: conversations.isEmpty ? nil : "\(conversations.count)", accessibilityID: "pad.space.chat")
+                    padSpaceSidebarRow(.bookshelf, badge: books.isEmpty ? nil : String(localized: "\(books.count) 本"), accessibilityID: "pad.space.bookshelf")
+                    if preferences.showsBookFriends {
+                        padSpaceSidebarRow(.friends, accessibilityID: "pad.space.friends")
                     }
+                    padSpaceSidebarRow(.workshop, accessibilityID: "工作台")
                 } header: {
-                    Text("置顶空间")
+                    Text("工作空间")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DS.Surface.inkSecondary)
                 }
-                .listRowInsets(EdgeInsets(top: 4, leading: 14, bottom: 6, trailing: 14))
-                .listRowBackground(Color.clear)
             }
 
             if !searchQuery.text.isEmpty || !tags.isEmpty || showOnlyBookmarked || !bookmarkedConversationIDs.isEmpty || !conversations.isEmpty {
@@ -749,7 +814,7 @@ struct ConversationListView: View {
             if searchQuery.text.isEmpty {
                 if !drafts.isEmpty {
                     Section("草稿") {
-                        ForEach(drafts) { conv in conversationRow(conv, compact: true) }
+                        ForEach(drafts) { conv in conversationRow(conv, compact: compact) }
                     }
                 }
                 if !pinned.isEmpty {
@@ -758,7 +823,7 @@ struct ConversationListView: View {
                     } header: {
                         Text("置顶对话")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DS.Surface.inkSecondary)
                     }
                 }
                 ForEach(ConversationTimeBucket.group(regular, date: \.updatedAt), id: \.bucket) { group in
@@ -767,7 +832,7 @@ struct ConversationListView: View {
                     } header: {
                         Text(group.bucket.title)
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DS.Surface.inkSecondary)
                     }
                 }
             } else {
@@ -796,7 +861,7 @@ struct ConversationListView: View {
             await historySearch.update(searchQuery, in: modelContext.container)
         }
         .task(id: scenePhase) {
-            if compact && scenePhase == .active { await store.loadInboxPreviews() }
+            if scenePhase == .active { await store.loadInboxPreviews() }
         }
         .searchable(text: $searchText, isPresented: $historySearchPresented,
                     placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索对话与书架")
@@ -833,7 +898,15 @@ struct ConversationListView: View {
             }
         }
 
-        ToolbarItem(placement: .topBarTrailing) {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button {
+                commandPaletteBinding.wrappedValue = true
+            } label: {
+                Image(systemName: "command")
+            }
+            .accessibilityLabel("快速跳转")
+            .accessibilityIdentifier("workspace.commandPalette")
+
             if preferences.simpleDailyMode && !preferences.showsArena {
                 Button {
                     createNewConversation(arenaMode: false)
@@ -882,7 +955,11 @@ struct ConversationListView: View {
             selectPhoneTab(.conversation)
             if phonePath.last != .chat { phonePath.append(.chat) }
         } else {
-            closeDrawerAnimated()
+            if let workspaceNavigation {
+                workspaceNavigation.openChat()
+            } else {
+                localPadSpace = .chat
+            }
         }
     }
 
@@ -948,7 +1025,7 @@ struct ConversationListView: View {
 
     @ViewBuilder
     private func conversationRow(_ conv: Conversation, compact: Bool = false) -> some View {
-        let isSelected = (splitSelection ?? landingDraft)?.id == conv.id && splitSearchRoute == nil
+        let isSelected = (usesPhoneWorkspace || activePadSpace == .chat) && (splitSelection ?? landingDraft)?.id == conv.id && splitSearchRoute == nil
         let rowBody = HStack(spacing: DS.Spacing.sm) {
             if compact {
                 let symbol = conv.isArenaMode ? "arrow.left.arrow.right" : (conv.isGroupMode ? "person.2" : "doc.text")

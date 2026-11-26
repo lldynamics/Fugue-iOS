@@ -71,6 +71,10 @@ struct ModelInspectorSheet: View {
                     }
                 }
 
+                if let spec = currentSpec {
+                    ModelMediaDetailSection(capabilities: spec.mediaCapabilities(baseURL: provider.baseURL))
+                }
+
                 Section("可用状态与能力") {
                     Toggle("启用此模型", isOn: $isEnabled)
                         .onChange(of: isEnabled) { _, val in
@@ -85,7 +89,7 @@ struct ModelInspectorSheet: View {
                             persist { $0.isStarred = val }
                         }
 
-                    Toggle("支持图片多模态输入", isOn: $supportsVision)
+                    Toggle("识图（本地标记）", isOn: $supportsVision)
                         .onChange(of: supportsVision) { _, val in
                             persist { $0.supportsVision = val }
                         }

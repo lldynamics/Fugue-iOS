@@ -53,7 +53,7 @@ struct TaskModel: Identifiable {
 
     func run(_ instruction: String, input: String, attachments: [MessageAttachment] = [],
              tools: [LLMToolDefinition] = [], schema: String? = nil, image: Bool = false,
-             limit: Int = 2048) async throws -> ModelTaskOutput {
+             limit: Int = 2048, conversationID: UUID = UUID(), kind: RequestKind = .modelTask) async throws -> ModelTaskOutput {
         let check = recipientCheck
         try check()
         try AppCompliance.requireConsent()
@@ -67,7 +67,7 @@ struct TaskModel: Identifiable {
         request.outputSchema = schema
         request.wantsImage = image
         request.validateBeforeSending = check
-        var record = RequestRecord(target: provider.makeTarget(for: spec), spec: spec, conversationID: UUID(), messageID: UUID(), kind: .modelTask)
+        var record = RequestRecord(target: provider.makeTarget(for: spec), spec: spec, conversationID: conversationID, messageID: UUID(), kind: kind)
         context.insert(record)
         try context.save()
         var start = Date()
@@ -116,14 +116,35 @@ enum CapabilityProbe: String, CaseIterable, Identifiable {
         }
     }
     struct Result: Codable {
-        let passed: Bool
+        let passed: Bool?
         let date: Date
         let detail: String
+        var confirmedAt: Date?
+
+        var isInconclusive: Bool { detail != "通过" && detail != "返回值未通过校验" }
+
+        var summary: String {
+            guard isInconclusive else { return passed == true ? String(localized: "通过") : String(localized: "返回值未通过校验") }
+            let latest: String
+            switch detail {
+            case "timeout": latest = String(localized: "本次超时")
+            case "rateLimit": latest = String(localized: "本次被限流")
+            default: latest = String(localized: "本次请求失败")
+            }
+            guard let passed, let confirmedAt else { return String(localized: "能力待确认") + " · " + latest }
+            let previous = passed ? String(localized: "上次通过") : String(localized: "上次未通过校验")
+            return previous + " " + confirmedAt.formatted(date: .abbreviated, time: .omitted) + " · " + latest
+        }
     }
 
     @MainActor func key(_ model: TaskModel) -> String { "model.probe." + model.fingerprint + rawValue }
     @MainActor func result(_ model: TaskModel) -> Result? {
-        UserDefaults.standard.data(forKey: key(model)).flatMap { try? JSONDecoder().decode(Result.self, from: $0) }
+        guard let data = UserDefaults.standard.data(forKey: key(model)),
+              var result = try? JSONDecoder().decode(Result.self, from: data) else { return nil }
+        // Earlier versions persisted a transport error as a negative capability test.
+        if result.detail == "请求失败，能力未知" { return Result(passed: nil, date: result.date, detail: "error") }
+        if !result.isInconclusive && result.confirmedAt == nil { result.confirmedAt = result.date }
+        return result
     }
 
     @MainActor func test(_ model: TaskModel) async throws {
@@ -157,10 +178,21 @@ enum CapabilityProbe: String, CaseIterable, Identifiable {
                 value = (try? JSONDecoder().decode([String: String].self, from: Data(output.text.utf8)))?["code"] ?? ""
             }
             let pass = value.trimmingCharacters(in: .whitespacesAndNewlines) == code
-            UserDefaults.standard.set(try JSONEncoder().encode(Result(passed: pass, date: Date(), detail: pass ? "通过" : "返回值未通过校验")), forKey: storageKey)
+            let now = Date()
+            try Task.checkCancellation()
+            UserDefaults.standard.set(try JSONEncoder().encode(Result(passed: pass, date: now, detail: pass ? "通过" : "返回值未通过校验", confirmedAt: now)), forKey: storageKey)
         } catch {
             if !Task.isCancelled {
-                UserDefaults.standard.set(try JSONEncoder().encode(Result(passed: false, date: Date(), detail: "请求失败，能力未知")), forKey: storageKey)
+                let previous = result(model)
+                let detail: String
+                switch error {
+                case let error as URLError where error.code == .timedOut: detail = "timeout"
+                case LLMError.httpError(408, _), LLMError.httpError(504, _): detail = "timeout"
+                case LLMError.httpError(429, _): detail = "rateLimit"
+                default: detail = "error"
+                }
+                let attempt = Result(passed: previous?.passed, date: Date(), detail: detail, confirmedAt: previous?.confirmedAt)
+                UserDefaults.standard.set(try JSONEncoder().encode(attempt), forKey: storageKey)
             }
             throw error
         }

@@ -664,6 +664,10 @@ enum OpenAICompatibleAdapter {
         "whisper-", "tts-", "dall-e", "sora-"
     ]
 
+    static func isOpenAIChatModel(_ id: String) -> Bool {
+        !nonChatModelPrefixes.contains(where: id.lowercased().hasPrefix)
+    }
+
     static func fetchModels(
         baseURL: String,
         apiKey: String,
@@ -706,14 +710,17 @@ enum OpenAICompatibleAdapter {
             guard !seen.contains(id) else { continue }
             let architecture = item["architecture"] as? [String: Any]
             let outputs = (item["output_modalities"] ?? architecture?["output_modalities"]) as? [String]
-            if let outputs, !outputs.contains("text") { continue }
-            if url.host?.lowercased() == "api.openai.com", nonChatModelPrefixes.contains(where: id.hasPrefix) { continue }
+            if let outputs, ModelMediaCapabilities.normalized(outputs)?.contains("text") != true { continue }
+            if url.host?.lowercased() == "api.openai.com", !isOpenAIChatModel(id) { continue }
             seen.insert(id)
             let displayName = (item["name"] as? String) ?? id
             let inputs = (item["input_modalities"] ?? architecture?["input_modalities"]) as? [String]
             let efforts = ((item["effort"] as? [String: Any])?["supported_levels"] ?? item["supported_reasoning_efforts"]) as? [String]
-            var spec = ModelSpec(id: id, displayName: displayName, supportsVision: inputs?.contains("image"),
+            let media = ModelMediaCapabilities(inputs: inputs, outputs: outputs)
+            let documented = url.host?.lowercased() == "api.openai.com" ? ModelMediaCapabilities.documentedOpenAI(id) : nil
+            var spec = ModelSpec(id: id, displayName: displayName, supportsVision: media[.imageInput] ?? documented?[.imageInput],
                                  supportsReasoning: efforts.map { !$0.isEmpty })
+            spec.reportedMedia = media.hasInformation ? media : nil
             if router, let pricing = item["pricing"] as? [String: Any] {
                 ProviderPricing.applyRouter(pricing, to: &spec)
             } else {

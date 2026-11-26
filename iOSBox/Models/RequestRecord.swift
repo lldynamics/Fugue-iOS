@@ -19,6 +19,9 @@ enum RequestStatus: String, Codable, CaseIterable {
 
 enum RequestKind: String, Codable {
     case answer, regeneration, synthesis, sharedReading, modelTask, shortcut, webSearch, continuation, agentTool, titleGeneration, studyGeneration
+    case practiceVoice, practiceTranscription, practiceReview
+
+    var usesAudioPricing: Bool { self == .practiceVoice || self == .practiceTranscription }
 
     var title: String {
         switch self {
@@ -33,6 +36,9 @@ enum RequestKind: String, Codable {
         case .agentTool: return String(localized: "工具调用")
         case .titleGeneration: return String(localized: "智能标题")
         case .studyGeneration: return String(localized: "学习辅导")
+        case .practiceVoice: return String(localized: "陪练语音")
+        case .practiceTranscription: return String(localized: "陪练转写")
+        case .practiceReview: return String(localized: "课后复盘")
         }
     }
 }
@@ -126,11 +132,13 @@ final class RequestRecord {
     }
 
     var hasModelPricing: Bool {
-        Self.validPrice(inputPricePerMillion) != nil && Self.validPrice(outputPricePerMillion) != nil
+        if kind.usesAudioPricing { return estimatedCost != nil }
+        return Self.validPrice(inputPricePerMillion) != nil && Self.validPrice(outputPricePerMillion) != nil
             && Self.currencies.contains(currency ?? "")
     }
 
     var estimatedCost: Double? {
+        if kind.usesAudioPricing { return practiceMeter?.cost(for: self) }
         guard let input = LLMUsage.valid(promptTokens), let output = LLMUsage.valid(completionTokens),
               let inPrice = Self.validPrice(inputPricePerMillion),
               let outPrice = Self.validPrice(outputPricePerMillion),
@@ -155,6 +163,7 @@ final class RequestRecord {
     /// Positive net amount saved by prompt caching relative to uncached input pricing,
     /// after deducting any cache-write surcharge.
     var estimatedCacheSavings: Double? {
+        guard !kind.usesAudioPricing else { return nil }
         guard let input = LLMUsage.valid(promptTokens),
               let inPrice = Self.validPrice(inputPricePerMillion),
               let readPrice = cacheReadPricePerMillion,
@@ -263,6 +272,13 @@ final class RequestRecord {
         var cacheReadPricePerMillion: Double? = nil
         var cacheWritePricePerMillion: Double? = nil
         var currency: String?
+        var practiceMeter: PracticeMeter?
+    }
+
+    var practiceMeter: PracticeMeter? {
+        guard kind.usesAudioPricing, let context = modelContext,
+              let row = try? PracticeMeterRecord.find(id, in: context) else { return nil }
+        return try? JSONDecoder().decode(PracticeMeter.self, from: row.data)
     }
 
     var snapshot: Snapshot {
@@ -278,7 +294,7 @@ final class RequestRecord {
                  outputPricePerMillion: outputPricePerMillion,
                  cacheReadPricePerMillion: cacheReadPricePerMillion,
                  cacheWritePricePerMillion: cacheWritePricePerMillion,
-                 currency: currency)
+                 currency: currency, practiceMeter: practiceMeter)
     }
 
     convenience init(snapshot s: Snapshot, persistCachePrices: Bool = true) {

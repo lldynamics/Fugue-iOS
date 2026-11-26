@@ -172,15 +172,20 @@ enum SchemaV10: VersionedSchema {
     }
 }
 
-typealias CurrentSchema = SchemaV10
+enum SchemaV11: VersionedSchema {
+    static let versionIdentifier = Schema.Version(11, 0, 0)
+    static var models: [any PersistentModel.Type] { SchemaV10.models + [PracticeMeterRecord.self] }
+}
+
+typealias CurrentSchema = SchemaV11
 
 enum IOSBoxMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self, SchemaV10.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self, SchemaV10.self, SchemaV11.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9, migrateV9toV10]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9, migrateV9toV10, .lightweight(fromVersion: SchemaV10.self, toVersion: SchemaV11.self)]
     }
 
     /// Additive optional column + external-storage flag: no data transformation needed.

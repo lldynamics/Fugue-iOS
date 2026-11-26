@@ -14,7 +14,7 @@ struct ModelRecommendation: View {
     @State private var requirement = "全部"
     @State private var recent: [RequestRecord] = []
     @State private var open = false
-    private struct Candidate: Identifiable {
+    struct Candidate: Identifiable {
         let id: String
         let model: TaskModel
         let ms: Double?
@@ -58,8 +58,14 @@ struct ModelRecommendation: View {
         }
     }
     private func candidates() -> [Candidate] {
-        let maxCost = Double(budget.replacingOccurrences(of: ",", with: "."))
         let estimate = TokenEstimator.estimateUpcomingInput(conversation: conversation, providers: providers, draftText: draft, attachments: attachments, quotedText: nil, target: nil).inputTokens
+        return Self.rank(providers: providers, recent: recent, requirement: requirement, preference: preference,
+                         currency: currency, budget: budget, estimate: estimate)
+    }
+
+    static func rank(providers: [ProviderConfig], recent: [RequestRecord], requirement: String, preference: String,
+                     currency: String, budget: String, estimate: Int) -> [Candidate] {
+        let maxCost = Double(budget.replacingOccurrences(of: ",", with: "."))
         return TaskModel.options(providers).compactMap { model -> Candidate? in
             if let probe = CapabilityProbe(rawValue: requirement), probe.result(model)?.passed != true { return nil }
             let times = recent.filter { $0.providerID == model.provider.id && $0.modelID == model.spec.id && $0.status == .succeeded }.compactMap { $0.firstContentMs.map(Double.init) }

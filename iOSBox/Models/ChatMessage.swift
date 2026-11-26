@@ -76,6 +76,7 @@ final class ChatMessage {
     }
 
     func applyRevision(_ chosen: MessageRevision, metadata meta: inout AssistanceMetadata) {
+        meta.claimChecks = chosen.claimChecks
         meta.isPersonaSimulation = chosen.isPersonaSimulation
         meta.privateSpeaker = chosen.privateSpeaker
         meta.knowledgeEvidence = chosen.knowledgeEvidence

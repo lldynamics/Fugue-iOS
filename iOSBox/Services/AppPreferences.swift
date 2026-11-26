@@ -374,7 +374,7 @@ final class AppPreferences {
            let resolvedTheme = DS.AccentTheme(rawValue: rawTheme) {
             self.accentTheme = resolvedTheme
         } else {
-            self.accentTheme = UIDevice.current.userInterfaceIdiom == .phone ? .vermilion : .cobalt
+            self.accentTheme = .vermilion
         }
         if let rawStyle = defaults.string(forKey: Keys.chatMessageStyle),
            let resolvedStyle = ChatMessageStyle(rawValue: rawStyle) {

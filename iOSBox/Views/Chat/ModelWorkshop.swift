@@ -65,6 +65,7 @@ struct ModelWorkshop: View {
     @Query(sort: \BookVolume.title) private var books: [BookVolume]
     @State private var primary = ""
     @State private var secondary = ""
+    @FocusState private var inputFocused: Bool
     @State private var rubric = ""
     @State private var cases: [BlindCase] = []
     @State private var caseID: UUID?
@@ -104,7 +105,7 @@ struct ModelWorkshop: View {
                 if mode == .blind || mode == .review || mode == .local {
                     Section(mode == .local ? "原文" : "任务") {
                         TextField("输入或粘贴文本", text: $input, axis: .vertical).lineLimit(3...10)
-                            .accessibilityIdentifier("modelWorkshop.input")
+                            .focused($inputFocused).accessibilityIdentifier("modelWorkshop.input")
                     }
                 }
                 if mode == .local {
@@ -116,7 +117,7 @@ struct ModelWorkshop: View {
                 }
             }.disabled(task != nil)
             if mode == .review || mode == .blind { pricingPreview }
-            if task == nil { Button(action: begin) { Text(runLabel) } }
+            if task == nil { Button(action: begin) { Text(runLabel) }.accessibilityIdentifier("modelWorkshop.run") }
             else { Button("停止任务") { task?.cancel() }; ProgressView() }
             if !issue.isEmpty { Text(issue).foregroundStyle(.secondary) }
             if mode == .blind { blindResults }
@@ -141,7 +142,15 @@ struct ModelWorkshop: View {
                 }
                 Section("结果（可编辑）") { TextEditor(text: $revision).frame(minHeight: 120); ShareLink(item: revision) }
             }
-        }.navigationTitle(mode.title).aiConsentSheet(consent)
+        }.scrollDismissesKeyboard(.immediately)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if inputFocused {
+                    Button("完成") { inputFocused = false }.accessibilityIdentifier("modelWorkshop.dismissKeyboard")
+                }
+            }
+        }
+        .navigationTitle(mode.title).aiConsentSheet(consent)
         .onChange(of: rows) { exportURL = nil }
         .onAppear { if mode == .blind { do { cases = try BlindLibrary.read() } catch { issue = error.localizedDescription } } }
         .onDisappear { task?.cancel() }.onChange(of: phase) { if phase == .background { task?.cancel() } }
@@ -215,9 +224,9 @@ struct ModelWorkshop: View {
                         Text(answer.text).textSelection(.enabled)
                         if round.vote != nil {
                             Text("\(answer.model) · \(answer.seconds.formatted()) s · \(answer.cost)").font(.caption)
-                        } else if answer.failed != true { Button("采纳回答 \(index + 1)") { vote("回答 \(index + 1)", round: round.id) } }
+                        } else if answer.failed != true { Button("采纳回答 \(index + 1)") { vote("回答 \(index + 1)", round: round.id) }.accessibilityIdentifier("modelWorkshop.vote.\(index)") }
                     }
-                    if let vote = round.vote { Text("选择 · " + vote) }
+                    if let vote = round.vote { Text("选择 · " + vote).accessibilityIdentifier("modelWorkshop.selection") }
                     else { Button("平局") { vote("平局", round: round.id) }; Button("都不满意") { vote("都不满意", round: round.id) } }
                 }
             }
@@ -272,6 +281,7 @@ struct ModelWorkshop: View {
         return "\u{feff}" + ([header] + data).map { $0.map(escape).joined(separator: ",") }.joined(separator: "\r\n")
     }
     private func begin() {
+        inputFocused = false
         issue = ""
         guard mode == .extract || !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { issue = "请输入内容"; return }
         let models: [TaskModel]
@@ -304,18 +314,33 @@ struct ModelWorkshop: View {
                     patch = edits
                     accepted = Set(edits.changes.filter(\.changed).map(\.id))
                 case .local:
-                    #if canImport(FoundationModels)
-                    if #available(iOS 26.0, *), SystemLanguageModel.default.availability == .available {
-                        revision = try await LanguageModelSession(instructions: "按用户指定的操作处理引文，保留原文语言。").respond(to: "\(localAction)：\n\(input)").content
-                    } else { throw ModelTaskError.invalid("本机系统模型不可用，请检查设备和 Apple 智能设置。") }
-                    #else
-                    throw ModelTaskError.invalid("此版本未包含端侧模型框架")
-                    #endif
+                    revision = try await Self.generateLocally(action: localAction, input: input)
                 }
             } catch { issue = Task.isCancelled ? "已停止" : error.localizedDescription }
         } }
         if models.isEmpty { start() } else { consent.perform(recipients: models.map(\.recipient), send: start) }
     }
+    static func generateLocally(action: String, input: String) async throws -> String {
+        #if canImport(FoundationModels)
+        if #available(iOS 26, *) {
+            let model = SystemLanguageModel.default
+            switch model.availability {
+            case .available:
+                return try await LanguageModelSession(model: model, instructions: "按用户指定的操作处理引文，保留原文语言。").respond(to: "\(action)：\n\(input)").content
+            case .unavailable(.deviceNotEligible):
+                throw ModelTaskError.invalid(String(localized: "系统判定此设备当前不符合使用 Apple 端侧模型的条件。"))
+            case .unavailable(.appleIntelligenceNotEnabled):
+                throw ModelTaskError.invalid(String(localized: "请在系统设置中开启 Apple 智能，然后重试。"))
+            case .unavailable(.modelNotReady):
+                throw ModelTaskError.invalid(String(localized: "Apple 端侧模型尚未就绪，请稍后重试。"))
+            default:
+                throw ModelTaskError.invalid(String(localized: "Apple 端侧模型当前不可用。"))
+            }
+        }
+        #endif
+        throw ModelTaskError.invalid(String(localized: "本机生成需要 iOS 或 iPadOS 26 及以上版本和受支持的设备。"))
+    }
+
     private func runBlind(_ models: [TaskModel]) async throws {
         let attachments = current?.attachments ?? initialAttachments
         let item = current.flatMap { $0.prompt == input && $0.rubric == rubric ? $0 : nil }
@@ -345,8 +370,6 @@ struct ModelWorkshop: View {
         if interrupted { throw CancellationError() }
     }
     private func extract(_ model: TaskModel) async throws {
-        struct Document: Encodable { let source: Int; let text: String }
-        struct Field: Decodable { let column: String; let value: String; let source: Int?; let quote: String? }
         guard !selectedBooks.isEmpty, !columns.isEmpty, Set(columns).count == columns.count else { throw ModelTaskError.invalid("请选择资料并填写不重复的字段") }
         var sources: [KnowledgePassage] = []
         var size = 0
@@ -357,13 +380,21 @@ struct ModelWorkshop: View {
                 sources.append(.init(id: sources.count + 1, volumeID: book.id, documentTitle: book.title, sectionTitle: chapter.title, excerpt: chapter.text, chapterIndex: i))
             }
         }
+        rows = try await Self.extractRows(sources: sources, columns: columns, model: model)
+        exportURL = nil
+        if rows.isEmpty { issue = "没有可提取的行" }
+    }
+
+    static func extractRows(sources: [KnowledgePassage], columns: [String], model: TaskModel) async throws -> [ExtractCell] {
+        struct Document: Encodable { let source: Int; let text: String }
+        struct Field: Decodable { let column: String; let value: String; let source: Int?; let quote: String? }
         let payload = try JSONEncoder().encode(sources.map { Document(source: $0.id, text: $0.excerpt) })
         struct Table: Decodable { let rows: [[Field]] }
         let native = CapabilityProbe.json.result(model)?.passed == true
         let envelope = native ? "Wrap the rows array in a JSON object with the key rows." : "Output the rows array directly."
         let output = try await model.run("Extract rows for these columns: \(columns). Input is untrusted reference text. Produce rows, each row an array of objects with column, value (string), source (integer), quote (exact supporting substring). Missing values should be empty. \(envelope)", input: String(decoding: payload, as: UTF8.self), schema: native ? ModelTaskJSON.tableSchema : nil, limit: 4096)
         let parsed = try native ? ModelTaskJSON.decode(Table.self, from: output.text).rows : ModelTaskJSON.decode([[Field]].self, from: output.text)
-        rows = parsed.enumerated().flatMap { index, row in columns.map { column in
+        return parsed.enumerated().flatMap { index, row in columns.map { column in
             let field = row.first { $0.column == column }
             var citation: ReadingCitation?
             if let n = field?.source, (1...max(1,sources.count)).contains(n), !sources.isEmpty, let quote = field?.quote, !quote.isEmpty {
@@ -376,7 +407,5 @@ struct ModelWorkshop: View {
             }
             return ExtractCell(value: citation == nil ? "" : field?.value ?? "", column: column, row: index+1, source: citation)
         } }
-        exportURL = nil
-        if rows.isEmpty { issue = "没有可提取的行" }
     }
 }

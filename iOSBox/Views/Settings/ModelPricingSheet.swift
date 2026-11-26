@@ -5,6 +5,7 @@ struct ModelPricingSheet: View {
     let provider: ProviderConfig
     let modelID: String
     var defaultBackfill: Bool = false
+    var showsAudioRates = false
 
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -14,6 +15,10 @@ struct ModelPricingSheet: View {
     @State private var output = ""
     @State private var cacheRead = ""
     @State private var cacheWrite = ""
+    @State private var audioInput = ""
+    @State private var audioOutput = ""
+    @State private var cachedAudio = ""
+    @State private var minute = ""
     @State private var currency = "USD"
     @State private var backfillUnpriced = false
     @State private var error: String?
@@ -24,7 +29,7 @@ struct ModelPricingSheet: View {
 
     private var unpricedRecordCount: Int {
         allRecords.filter {
-            $0.providerID == provider.id && $0.modelID == modelID && $0.kind != .webSearch
+            $0.providerID == provider.id && $0.modelID == modelID && $0.kind != .webSearch && !$0.kind.usesAudioPricing
                 && $0.status != .running && $0.status != .blocked && !$0.hasModelPricing
         }.count
     }
@@ -37,7 +42,12 @@ struct ModelPricingSheet: View {
     private func matchesFields(_ model: ModelSpec) -> Bool {
         model.inputPricePerMillion == price(input) && model.outputPricePerMillion == price(output)
             && model.cacheReadPricePerMillion == price(cacheRead) && model.cacheWritePricePerMillion == price(cacheWrite)
-            && (model.priceCurrency ?? "USD") == currency
+            && model.audioRates == audioRates && (model.priceCurrency ?? "USD") == currency
+    }
+
+    private var audioRates: PracticeAudioRates? {
+        let rates = PracticeAudioRates(input: price(audioInput), output: price(audioOutput), cachedInput: price(cachedAudio), perMinute: price(minute))
+        return rates == PracticeAudioRates() ? nil : rates
     }
 
     private var automaticSource: ModelPriceSource? {
@@ -50,6 +60,10 @@ struct ModelPricingSheet: View {
         output = spec.outputPricePerMillion.map(String.init(describing:)) ?? ""
         cacheRead = spec.cacheReadPricePerMillion.map(String.init(describing:)) ?? ""
         cacheWrite = spec.cacheWritePricePerMillion.map(String.init(describing:)) ?? ""
+        audioInput = spec.audioRates?.input.map(String.init(describing:)) ?? ""
+        audioOutput = spec.audioRates?.output.map(String.init(describing:)) ?? ""
+        cachedAudio = spec.audioRates?.cachedInput.map(String.init(describing:)) ?? ""
+        minute = spec.audioRates?.perMinute.map(String.init(describing:)) ?? ""
         currency = spec.priceCurrency ?? "USD"
         automaticModel = spec.priceSource == .manual || spec.priceSource == nil ? nil : spec
     }
@@ -64,7 +78,9 @@ struct ModelPricingSheet: View {
                 error = String(localized: "服务商暂未提供此模型的可用单价。")
                 return
             }
-            loadFields(model)
+            var publishedModel = model
+            if initialModel?.priceCurrency == model.priceCurrency { publishedModel.audioRates = initialModel?.audioRates }
+            loadFields(publishedModel)
         } catch {
             if !Task.isCancelled { self.error = String(localized: "获取单价失败，请稍后重试。") }
         }
@@ -84,7 +100,7 @@ struct ModelPricingSheet: View {
     private var isValid: Bool {
         let baseValid = (input.trimmingCharacters(in: .whitespaces).isEmpty && output.trimmingCharacters(in: .whitespaces).isEmpty)
             || (price(input) != nil && price(output) != nil)
-        return baseValid && isOptionalFieldValid(cacheRead) && isOptionalFieldValid(cacheWrite)
+        return baseValid && [cacheRead, cacheWrite, audioInput, audioOutput, cachedAudio, minute].allSatisfy(isOptionalFieldValid)
     }
 
     private func applyPreset(_ preset: ModelPricingCatalog.Preset) {
@@ -175,6 +191,14 @@ struct ModelPricingSheet: View {
                     Text("填写缓存命中或写入单价后，新请求将自动按实际缓存 Token 折算费用并统计缓存节省金额。单价只影响新请求，清空输入与输出两项可停止计价。")
                 }
 
+                if showsAudioRates || initialModel?.audioRates != nil || modelID.lowercased().contains("realtime") || modelID.lowercased().contains("transcrib") {
+                    Section("语音计价") {
+                        audioField("每百万音频输入 Token", $audioInput)
+                        audioField("每百万音频输出 Token", $audioOutput)
+                        audioField("每百万缓存音频 Token", $cachedAudio)
+                        audioField("按时长转写的每分钟单价", $minute)
+                    }
+                }
                 if unpricedRecordCount > 0 && price(input) != nil && price(output) != nil {
                     Section {
                         Toggle("同步补算历史未定价请求（\(unpricedRecordCount) 次）", isOn: $backfillUnpriced)
@@ -206,6 +230,13 @@ struct ModelPricingSheet: View {
         }
     }
 
+    private func audioField(_ title: LocalizedStringKey, _ value: Binding<String>) -> some View {
+        LabeledContent(title) {
+            TextField("未设置", text: value).keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                .accessibilityLabel(Text(title))
+        }
+    }
+
     private func save() {
         var models = provider.models
         let existingIndex = models.firstIndex(where: { $0.id == modelID })
@@ -225,7 +256,8 @@ struct ModelPricingSheet: View {
         models[index].outputPricePerMillion = outVal
         models[index].cacheReadPricePerMillion = inVal == nil ? nil : price(cacheRead)
         models[index].cacheWritePricePerMillion = inVal == nil ? nil : price(cacheWrite)
-        models[index].priceCurrency = inVal == nil ? nil : currency
+        models[index].audioRates = audioRates
+        models[index].priceCurrency = inVal == nil && audioRates == nil ? nil : currency
         let source = automaticSource ?? .manual
         let modelUnchanged = initialModel.map { matchesFields($0) && source == ($0.priceSource ?? .manual) } ?? false
         if modelUnchanged && (!backfillUnpriced || unpricedRecordCount == 0) {

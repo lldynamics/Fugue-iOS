@@ -21,6 +21,7 @@ struct MessageRowView: View {
     private struct ClaimLaunch: Identifiable {
         let id = UUID()
         let text: String
+        let version: ClaimCheckRecord.Version
     }
     @State private var workshop: WorkshopLaunch?
     @State private var editingImage: MessageAttachment?
@@ -551,23 +552,31 @@ struct MessageRowView: View {
                 HStack(spacing: DS.Spacing.xs) {
                     ForEach(images) { att in
                         if let uiImg = att.cachedImage {
-                            Button {
-                                previewImage = uiImg
-                            } label: {
-                                Image(uiImage: uiImg)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 112, height: 112)
-                                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
-                                            .strokeBorder(DS.Surface.hairline, lineWidth: 1)
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("查看图片 \(att.fileName)")
-                            if message.role == .assistant {
-                                Button("选区改图") { editingImage = att }.font(.caption)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Button {
+                                    previewImage = uiImg
+                                } label: {
+                                    Image(uiImage: uiImg)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 112, height: 112)
+                                        .contentShape(Rectangle())
+                                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                                                .strokeBorder(DS.Surface.hairline, lineWidth: 1)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("查看图片 \(att.fileName)")
+                                if message.role == .assistant {
+                                    Button("选区改图") { editingImage = att }
+                                        .font(.caption)
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .frame(minHeight: 44)
+                                        .accessibilityIdentifier("attachment.editRegion")
+                                }
                             }
                         }
                     }
@@ -844,6 +853,14 @@ struct MessageRowView: View {
                 .background(Color.orange.opacity(0.11), in: RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
             }
 
+            if !message.isStreaming, !message.content.isEmpty,
+               meta.claimChecks?.isEmpty == false || meta.revisions.contains(where: { $0.claimChecks?.isEmpty == false }) {
+                Button {
+                    checkingClaim = .init(text: message.content, version: .init(message))
+                } label: {
+                    Label(meta.claimChecks?.isEmpty == false ? "查看本版出处核对" : "本版出处待核对", systemImage: "text.badge.checkmark")
+                }.font(.footnote).accessibilityIdentifier("reply.claimRecords")
+            }
             if !message.isStreaming && (!message.content.isEmpty || !attachments.isEmpty || message.errorMessage != nil) {
                 assistantFooter(
                     meta: meta,
@@ -873,7 +890,7 @@ struct MessageRowView: View {
         .sheet(item: $workshop) { item in NavigationStack { ModelWorkshop(mode: item.mode, initialAttachments: message.attachments, input: item.text) } }
         .sheet(item: $editingImage) { item in NavigationStack { RegionImageEditor(message: message, attachmentID: item.id) } }
         .sheet(item: $checkingClaim) { item in
-            ClaimCheckSheet(sources: claimSources, open: actions.onOpenCitation, allowedBook: message.conversation?.activeBookFriend?.bookID, chapterLimits: message.conversation?.readingChapterLimits ?? [:], claim: item.text)
+            ClaimCheckSheet(message: message, version: item.version, sources: claimSources, open: actions.onOpenCitation, allowedBook: message.conversation?.activeBookFriend?.bookID, chapterLimits: message.conversation?.readingChapterLimits ?? [:], claim: item.text)
         }
         .sheet(item: $exportShareItem) { payload in
             ReplyActivityShareSheet(items: [payload.url])
@@ -1076,7 +1093,7 @@ struct MessageRowView: View {
                 if hasSecondaryActions || (prioritizesFollowUp && actions.onRegenerate != nil) {
                     Menu {
                         if canCheckClaim {
-                            Button("逐条核对出处") { checkingClaim = .init(text: inlineSelection.text ?? message.content) }
+                            Button("逐条核对出处") { checkingClaim = .init(text: inlineSelection.text ?? message.content, version: .init(message)) }
                         }
                         Button("在本机处理选文") { workshop = .init(mode: .local, text: inlineSelection.text ?? message.content) }
                         // Frequent, non-destructive actions sit in one compact row at the top of the menu.

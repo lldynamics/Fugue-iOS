@@ -180,7 +180,7 @@ enum RequestLedger {
         let writePrice = RequestRecord.validPrice(spec.cacheWritePricePerMillion)
         var updatedCount = 0
         var cacheBatch: [UUID: CachePriceSnapshotStore.Pair] = [:]
-        for record in records where record.providerID == providerID && record.modelID == modelID && record.kind != .webSearch && !record.hasModelPricing {
+        for record in records where record.providerID == providerID && record.modelID == modelID && record.kind != .webSearch && !record.kind.usesAudioPricing && !record.hasModelPricing {
             record.inputPricePerMillion = inPrice
             record.outputPricePerMillion = outPrice
             record.currency = currency

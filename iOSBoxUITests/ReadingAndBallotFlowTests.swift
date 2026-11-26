@@ -142,6 +142,12 @@ final class ReadingAndBallotFlowTests: XCTestCase {
         XCTAssertTrue(voice.exists)
         voice.tap()
         XCTAssertTrue(app.buttons["语音输入"].exists)
+        app.buttons["chatComposer.liveCall"].tap()
+        let call = app.navigationBars["实时通话"]
+        XCTAssertTrue(call.waitForExistence(timeout: 8), app.debugDescription)
+        call.buttons["关闭"].tap()
+        XCTAssertTrue(voice.waitForExistence(timeout: 5))
+        voice.tap()
         app.buttons["音频纪要"].tap()
         XCTAssertTrue(app.navigationBars["录音与音频转会议纪要"].waitForExistence(timeout: 8))
     }

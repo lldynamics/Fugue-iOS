@@ -570,6 +570,49 @@ extension ConnectionResilienceTests {
         XCTAssertEqual(models.first?.supportsReasoning, true)
     }
 
+    func testDirectionalMediaFromCatalogsAndOfficialDocumentation() async throws {
+        let router = try await listedModels(.openAICompatible) { _, _ in
+            #"{"data":[{"id":"demo","architecture":{"input_modalities":["TEXT","image","audio"],"output_modalities":["Text","audio"]}}]}"#
+        }
+        let live = try XCTUnwrap(router.first)
+        let report = try XCTUnwrap(live.reportedMedia)
+        XCTAssertEqual(report[.audioInput], true)
+        XCTAssertEqual(report[.audioOutput], true)
+        XCTAssertEqual(report[.imageInput], true)
+        XCTAssertEqual(report[.imageOutput], false)
+
+        var saved = ModelSpec(id: "demo", supportsVision: false)
+        saved.isStarred = true
+        let merged = ProviderModelCatalog.merging(router, with: [saved])[0]
+        XCTAssertFalse(merged.supportsVision)
+        XCTAssertTrue(merged.isStarred)
+        XCTAssertEqual(merged.reportedMedia, report)
+        XCTAssertEqual(try JSONDecoder().decode(ModelSpec.self, from: JSONEncoder().encode(merged)), merged)
+        let old = try JSONDecoder().decode(ModelSpec.self, from: Data(#"{"id":"unknown","displayName":"Unknown","isEnabled":true,"supportsVision":true,"supportsReasoning":false}"#.utf8))
+        XCTAssertNil(old.reportedMedia)
+
+        let gemini = try await listedModels(.gemini) { _, _ in
+            #"{"models":[{"name":"models/demo","supportedInputModalities":["VIDEO"],"supportedOutputModalities":["TEXT","IMAGE"]}]}"#
+        }
+        XCTAssertEqual(gemini.first?.reportedMedia?[.videoInput], true)
+        XCTAssertEqual(gemini.first?.reportedMedia?[.imageOutput], true)
+        let claude = try await listedModels(.anthropic) { _, _ in
+            #"{"data":[{"id":"demo","capabilities":{"image_input":{"supported":true}}}]}"#
+        }
+        XCTAssertEqual(claude.first?.reportedMedia?[.imageInput], true)
+        XCTAssertNil(claude.first?.reportedMedia?[.audioOutput])
+
+        let official = "https://api.openai.com/v1"
+        var audio = ModelSpec(id: "gpt-audio")
+        XCTAssertEqual(audio.mediaCapabilities(baseURL: official)[.audioOutput], true)
+        XCTAssertNil(audio.mediaCapabilities(baseURL: "https://relay.invalid/v1")[.audioOutput])
+        audio.reportedMedia = ModelMediaCapabilities(outputs: ["text"])
+        XCTAssertEqual(audio.mediaCapabilities(baseURL: official)[.audioOutput], false)
+        XCTAssertEqual(audio.mediaCapabilities(baseURL: official)[.audioInput], true)
+        XCTAssertEqual(ModelSpec(id: "tts-1").mediaCapabilities(baseURL: official)[.audioInput], false)
+        XCTAssertNil(ModelSpec(id: "gpt-audio-custom").mediaCapabilities(baseURL: official)[.audioOutput])
+    }
+
     func testModelListRejectsBodyExceedingTheCatalogBudget() async {
         do {
             _ = try await listedModels(.openAICompatible) { _, _ in

@@ -107,6 +107,13 @@ struct CustomHeader: Codable, Hashable, Identifiable {
     }
 }
 
+struct PracticeAudioRates: Codable, Hashable {
+    var input: Double?
+    var output: Double?
+    var cachedInput: Double?
+    var perMinute: Double?
+}
+
 struct ModelSpec: Codable, Hashable, Identifiable {
     enum CatalogStatus: String, Codable {
         case listed, unlisted, manual
@@ -123,7 +130,9 @@ struct ModelSpec: Codable, Hashable, Identifiable {
     var cacheReadPricePerMillion: Double?
     var cacheWritePricePerMillion: Double?
     var priceCurrency: String?
+    var audioRates: PracticeAudioRates?
     var priceSource: ModelPriceSource?
+    var reportedMedia: ModelMediaCapabilities?
     var isFavorite: Bool?
     // Older configurations have no provenance until their next catalog refresh.
     var catalogStatus: CatalogStatus?

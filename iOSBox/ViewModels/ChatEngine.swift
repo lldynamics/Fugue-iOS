@@ -982,6 +982,13 @@ final class ChatEngine {
 
         assistantMessage.errorMessage = nil
         if let personaExcerpts { assistantMessage.assistanceMetadata.appendPersonaExcerpts(personaExcerpts) }
+        if prevMeta.claimChecks?.isEmpty == false {
+            var meta = assistantMessage.assistanceMetadata
+            if meta.activeRevisionIndex == nil { meta.revisions.append(Self.snapshotRevision(of: assistantMessage)) }
+            meta.activeRevisionIndex = nil
+            meta.claimChecks = nil
+            assistantMessage.assistanceMetadata = meta
+        }
         if groupPersona?.isSimulatedPersona == true { assistantMessage.assistanceMetadata.isPersonaSimulation = true }
         assistantMessage.finishReason = nil
         assistantMessage.isStreaming = true
@@ -1076,6 +1083,7 @@ final class ChatEngine {
             arenaTargets: conversation.arenaTargets
         )
         forked.assistanceSettings = conversation.assistanceSettings
+        forked.assistanceSettings.voicePractice = nil
         forked.folderTag = conversation.folderTag
         context.insert(forked)
 
@@ -1215,6 +1223,7 @@ final class ChatEngine {
             personaExcerpts: message.assistanceMetadata.personaExcerpts,
             privateSpeaker: message.assistanceMetadata.privateSpeaker,
             knowledgeEvidence: message.assistanceMetadata.knowledgeEvidence,
+            claimChecks: message.assistanceMetadata.claimChecks,
             createdAt: Date()
         )
     }

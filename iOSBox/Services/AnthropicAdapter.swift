@@ -585,7 +585,16 @@ enum AnthropicAdapter {
         return try await ModelListTransport.pages(request: req, session: session, itemsKey: "data", cursorName: "after_id") { page, items in
             let models = try items.map { item -> ModelSpec in
                 guard let id = item["id"] as? String, !id.isEmpty else { throw URLError(.cannotParseResponse) }
-                return ModelSpec(id: id, displayName: item["display_name"] as? String)
+                let capabilities = item["capabilities"] as? [String: Any]
+                let imageInput = capabilities?["image_input"] as? [String: Any]
+                let vision = imageInput?["supported"] as? Bool
+                var model = ModelSpec(id: id, displayName: item["display_name"] as? String, supportsVision: vision)
+                if let vision {
+                    var media = ModelMediaCapabilities()
+                    media[.imageInput] = vision
+                    model.reportedMedia = media
+                }
+                return model
             }
             guard page["has_more"] as? Bool == true else { return (models, nil) }
             guard let last = page["last_id"] as? String, !last.isEmpty else { throw URLError(.cannotParseResponse) }

@@ -1,5 +1,6 @@
 import Foundation
 import NaturalLanguage
+import Accelerate
 
 struct PassageSemantics {
 
@@ -32,6 +33,49 @@ struct PassageSemantics {
     struct Scorer {
         let model: String?
         let evaluate: (String, [Float]?) -> (score: Double, computed: [Float]?)
+    }
+
+    /// Distinguish passages whose Chinese sentence vectors all have high cosine similarity.
+    /// Called only on the shortlist. Word vectors are unit-normalized once per query.
+    static func chineseWordScore(for query: String) -> ((String) -> Double?)? {
+        let language = language(for: query)
+        guard [.simplifiedChinese, .traditionalChinese].contains(language),
+              let embedding = NLEmbedding.wordEmbedding(for: language) else { return nil }
+        let stop: Set<String> = ["的", "了", "是", "在", "有", "时", "做", "要", "去", "才", "并", "再", "给",
+                                 "应该", "怎样", "怎么", "如何", "什么", "时候", "需要", "可以", "哪里", "什么时候"]
+        let tokenizer = NLTokenizer(unit: .word)
+        tokenizer.setLanguage(language)
+        var cache: [String: [Float]] = [:]
+        func vectors(_ text: String, limit: Int) -> [[Float]] {
+            tokenizer.string = text
+            var found: [[Float]] = []
+            var seen = Set<String>()
+            tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+                let word = String(text[range])
+                guard seen.insert(word).inserted, !stop.contains(word) else { return true }
+                if let cached = cache[word] { found.append(cached) }
+                else if let v = embedding.vector(for: word)?.map(Float.init) {
+                    let norm = sqrt(vDSP.dot(v, v))
+                    if norm > 0 {
+                        let unit = vDSP.divide(v, norm)
+                        found.append(unit)
+                        if cache.count < 1024 { cache[word] = unit }
+                    }
+                }
+                return found.count < limit
+            }
+            return found
+        }
+        let queryWords = vectors(query, limit: 12)
+        guard !queryWords.isEmpty else { return nil }
+        return { text in
+            let passageWords = vectors(text, limit: 96)
+            guard !passageWords.isEmpty else { return nil }
+            let sum = queryWords.reduce(Float.zero) { total, queryWord in
+                total + passageWords.reduce(Float.zero) { max($0, vDSP.dot(queryWord, $1)) }
+            }
+            return Double(sum) / Double(queryWords.count)
+        }
     }
     func scorer(for query: String) -> Scorer {
         let groups = Self.equivalents.filter { group in group.contains { query.localizedCaseInsensitiveContains($0) } }

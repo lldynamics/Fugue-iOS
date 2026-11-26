@@ -20,7 +20,7 @@ final class UIAndFeatureUpgradesTests: XCTestCase {
 
         let prefs = AppPreferences(defaults: defaults)
         XCTAssertEqual(prefs.fontScale, 1.0, accuracy: 0.001)
-        XCTAssertEqual(prefs.accentTheme, UIDevice.current.userInterfaceIdiom == .phone ? .vermilion : .cobalt)
+        XCTAssertEqual(prefs.accentTheme, .vermilion)
         XCTAssertFalse(prefs.codeDefaultLineNumbers)
         XCTAssertTrue(prefs.hapticFeedbackEnabled)
         XCTAssertTrue(prefs.autoCollapseReasoning)

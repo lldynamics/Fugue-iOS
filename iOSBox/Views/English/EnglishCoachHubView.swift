@@ -515,6 +515,12 @@ struct EnglishCoachHubView: View {
     @ViewBuilder
     private var todayLessonSection: some View {
         todayStatusHeader
+        NavigationLink {
+            VoicePracticeView(course: store.activeLesson, level: store.profile.level)
+        } label: {
+            Label(store.activeLesson == nil ? "语言陪练" : "用本课场景练口语", systemImage: "waveform")
+        }
+        .buttonStyle(.bordered)
 
         if isGeneratingLesson {
             VStack(spacing: DS.Spacing.md) {

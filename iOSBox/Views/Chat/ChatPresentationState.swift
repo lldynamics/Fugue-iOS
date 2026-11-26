@@ -16,6 +16,7 @@ enum ChatActiveSheet: Identifiable, Equatable {
     case search
     case questionDirectory
     case modelSetup
+    case liveCall
     case audioTranscription
     case synthesis(UUID)
     case conversationExport
@@ -36,6 +37,7 @@ enum ChatActiveSheet: Identifiable, Equatable {
         case .search: return "search"
         case .questionDirectory: return "questionDirectory"
         case .modelSetup: return "modelSetup"
+        case .liveCall: return "liveCall"
         case .audioTranscription: return "audioTranscription"
         case .synthesis(let groupID): return "synthesis-\(groupID.uuidString)"
         case .conversationExport: return "conversationExport"

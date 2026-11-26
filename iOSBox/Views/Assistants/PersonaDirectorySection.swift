@@ -159,7 +159,7 @@ struct FriendActionLabel: View {
     }
 }
 
-private struct PersonaProfileEditor: View {
+struct PersonaProfileEditor: View {
     @State var draft: GroupMember
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     @Environment(\.modelContext) private var context

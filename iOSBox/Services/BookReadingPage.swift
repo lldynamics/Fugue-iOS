@@ -1,6 +1,6 @@
 import Foundation
 
-struct ReadingCitation: Equatable, Sendable {
+struct ReadingCitation: Codable, Equatable, Sendable {
     let volumeID: UUID
     let documentTitle: String
     let chapter: String

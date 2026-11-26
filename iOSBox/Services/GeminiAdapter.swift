@@ -441,11 +441,14 @@ enum GeminiAdapter {
             let models = try items.compactMap { item -> ModelSpec? in
                 guard let name = item["name"] as? String else { throw URLError(.cannotParseResponse) }
                 if let methods = item["supportedGenerationMethods"] as? [String], !methods.contains("generateContent") { return nil }
-                if let outputs = item["supportedOutputModalities"] as? [String],
-                   !outputs.contains(where: { $0.lowercased() == "text" }) { return nil }
+                let outputs = item["supportedOutputModalities"] as? [String]
+                if let outputs, ModelMediaCapabilities.normalized(outputs)?.contains("text") != true { return nil }
                 let id = name.hasPrefix("models/") ? String(name.dropFirst("models/".count)) : name
                 guard !id.isEmpty else { throw URLError(.cannotParseResponse) }
-                return ModelSpec(id: id, displayName: item["displayName"] as? String)
+                let media = ModelMediaCapabilities(inputs: item["supportedInputModalities"] as? [String], outputs: outputs)
+                var model = ModelSpec(id: id, displayName: item["displayName"] as? String, supportsVision: media[.imageInput])
+                model.reportedMedia = media.hasInformation ? media : nil
+                return model
             }
             return (models, page["nextPageToken"] as? String)
         }

@@ -67,10 +67,11 @@ struct ChatStartModeMenu: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .padding(.horizontal, DS.Spacing.md)
+                .padding(.vertical, 7)
+                .background(DS.Surface.card, in: Capsule())
+                .overlay(Capsule().strokeBorder(DS.Surface.strongBorder, lineWidth: 1).allowsHitTesting(false))
                 .frame(minHeight: DS.TouchTarget.minimum)
-                .background(DS.Surface.subtle, in: Capsule())
-                .overlay(Capsule().strokeBorder(DS.Surface.hairline).allowsHitTesting(false))
-                .contentShape(Capsule())
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
@@ -90,6 +91,7 @@ struct ComposerBarView: View {
     var onOpenGroupSetup: (() -> Void)? = nil
     let onOpenOptions: () -> Void
     let onManageKnowledge: () -> Void
+    var onOpenLiveCall: (() -> Void)? = nil
     var onOpenAudioTranscription: (() -> Void)? = nil
     var externalDocumentScanTrigger: Int = 0
     var writingFirst = false
@@ -1008,7 +1010,7 @@ struct ComposerBarView: View {
     }
 
     private var writingEditor: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+        VStack(alignment: .leading, spacing: DS.Spacing.md) {
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
                 HStack {
                     ChatStartModeMenu(isGenerating: isGenerating, onOpenArena: onOpenArenaPicker,
@@ -1037,8 +1039,9 @@ struct ComposerBarView: View {
             .overlay {
                 RoundedRectangle(cornerRadius: DS.Radius.island, style: .continuous)
                     .strokeBorder(DS.Surface.strongBorder, lineWidth: 1)
+                    .allowsHitTesting(false)
             }
-            .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: 6)
+            .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 3)
 
             if widthClass == .compact || typeSize.isAccessibilitySize {
                 VStack(alignment: .trailing, spacing: 6) {
@@ -1066,7 +1069,9 @@ struct ComposerBarView: View {
         HStack(spacing: DS.Spacing.sm) {
             if needsModel {
                 if !canChooseModel {
-                    Text("首次发送前，先连接一个模型。").font(.footnote).foregroundStyle(.secondary)
+                    Text("首次发送前，先连接一个模型。")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
                 }
                 Button(modelActionTitle, action: onOpenModelPicker)
                     .accessibilityIdentifier("chatComposer.model")
@@ -1107,6 +1112,10 @@ struct ComposerBarView: View {
                     .accessibilityLabel("停止语音输入")
             } else {
                 Menu {
+                    if let onOpenLiveCall {
+                        Button(action: onOpenLiveCall) { Label("实时通话", systemImage: "waveform.circle") }
+                            .accessibilityIdentifier("chatComposer.liveCall")
+                    }
                     Button { startDictation() } label: { Label("语音输入", systemImage: "mic") }
                     if let onOpenAudioTranscription {
                         Button {

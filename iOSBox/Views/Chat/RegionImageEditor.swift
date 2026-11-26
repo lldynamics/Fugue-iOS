@@ -8,6 +8,7 @@ struct RegionImageEditor: View {
     @Environment(\.modelContext) private var context
     @State private var selected: UUID?
     @State private var choice = ""
+    @FocusState private var editingInstruction: Bool
     @State private var instruction = ""
     @State private var selection = CGRect.zero
     @State private var split = 0.5
@@ -50,14 +51,18 @@ struct RegionImageEditor: View {
                                     .frame(width: size.width * selection.width, height: size.height * selection.height)
                                     .position(x: size.width * selection.midX, y: size.height * selection.midY)
                             }
-                        }.contentShape(Rectangle()).gesture(DragGesture(minimumDistance: 1).onChanged { drag in
-                            guard task == nil else { return }
-                            if compare && selected != nil { split = min(1,max(0,drag.location.x / size.width)); return }
-                            let a = drag.startLocation, b = drag.location
-                            let rect = CGRect(x: min(a.x,b.x)/size.width, y: min(a.y,b.y)/size.height,
-                                              width: abs(a.x-b.x)/size.width, height: abs(a.y-b.y)/size.height)
-                            selection = rect.intersection(CGRect(x: 0,y: 0,width: 1,height: 1))
-                        })
+                            RegionGestureSurface(comparing: compare, value: compare ? split.formatted(.percent) : selection.isEmpty ? "" : Double(selection.width).formatted(.percent)) { a, b in
+                                guard task == nil else { return }
+                                if compare && selected != nil {
+                                    split = min(1, max(0, b.x))
+                                } else {
+                                    let next = CGRect(x: min(a.x,b.x), y: min(a.y,b.y),
+                                                       width: abs(a.x-b.x), height: abs(a.y-b.y))
+                                        .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+                                    if next.width >= 0.01, next.height >= 0.01 { selection = next }
+                                }
+                            }
+                        }
                     }.aspectRatio(image.size, contentMode: .fit)
                 }
                 Button("导出当前版本") {
@@ -70,9 +75,9 @@ struct RegionImageEditor: View {
                 }
                 Text(compare && selected != nil ? "滑动分隔线对照两个版本" : "在图上拖出需要修改的矩形").font(.footnote)
             }
-            let eligible = providers.filter { $0.protocolType == .gemini }
+            let eligible = providers.filter { $0.protocolType == .gemini || $0.protocolType == .openAIResponses }
             TaskModelPicker(providers: eligible, choice: $choice, title: "图片编辑模型")
-            TextField("描述选区内的修改", text: $instruction)
+            TextField("描述选区内的修改", text: $instruction).focused($editingInstruction)
             if let model = TaskModel.options(eligible).first(where: { $0.id == choice }) {
                 Button("发送选区给 \(model.recipient)") {
                     consent.perform(recipients: [model.recipient]) {
@@ -81,11 +86,16 @@ struct RegionImageEditor: View {
                             do { try await edit(model); issue = "" } catch { issue = error.localizedDescription }
                         }
                     }
-                }.disabled(task != nil || compare || selection.width < 0.01 || selection.height < 0.01 || instruction.isEmpty)
-            } else { Text("请选择支持图片输出的 Gemini 模型。") }
+                }.accessibilityIdentifier("regionEditor.send").disabled(task != nil || compare || selection.width < 0.01 || selection.height < 0.01 || instruction.isEmpty)
+            } else { Text("请选择支持图片编辑的 Gemini 模型或支持图像生成工具的 Responses 模型。") }
             if task != nil { Button("取消") { task?.cancel() } }
             if !issue.isEmpty { Text(issue).foregroundStyle(.red) }
         }.navigationTitle("选区改图与版本对照").aiConsentSheet(consent)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if editingInstruction { Button("完成") { editingInstruction = false }.accessibilityIdentifier("regionEditor.dismissKeyboard") }
+            }
+        }
         .onChange(of: selected) { selection = .zero; if selected == nil { compare = false } }
         .sheet(item: $share) { payload in ReplyActivityShareSheet(items: [payload.url]) }
         .onDisappear { task?.cancel() }
@@ -101,15 +111,25 @@ struct RegionImageEditor: View {
     }
 
     private func edit(_ model: TaskModel) async throws {
-        guard let base = picture(selected), let cg = base.cgImage,
-              max(cg.width,cg.height) <= 4096, versions.count < 12 else { throw ModelTaskError.invalid("支持最长边 4096 像素、最多 12 个版本") }
+        guard let base = picture(selected) else { throw LLMError.emptyResponse }
+        let id = try await Self.edit(model, message: message, attachmentID: attachmentID, base: base,
+                                     parent: selected, selection: selection, prompt: instruction, context: context)
+        selected = id
+        compare = true
+    }
+
+    static func edit(_ model: TaskModel, message: ChatMessage, attachmentID: UUID, base: UIImage,
+                     parent: UUID?, selection: CGRect, prompt: String, context: ModelContext) async throws -> UUID {
+        guard let cg = base.cgImage, max(cg.width,cg.height) <= 4096,
+              let attachment = message.attachments.first(where: { $0.id == attachmentID }),
+              (attachment.editedVersions?.count ?? 0) < 12 else { throw ModelTaskError.invalid("支持最长边 4096 像素、最多 12 个版本") }
         let size = CGSize(width: base.size.width * base.scale, height: base.size.height * base.scale)
         let rect = CGRect(x: selection.minX*size.width, y: selection.minY*size.height, width: selection.width*size.width, height: selection.height*size.height).integral.intersection(CGRect(origin: .zero, size: size))
+        guard !rect.isNull, !rect.isEmpty else { throw ModelTaskError.invalid("请先在图片上选择编辑区域") }
         let format = UIGraphicsImageRendererFormat(); format.scale = 1
         let region = UIGraphicsImageRenderer(size: rect.size, format: format).pngData { _ in
             base.draw(in: CGRect(origin: CGPoint(x: -rect.minX, y: -rect.minY), size: size))
         }
-        let prompt = instruction, parent = selected
         let input = MessageAttachment(kind: .image, fileName: "region.png", mimeType: "image/png", dataBase64: region.base64EncodedString(), extractedText: nil, byteSize: region.count)
         let out = try await model.run("", input: prompt, attachments: [input], image: true, limit: 8192)
         guard let encoded = out.images.first?.dataBase64, let bytes = Data(base64Encoded: encoded),
@@ -130,6 +150,53 @@ struct RegionImageEditor: View {
             if let previousDate { message.conversation?.updatedAt = previousDate }
             throw error
         }
-        selected = result.id; compare = true
+        return result.id
+    }
+}
+
+/// Give a drag that starts inside the image precedence over the enclosing form's scroll gesture.
+private struct RegionGestureSurface: UIViewRepresentable {
+    let comparing: Bool
+    let value: String
+    let drag: (CGPoint, CGPoint) -> Void
+
+    final class Surface: UIView {
+        var drag: ((CGPoint, CGPoint) -> Void)?
+        lazy var pan = UIPanGestureRecognizer(target: self, action: #selector(panned))
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil else { return }
+            var ancestor = superview
+            while let view = ancestor {
+                if let scroll = view as? UIScrollView { scroll.panGestureRecognizer.require(toFail: pan) }
+                ancestor = view.superview
+            }
+        }
+
+        @objc private func panned() {
+            guard bounds.width > 0, bounds.height > 0, [.began, .changed, .ended].contains(pan.state) else { return }
+            let end = pan.location(in: self)
+            let offset = pan.translation(in: self)
+            let a = CGPoint(x: (end.x - offset.x) / bounds.width, y: (end.y - offset.y) / bounds.height)
+            let b = CGPoint(x: end.x / bounds.width, y: end.y / bounds.height)
+            drag?(a, b)
+        }
+    }
+
+    func makeUIView(context: Context) -> Surface {
+        let view = Surface()
+        view.pan.maximumNumberOfTouches = 1
+        view.addGestureRecognizer(view.pan)
+        view.isAccessibilityElement = true
+        view.accessibilityTraits = .image
+        view.accessibilityIdentifier = "regionEditor.canvas"
+        return view
+    }
+
+    func updateUIView(_ view: Surface, context: Context) {
+        view.drag = drag
+        view.accessibilityLabel = comparing ? String(localized: "版本对照") : String(localized: "图片选区")
+        view.accessibilityValue = value
     }
 }

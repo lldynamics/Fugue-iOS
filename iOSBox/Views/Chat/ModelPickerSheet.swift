@@ -318,6 +318,7 @@ struct ModelPickerSheet: View {
 
     @ViewBuilder
     private func modelRow(target: ResolvedModelTarget, spec: ModelSpec, provider: ProviderConfig, showProviderSubtitle: Bool) -> some View {
+        let media = spec.mediaCapabilities(baseURL: provider.baseURL)
         let isSelected: Bool = {
             switch mode {
             case .single:
@@ -347,7 +348,7 @@ struct ModelPickerSheet: View {
                         Text(target.modelDisplayName)
                             .font(.body.weight(.medium))
                             .foregroundStyle(.primary)
-                        if target.supportsReasoning || target.supportsVision {
+                        if target.supportsReasoning || (target.supportsVision && media[.imageInput] == nil) {
                             HStack(spacing: 6) {
                                 if target.supportsReasoning {
                                     Text("思考")
@@ -357,8 +358,8 @@ struct ModelPickerSheet: View {
                                         .padding(.vertical, 1.5)
                                         .background(Color.purple.opacity(0.12), in: Capsule())
                                 }
-                                if target.supportsVision {
-                                    Text("识图")
+                                if target.supportsVision && media[.imageInput] == nil {
+                                    Text("识图（本地标记）")
                                         .font(.caption2.weight(.semibold))
                                         .foregroundStyle(DS.AccentTheme.cobalt.readableText)
                                         .padding(.horizontal, 5)
@@ -368,6 +369,7 @@ struct ModelPickerSheet: View {
                             }
                         }
 
+                        ModelMediaSummary(capabilities: media)
                         if showProviderSubtitle {
                             Text("\(provider.name) · \(target.modelID)")
                                 .font(.caption2)

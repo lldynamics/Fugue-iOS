@@ -51,11 +51,8 @@ struct FriendPersistentMemoryTests {
     }
 
     private func waitUntilIdle(_ engine: ChatEngine, conversationID: UUID) async {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while (engine.isGenerating(in: conversationID) || !engine.activeFriendMemoryTasks.isEmpty)
-                && ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(15))
-        }
+        while let generation = engine.activeGenerations[conversationID] { await generation.task.value }
+        for task in Array(engine.activeFriendMemoryTasks.values) { await task.value }
     }
 
     @Test("FriendMemoryStore enforces 25-entry cap, obsolete replacement, and BookFriend chapter spoiler boundaries")
@@ -125,6 +122,7 @@ struct FriendPersistentMemoryTests {
     @Test("Private Persona chat auto-extracts memory into ledger and shares bidirectionally with Group Relay without leaking across providers")
     func bidirectionalPrivateAndGroupSharingWithProviderIsolation() async throws {
         let container = try makeInMemoryContainer()
+        defer { withExtendedLifetime(container) {} }
         let context = container.mainContext
         let store = FriendMemoryStore(fileURL: nil, notifySyncChanges: false)
 

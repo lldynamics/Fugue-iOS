@@ -6,6 +6,24 @@ import SwiftData
 @MainActor
 enum WorkspaceTestContent {
     static func insert(in context: ModelContext) throws {
+        if ProcessInfo.processInfo.arguments.contains("-ui-test-voice-practice") {
+            let line = LiveVoiceSession.Line(role: .user, text: "Yesterday I go to the bookstore.")
+            var profile = PracticeProfile()
+            profile.scene = "Bookstore practice"
+            var lesson = PracticeLesson(profile: profile, providerID: UUID(), reviewModelID: "fixture", targets: [])
+            lesson.reviewed = true
+            lesson.callSeconds = 75
+            lesson.realtimeModelID = "fixture"
+            let practice = try LanguagePractice.saveTranscript([line], model: "fixture", lesson: lesson, in: context)
+            practice.messages.first?.assistanceMetadata.practiceCard = PracticeCard(messageID: line.id, quote: "Yesterday I go",
+                expression: "Yesterday I went", note: "用过去式讲述昨天的行动。")
+            let spec = ModelSpec(id: "fixture-voice")
+            let account = ProviderConfig(id: lesson.providerID, name: "Practice fixture", protocolType: .openAIResponses, baseURL: "https://api.openai.com/v1")
+            let charge = RequestRecord(target: account.makeTarget(for: spec), spec: spec, conversationID: practice.id, messageID: line.id, kind: .practiceVoice)
+            charge.promptTokens = 25; charge.completionTokens = 8
+            charge.finish(.succeeded, elapsedMs: 500)
+            context.insert(charge)
+        }
         if ProcessInfo.processInfo.arguments.contains("-ui-test-learning-journal") {
             let log = EnglishStudyLogEntry(lessonID: UUID(), dateKey: "2026-01-01", lessonTitle: "Archived lesson",
                 shadowingCompletedCount: 2, averagePronunciationScore: 80, spokenTurnCount: 1,
@@ -106,6 +124,9 @@ enum WorkspaceTestContent {
         if ProcessInfo.processInfo.arguments.contains("-ui-audit-incomplete-currency") {
             var legacy = ModelSpec(id: "legacy-pricing")
             legacy.catalogStatus = .manual
+            if ProcessInfo.processInfo.arguments.contains("-ui-test-media-capabilities") {
+                legacy.reportedMedia = ModelMediaCapabilities(inputs: ["text", "image", "audio"], outputs: ["text", "audio"])
+            }
             legacy.inputPricePerMillion = 0.1
             legacy.outputPricePerMillion = 1
             let provider = ProviderConfig(name: "币种缺失测试", protocolType: .openAICompatible,
