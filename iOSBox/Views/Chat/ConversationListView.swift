@@ -92,7 +92,7 @@ struct ConversationListView: View {
     }
 
     private var showsPhoneTabBar: Bool {
-        !isPhoneKeyboardVisible && (phoneTab == .library || phonePath.last != .chat)
+        !isPhoneKeyboardVisible && (phoneTab != .conversation || phonePath.last != .chat)
     }
 
     private var isDrawerOpen: Bool {
@@ -385,13 +385,22 @@ struct ConversationListView: View {
                 Tab("对话", systemImage: "bubble.left", value: .conversation) {
                     phoneInboxStack.toolbar(.hidden, for: .tabBar)
                 }
+                if preferences.showsBookFriends {
+                    Tab("好友", systemImage: "person.2", value: .friends) {
+                        phoneFriendsStack.toolbar(.hidden, for: .tabBar)
+                    }
+                }
                 Tab("资料库", systemImage: "book", value: .library) {
                     phoneLibraryStack.toolbar(.hidden, for: .tabBar)
                 }
             }
 
             if showsPhoneTabBar {
-                PhoneWorkspaceTabBar(selection: phoneTab, accent: theme) { tab in
+                PhoneWorkspaceTabBar(
+                    selection: phoneTab,
+                    accent: theme,
+                    showsFriends: preferences.showsBookFriends
+                ) { tab in
                     if tab == .conversation && tab == phoneTab { phonePath.removeAll() }
                     else { selectPhoneTab(tab) }
                 }
@@ -400,11 +409,23 @@ struct ConversationListView: View {
         .environment(\.usesPhoneWorkspace, true)
         .tint(theme.tintColor)
         .background(DS.Surface.canvas.ignoresSafeArea())
+        .onChange(of: preferences.showsBookFriends) { _, shows in
+            if !shows && phoneTab == .friends {
+                phoneTab = .conversation
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             isPhoneKeyboardVisible = true
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             isPhoneKeyboardVisible = false
+        }
+    }
+
+    private var phoneFriendsStack: some View {
+        NavigationStack {
+            PhoneFriendsView()
+                .toolbar(.hidden, for: .tabBar)
         }
     }
 

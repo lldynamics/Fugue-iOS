@@ -7,11 +7,12 @@ extension EnvironmentValues {
 }
 
 enum PhoneWorkspaceTab: String, CaseIterable {
-    case conversation, library
+    case conversation, friends, library
 
     var title: LocalizedStringKey {
         switch self {
         case .conversation: "对话"
+        case .friends: "好友"
         case .library: "资料库"
         }
     }
@@ -19,19 +20,25 @@ enum PhoneWorkspaceTab: String, CaseIterable {
     var symbol: String {
         switch self {
         case .conversation: "bubble.left"
+        case .friends: "person.2"
         case .library: "book"
         }
+    }
+
+    static func visibleTabs(showsFriends: Bool) -> [PhoneWorkspaceTab] {
+        showsFriends ? [.conversation, .friends, .library] : [.conversation, .library]
     }
 }
 
 struct PhoneWorkspaceTabBar: View {
     let selection: PhoneWorkspaceTab
     let accent: DS.AccentTheme
+    var showsFriends = true
     let onSelect: (PhoneWorkspaceTab) -> Void
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(PhoneWorkspaceTab.allCases, id: \.self) { tab in
+            ForEach(PhoneWorkspaceTab.visibleTabs(showsFriends: showsFriends), id: \.self) { tab in
                 Button { onSelect(tab) } label: {
                     VStack(spacing: DS.Spacing.xxs) {
                         Image(systemName: tab.symbol).font(.body.weight(.medium))

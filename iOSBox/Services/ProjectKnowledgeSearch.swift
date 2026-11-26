@@ -100,6 +100,7 @@ actor ProjectKnowledgeSearch {
         let utf16Offset: Int
     }
 
+    private let semantics = PassageSemantics()
     private let storage: FullTextSearchIndex
     private let maxCachedTextBytes: Int
     private var chunkCache: [UUID: [Chunk]] = [:]
@@ -178,13 +179,13 @@ actor ProjectKnowledgeSearch {
         from documents: [KnowledgeDocumentSnapshot],
         query: String,
         maxPassages: Int = 5,
-        chapterLimits: [UUID: Int] = [:]
+        chapterLimits: [UUID: Int] = [:], semantic: Bool = false
     ) async throws -> KnowledgeEvidence {
         try await retrieveCheckingCache(
             from: documents,
             query: query,
             maxPassages: maxPassages,
-            chapterLimits: chapterLimits
+            chapterLimits: chapterLimits, semantic: semantic
         ).evidence
     }
 
@@ -194,7 +195,7 @@ actor ProjectKnowledgeSearch {
         from documents: [KnowledgeDocumentSnapshot],
         query: String,
         maxPassages: Int = 5,
-        chapterLimits: [UUID: Int] = [:]
+        chapterLimits: [UUID: Int] = [:], semantic: Bool = false
     ) async throws -> (evidence: KnowledgeEvidence, missingVolumeIDs: [UUID]) {
         try Task.checkCancellation()
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -322,6 +323,29 @@ actor ProjectKnowledgeSearch {
             scoresByID[id, default: 0] += phraseBonus
         }
 
+        if semantic {
+            let scorer = semantics.scorer(for: searchText)
+            var hits: [(String, Double)] = []
+            for start in stride(from: 0, to: allChunks.count, by: 48) {
+                let batch = allChunks[start..<min(start+48, allChunks.count)]
+                let stored: [String: FullTextSearchIndex.StoredVector]
+                if let model = scorer.model {
+                    stored = try await storage.passageVectors(ids: batch.map(\.chunkID), model: model)
+                } else { stored = [:] }
+                var updates: [String: FullTextSearchIndex.StoredVector] = [:]
+                for chunk in batch {
+                    try Task.checkCancellation()
+                    let row = stored[chunk.chunkID]
+                    let result = scorer.evaluate(chunk.text, row?.text == chunk.text ? row?.values : nil)
+                    if result.score > 0.48 { hits.append((chunk.chunkID, result.score)) }
+                    if let vector = result.computed { updates[chunk.chunkID] = .init(text: chunk.text, values: vector) }
+                }
+                if let model = scorer.model { try await storage.storePassageVectors(updates, model: model) }
+            }
+            for (rank, hit) in hits.sorted(by: { $0.1 > $1.1 }).prefix(60).enumerated() {
+                scoresByID[hit.0, default: 0] += hit.1 / (rrfK + Double(rank + 1))
+            }
+        }
         let chosen = selectDiversePassages(
             chunks: allChunks,
             scoresByID: scoresByID,

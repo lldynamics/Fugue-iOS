@@ -19,6 +19,7 @@ enum ChatActiveSheet: Identifiable, Equatable {
     case audioTranscription
     case synthesis(UUID)
     case conversationExport
+    case friendMemory
 
     var id: String {
         switch self {
@@ -38,6 +39,7 @@ enum ChatActiveSheet: Identifiable, Equatable {
         case .audioTranscription: return "audioTranscription"
         case .synthesis(let groupID): return "synthesis-\(groupID.uuidString)"
         case .conversationExport: return "conversationExport"
+        case .friendMemory: return "friendMemory"
         }
     }
 }

@@ -68,6 +68,8 @@ final class ChatEngine {
     @ObservationIgnored var activeTitleTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored var activeSummaryTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored var activeSummaryTokens: [UUID: UUID] = [:]
+    @ObservationIgnored var activeFriendMemoryTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored var activeFriendMemoryTokens: [String: UUID] = [:]
     @ObservationIgnored var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored let search: @Sendable (String) async throws -> SearchEvidence
     @ObservationIgnored let hasCustomSearchHandler: Bool
@@ -82,6 +84,8 @@ final class ChatEngine {
     /// Live speaker indicator (`"🧑‍💻 毒舌架构师·老王"`) while a group member has the floor.
     var activeGroupSpeakers: [UUID: String] = [:]
     var pendingWebpageApprovals: [PendingWebpageApproval] = []
+    var extractingFriendKeys: Set<String> = []
+    @ObservationIgnored var friendMemoryStore: FriendMemoryStore = .shared
 
     convenience init(
         stream: @escaping @Sendable (LLMChatRequest) -> AsyncThrowingStream<LLMStreamEvent, Error> = { LLMClient.streamChat($0) }
@@ -1151,7 +1155,7 @@ final class ChatEngine {
     }
 
     func updateBackgroundExecution() {
-        if activeGenerations.isEmpty && activeTitleTasks.isEmpty && activeSummaryTasks.isEmpty {
+        if activeGenerations.isEmpty && activeTitleTasks.isEmpty && activeSummaryTasks.isEmpty && activeFriendMemoryTasks.isEmpty {
             endBackgroundTaskIfNeeded()
         } else if backgroundTaskID == .invalid {
             backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "iOSBox.LLMStreaming") { [weak self] in
@@ -1175,6 +1179,12 @@ final class ChatEngine {
             summaryTask.cancel()
         }
         activeSummaryTasks.removeAll()
+        activeFriendMemoryTokens.removeAll()
+        for friendTask in activeFriendMemoryTasks.values {
+            friendTask.cancel()
+        }
+        activeFriendMemoryTasks.removeAll()
+        extractingFriendKeys.removeAll()
         endBackgroundTaskIfNeeded()
     }
 

@@ -17,11 +17,14 @@ struct ReadingNoteDraft: Identifiable {
 struct ReadingPassageSelection: View {
     let source: ReadingCitation
     @Environment(\.dismiss) private var dismiss
+    @State private var offlineText: String?
     @State private var selectedRange: NSRange?
     @State private var note: ReadingNoteDraft?
 
     var body: some View {
-        if let note {
+        if let offlineText {
+            NavigationStack { ModelWorkshop(mode: .local, input: offlineText) }
+        } else if let note {
             ReadingNoteEditor(draft: note)
         } else {
             NavigationStack {
@@ -31,6 +34,9 @@ struct ReadingPassageSelection: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
+                        ToolbarItem(placement: .bottomBar) {
+                            Button("本机处理") { offlineText = source.selecting(selectedRange)?.excerpt }.disabled(source.selecting(selectedRange) == nil)
+                        }
                         ToolbarItem(placement: .bottomBar) {
                             Button("摘录与批注") {
                                 if let citation = source.selecting(selectedRange) { note = ReadingNoteDraft(citation: citation) }

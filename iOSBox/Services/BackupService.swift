@@ -23,6 +23,7 @@ struct BackupArchive: Codable {
     var englishCoach: EnglishCoachStore.PersistedState? = nil
     var annotations: [ReadingAnnotation.Snapshot]? = nil
     var memoryCollections: [NamedMemoryCollection]? = nil
+    var friendMemories: FriendMemoryStore.PersistedState? = nil
 }
 
 struct ProviderBackup: Codable {
@@ -431,7 +432,8 @@ enum BackupService {
     static func makeArchive(
         context: ModelContext,
         knowledgeStore: PresetKnowledgeStore = .shared,
-        tombstoneStore: SyncTombstoneStore? = nil
+        tombstoneStore: SyncTombstoneStore? = nil,
+        friendMemoryStore: FriendMemoryStore? = nil
     ) throws -> BackupArchive {
         guard PersistenceController.canCommitUserData(in: context) else { throw BackupError.storageUnavailable }
         let providers = try context.fetch(FetchDescriptor<ProviderConfig>(sortBy: [SortDescriptor(\.sortOrder)]))
@@ -451,6 +453,8 @@ enum BackupService {
         let tombstones = tombstoneStore?.allTombstones() ?? []
         let isPersistent = !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly)
         let englishSnapshot = isPersistent ? EnglishCoachStore.shared.snapshotForBackup() : nil
+        let effectiveFriendStore = friendMemoryStore ?? (isPersistent ? FriendMemoryStore.shared : nil)
+        let friendMemoriesSnapshot = effectiveFriendStore?.exportState()
         var budget = ContentBudget(remaining: maximumFileBytes)
 
         return BackupArchive(
@@ -503,7 +507,8 @@ enum BackupService {
             tombstones: tombstones.isEmpty ? nil : tombstones,
             englishCoach: englishSnapshot,
             annotations: try context.fetch(FetchDescriptor<ReadingAnnotation>()).map(\.snapshot),
-            memoryCollections: collections.isEmpty ? nil : collections
+            memoryCollections: collections.isEmpty ? nil : collections,
+            friendMemories: friendMemoriesSnapshot
         )
     }
 
@@ -671,7 +676,8 @@ enum BackupService {
         _ backup: DecodedBackup,
         to context: ModelContext,
         knowledgeStore: PresetKnowledgeStore = .shared,
-        tombstonePolicy: SyncTombstonePolicy = .ignore
+        tombstonePolicy: SyncTombstonePolicy = .ignore,
+        friendMemoryStore: FriendMemoryStore? = nil
     ) throws -> ImportSummary {
         guard PersistenceController.canCommitUserData(in: context) else { throw BackupError.storageUnavailable }
         let isPersistent = !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly)
@@ -745,6 +751,36 @@ enum BackupService {
            let incomingEnglish = archive.englishCoach,
            !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
             EnglishCoachStore.shared.mergeImported(incomingEnglish)
+        }
+        if case .full(let archive) = backup,
+           let targetFriendStore = friendMemoryStore ?? (isPersistent ? FriendMemoryStore.shared : nil) {
+            let enforcing: Bool
+            if case .enforce = tombstonePolicy { enforcing = true } else { enforcing = false }
+            let deletedPersonaIDs = Set(
+                sidecars.mergedTombstoneMap.keys
+                    .filter { $0.kind == .personaProfile }
+                    .map(\.id)
+            )
+            let deletedBookIDs = Set(sidecars.deletedBookIDs).union(
+                sidecars.mergedTombstoneMap.keys
+                    .filter { $0.kind == .book }
+                    .map(\.id)
+            )
+            if let incomingFriendMemories = archive.friendMemories {
+                targetFriendStore.mergeImported(
+                    incomingFriendMemories,
+                    deletedPersonaIDs: deletedPersonaIDs,
+                    deletedBookIDs: deletedBookIDs,
+                    enforcingTombstones: enforcing
+                )
+            } else if enforcing && (!deletedPersonaIDs.isEmpty || !deletedBookIDs.isEmpty) {
+                targetFriendStore.mergeImported(
+                    FriendMemoryStore.PersistedState(),
+                    deletedPersonaIDs: deletedPersonaIDs,
+                    deletedBookIDs: deletedBookIDs,
+                    enforcingTombstones: true
+                )
+            }
         }
 
         switch tombstonePolicy {

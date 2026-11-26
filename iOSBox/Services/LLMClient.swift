@@ -169,6 +169,12 @@ struct LLMChatRequest: Sendable {
     let enableNativeSearch: Bool
     let idleTimeoutSeconds: TimeInterval?
     let tools: [LLMToolDefinition]
+    var outputSchema: String?
+    var wantsImage = false
+    var schemaObject: [String: Any]? {
+        guard let outputSchema else { return nil }
+        return (try? JSONSerialization.jsonObject(with: Data(outputSchema.utf8))) as? [String: Any]
+    }
     var validateBeforeSending: (@MainActor @Sendable () throws -> Void)?
 
     init(

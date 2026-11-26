@@ -114,6 +114,9 @@ struct BackupRecoveryPlan: Identifiable {
             if !selected.contains(.memories) { copy.memories = nil; copy.memoryCollections = nil }
             if !selected.contains(.providers) { copy.providers = [] }
             if !selected.contains(.requests) { copy.requests = nil }
+            if !selected.contains(.people) && !selected.contains(.books) && !selected.contains(.memories) {
+                copy.friendMemories = nil
+            }
             if !selected.contains(.english) { copy.englishCoach = nil }
             return copy
         }

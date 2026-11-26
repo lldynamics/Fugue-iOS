@@ -86,13 +86,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Used for voice dictation, English speaking practice, and recording voice notes; audio is captured only when you start recording, processed on-device by default, and sent to your configured provider only when you choose cloud transcription."
+            "value": "Used for dictation, speaking practice, voice notes, and live conversations. Cloud transcription sends recordings to your configured service. Starting a live call streams microphone audio to your selected Gemini service."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用于语音听写输入、英语口语陪练及录制会议语音纪要；仅在你主动开始录音时采集音频，默认使用设备本地识别，仅在你选择云端转写时发送至你配置的服务商。"
+            "value": "用于听写、英语陪练、会议录音和实时语音。你选择云端转写时，录音会发送给配置的转写服务。开始实时通话时，麦克风音频会发送给所选的 Gemini 服务。"
           }
         }
       }

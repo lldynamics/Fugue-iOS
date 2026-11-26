@@ -18,7 +18,7 @@ enum RequestStatus: String, Codable, CaseIterable {
 }
 
 enum RequestKind: String, Codable {
-    case answer, regeneration, synthesis, sharedReading, shortcut, webSearch, continuation, agentTool, titleGeneration, studyGeneration
+    case answer, regeneration, synthesis, sharedReading, modelTask, shortcut, webSearch, continuation, agentTool, titleGeneration, studyGeneration
 
     var title: String {
         switch self {
@@ -26,6 +26,7 @@ enum RequestKind: String, Codable {
         case .regeneration: return String(localized: "重答")
         case .synthesis: return String(localized: "裁判汇总")
         case .sharedReading: return String(localized: "分享精读")
+        case .modelTask: return String(localized: "模型任务")
         case .shortcut: return String(localized: "快捷指令")
         case .webSearch: return String(localized: "联网搜索")
         case .continuation: return String(localized: "续写")

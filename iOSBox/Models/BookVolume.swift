@@ -325,6 +325,7 @@ enum BookLibrary {
         }
         if !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
             SyncTombstoneStore.shared.recordDeletion(kind: .book, id: removedID)
+            FriendMemoryStore.shared.removeMemoriesForBook(bookID: removedID)
         }
         Task { await ProjectKnowledgeSearch.shared.invalidate(volumeID: removedID) }
     }

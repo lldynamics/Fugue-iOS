@@ -44,6 +44,8 @@ struct ModelPickerSheet: View {
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     let directory: ChatModelDirectory
     @Bindable var conversation: Conversation
+    var draftText = ""
+    var draftAttachments: [MessageAttachment] = []
     let selectSingle: (ResolvedModelTarget) throws -> Void
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -98,6 +100,7 @@ struct ModelPickerSheet: View {
                     .background(usesPhoneWorkspace ? DS.Surface.canvas : DS.Surface.grouped)
                 } else {
                     List {
+                        if mode == .single && !isSearching { ModelRecommendation(providers: configuredProviders, conversation: conversation, draft: draftText, attachments: draftAttachments, choose: choose) }
                         if !isSearching && mode == .arenaMulti {
                             Section {
                                 HStack {

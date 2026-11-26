@@ -527,6 +527,7 @@ enum OpenAICompatibleAdapter {
         if includeReasoningParams {
             body.merge(reasoningParameters(for: request)) { _, new in new }
         }
+        if let schema = request.schemaObject { body["response_format"] = ["type": "json_schema", "json_schema": ["name": "result", "strict": true, "schema": schema]] }
         return body
     }
 

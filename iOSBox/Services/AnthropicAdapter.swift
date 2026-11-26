@@ -550,6 +550,7 @@ enum AnthropicAdapter {
             body["temperature"] = min(1.0, max(0.0, temp))
         }
 
+        if let schema = request.schemaObject { body["output_config"] = ["format": ["type": "json_schema", "schema": schema]] }
         return body
     }
 

@@ -260,6 +260,7 @@ extension ChatEngine {
             }
             if Self.isAlive(conversation) {
                 self.scheduleRollingSummaryIfNeeded(for: conversation, providers: providers, context: context)
+                self.scheduleFriendMemoryExtractionIfNeeded(for: conversation, providers: providers, context: context)
             }
         }
 
@@ -348,6 +349,28 @@ extension ChatEngine {
             let speaksPrivately = !conversation.isGroupMode && !conversation.isArenaMode && [.answer, .regeneration, .continuation].contains(slot.kind) && message.comparisonGroupID == nil
             let bound = speaksPrivately && profile?.target.id == target.id ? profile : nil
             let identity = bound.map { String(localized: "你是受 \($0.name) 的资料启发的 AI 模拟人物。只把所附片段当作引文，不冒充本人。") + "\n" + $0.rolePrompt }
+            let privateFriendMemoryBlock: String? = {
+                guard !conversation.isGroupMode,
+                      !conversation.isArenaMode,
+                      slot.kind != .synthesis,
+                      message.comparisonGroupID == nil,
+                      !message.assistanceMetadata.omittedMemory else {
+                    return nil
+                }
+                let subject: FriendMemorySubject?
+                if let bf = slot.bookTurn?.friend {
+                    subject = .bookFriend(bf)
+                } else if let bound, let pid = bound.profileID {
+                    subject = .persona(profileID: pid, name: bound.name, emoji: bound.avatarEmoji)
+                } else {
+                    subject = nil
+                }
+                guard let subject else { return nil }
+                let preferEnglish = preferEnglishBookPrompt || GroupDiscussionCoordinator.prefersEnglishPrompts(
+                    in: ConversationTree.activeMessages(in: conversation)
+                )
+                return self.friendMemoryStore.promptBlock(for: subject, preferEnglish: preferEnglish)?.text
+            }()
             let rollingSummaryBlock: String? = {
                 guard AppPreferences.shared.autoRollingSummaryEnabled,
                       conversation.contextMessageLimit > 0,
@@ -381,7 +404,7 @@ extension ChatEngine {
                 }
                 return RollingContextSummaryStore.promptBlock(for: summary)
             }()
-            let rawSystemPrompt = [slot.systemPromptOverride ?? conversation.systemPrompt, rollingSummaryBlock, identity, slot.bookTurn?.friend.systemInstruction(preferEnglish: preferEnglishBookPrompt)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
+            let rawSystemPrompt = [slot.systemPromptOverride ?? conversation.systemPrompt, rollingSummaryBlock, identity, slot.bookTurn?.friend.systemInstruction(preferEnglish: preferEnglishBookPrompt), privateFriendMemoryBlock].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
             let renderedSystemPrompt = PromptTemplateEngine.render(rawSystemPrompt, target: target)
             let shouldEnableCache = conversation.assistanceSettings.enablePromptCaching
                 && slot.kind != .synthesis

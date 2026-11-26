@@ -497,12 +497,27 @@ extension ChatEngine {
                     )
                 }
 
+                let friendMemoryPrompt: String? = {
+                    guard !omitMemory,
+                          step.intent != .summarize,
+                          let subject = FriendMemorySubject.from(member: step.member),
+                          let prompt = self.friendMemoryStore.promptBlock(for: subject, preferEnglish: englishPreferred) else {
+                        return nil
+                    }
+                    return prompt.text
+                }()
+                let combinedBaseSystemPrompt = [memoryInfo.systemPrompt, friendMemoryPrompt]
+                    .compactMap { $0 }
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n\n")
+
                 let systemPrompt = GroupDiscussionCoordinator.buildSystemPrompt(
                     for: step.member,
                     activeMembers: activeMembers,
                     speechStyle: settings.groupSpeechStyle,
                     intent: step.intent,
-                    baseSystemPrompt: memoryInfo.systemPrompt,
+                    baseSystemPrompt: combinedBaseSystemPrompt,
                     allowPass: step.allowPass || turnsCompleted > 0,
                     preferEnglish: englishPreferred
                 )
@@ -728,6 +743,22 @@ extension ChatEngine {
                     context: context,
                     expectedUnchangedTitle: expectedTitle
                 )
+            }
+            if Self.isAlive(conversation) {
+                let spokenIDs = Set(roundMessages.compactMap { $0.assistanceMetadata.groupMemberID })
+                let spokenKeys = Set(
+                    conversation.groupMembers
+                        .filter { spokenIDs.contains($0.id) }
+                        .compactMap { FriendMemorySubject.from(member: $0)?.friendKey }
+                )
+                if !spokenKeys.isEmpty {
+                    self.scheduleFriendMemoryExtractionIfNeeded(
+                        for: conversation,
+                        speakerKeysFilter: spokenKeys,
+                        providers: providers,
+                        context: context
+                    )
+                }
             }
         }
 

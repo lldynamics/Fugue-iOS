@@ -97,6 +97,7 @@ struct ModelInspectorSheet: View {
                 }
 
                 if let spec = currentSpec {
+                    CapabilityChecks(model: TaskModel(provider: provider, spec: spec))
                     Section("计价配置") {
                         Button {
                             showPricingSheet = true

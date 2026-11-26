@@ -53,6 +53,7 @@ struct AssistantListView: View {
     @State private var preferences = AppPreferences.shared
     @State private var ocrQueue = BackgroundPDFOCRQueue.shared
     @State private var showEnglishCoach = false
+    @State private var activeMemorySubject: FriendMemorySubject?
 
     private var visibleSections: [WorkshopSection] {
         let sections = WorkshopSection.allCases.filter { section in
@@ -97,7 +98,11 @@ struct AssistantListView: View {
                 }
                 switch activeSection {
                 case .friends:
-                    PersonaDirectorySection(invite: { invitedProfile = $0 }, allowsGroupInvitations: preferences.showsGroupChat)
+                    PersonaDirectorySection(
+                        invite: { invitedProfile = $0 },
+                        allowsGroupInvitations: preferences.showsGroupChat,
+                        onOpenMemory: { activeMemorySubject = $0 }
+                    )
                     bookFriendsSection
                 case .presets:
                     presetsSection
@@ -181,6 +186,7 @@ struct AssistantListView: View {
                 }
             }
             .sheet(item: $invitedProfile) { PersonaInvitationView(member: $0) }
+            .sheet(item: $activeMemorySubject) { subject in FriendMemorySheet(subjects: [subject]) }
             .sheet(item: $inviting, onDismiss: routeCreatedLibraryChatIfNeeded) { chat in
                 if let friend = chat.activeBookFriend {
                     BookInvitationSheet(friend: friend) { opened in
@@ -458,73 +464,24 @@ struct AssistantListView: View {
 
     @ViewBuilder
     private var bookFriendsSection: some View {
-        Section("书中好友") {
-            Button {
+        BookFriendsDirectorySection(
+            conversations: conversations,
+            books: books,
+            allowsGroupInvitations: preferences.showsGroupChat,
+            onCreateBookFriend: {
                 preselectedBookID = books.first?.id
                 showBookFriends = true
-            } label: {
-                Label("从书中创建好友", systemImage: "book.pages")
-            }
-
-            ForEach(BookFriendHistory.grouped(conversations)) { history in
-                let chat = history.chats[0]
-                let friend = history.friend
-                let book = books.first { $0.id == friend.bookID }
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Button { SystemEntryRouter.shared.conversationID = chat.id } label: {
-                            HStack {
-                                DSIconTile(systemImage: "book.pages", tint: theme.readableText, size: 38)
-                                VStack(alignment: .leading) {
-                                    Text(verbatim: friend.name).font(.headline)
-                                    Text("来自《\(friend.bookTitle)》 · \(friend.progressLabel(in: book))")
-                                        .font(.subheadline).foregroundStyle(.secondary)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, minHeight: DS.TouchTarget.minimum, alignment: .leading)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("私聊")
-                        if history.chats.count > 1 {
-                            Menu {
-                                ForEach(history.chats) { thread in
-                                    if let scope = thread.activeBookFriend {
-                                        Button { SystemEntryRouter.shared.conversationID = thread.id } label: {
-                                            Text(verbatim: "\(scope.progressLabel(in: book)) · \(thread.updatedAt.formatted(date: .abbreviated, time: .shortened))")
-                                        }
-                                    }
-                                }
-                            } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
-                            .accessibilityLabel("不同进度的对话")
-                        }
-                    }
-                    let layout = dynamicTypeSize.isAccessibilitySize
-                        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
-                        : AnyLayout(HStackLayout(spacing: 8))
-                    layout {
-                        Button { SystemEntryRouter.shared.conversationID = chat.id } label: {
-                            FriendActionLabel(title: "私聊", icon: "bubble.left")
-                        }
-                        .accessibilityLabel(Text("与 \(friend.name) 私聊"))
-                        if preferences.showsGroupChat {
-                            Button { inviting = chat } label: {
-                                FriendActionLabel(title: "邀请进群", icon: "person.2.badge.plus")
-                            }
-                            .accessibilityLabel(Text("邀请 \(friend.name) 进群"))
-                            .accessibilityIdentifier("friend.invite.\(chat.id)")
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
+            },
+            onInviteBookFriend: { inviting = $0 },
+            onOpenMemory: { activeMemorySubject = $0 }
+        )
     }
 
     private var bookshelfSection: some View {
         Section {
             if books.isEmpty { LocalReadingSampleButton() }
             else {
+                NavigationLink("书架语义检索") { SemanticShelfView() }
                 Button { startingLibraryDiscussion = true } label: { Label("用一组资料新建对话", systemImage: "books.vertical") }
             }
             Button {

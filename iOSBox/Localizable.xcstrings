@@ -113,6 +113,22 @@
         }
       }
     },
+    "%@ · %@ s · %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %@ s · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %@ s · %@"
+          }
+        }
+      }
+    },
     "%@ · %@ · #%lld": {
       "localizations": {
         "en": {
@@ -321,6 +337,22 @@
         }
       }
     },
+    "%@ 的好友记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@’s Friend Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 的好友记忆"
+          }
+        }
+      }
+    },
     "%@ 的思考能力": {
       "localizations": {
         "en": {
@@ -493,6 +525,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld tok"
+          }
+        }
+      }
+    },
+    "%lld · %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · %@"
           }
         }
       }
@@ -1725,6 +1773,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "DeepSeek 深度求索"
+          }
+        }
+      }
+    },
+    "Gemini 账号": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gemini Account"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gemini 账号"
           }
         }
       }
@@ -3377,6 +3441,38 @@
         }
       }
     },
+    "下载前使用全文和内置同义词检索。书籍正文始终留在本机。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uses full-text and built-in synonym search until downloaded. Book text always stays on your device."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载前使用全文和内置同义词检索。书籍正文始终留在本机。"
+          }
+        }
+      }
+    },
+    "下载系统语义模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download System Semantic Model"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载系统语义模型"
+          }
+        }
+      }
+    },
     "下面我用自己的话给你讲一遍这个概念，请你扮演挑刺学生指出我没讲清或跳步的地方：\n\n": {
       "localizations": {
         "en": {
@@ -3597,6 +3693,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "与本机的重合项目"
+          }
+        }
+      }
+    },
+    "与编辑前对照": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compare with Original"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与编辑前对照"
           }
         }
       }
@@ -3997,6 +4109,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "书架文档 (%lld)"
+          }
+        }
+      }
+    },
+    "书架语义检索": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Semantic Bookshelf Search"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "书架语义检索"
           }
         }
       }
@@ -4417,6 +4545,22 @@
         }
       }
     },
+    "人物档案 · 跨私聊与圆桌群聊共享": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Persona Profile · Shared across private & group chats"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "人物档案 · 跨私聊与圆桌群聊共享"
+          }
+        }
+      }
+    },
     "人物资料与动态": {
       "localizations": {
         "en": {
@@ -4509,6 +4653,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "仅估算已安排发言的输入费用。后续接力、检索结果、输出、标题、重试及联网费用按实际用量计费。"
+          }
+        }
+      }
+    },
+    "仅保存题目": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save Prompt Only"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅保存题目"
           }
         }
       }
@@ -4813,6 +4973,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "从书架移除这本书？"
+          }
+        }
+      }
+    },
+    "从书架补充依据": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Supporting Passages from Bookshelf"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从书架补充依据"
           }
         }
       }
@@ -5233,6 +5409,22 @@
         }
       }
     },
+    "任务": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务"
+          }
+        }
+      }
+    },
     "会议纪要与待办": {
       "localizations": {
         "en": {
@@ -5389,6 +5581,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "余额不足"
+          }
+        }
+      }
+    },
+    "你": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你"
           }
         }
       }
@@ -6161,6 +6369,22 @@
         }
       }
     },
+    "例如：常一起讨论产品设计与读书心得，近期正在筹备新项目…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "e.g. Often discuss product design and books; currently planning a new project…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "例如：常一起讨论产品设计与读书心得，近期正在筹备新项目…"
+          }
+        }
+      }
+    },
     "例如：我使用 Swift，偏好简体中文回答。": {
       "localizations": {
         "en": {
@@ -6353,6 +6577,22 @@
         }
       }
     },
+    "保存文字到对话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save Transcript to Chat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存文字到对话"
+          }
+        }
+      }
+    },
     "保存连接": {
       "localizations": {
         "en": {
@@ -6465,6 +6705,22 @@
         }
       }
     },
+    "偏好": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preference"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "偏好"
+          }
+        }
+      }
+    },
     "偏差 %lld 次": {
       "localizations": {
         "en": {
@@ -6497,6 +6753,22 @@
         }
       }
     },
+    "停止任务": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop Task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止任务"
+          }
+        }
+      }
+    },
     "停止并关闭": {
       "localizations": {
         "en": {
@@ -6525,6 +6797,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "停止朗读"
+          }
+        }
+      }
+    },
+    "停止测试": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop Test"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止测试"
           }
         }
       }
@@ -6605,6 +6893,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "停用"
+          }
+        }
+      }
+    },
+    "停用此条记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disable Memory Entry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停用此条记忆"
           }
         }
       }
@@ -6909,6 +7213,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "全书"
+          }
+        }
+      }
+    },
+    "全书范围": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full Book"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全书范围"
           }
         }
       }
@@ -7233,6 +7553,22 @@
         }
       }
     },
+    "共同记忆条目（%lld/%lld）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shared Memories (%lld/%lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共同记忆条目（%lld/%lld）"
+          }
+        }
+      }
+    },
     "关于与隐私声明": {
       "localizations": {
         "en": {
@@ -7261,6 +7597,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "关注话题：%@"
+          }
+        }
+      }
+    },
+    "关系与近况小结": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relationship & Recent Context"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关系与近况小结"
           }
         }
       }
@@ -8257,6 +8609,22 @@
         }
       }
     },
+    "删除这道题": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Prompt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除这道题"
+          }
+        }
+      }
+    },
     "删除采纳记录": {
       "localizations": {
         "en": {
@@ -8721,6 +9089,22 @@
         }
       }
     },
+    "单个好友最多保留 %lld 条记忆，超出时后台提炼会自动合并去重并淘汰陈旧琐碎细节。左滑可删除单条记忆。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Up to %lld memories are kept per friend; older minor details are consolidated automatically when full. Swipe left to delete an entry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "单个好友最多保留 %lld 条记忆，超出时后台提炼会自动合并去重并淘汰陈旧琐碎细节。左滑可删除单条记忆。"
+          }
+        }
+      }
+    },
     "单个对话超过 50,000 条消息的导入上限。": {
       "localizations": {
         "en": {
@@ -9009,6 +9393,22 @@
         }
       }
     },
+    "原生 PDF": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Native PDF"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原生 PDF"
+          }
+        }
+      }
+    },
     "原生联网 · 本会话": {
       "localizations": {
         "en": {
@@ -9021,6 +9421,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "原生联网 · 本会话"
+          }
+        }
+      }
+    },
+    "原稿": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原稿"
           }
         }
       }
@@ -9393,6 +9809,54 @@
         }
       }
     },
+    "发送完整正文的资料": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Materials Sent in Full"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送完整正文的资料"
+          }
+        }
+      }
+    },
+    "发送的原文摘录": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Excerpts Sent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送的原文摘录"
+          }
+        }
+      }
+    },
+    "发送给 %@ 核对": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send to %@ to Verify"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送给 %@ 核对"
+          }
+        }
+      }
+    },
     "发送英文回答": {
       "localizations": {
         "en": {
@@ -9405,6 +9869,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "发送英文回答"
+          }
+        }
+      }
+    },
+    "发送选区给 %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send Selection to %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送选区给 %@"
           }
         }
       }
@@ -9453,6 +9933,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "取消常用置顶"
+          }
+        }
+      }
+    },
+    "取消搜索": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel Search"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消搜索"
           }
         }
       }
@@ -10305,6 +10801,22 @@
         }
       }
     },
+    "启用好友持续记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Persistent Friend Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用好友持续记忆"
+          }
+        }
+      }
+    },
     "启用并使用": {
       "localizations": {
         "en": {
@@ -10365,6 +10877,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "启用智能工具"
+          }
+        }
+      }
+    },
+    "启用此条记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Memory Entry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用此条记忆"
           }
         }
       }
@@ -10705,6 +11233,22 @@
         }
       }
     },
+    "回答 %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Response %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回答 %lld"
+          }
+        }
+      }
+    },
     "回答模型与可能用到的备用模型": {
       "localizations": {
         "en": {
@@ -10893,6 +11437,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "图片模型"
+          }
+        }
+      }
+    },
+    "图片读字": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image Text Recognition"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图片读字"
           }
         }
       }
@@ -11089,6 +11649,22 @@
         }
       }
     },
+    "在图上拖出需要修改的矩形": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drag a rectangle over the area to edit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在图上拖出需要修改的矩形"
+          }
+        }
+      }
+    },
     "在多模型对比的主回复下记录采纳理由，即可在这里回看当时的回答。": {
       "localizations": {
         "en": {
@@ -11149,6 +11725,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "在服务商控制台创建 API Key 后粘贴到这里，密钥保存在本机钥匙串。免鉴权的局域网服务可留空。"
+          }
+        }
+      }
+    },
+    "在本机处理选文": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Process Selection On-Device"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在本机处理选文"
           }
         }
       }
@@ -12465,6 +13057,70 @@
         }
       }
     },
+    "好友持续记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Friend Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "好友持续记忆"
+          }
+        }
+      }
+    },
+    "好友角色": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Friend"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "好友角色"
+          }
+        }
+      }
+    },
+    "好友记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Friend Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "好友记忆"
+          }
+        }
+      }
+    },
+    "好友记忆提示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Friend Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "好友记忆提示"
+          }
+        }
+      }
+    },
     "如何套用这个模板？": {
       "localizations": {
         "en": {
@@ -12481,6 +13137,22 @@
         }
       }
     },
+    "字段（逗号分隔）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fields (comma-separated)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "字段（逗号分隔）"
+          }
+        }
+      }
+    },
     "存为草稿，稍后提问": {
       "localizations": {
         "en": {
@@ -12493,6 +13165,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "存为草稿，稍后提问"
+          }
+        }
+      }
+    },
+    "存入盲测题库": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save to Blind-Test Bank"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存入盲测题库"
           }
         }
       }
@@ -12849,6 +13537,22 @@
         }
       }
     },
+    "实时语音": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Live Voice"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实时语音"
+          }
+        }
+      }
+    },
     "实际对话端点：%@": {
       "localizations": {
         "en": {
@@ -12861,6 +13565,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "实际对话端点：%@"
+          }
+        }
+      }
+    },
+    "审校意见": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review Notes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "审校意见"
           }
         }
       }
@@ -13021,6 +13741,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "对话与消息"
+          }
+        }
+      }
+    },
+    "对话中自动提炼更新": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update Automatically During Chat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对话中自动提炼更新"
           }
         }
       }
@@ -13457,6 +14193,22 @@
         }
       }
     },
+    "导出当前版本": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export Current Version"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出当前版本"
+          }
+        }
+      }
+    },
     "导出时间：%@": {
       "localizations": {
         "en": {
@@ -13677,6 +14429,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "将所选图片和问题发给 %@。同意此次及后续主动发起的 AI 请求？可在「夜奔」中撤回。"
+          }
+        }
+      }
+    },
+    "将清空与「%@」的关系小结及所有记忆条目（已有聊天消息不会删除）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clears the relationship summary and all memory entries for “%@” (existing chat messages are kept)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将清空与「%@」的关系小结及所有记忆条目（已有聊天消息不会删除）。"
           }
         }
       }
@@ -14977,6 +15745,22 @@
         }
       }
     },
+    "已根据当前对话更新好友记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updated friend memory from this conversation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已根据当前对话更新好友记忆"
+          }
+        }
+      }
+    },
     "已检查 %lld 个订阅，新增 %lld 条动态。": {
       "localizations": {
         "en": {
@@ -14989,6 +15773,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "已检查 %lld 个订阅，新增 %lld 条动态。"
+          }
+        }
+      }
+    },
+    "已检查当前对话，暂无需要新增的长期记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checked this conversation — no new long-term memories to add"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已检查当前对话，暂无需要新增的长期记忆"
           }
         }
       }
@@ -15809,6 +16609,22 @@
         }
       }
     },
+    "平局": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tie"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "平局"
+          }
+        }
+      }
+    },
     "并发对比": {
       "localizations": {
         "en": {
@@ -16097,6 +16913,22 @@
         }
       }
     },
+    "开启后，这位好友会在私聊与圆桌群聊中持续记住你们的共同话题、近况与约定（群聊中仅注入给该好友自身模型，不泄露给其他成员）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When enabled, this friend remembers shared topics, updates, and promises across private and group chats (in group chats, memories are sent only to this friend's own model)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启后，这位好友会在私聊与圆桌群聊中持续记住你们的共同话题、近况与约定（群聊中仅注入给该好友自身模型，不泄露给其他成员）。"
+          }
+        }
+      }
+    },
     "开启后，进入系统多任务切换界面时将自动以毛玻璃遮挡当前页面；启用应用锁时防窥遮罩会始终开启。": {
       "localizations": {
         "en": {
@@ -16225,6 +17057,22 @@
         }
       }
     },
+    "开始向 %@ 传送麦克风声音": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start Streaming Microphone Audio to %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始向 %@ 传送麦克风声音"
+          }
+        }
+      }
+    },
     "开始处理": {
       "localizations": {
         "en": {
@@ -16301,6 +17149,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "开始新话题"
+          }
+        }
+      }
+    },
+    "开始新通话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start New Call"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始新通话"
           }
         }
       }
@@ -16705,6 +17569,22 @@
         }
       }
     },
+    "当前没有满足所选条件的模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No models match the selected criteria"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前没有满足所选条件的模型"
+          }
+        }
+      }
+    },
     "当前消息暂无可导出的文本内容。": {
       "localizations": {
         "en": {
@@ -17021,6 +17901,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "待导入文字"
+          }
+        }
+      }
+    },
+    "待核对的结论": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claims to Verify"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待核对的结论"
           }
         }
       }
@@ -17825,6 +18721,22 @@
         }
       }
     },
+    "手动添加共同记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Shared Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手动添加共同记忆"
+          }
+        }
+      }
+    },
     "手动添加服务商": {
       "localizations": {
         "en": {
@@ -18497,6 +19409,22 @@
         }
       }
     },
+    "按任务推荐模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recommend Models by Task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按任务推荐模型"
+          }
+        }
+      }
+    },
     "按实际路由计费": {
       "localizations": {
         "en": {
@@ -18525,6 +19453,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "按实际路由计费，服务商没有固定单价。"
+          }
+        }
+      }
+    },
+    "按意思搜索": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search by Meaning"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按意思搜索"
           }
         }
       }
@@ -18637,6 +19581,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "按此进度邀请"
+          }
+        }
+      }
+    },
+    "按每步最多 2,048 个输出 Token 估算；服务商实际用量及重试会影响最终费用。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estimated at up to 2,048 output tokens per step; actual provider billing and retries affect final cost."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按每步最多 2,048 个输出 Token 估算；服务商实际用量及重试会影响最终费用。"
           }
         }
       }
@@ -18813,6 +19773,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "排课微调"
+          }
+        }
+      }
+    },
+    "接力审稿": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Draft and Review"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接力审稿"
           }
         }
       }
@@ -19009,6 +19985,22 @@
         }
       }
     },
+    "描述选区内的修改": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Describe the edit inside the selection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "描述选区内的修改"
+          }
+        }
+      }
+    },
     "提升为主 Key": {
       "localizations": {
         "en": {
@@ -19197,6 +20189,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "搜索不使用模型 Token 计价，费用请以 Tavily 账单为准。成功结果的来源与返回额度保存在对应回答中。"
+          }
+        }
+      }
+    },
+    "搜索好友或书名": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search friends or books"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索好友或书名"
           }
         }
       }
@@ -19629,6 +20637,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "支持 EPUB、TXT、Markdown 和带文字的 PDF。正文保存在本机，也会随完整备份导出。"
+          }
+        }
+      }
+    },
+    "支持 Live 音频的模型 ID": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Live Audio Model ID"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "支持 Live 音频的模型 ID"
           }
         }
       }
@@ -20177,6 +21201,22 @@
         }
       }
     },
+    "新增共同记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Shared Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新增共同记忆"
+          }
+        }
+      }
+    },
     "新对话": {
       "localizations": {
         "en": {
@@ -20349,6 +21389,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "新话题保留历史，后续请求不携带分割线前的上下文。"
+          }
+        }
+      }
+    },
+    "新题目": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Prompt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新题目"
           }
         }
       }
@@ -21217,6 +22273,22 @@
         }
       }
     },
+    "暂无关系近况小结。随着对话深入会自动凝练，也可以手动编写。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No relationship summary yet. One will form automatically as you chat, or you can write one manually."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无关系近况小结。随着对话深入会自动凝练，也可以手动编写。"
+          }
+        }
+      }
+    },
     "暂无内置同名单价，请手动点击模型设置单价。": {
       "localizations": {
         "en": {
@@ -21245,6 +22317,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "暂无助手预设"
+          }
+        }
+      }
+    },
+    "暂无可管理的好友记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Friend Memory Available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无可管理的好友记忆"
           }
         }
       }
@@ -23137,6 +24225,38 @@
         }
       }
     },
+    "本机处理": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On-Device"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机处理"
+          }
+        }
+      }
+    },
+    "本机摘要与改写": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On-Device Writing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机摘要与改写"
+          }
+        }
+      }
+    },
     "本条附件": {
       "localizations": {
         "en": {
@@ -23249,18 +24369,18 @@
         }
       }
     },
-    "本次及后续主动发起的操作可能发送：对话消息、选用的历史上下文、引用、图片/文档附件与系统提示词；启用个人记忆时适用的记忆条目；圆桌人物参考片段、书中好友选取的原书片段，以及英语陪练中的口语/文本练习与纠错请求。若你主动选择云端语音转写（如 Whisper）或开启云端语音朗读（TTS），相应的录音音频或待朗读回复文本也会发送至你指定的语音服务商（设备本地语音识别与系统朗读默认在本机完成）。": {
+    "本次及后续主动发起的操作可能发送：对话消息、选用的历史上下文、引用、图片/文档附件与系统提示词；启用个人记忆时适用的记忆条目；圆桌人物参考片段、书中好友选取的原书片段、好友持续记忆中的共同脉络，以及英语陪练中的口语/文本练习与纠错请求。若你主动选择云端语音转写（如 Whisper）或开启云端语音朗读（TTS），相应的录音音频或待朗读回复文本也会发送至你指定的语音服务商（设备本地语音识别与系统朗读默认在本机完成）。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Actions you initiate may send: chat messages, selected conversation history, quotes, image/document attachments, and system prompts; applicable personal memory items when enabled; persona reference excerpts, book passages for Book Friends, and spoken/written English practice turns. If you choose cloud speech transcription (such as Whisper) or cloud text-to-speech (TTS), your recorded audio or reply text is sent to your configured voice provider (on-device speech recognition and system voices run locally by default)."
+            "value": "Actions you initiate may send: chat messages, selected conversation history, quotes, image/document attachments, and system prompts; applicable personal memory items when enabled; persona reference excerpts, book passages for Book Friends, shared context from persistent Friend Memory, and spoken/written English practice turns. If you choose cloud speech transcription (such as Whisper) or cloud text-to-speech (TTS), your recorded audio or reply text is sent to your configured voice provider (on-device speech recognition and system voices run locally by default)."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本次及后续主动发起的操作可能发送：对话消息、选用的历史上下文、引用、图片/文档附件与系统提示词；启用个人记忆时适用的记忆条目；圆桌人物参考片段、书中好友选取的原书片段，以及英语陪练中的口语/文本练习与纠错请求。若你主动选择云端语音转写（如 Whisper）或开启云端语音朗读（TTS），相应的录音音频或待朗读回复文本也会发送至你指定的语音服务商（设备本地语音识别与系统朗读默认在本机完成）。"
+            "value": "本次及后续主动发起的操作可能发送：对话消息、选用的历史上下文、引用、图片/文档附件与系统提示词；启用个人记忆时适用的记忆条目；圆桌人物参考片段、书中好友选取的原书片段、好友持续记忆中的共同脉络，以及英语陪练中的口语/文本练习与纠错请求。若你主动选择云端语音转写（如 Whisper）或开启云端语音朗读（TTS），相应的录音音频或待朗读回复文本也会发送至你指定的语音服务商（设备本地语音识别与系统朗读默认在本机完成）。"
           }
         }
       }
@@ -23345,6 +24465,22 @@
         }
       }
     },
+    "本次预算（可选）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Budget per Request (Optional)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本次预算（可选）"
+          }
+        }
+      }
+    },
     "本群中来自这本书的好友共用此阅读进度。": {
       "localizations": {
         "en": {
@@ -23405,6 +24541,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "朱砂"
+          }
+        }
+      }
+    },
+    "材料不足": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Insufficient Evidence"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材料不足"
           }
         }
       }
@@ -23581,6 +24733,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "查找人物"
+          }
+        }
+      }
+    },
+    "查找相关原文": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Find Relevant Passages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查找相关原文"
           }
         }
       }
@@ -23985,6 +25153,22 @@
         }
       }
     },
+    "检索范围（最多 12 本）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search Scope (up to 12 books)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检索范围（最多 12 本）"
+          }
+        }
+      }
+    },
     "检验跟读对齐": {
       "localizations": {
         "en": {
@@ -24065,6 +25249,22 @@
         }
       }
     },
+    "模型任务": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model Task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模型任务"
+          }
+        }
+      }
+    },
     "模型列表地址不可用。请核对接口地址，或手动指定模型 ID。": {
       "localizations": {
         "en": {
@@ -24109,6 +25309,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "模型对比记录"
+          }
+        }
+      }
+    },
+    "模型工具": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model Tools"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模型工具"
           }
         }
       }
@@ -24221,6 +25437,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "模型能力可能根据名称推测，长按模型可修改单价或能力标记。"
+          }
+        }
+      }
+    },
+    "模型能力实测": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Live Capability Probe"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模型能力实测"
           }
         }
       }
@@ -24365,6 +25597,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在与 WebDAV 通信…"
+          }
+        }
+      }
+    },
+    "正在从对话提炼记忆…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extracting memories from chat…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在从对话提炼记忆…"
           }
         }
       }
@@ -25041,6 +26289,22 @@
         }
       }
     },
+    "每项发送一个合成样本，服务商可能计费。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Each check sends a synthetic prompt and may incur provider charges."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每项发送一个合成样本，服务商可能计费。"
+          }
+        }
+      }
+    },
     "毒舌架构师": {
       "localizations": {
         "en": {
@@ -25537,6 +26801,22 @@
         }
       }
     },
+    "添加共同记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Shared Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加共同记忆"
+          }
+        }
+      }
+    },
     "添加内容": {
       "localizations": {
         "en": {
@@ -25565,6 +26845,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "添加备用模型"
+          }
+        }
+      }
+    },
+    "添加好友": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Friend"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加好友"
           }
         }
       }
@@ -25793,6 +27089,38 @@
         }
       }
     },
+    "清空全部记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear All Memories"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清空全部记忆"
+          }
+        }
+      }
+    },
+    "清空小结": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear Summary"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清空小结"
+          }
+        }
+      }
+    },
     "清空当前消息记录": {
       "localizations": {
         "en": {
@@ -25853,6 +27181,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "清空本会话已绑定的知识库"
+          }
+        }
+      }
+    },
+    "清空这位好友的全部记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear All Memories for This Friend"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清空这位好友的全部记忆"
+          }
+        }
+      }
+    },
+    "清空这位好友的全部记忆？": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear All Memories for This Friend?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清空这位好友的全部记忆？"
           }
         }
       }
@@ -25965,6 +27325,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "源码"
+          }
+        }
+      }
+    },
+    "滑动分隔线对照两个版本": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drag the divider to compare both versions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "滑动分隔线对照两个版本"
           }
         }
       }
@@ -26193,6 +27569,22 @@
         }
       }
     },
+    "生成 CSV": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generate CSV"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "生成 CSV"
+          }
+        }
+      }
+    },
     "生成会议纪要并发送": {
       "localizations": {
         "en": {
@@ -26381,6 +27773,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "用本机副本覆盖云端"
+          }
+        }
+      }
+    },
+    "用自己的话描述要找的内容": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Describe what you're looking for in your own words"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用自己的话描述要找的内容"
+          }
+        }
+      }
+    },
+    "用途": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Case"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用途"
           }
         }
       }
@@ -26609,6 +28033,22 @@
         }
       }
     },
+    "盲测题库": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blind Model Tests"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "盲测题库"
+          }
+        }
+      }
+    },
     "相册": {
       "localizations": {
         "en": {
@@ -26637,6 +28077,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "相机、相册、麦克风、语音识别与局域网权限仅在你主动点击拍照、选图、语音听写或连接本地模型地址时按需请求，不会在后台静默采集。"
+          }
+        }
+      }
+    },
+    "省钱优先": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cost First"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "省钱优先"
           }
         }
       }
@@ -27089,6 +28545,22 @@
         }
       }
     },
+    "立即从当前对话提炼记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extract Memories from Chat Now"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即从当前对话提炼记忆"
+          }
+        }
+      }
+    },
     "立即体验快捷直达": {
       "localizations": {
         "en": {
@@ -27357,6 +28829,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "第 %lld 节"
+          }
+        }
+      }
+    },
+    "第 %lld 行 · %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Line %lld · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %lld 行 · %@"
           }
         }
       }
@@ -28145,6 +29633,38 @@
         }
       }
     },
+    "结束通话": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "End Call"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结束通话"
+          }
+        }
+      }
+    },
+    "结构化输出": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Structured Output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结构化输出"
+          }
+        }
+      }
+    },
     "结果保存失败，请保留当前窗口并重试。": {
       "localizations": {
         "en": {
@@ -28157,6 +29677,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "结果保存失败，请保留当前窗口并重试。"
+          }
+        }
+      }
+    },
+    "结果（可编辑）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Result (Editable)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结果（可编辑）"
           }
         }
       }
@@ -28445,6 +29981,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "编辑偏好"
+          }
+        }
+      }
+    },
+    "编辑共同记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Shared Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑共同记忆"
+          }
+        }
+      }
+    },
+    "编辑关系小结": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Relationship Summary"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑关系小结"
           }
         }
       }
@@ -30269,6 +31837,22 @@
         }
       }
     },
+    "记录希望这位好友一直记住的共同经历、你的近况或约定…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Record a shared experience, update, or promise for this friend to remember…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "记录希望这位好友一直记住的共同经历、你的近况或约定…"
+          }
+        }
+      }
+    },
     "记录采纳理由": {
       "localizations": {
         "en": {
@@ -30281,6 +31865,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "记录采纳理由"
+          }
+        }
+      }
+    },
+    "记忆": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "记忆"
+          }
+        }
+      }
+    },
+    "记忆 %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Memory %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "记忆 %lld"
           }
         }
       }
@@ -30681,6 +32297,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "评分"
+          }
+        }
+      }
+    },
+    "评分标准": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evaluation Criteria"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "评分标准"
           }
         }
       }
@@ -31177,6 +32809,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "请充当我的私教分步讲解这道题/这部分内容：先指出核心考点与思路，再逐步推导，最后点明易错点：\n\n"
+          }
+        }
+      }
+    },
+    "请先从「好友」页选择一位人物档案或书中好友。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a persona profile or book friend from the Friends tab first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先从「好友」页选择一位人物档案或书中好友。"
           }
         }
       }
@@ -32349,6 +33997,22 @@
         }
       }
     },
+    "请选择支持图片输出的 Gemini 模型。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a Gemini model that supports image output."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请选择支持图片输出的 Gemini 模型。"
+          }
+        }
+      }
+    },
     "请选择用于本次对话的已启用模型。": {
       "localizations": {
         "en": {
@@ -32669,6 +34333,22 @@
         }
       }
     },
+    "费用按预计输入和 1,000 个输出 Token 估算。速度取最近成功请求的首字中位数。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cost is estimated from projected input plus 1,000 output tokens. Speed uses the median time-to-first-token of recent successful requests."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "费用按预计输入和 1,000 个输出 Token 估算。速度取最近成功请求的首字中位数。"
+          }
+        }
+      }
+    },
     "资料": {
       "localizations": {
         "en": {
@@ -32713,6 +34393,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "资料库"
+          }
+        }
+      }
+    },
+    "资料提取表": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Document Extraction"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "资料提取表"
           }
         }
       }
@@ -33277,6 +34973,22 @@
         }
       }
     },
+    "输入或粘贴文本": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter or paste text"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入或粘贴文本"
+          }
+        }
+      }
+    },
     "输入文本（可选）": {
       "localizations": {
         "en": {
@@ -33453,6 +35165,38 @@
         }
       }
     },
+    "运行前费用预估": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estimated Cost Before Running"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行前费用预估"
+          }
+        }
+      }
+    },
+    "运行所选测试（%lld）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Run Selected Tests (%lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行所选测试（%lld）"
+          }
+        }
+      }
+    },
     "运行技能 ${skill}": {
       "localizations": {
         "en": {
@@ -33513,6 +35257,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "还没有对话"
+          }
+        }
+      }
+    },
+    "还没有记录具体记忆条目。聊过几轮后系统会自动沉淀，也可点击上方手动补充。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No memory entries yet. Memories accumulate automatically after a few turns, or tap above to add one."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没有记录具体记忆条目。聊过几轮后系统会自动沉淀，也可点击上方手动补充。"
           }
         }
       }
@@ -34045,6 +35805,54 @@
         }
       }
     },
+    "选区改图": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Region Edit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选区改图"
+          }
+        }
+      }
+    },
+    "选区改图与版本对照": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Region Image Edit & Comparison"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选区改图与版本对照"
+          }
+        }
+      }
+    },
+    "选择 2–4 个模型": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select 2–4 Models"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择 2–4 个模型"
+          }
+        }
+      }
+    },
     "选择参考资料（已选 %lld/12）": {
       "localizations": {
         "en": {
@@ -34269,6 +36077,22 @@
         }
       }
     },
+    "选择群内好友": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select Group Friend"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择群内好友"
+          }
+        }
+      }
+    },
     "选择裁判模型": {
       "localizations": {
         "en": {
@@ -34301,6 +36125,38 @@
         }
       }
     },
+    "选择账号": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Account"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择账号"
+          }
+        }
+      }
+    },
+    "逐条核对出处": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verify Citations Claim by Claim"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "逐条核对出处"
+          }
+        }
+      }
+    },
     "逐段解析实现原理、并发安全与边界条件": {
       "localizations": {
         "en": {
@@ -34317,6 +36173,22 @@
         }
       }
     },
+    "逐项采纳修订": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review & Accept Edits"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "逐项采纳修订"
+          }
+        }
+      }
+    },
     "通义千问 Qwen 全系列官方与开源模型聚合平台": {
       "localizations": {
         "en": {
@@ -34329,6 +36201,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "通义千问 Qwen 全系列官方与开源模型聚合平台"
+          }
+        }
+      }
+    },
+    "速度优先": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speed First"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "速度优先"
           }
         }
       }
@@ -34493,6 +36381,22 @@
         }
       }
     },
+    "部分模型单价未知": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pricing missing for some models"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分模型单价未知"
+          }
+        }
+      }
+    },
     "部分群成员模型尚未就绪：%@，轮到其发言时可能报错。": {
       "localizations": {
         "en": {
@@ -34521,6 +36425,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "部分订阅正在检查或群内正在发言，稍后可再检查。"
+          }
+        }
+      }
+    },
+    "都不满意": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neither"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "都不满意"
           }
         }
       }
@@ -34617,6 +36537,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "采样与上下文控制"
+          }
+        }
+      }
+    },
+    "采纳回答 %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accept Response %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "采纳回答 %lld"
           }
         }
       }
@@ -35097,6 +37033,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "阅读进度不可用"
+          }
+        }
+      }
+    },
+    "防剧透保护：另有 %lld 条在后续章节产生的记忆已按当前阅读进度自动隐藏。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spoiler protection: %lld memories from later chapters are hidden for your current reading progress."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "防剧透保护：另有 %lld 条在后续章节产生的记忆已按当前阅读进度自动隐藏。"
           }
         }
       }
@@ -35785,6 +37737,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "预计请求"
+          }
+        }
+      }
+    },
+    "题库": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prompt Bank"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "题库"
+          }
+        }
+      }
+    },
+    "题目": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prompt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "题目"
           }
         }
       }

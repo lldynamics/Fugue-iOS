@@ -983,6 +983,46 @@ actor FullTextSearchIndex {
         return candidates
     }
 
+    struct StoredVector {
+        let text: String
+        let values: [Float]
+    }
+
+    func passageVectors(ids: [String], model: String) throws -> [String: StoredVector] {
+        guard !ids.isEmpty else { return [:] }
+        let db = try ensureOpen()
+        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+        let stmt = try prepare(db, "SELECT chunk_id, raw_text, embedding_blob FROM rag_chunks WHERE embedding_model = ? AND chunk_id IN (\(placeholders))")
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, model)
+        for (i, key) in ids.enumerated() { bindText(stmt, Int32(i+2), key) }
+        var values: [String: StoredVector] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let size = Int(sqlite3_column_bytes(stmt, 2))
+            guard size > 0, size <= 65536, size.isMultiple(of: 4), let bytes = sqlite3_column_blob(stmt, 2) else { continue }
+            let floats = (0..<size/4).map { bytes.loadUnaligned(fromByteOffset: 4*$0, as: Float.self) }
+            values[columnString(stmt, 0)] = StoredVector(text: columnString(stmt, 1), values: floats)
+        }
+        return values
+    }
+
+    func storePassageVectors(_ vectors: [String: StoredVector], model: String) throws {
+        guard !vectors.isEmpty else { return }
+        let db = try ensureOpen()
+        try withTransaction(db) {
+            let stmt = try prepare(db, "UPDATE rag_chunks SET embedding_model = ?, embedding_blob = ? WHERE chunk_id = ? AND raw_text = ?")
+            defer { sqlite3_finalize(stmt) }
+            for (id, row) in vectors {
+                sqlite3_reset(stmt)
+                bindText(stmt, 1, model)
+                _ = row.values.withUnsafeBytes { sqlite3_bind_blob(stmt, 2, $0.baseAddress, Int32($0.count), Self.transientDestructor) }
+                bindText(stmt, 3, id)
+                bindText(stmt, 4, row.text)
+                try stepDone(db, stmt)
+            }
+        }
+    }
+
     func fetchRAGChunks(
         volumeIDs: [UUID],
         chapterLimits: [UUID: Int] = [:]

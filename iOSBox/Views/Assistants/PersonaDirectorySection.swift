@@ -4,24 +4,38 @@ import SwiftData
 struct PersonaDirectorySection: View {
     let invite: (GroupMember) -> Void
     let allowsGroupInvitations: Bool
+    var searchQuery: String = ""
+    var triggerCreateCounter: Int = 0
+    var onOpenMemory: ((FriendMemorySubject) -> Void)? = nil
     @Environment(\.modelContext) private var context
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Query(sort: \PersonaProfile.name) private var profiles: [PersonaProfile]
     @Query(sort: \ProviderConfig.sortOrder) private var providers: [ProviderConfig]
     @State private var editing: GroupMember?
+    @State private var fallbackMemorySubject: FriendMemorySubject?
     @State private var removing: PersonaProfile?
     @State private var connecting = false
     @State private var error: String?
+    @State private var memoryStore = FriendMemoryStore.shared
+
+    private var filteredProfiles: [PersonaProfile] {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return profiles }
+        return profiles.filter { profile in
+            let member = try? profile.member()
+            return profile.name.localizedStandardContains(query)
+                || (member?.title.localizedStandardContains(query) ?? false)
+                || (member?.rolePrompt.localizedStandardContains(query) ?? false)
+        }
+    }
 
     var body: some View {
         Section("人物档案") {
-            Button {
-                let ready = ProviderConfig.readyTargets(in: providers)
-                if let target = AppPreferences.shared.initialTarget(from: ready) ?? ready.first { create(using: target) }
-                else { connecting = true }
-            } label: { Label("新建人物档案", systemImage: "person.crop.circle.badge.plus") }
+            Button(action: startCreatingPersona) {
+                Label("新建人物档案", systemImage: "person.crop.circle.badge.plus")
+            }
 
-            ForEach(profiles) { profile in
+            ForEach(filteredProfiles) { profile in
                 let member = try? profile.member()
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -41,6 +55,7 @@ struct PersonaDirectorySection: View {
                         .accessibilityHint("私聊")
                         Spacer()
                         Menu {
+                            Button("好友记忆") { presentMemory(.persona(profile)) }
                             Button("编辑人物档案") { do { editing = try profile.member() } catch { self.error = error.localizedDescription } }
                             Button("删除人物档案", role: .destructive) { removing = profile }
                         } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
@@ -54,6 +69,7 @@ struct PersonaDirectorySection: View {
             }
         }
         .sheet(item: $editing) { PersonaProfileEditor(draft: $0) }
+        .sheet(item: $fallbackMemorySubject) { subject in FriendMemorySheet(subjects: [subject]) }
         .sheet(isPresented: $connecting) { FirstModelSetupSheet { target in connecting = false; create(using: target) } }
         .confirmationDialog("删除人物档案？", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { profile in
             Button("删除人物档案", role: .destructive) {
@@ -63,6 +79,7 @@ struct PersonaDirectorySection: View {
                     try context.transaction { context.delete(profile); try context.save() }
                     if !context.container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
                         SyncTombstoneStore.shared.recordDeletion(kind: .personaProfile, id: deletedProfileID)
+                        FriendMemoryStore.shared.removeMemoriesForPersona(profileID: deletedProfileID)
                     }
                 } catch { context.rollback(); self.error = error.localizedDescription }
             }
@@ -70,6 +87,15 @@ struct PersonaDirectorySection: View {
         .alert("人物档案", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好", role: .cancel) {}
         } message: { Text(verbatim: error ?? "") }
+        .onChange(of: triggerCreateCounter) { _, _ in
+            startCreatingPersona()
+        }
+    }
+
+    private func startCreatingPersona() {
+        let ready = ProviderConfig.readyTargets(in: providers)
+        if let target = AppPreferences.shared.initialTarget(from: ready) ?? ready.first { create(using: target) }
+        else { connecting = true }
     }
 
     private func create(using target: ResolvedModelTarget) {
@@ -82,12 +108,29 @@ struct PersonaDirectorySection: View {
         } catch { self.error = error.localizedDescription }
     }
 
+    private func presentMemory(_ subject: FriendMemorySubject) {
+        if let onOpenMemory {
+            onOpenMemory(subject)
+        } else {
+            fallbackMemorySubject = subject
+        }
+    }
+
     @ViewBuilder
     private func actions(for profile: PersonaProfile) -> some View {
+        let subject = FriendMemorySubject.persona(profile)
+        let activeCount = memoryStore.activeVisibleEntryCount(for: subject)
         Button { openPrivateChat(profile) } label: {
             FriendActionLabel(title: "私聊", icon: "bubble.left")
         }.buttonStyle(.plain)
         .accessibilityLabel(Text("与 \(profile.name) 私聊"))
+        Button { presentMemory(subject) } label: {
+            FriendActionLabel(
+                title: activeCount > 0 ? "记忆 \(activeCount)" : "记忆",
+                icon: "brain.head.profile"
+            )
+        }.buttonStyle(.plain)
+        .accessibilityLabel(Text("\(profile.name) 的好友记忆"))
         if allowsGroupInvitations {
             Button {
                 do { invite(try profile.member()) } catch { self.error = error.localizedDescription }

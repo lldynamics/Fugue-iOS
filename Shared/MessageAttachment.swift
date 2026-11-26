@@ -21,6 +21,13 @@ struct AttachmentTextCoverage: Codable, Hashable, Sendable {
     let isTruncated: Bool
 }
 
+struct EditedImage: Codable, Hashable, Identifiable, Sendable {
+    var id = UUID()
+    let parent: UUID?
+    let instruction: String
+    let png: Data
+}
+
 struct MessageAttachment: Codable, Hashable, Identifiable {
     var id: UUID = UUID()
     var kind: AttachmentKind
@@ -29,6 +36,7 @@ struct MessageAttachment: Codable, Hashable, Identifiable {
     var dataBase64: String?
     var extractedText: String?
     var byteSize: Int
+    var editedVersions: [EditedImage]? = nil
     var textCoverage: AttachmentTextCoverage? = nil
     /// A reviewed PDF must be delivered as a file even on the Chat Completions endpoint.
     var sendOriginalPDF: Bool? = nil

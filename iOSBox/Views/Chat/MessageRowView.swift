@@ -13,6 +13,18 @@ struct MessageRowView: View {
 
     private var isReading: Bool { message.conversation?.readingVolumeID != nil }
 
+    private struct WorkshopLaunch: Identifiable {
+        let id = UUID()
+        let mode: LabMode
+        let text: String
+    }
+    private struct ClaimLaunch: Identifiable {
+        let id = UUID()
+        let text: String
+    }
+    @State private var workshop: WorkshopLaunch?
+    @State private var editingImage: MessageAttachment?
+    @State private var checkingClaim: ClaimLaunch?
     @State private var copiedToastText: String?
     @State private var copyToastToken = UUID()
     @State private var exportShareItem: ExportSharePayload?
@@ -322,6 +334,7 @@ struct MessageRowView: View {
         )) { wrapper in
             ImageFullScreenSheet(image: wrapper.image)
         }
+        .sheet(item: $workshop) { item in NavigationStack { ModelWorkshop(mode: item.mode, initialAttachments: message.attachments, input: item.text) } }
         .sheet(isPresented: $showEditSheet) {
             NavigationStack {
                 VStack(spacing: DS.Spacing.md) {
@@ -384,6 +397,7 @@ struct MessageRowView: View {
 
     @ViewBuilder
     private func userMessageContextMenu(meta: AssistanceMetadata) -> some View {
+        Button("存入盲测题库") { workshop = .init(mode: .blind, text: message.content) }
         Button {
             UIPasteboard.general.string = message.content
         } label: {
@@ -552,6 +566,9 @@ struct MessageRowView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("查看图片 \(att.fileName)")
+                            if message.role == .assistant {
+                                Button("选区改图") { editingImage = att }.font(.caption)
+                            }
                         }
                     }
                 }
@@ -596,6 +613,20 @@ struct MessageRowView: View {
             ? ReadingReferences(knowledge: meta.knowledgeEvidence, book: meta.bookReply, friend: message.conversation?.activeBookFriend,
                                 limits: message.conversation?.readingChapterLimits ?? [:])
             : ReadingReferences()
+        let claimSources: [ReadingCitation] = {
+            if !references.sources.isEmpty { return references.sources }
+            guard message.isSynthesis, let group = message.comparisonGroupID, let conversation = message.conversation else { return [] }
+            var sources: [ReadingCitation] = []
+            for candidate in ArenaSynthesis.eligibleSources(in: conversation.messages, groupID: group) {
+                let info = candidate.assistanceMetadata
+                let refs = ReadingReferences(knowledge: info.knowledgeEvidence, book: info.bookReply,
+                                             friend: conversation.activeBookFriend, limits: conversation.readingChapterLimits)
+                for source in refs.sources where !sources.contains(where: { $0.volumeID == source.volumeID && $0.excerpt == source.excerpt }) {
+                    sources.append(source)
+                }
+            }
+            return sources
+        }()
         let bodyText = MarkdownContentView(text: message.content, isStreaming: message.isStreaming,
                                            references: references, onOpenCitation: actions.onOpenCitation,
                                            replySelection: replySelectionContext)
@@ -819,7 +850,8 @@ struct MessageRowView: View {
                     totalRevisions: totalRevisions,
                     currentRevision: currentRevision,
                     isSpeaking: isSpeaking,
-                    groupPersona: groupPersona
+                    groupPersona: groupPersona,
+                    canCheckClaim: !message.content.isEmpty
                 )
             }
         }
@@ -838,8 +870,13 @@ struct MessageRowView: View {
         }) {
             TextSelectionSheet(text: message.content, onQuote: prioritizesFollowUp && actions.onQuote != nil ? { pendingSelectedQuote = $0 } : nil)
         }
+        .sheet(item: $workshop) { item in NavigationStack { ModelWorkshop(mode: item.mode, initialAttachments: message.attachments, input: item.text) } }
+        .sheet(item: $editingImage) { item in NavigationStack { RegionImageEditor(message: message, attachmentID: item.id) } }
+        .sheet(item: $checkingClaim) { item in
+            ClaimCheckSheet(sources: claimSources, open: actions.onOpenCitation, allowedBook: message.conversation?.activeBookFriend?.bookID, chapterLimits: message.conversation?.readingChapterLimits ?? [:], claim: item.text)
+        }
         .sheet(item: $exportShareItem) { payload in
-            ActivityShareSheet(items: [payload.url])
+            ReplyActivityShareSheet(items: [payload.url])
         }
         .alert("导出失败", isPresented: Binding(
             get: { exportErrorMessage != nil },
@@ -999,7 +1036,7 @@ struct MessageRowView: View {
         totalRevisions: Int,
         currentRevision: Int,
         isSpeaking: Bool,
-        groupPersona: String?
+        groupPersona: String?, canCheckClaim: Bool
     ) -> some View {
         let exportSpeaker = meta.groupSpeakerDisplayTitle
             ?? (message.modelDisplayName.isEmpty ? String(localized: "AI 助手") : message.modelDisplayName)
@@ -1038,6 +1075,10 @@ struct MessageRowView: View {
                 let hasSecondaryActions = !message.content.isEmpty || actions.onQuote != nil || actions.onToggleBookmark != nil || actions.onForkConversation != nil || actions.onToggleExcludeFromContext != nil || actions.onDeleteMessage != nil
                 if hasSecondaryActions || (prioritizesFollowUp && actions.onRegenerate != nil) {
                     Menu {
+                        if canCheckClaim {
+                            Button("逐条核对出处") { checkingClaim = .init(text: inlineSelection.text ?? message.content) }
+                        }
+                        Button("在本机处理选文") { workshop = .init(mode: .local, text: inlineSelection.text ?? message.content) }
                         // Frequent, non-destructive actions sit in one compact row at the top of the menu.
                         if !message.content.isEmpty || actions.onToggleBookmark != nil {
                             ControlGroup {
@@ -1462,12 +1503,12 @@ private struct ImageFullScreenSheet: View {
     }
 }
 
-private struct ExportSharePayload: Identifiable {
+struct ExportSharePayload: Identifiable {
     let id = UUID()
     let url: URL
 }
 
-private struct ActivityShareSheet: UIViewControllerRepresentable {
+struct ReplyActivityShareSheet: UIViewControllerRepresentable {
     let items: [Any]
 
     func makeUIViewController(context: Context) -> UIActivityViewController {

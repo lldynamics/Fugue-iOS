@@ -728,6 +728,17 @@ struct ChatDetailView: View {
                 .accessibilityLabel("会话检视器")
                 .accessibilityIdentifier("chat.inspector")
             }
+            if !FriendMemorySubject.subjects(in: conversation).isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        presentSheet(.friendMemory)
+                    } label: {
+                        Image(systemName: "brain.head.profile")
+                    }
+                    .accessibilityLabel("好友持续记忆")
+                    .accessibilityIdentifier("chat.friendMemory")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
@@ -736,6 +747,14 @@ struct ChatDetailView: View {
                         Label("系统提示词与参数", systemImage: "slider.horizontal.3")
                     }
                     .keyboardShortcut(",", modifiers: [.command, .shift])
+
+                    if !FriendMemorySubject.subjects(in: conversation).isEmpty {
+                        Button {
+                            presentSheet(.friendMemory)
+                        } label: {
+                            Label("好友持续记忆", systemImage: "brain.head.profile")
+                        }
+                    }
 
                     if conversation.activeBookFriend != nil {
                         Divider()
@@ -1064,7 +1083,7 @@ struct ChatDetailView: View {
             ModelPickerSheet(
                 mode: sheet == .model ? .single : .arenaMulti,
                 directory: modelDirectory,
-                conversation: conversation
+                conversation: conversation, draftText: draft.text, draftAttachments: draft.attachments
             ) { target in
                 try useModel(target, exitGroup: true)
             }
@@ -1158,6 +1177,13 @@ struct ChatDetailView: View {
 
         case .conversationExport:
             ConversationExportSheet(conversation: conversation)
+
+        case .friendMemory:
+            FriendMemorySheet(
+                subjects: FriendMemorySubject.subjects(in: conversation),
+                conversation: conversation
+            )
+            .presentationDetents([.large])
         }
     }
 

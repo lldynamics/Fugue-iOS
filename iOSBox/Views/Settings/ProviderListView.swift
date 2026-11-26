@@ -105,6 +105,13 @@ struct ProviderListView: View {
                     NavigationLink { VoiceSettingsView() } label: { Label("语音转写与自然朗读", systemImage: "waveform") }
                 }
 
+                Section("模型工具") {
+                    NavigationLink("实时语音") { LiveVoiceView() }
+                    ForEach(LabMode.allCases) { mode in
+                        NavigationLink(mode.title) { ModelWorkshop(mode: mode) }
+                    }
+                }
+
                 Section("用量与联网") {
                     NavigationLink { RequestLedgerView() } label: { Label("用量与费用账本", systemImage: "chart.bar.xaxis") }
                     NavigationLink { SearchSettingsView() } label: { Label("联网搜索", systemImage: "globe") }

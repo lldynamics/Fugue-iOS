@@ -371,6 +371,11 @@ enum GeminiAdapter {
         if includeThinkingConfig, let thinkingConfig = thinkingConfig(for: request) {
             generationConfig["thinkingConfig"] = thinkingConfig
         }
+        if let schema = request.schemaObject {
+            generationConfig["responseMimeType"] = "application/json"
+            generationConfig["responseJsonSchema"] = schema
+        }
+        if request.wantsImage { generationConfig["responseModalities"] = ["TEXT", "IMAGE"] }
         if !generationConfig.isEmpty {
             body["generationConfig"] = generationConfig
         }

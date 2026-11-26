@@ -9,7 +9,7 @@ struct AIDataConsentSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     static var transmittedDataSummary: String {
-        String(localized: "本次及后续主动发起的操作可能发送：对话消息、选用的历史上下文、引用、图片/文档附件与系统提示词；启用个人记忆时适用的记忆条目；圆桌人物参考片段、书中好友选取的原书片段，以及英语陪练中的口语/文本练习与纠错请求。若你主动选择云端语音转写（如 Whisper）或开启云端语音朗读（TTS），相应的录音音频或待朗读回复文本也会发送至你指定的语音服务商（设备本地语音识别与系统朗读默认在本机完成）。")
+        String(localized: "本次及后续主动发起的操作可能发送：对话消息、选用的历史上下文、引用、图片/文档附件与系统提示词；启用个人记忆时适用的记忆条目；圆桌人物参考片段、书中好友选取的原书片段、好友持续记忆中的共同脉络，以及英语陪练中的口语/文本练习与纠错请求。若你主动选择云端语音转写（如 Whisper）或开启云端语音朗读（TTS），相应的录音音频或待朗读回复文本也会发送至你指定的语音服务商（设备本地语音识别与系统朗读默认在本机完成）。")
     }
 
     static var webSearchGroundingSummary: String {

@@ -343,6 +343,7 @@ enum OpenAIResponsesAdapter {
             body["tools"] = tools
         }
 
+        if let schema = request.schemaObject { body["text"] = ["format": ["type": "json_schema", "name": "result", "strict": true, "schema": schema]] }
         return body
     }
 
