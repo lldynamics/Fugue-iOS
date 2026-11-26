@@ -213,6 +213,12 @@ final class ChatDefaultsPeopleAndShelfTests: XCTestCase {
         let profile = try PersonaLibrary.save(person(p.makeTarget(for: p.models[0])), in: ctx)
         let chat = try PersonaLibrary.privateChat(with: profile, in: ctx)
         let requests = OSAllocatedUnfairLock(initialState: [LLMChatRequest]()), engine = recordingEngine(requests)
+        // This fixture records foreground generation. Automatic memory extraction has its own transport tests.
+        let memory = FriendMemoryStore(fileURL: nil)
+        for subject in FriendMemorySubject.subjects(in: chat) {
+            memory.setAutoExtractEnabled(false, for: subject)
+        }
+        engine.friendMemoryStore = memory
         func send(using options: GenerationOptions = GenerationOptions()) -> SendOutcome {
             engine.sendUserMessage(text: "What birds do you hear?", attachments: [], in: chat, providers: [p], context: ctx, options: options)
         }

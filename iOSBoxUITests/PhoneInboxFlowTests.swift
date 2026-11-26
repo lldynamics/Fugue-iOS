@@ -84,6 +84,7 @@ final class PhoneInboxFlowTests: XCTestCase {
         app.launch()
         let empty = app.staticTexts["No conversations yet"]
         XCTAssertTrue(empty.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["workspace.tab.friends"].label, "Friends")
         XCTAssertEqual(app.buttons["workspace.tab.library"].label, "Library")
         app.buttons["inbox.newQuestion"].tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
@@ -100,12 +101,52 @@ final class PhoneInboxFlowTests: XCTestCase {
         shot.lifetime = .keepAlways
         add(shot)
         XCTAssertTrue(hasDarkCanvas(screenshot), "The visible inbox background should use the dark color scheme.")
-        for id in ["inbox.search", "inbox.resume", "inbox.attach", "inbox.newQuestion", "workspace.tab.library"] {
+        for id in [
+            "inbox.search",
+            "inbox.resume",
+            "inbox.attach",
+            "inbox.newQuestion",
+            "workspace.tab.conversation",
+            "workspace.tab.friends",
+            "workspace.tab.library"
+        ] {
             let control = app.buttons[id]
             XCTAssertTrue(control.isHittable, id)
             // Accessibility returns screen coordinates after a floating-point transform.
             XCTAssertGreaterThanOrEqual(min(control.frame.height, control.frame.width) + 0.000001, 44, id)
         }
+    }
+
+    func testFriendsTabSitsBetweenConversationAndLibraryAndRoutesToChat() throws {
+        let app = try launch(["-ui-test-personas"])
+        let conversationTab = app.buttons["workspace.tab.conversation"]
+        let friendsTab = app.buttons["workspace.tab.friends"]
+        let libraryTab = app.buttons["workspace.tab.library"]
+
+        XCTAssertTrue(conversationTab.isHittable)
+        XCTAssertTrue(friendsTab.isHittable)
+        XCTAssertTrue(libraryTab.isHittable)
+        XCTAssertEqual(friendsTab.label, "好友")
+        XCTAssertLessThan(conversationTab.frame.minX, friendsTab.frame.minX)
+        XCTAssertLessThan(friendsTab.frame.minX, libraryTab.frame.minX)
+
+        friendsTab.tap()
+        XCTAssertTrue(app.navigationBars["好友"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["friends.addMenu"].exists)
+        XCTAssertTrue(app.buttons["林舟"].waitForExistence(timeout: 5), app.debugDescription)
+        let bookFriend = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "旅人", "山路手记")
+        ).firstMatch
+        XCTAssertTrue(bookFriend.exists, app.debugDescription)
+
+        let friendsShot = XCTAttachment(screenshot: app.screenshot())
+        friendsShot.name = "iPhone friends tab"
+        friendsShot.lifetime = .keepAlways
+        add(friendsShot)
+
+        app.buttons["与 林舟 私聊"].tap()
+        let input = app.descendants(matching: .any).matching(identifier: "chatComposer.input").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 6), app.debugDescription)
     }
 
     private func hasDarkCanvas(_ screenshot: XCUIScreenshot) -> Bool {
