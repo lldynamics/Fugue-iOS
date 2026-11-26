@@ -8,8 +8,8 @@
 
 夜奔（Fugue）适用于运行 iOS 18 或 iPadOS 18 及以上版本的 iPhone 和 iPad。要开始聊天，请准备一个可用的模型接口。公网接口通常需要 API Key。允许免鉴权的自部署局域网接口可将密钥留空。
 
-1. 打开「对话」，进入「连接模型」，选一个服务商或添加自定义接口。
-2. 核对 API Base URL、协议和模型 ID，按需填写 API Key，再选「验证连接并使用此模型」。验证可能发送一条固定的测试消息。
+1. 打开「写个新问题…」，点「连接模型」，选择服务商（或展开「导入连接信息」粘贴接口与密钥）。
+2. 核对服务商与 API Key（可在「高级设置」检查 API Base URL、协议和模型 ID），点「验证连接」，通过后点「保存并继续」。验证会发送一条固定的测试消息。
 3. 首次发送时核对接收服务商和数据范围，再决定是否发送。
 
 ### 请求失败或模型列表为空
@@ -20,7 +20,7 @@
 
 ### 书架和知识库
 
-在「工作台 → 书架」导入文档，或在对话中绑定书架资料；可在「设置 → 全文检索与知识库索引」查看或重建本地检索索引。
+在 iPhone 前往「资料库 → 书架」（iPad 为「工作台 → 书架」）导入文档（支持 `TXT / MD / EPUB / PDF / DOCX / XLSX / PPTX`），或在对话中绑定书架资料；可在「设置 → 全文检索与知识库索引」查看或重建本地检索索引。
 
 在「设置 → 关于与隐私声明」可以撤回对话发送授权，也可以管理 Spotlight、实时活动和桌面小组件的预览选项。「设置 → 隐私锁与防窥遮罩」可配置设备认证。
 
@@ -46,8 +46,8 @@
 
 Fugue runs on iPhone with iOS 18 or later and iPad with iPadOS 18 or later. To start chatting, set up a working model endpoint. Public endpoints typically require an API key. You can leave the key blank for a self-hosted endpoint on your local network that allows unauthenticated access.
 
-1. Open Chats, choose Connect a Model, and select a provider or add a custom endpoint.
-2. Check the API base URL, protocol, and model ID. Enter your API key if needed, then choose Verify Connection and Use This Model. Verification can send a fixed test message.
+1. Tap **Ask a new question…**, choose **Connect a Model**, and select a provider (or expand **Import connection details** to paste your endpoint and key).
+2. Check the provider and API key (or verify the API base URL, protocol, and model ID under **Advanced settings**), tap **Test connection**, and then tap **Save and Continue**. Verification sends a fixed test message.
 3. Before the first send, review the receiving provider and the data involved, then decide whether to send.
 
 ### Fix a failed request or an empty model list
@@ -58,7 +58,7 @@ If you have a billing question, check the provider and request count in Settings
 
 ### Bookshelf and knowledge search
 
-Import documents in Workspace → Bookshelf or link bookshelf documents to a chat. You can view or rebuild the local search index in Settings → Full-Text Search & Knowledge Index.
+Import documents (`TXT / MD / EPUB / PDF / DOCX / XLSX / PPTX`) in **Library → Bookshelf** on iPhone (**Workspace → Bookshelf** on iPad) or link bookshelf documents to a chat. You can view or rebuild the local search index in Settings → Full-Text Search & Knowledge Index.
 
 In Settings → About & Privacy, you can withdraw chat sending permission and manage previews for Spotlight, Live Activities, and Home Screen widgets. Go to Settings → Privacy Lock & Blur Shield to configure device authentication.
 

@@ -22,7 +22,7 @@
 
 • 比较不同模型。同一个问题可以交给多个模型并行回答。选中一条回复继续追问，或用 AI 圆桌让不同角色讨论同一个问题。
 
-• 带着原文提问。导入 PDF、EPUB、TXT 或 Markdown，绑定书架资料后可查看回答引用的原文片段。读书时也可以和书中角色对话，按阅读进度限制参考章节。
+• 带着原文提问。导入 TXT、MD、EPUB、PDF、DOCX、XLSX 或 PPTX 文档，绑定书架资料后可查看回答引用的原文片段。读书时也可以和书中角色对话，按阅读进度限制参考章节。
 
 • 整理工作和学习材料。用助手预设处理常用任务，搜索和收藏对话。可扫描文档并在本机识别文字，也可用兼容的接口转写音频。
 
@@ -54,7 +54,7 @@ Fugue brings AI chat and document reading together on iPhone and iPad. Connect a
 
 • Compare models. Send the same question to several models in parallel. Pick a reply to continue from, or set up an AI roundtable to discuss a question from different perspectives.
 
-• Ask questions with the source at hand. Import PDF, EPUB, TXT, or Markdown documents, link them to a chat, and see the passages cited in an answer. You can also chat with a character from a book and limit references to chapters you’ve reached.
+• Ask questions with the source at hand. Import TXT, MD, EPUB, PDF, DOCX, XLSX, or PPTX documents, link them to a chat, and see the passages cited in an answer. You can also chat with a character from a book and limit references to chapters you’ve reached.
 
 • Organize work and study materials. Use assistant presets for recurring tasks, search chats, and bookmark replies. Scan a document and recognize text on your device, or transcribe audio through a compatible endpoint.
 
@@ -70,24 +70,36 @@ model comparison,document search,voice notes,local models,OCR,roundtable
 
 ### 简体中文
 
-夜奔无需注册应用账号。联网对话通过用户配置的模型接口运行。请使用本次审核提供的专用接口测试。
+夜奔无需注册应用账号。联网对话通过用户配置的模型接口运行。请直接复制下方测试连接配置块，在应用内一键导入即可完成审核测试：
 
-- 服务商、协议和 Base URL **【待确认】**
-- 模型 ID **【待确认】**
-- 审核专用 API Key **【待确认，填入审核资料】**
+```text
+Base URL: 【待填入审核专用 HTTPS 接口地址，如 https://review-api.yourdomain.com/v1】
+Protocol: 【待填入协议：openai_responses / openai_compatible / anthropic / gemini】
+Model ID: 【待填入测试模型 ID，如 gpt-4.1-mini】
+API Key: 【待填入审核专用临时 API Key】
+```
 
-1. 打开「对话」，选择「连接模型」。选择服务商或添加自定义接口，填写上述信息，点「验证连接并使用此模型」。
-2. 发一条测试消息。出现授权提示时，可查看接收方和将发送的数据，选择允许后继续。
-3. 如需试用书架问答，在「工作台」的「书架」导入一份测试文档，再把文档绑定到对话。
+审核联系人：**【待填入姓名、电话与邮箱】**
+
+1. 打开应用，点「写个新问题…」，再点输入框上方的「连接模型」。
+2. 展开「导入连接信息」，粘贴上方整段配置并点「识别」（或复制后直接点「读取剪贴板自动识别」），点「验证连接」，验证通过后点「保存并继续」。
+3. 发送一条测试消息。首次发送会出现数据接收方与传输内容确认页，点「同意并继续发送」即可对话。
+4. 如需试用书架问答，前往「资料库 → 书架」（iPad 为「工作台 → 书架」）导入一份测试文档（支持 `TXT / MD / EPUB / PDF / DOCX / XLSX / PPTX`），再在对话中绑定该文档即可提问并查看原文引用。
 
 ### English
 
-Fugue does not require an app account. Online chat runs through a model endpoint configured by the user. Please use the dedicated endpoint provided for this review.
+Fugue does not require an app account. Online chat runs through a model endpoint configured by the user. Copy the dedicated review configuration block below to connect in one step:
 
-- Provider, protocol, and base URL **[Confirm]**
-- Model ID **[Confirm]**
-- Review-only API key **[Confirm and enter in App Review Information]**
+```text
+Base URL: [Enter HTTPS review endpoint, e.g. https://review-api.yourdomain.com/v1]
+Protocol: [Enter protocol: openai_responses / openai_compatible / anthropic / gemini]
+Model ID: [Enter review model ID, e.g. gpt-4.1-mini]
+API Key: [Enter review-only temporary API key]
+```
 
-1. Open Chats and choose Connect a Model. Select a provider or add a custom endpoint, enter the details above, and choose Verify Connection and Use This Model.
-2. Send a sample message. When prompted, review the recipient and the data to be sent, then grant permission to proceed.
-3. To try document Q&A, import a sample document in the Workshop bookshelf and link it to a chat.
+Review contact: **[Enter name, phone number, and email]**
+
+1. Open Fugue, tap **Ask a new question…**, then tap **Connect a Model** above the message field.
+2. Expand **Import connection details**, paste the block above and tap **Detect** (or copy it first and tap **Read Clipboard to Detect**), tap **Test connection**, and then tap **Save and Continue**.
+3. Send a sample message. On the first request, review the recipient and data disclosure sheet, then tap **Agree and Send** to proceed.
+4. To try document Q&A, open **Library → Bookshelf** (**Workspace → Bookshelf** on iPad), import a sample file (`TXT / MD / EPUB / PDF / DOCX / XLSX / PPTX`), and link it to a chat to see cited passages.
